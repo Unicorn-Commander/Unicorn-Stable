@@ -1,0 +1,30 @@
+[project]
+name = "stable-agents"
+version = "0.1.0"
+description = "Stable AI agent runtime — LiveKit Agents SDK workers"
+requires-python = ">=3.12"
+dependencies = [
+    "livekit-agents~=1.5",
+    "livekit-plugins-deepgram~=1.5",
+    "livekit-plugins-elevenlabs~=1.5",
+    "livekit-plugins-cartesia~=1.5",
+    "livekit-plugins-silero~=1.5",
+    "livekit-plugins-anthropic~=1.5",
+    "livekit-plugins-openai~=1.5",
+    "livekit-plugins-turn-detector~=1.5",
+    "livekit-api~=1.1",
+    "livekit~=1.1",
+    "httpx>=0.28",
+    "structlog>=24.4",
+    "redis[hiredis]>=5.2",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "Pillow>=11.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_runtime*", "triage*", "plugins*"]

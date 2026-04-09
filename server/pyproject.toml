@@ -1,0 +1,27 @@
+[project]
+name = "stable-server"
+version = "0.1.0"
+description = "Stable — LiveKit-based chat/voice/video platform backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis[hiredis]>=5.2",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "livekit-api~=1.1",
+    "python-jose[cryptography]>=3.3",
+    "httpx>=0.28",
+    "structlog>=24.4",
+    "python-multipart>=0.0.18",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
