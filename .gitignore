@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Build artifacts
+web/dist/
+web/build/
+server/*.egg-info/
+agents/*.egg-info/
+.ruff_cache/
+.mypy_cache/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker volumes (local dev)
+postgres_data/
+redis_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Uploads
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Alembic
+server/alembic/versions/__pycache__/
+
+# Test / Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/

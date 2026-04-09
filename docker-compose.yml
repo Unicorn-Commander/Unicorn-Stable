@@ -1,0 +1,178 @@
+services:
+  # ==========================================================================
+  # LiveKit SFU Server — core real-time media & data channel infrastructure
+  # ==========================================================================
+  livekit:
+    image: livekit/livekit-server:v1.8
+    container_name: stable-livekit
+    restart: unless-stopped
+    ports:
+      - "7880:7880"   # HTTP / WebSocket signaling
+      - "7881:7881"   # TCP media (TURN/TLS)
+      - "7882:7882/udp"  # UDP media (WebRTC)
+    volumes:
+      - ./server/livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config", "/etc/livekit.yaml"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - stable-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # PostgreSQL 16 — persistent storage for rooms, messages, agents, audit
+  # ==========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: stable-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    environment:
+      POSTGRES_DB: stable
+      POSTGRES_USER: stable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stable_dev_password_2026}
+    networks:
+      - stable-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stable -d stable"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Redis 7 — presence, typing indicators, pub/sub, rate limiting, LiveKit
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: stable-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - stable-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ==========================================================================
+  # Stable Backend — FastAPI: auth, rooms, messages, tokens, WebSocket
+  # ==========================================================================
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: stable-backend
+    restart: unless-stopped
+    ports:
+      - "8400:8400"
+    volumes:
+      - ./server:/app
+      - backend_uploads:/app/uploads
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8400
+      - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@postgres:5432/stable
+      - REDIS_URL=redis://redis:6379/0
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_URL=http://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-uchub}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-stable}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:8401}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    networks:
+      - stable-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # Agent Runtime — LiveKit Agents SDK: AI participants in rooms
+  # ==========================================================================
+  agent-runtime:
+    build:
+      context: ./agents
+      dockerfile: Dockerfile
+    container_name: stable-agents
+    restart: unless-stopped
+    volumes:
+      - ./agents:/app
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
+      - STABLE_BACKEND_URL=http://backend:8400
+      - REDIS_URL=redis://redis:6379/1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      livekit:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - stable-net
+
+  # ==========================================================================
+  # Web Client — React/TypeScript served by nginx
+  # ==========================================================================
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: stable-web
+    restart: unless-stopped
+    ports:
+      - "8401:80"
+    depends_on:
+      - backend
+    networks:
+      - stable-net
+
+networks:
+  stable-net:
+    driver: bridge
+    name: stable-network
+
+volumes:
+  postgres_data:
+    name: stable-postgres-data
+  redis_data:
+    name: stable-redis-data
+  backend_uploads:
+    name: stable-backend-uploads
