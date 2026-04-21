@@ -7,8 +7,18 @@ import structlog
 from livekit.api import AccessToken, LiveKitAPI, VideoGrants
 from livekit.api.room_service import CreateRoomRequest, DeleteRoomRequest, ListRoomsRequest
 from livekit.api.room_service import MuteRoomParticipantRequest, RoomParticipantIdentity
-from livekit.api.room_service import SendDataRequest
+from livekit.api.room_service import SendDataRequest, UpdateRoomMetadataRequest
 from livekit.protocol.room import Room as LKRoom
+
+try:
+    # LiveKit >=1.5 ships agent dispatch on AgentDispatchService
+    from livekit.api.agent_dispatch_service import (
+        CreateAgentDispatchRequest,
+    )
+    _HAS_AGENT_DISPATCH = True
+except ImportError:  # pragma: no cover — older SDKs
+    CreateAgentDispatchRequest = None  # type: ignore[assignment]
+    _HAS_AGENT_DISPATCH = False
 
 logger = structlog.get_logger(__name__)
 
@@ -125,6 +135,79 @@ class LiveKitService:
             identity=identity,
             muted=muted,
         )
+
+    async def update_room_metadata(self, room_name: str, metadata: str) -> None:
+        """Update a LiveKit room's metadata JSON string in-place.
+
+        The Stable agent worker reads this metadata to decide which agent class
+        (and which Brigade agent, via `brigade_agent_id`) to spawn.
+        """
+        request = UpdateRoomMetadataRequest(room=room_name, metadata=metadata)
+        await self._api.room.update_room_metadata(request)
+        logger.info(
+            "livekit_room_metadata_updated",
+            room=room_name,
+            metadata_len=len(metadata),
+        )
+
+    async def dispatch_agent(
+        self,
+        *,
+        room_name: str,
+        agent_name: str = "stable-brigade",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch a worker job to a room so an agent joins as a participant.
+
+        `agent_name` is the `WorkerOptions.agent_name` the worker registered
+        with. `metadata` is serialized into the dispatch and also the room so
+        the worker can read which Brigade agent to act as.
+        """
+        metadata_str = json.dumps(metadata or {})
+
+        # Also bake metadata into the room so the worker's job handler can
+        # read brigade_agent_id from ctx.room.metadata.
+        try:
+            await self.update_room_metadata(room_name, metadata_str)
+        except Exception:
+            logger.warning(
+                "livekit_room_metadata_update_failed",
+                room=room_name,
+                exc_info=True,
+            )
+
+        if not _HAS_AGENT_DISPATCH or CreateAgentDispatchRequest is None:
+            logger.warning(
+                "livekit_agent_dispatch_unavailable",
+                note="SDK does not expose AgentDispatchService; metadata was "
+                     "applied to the room but no explicit dispatch was sent. "
+                     "Workers with auto_accept will still pick up the job.",
+            )
+            return {
+                "dispatched": False,
+                "reason": "no_agent_dispatch_service",
+                "metadata": metadata or {},
+            }
+
+        request = CreateAgentDispatchRequest(
+            agent_name=agent_name,
+            room=room_name,
+            metadata=metadata_str,
+        )
+        resp = await self._api.agent_dispatch.create_dispatch(request)
+        logger.info(
+            "livekit_agent_dispatched",
+            room=room_name,
+            agent_name=agent_name,
+            dispatch_id=getattr(resp, "id", ""),
+            metadata=metadata or {},
+        )
+        return {
+            "dispatched": True,
+            "dispatch_id": getattr(resp, "id", ""),
+            "agent_name": agent_name,
+            "metadata": metadata or {},
+        }
 
     async def send_data(
         self,

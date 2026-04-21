@@ -66,6 +66,20 @@ export interface Agent {
   model: string;
 }
 
+export interface BrigadeAgent {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface InviteBrigadeAgentResponse {
+  room_name: string;
+  brigade_agent_id: string;
+  dispatched: boolean;
+  dispatch_id: string | null;
+  reason: string | null;
+}
+
 export interface LiveKitTokenResponse {
   token: string;
   ws_url: string;
@@ -189,6 +203,21 @@ class StableApiClient {
 
   async getAgents(): Promise<Agent[]> {
     return this.request<Agent[]>("GET", "/api/v1/agents");
+  }
+
+  async getBrigadeAgents(): Promise<BrigadeAgent[]> {
+    return this.request<BrigadeAgent[]>("GET", "/api/v1/brigade/agents");
+  }
+
+  async inviteBrigadeAgent(
+    roomName: string,
+    brigadeAgentId: string,
+  ): Promise<InviteBrigadeAgentResponse> {
+    return this.request<InviteBrigadeAgentResponse>(
+      "POST",
+      `/api/v1/rooms/${encodeURIComponent(roomName)}/invite-brigade-agent`,
+      { brigade_agent_id: brigadeAgentId },
+    );
   }
 
   async editMessage(

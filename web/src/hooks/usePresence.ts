@@ -1,10 +1,11 @@
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useMemo } from "react";
 import { ws } from "@/services/websocket";
 import type { WsTypingEvent, WsPresenceEvent, WsEventPayload } from "@/services/websocket";
-import { useAppStore } from "@/stores/appStore";
+import { useAppStore, type TypingUser } from "@/stores/appStore";
 
 const TYPING_TIMEOUT_MS = 3000;
 const TYPING_SEND_THROTTLE_MS = 2000;
+const EMPTY_TYPING: TypingUser[] = [];
 
 interface UsePresenceReturn {
   typingUsers: Array<{ user_id: string; username: string }>;
@@ -13,7 +14,7 @@ interface UsePresenceReturn {
 }
 
 export function usePresence(roomId: string | null): UsePresenceReturn {
-  const typing = useAppStore((s) => (roomId ? (s.typing[roomId] ?? []) : []));
+  const typing = useAppStore((s) => (roomId ? (s.typing[roomId] ?? EMPTY_TYPING) : EMPTY_TYPING));
   const addTypingUser = useAppStore((s) => s.addTypingUser);
   const removeTypingUser = useAppStore((s) => s.removeTypingUser);
   const addOnlineUser = useAppStore((s) => s.addOnlineUser);
@@ -84,14 +85,14 @@ export function usePresence(roomId: string | null): UsePresenceReturn {
   }, [roomId]);
 
   const isUserOnline = useCallback(
-    (userId: string) => onlineUsers.has(userId),
+    (userId: string) => onlineUsers.includes(userId),
     [onlineUsers],
   );
 
-  const typingUsers = typing.map((t) => ({
-    user_id: t.user_id,
-    username: t.username,
-  }));
+  const typingUsers = useMemo(
+    () => typing.map((t) => ({ user_id: t.user_id, username: t.username })),
+    [typing],
+  );
 
   return {
     typingUsers,

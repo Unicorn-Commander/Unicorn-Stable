@@ -7,6 +7,7 @@ import { ChatPanel } from "./ChatPanel";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { StageView } from "./StageView";
 import { VoiceVideoBar } from "./VoiceVideoBar";
+import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 
 interface RoomViewProps {
   roomId: string;
@@ -72,9 +73,12 @@ export function RoomView({ roomId }: RoomViewProps) {
               animate={{ width: 240, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="shrink-0 overflow-hidden border-l border-slate-700/50"
+              className="shrink-0 overflow-hidden border-l border-slate-700/50 flex flex-col"
             >
               <ParticipantStrip roomId={roomId} />
+              <div className="border-t border-slate-700/50 shrink-0">
+                <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

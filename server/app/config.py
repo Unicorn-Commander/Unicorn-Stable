@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     keycloak_client_id: str = "stable-backend"
     keycloak_client_secret: str = ""
 
+    # Unicorn Brigade — upstream agent backend. Agents in Stable rooms route
+    # their LLM calls through Brigade so persona + memory + delegation live
+    # in one place.
+    brigade_base_url: str = "https://brigade.magicunicorn.dev/api/v1/openai/v1"
+    brigade_api_key: str = ""
+    brigade_worker_agent_name: str = "stable-brigade"  # must match WorkerOptions.agent_name
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 

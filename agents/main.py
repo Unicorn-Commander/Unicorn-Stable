@@ -12,6 +12,7 @@ from livekit.agents import AutoSubscribe, JobContext, JobRequest, WorkerOptions,
 
 from agent_runtime.config import AgentSettings, get_agent_settings
 from agent_runtime.registry import AgentRegistry
+from brigade_backed.agent import BrigadeBackedAgent
 from triage.agent import TriageAgent
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,7 @@ def main() -> None:
     global _registry
     _registry = AgentRegistry(settings=settings)
     _registry.register(TriageAgent)
+    _registry.register(BrigadeBackedAgent)
 
     logger.info(
         "agents_registered",

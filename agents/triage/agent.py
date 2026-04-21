@@ -61,6 +61,9 @@ _MENTION_PATTERN: re.Pattern[str] = re.compile(
 class TriageAgent(StableAgent):
     agent_type: str = "triage"
     system_prompt: str = TRIAGE_SYSTEM_PROMPT
+    # When Brigade is the LLM backend, this Stable agent acts as this Brigade agent.
+    # The General is the primary orchestrator — same role as triage here.
+    brigade_agent_id: str = "the-general"
 
     def __init__(self, settings: AgentSettings | None = None) -> None:
         super().__init__(settings)
@@ -105,7 +108,32 @@ class TriageAgent(StableAgent):
         return pipeline
 
     def _build_llm(self, cfg: AgentSettings) -> Any:
-        """Build the LLM plugin, preferring Anthropic, falling back to OpenAI."""
+        """Build the LLM plugin.
+
+        Preference order:
+          1. Unicorn Brigade (via OpenAI-compat adapter) — persona, memory,
+             delegation all come from Brigade. The LiveKit side stays a
+             thin voice/room host.
+          2. Direct Anthropic.
+          3. OpenAI.
+          4. OpenRouter.
+        """
+        if cfg.brigade_api_key:
+            from agent_runtime.brigade_llm import build_brigade_llm
+            brigade_agent_id = getattr(self, "brigade_agent_id", None) or "the-general"
+            user_id = getattr(self, "_human_user_id", None)
+            logger.info(
+                "triage_llm_provider",
+                provider="brigade",
+                brigade_agent_id=brigade_agent_id,
+                has_user_id=bool(user_id),
+            )
+            return build_brigade_llm(
+                cfg,
+                brigade_agent_id=brigade_agent_id,
+                user_id=user_id,
+            )
+
         if cfg.anthropic_api_key:
             logger.info("triage_llm_provider", provider="anthropic")
             return anthropic.LLM(
@@ -129,7 +157,8 @@ class TriageAgent(StableAgent):
             )
 
         raise ValueError(
-            "No LLM provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY."
+            "No LLM provider configured. Set BRIGADE_API_KEY, ANTHROPIC_API_KEY, "
+            "OPENAI_API_KEY, or OPENROUTER_API_KEY."
         )
 
     def _build_chat_context(self) -> Any:

@@ -40,7 +40,7 @@ interface AppState {
   participants: Record<string, RoomMember[]>;
   agents: Agent[];
   typing: Record<string, TypingUser[]>;
-  onlineUsers: Set<string>;
+  onlineUsers: string[];
   ui: UIState;
   voiceActive: boolean;
 
@@ -58,7 +58,7 @@ interface AppState {
   setAgents: (agents: Agent[]) => void;
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
-  setOnlineUsers: (userIds: Set<string>) => void;
+  setOnlineUsers: (userIds: string[]) => void;
   addOnlineUser: (userId: string) => void;
   removeOnlineUser: (userId: string) => void;
   setVoiceActive: (active: boolean) => void;
@@ -79,7 +79,7 @@ export const useAppStore = create<AppState>((set) => ({
   participants: {},
   agents: [],
   typing: {},
-  onlineUsers: new Set<string>(),
+  onlineUsers: [],
   ui: {
     sidebarOpen: true,
     participantPanelOpen: true,
@@ -235,17 +235,15 @@ export const useAppStore = create<AppState>((set) => ({
 
   setOnlineUsers: (userIds) => set({ onlineUsers: userIds }),
   addOnlineUser: (userId) =>
-    set((state) => {
-      const next = new Set(state.onlineUsers);
-      next.add(userId);
-      return { onlineUsers: next };
-    }),
+    set((state) => ({
+      onlineUsers: state.onlineUsers.includes(userId)
+        ? state.onlineUsers
+        : [...state.onlineUsers, userId],
+    })),
   removeOnlineUser: (userId) =>
-    set((state) => {
-      const next = new Set(state.onlineUsers);
-      next.delete(userId);
-      return { onlineUsers: next };
-    }),
+    set((state) => ({
+      onlineUsers: state.onlineUsers.filter((id) => id !== userId),
+    })),
 
   setVoiceActive: (active) => set({ voiceActive: active }),
 

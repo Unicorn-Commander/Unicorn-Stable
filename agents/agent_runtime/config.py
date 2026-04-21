@@ -31,6 +31,12 @@ class AgentSettings(BaseSettings):
     openai_api_key: str = ""
     openrouter_api_key: str = ""
 
+    # Unicorn Brigade — primary LLM/agent backend. When configured, agents
+    # route LLM calls through Brigade's OpenAI-compat adapter, inheriting
+    # Brigade's persona + memory + delegation pipeline.
+    brigade_base_url: str = "https://brigade.magicunicorn.dev/api/v1/openai/v1"
+    brigade_api_key: str = ""
+
     # Voice pipeline keys
     deepgram_api_key: str = ""
     elevenlabs_api_key: str = ""

@@ -1,6 +1,7 @@
 import { Bot, Crown, Shield, Mic } from "lucide-react";
 import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
+import { EMPTY_MEMBERS } from "@/stores/selectors";
 import type { RoomMember } from "@/services/api";
 
 interface ParticipantStripProps {
@@ -38,7 +39,7 @@ function RoleBadge({ role }: { role: RoomMember["role"] }) {
 }
 
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
-  const participants = useAppStore((s) => s.participants[roomId] ?? []);
+  const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const agents = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
   const onlineUsers = useAppStore((s) => s.onlineUsers);
@@ -53,10 +54,10 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
 
   const humanParticipants = participants.filter(Boolean);
   const onlineHumans = humanParticipants.filter(
-    (p) => p.is_online || onlineUsers.has(p.user_id),
+    (p) => p.is_online || onlineUsers.includes(p.user_id),
   );
   const offlineHumans = humanParticipants.filter(
-    (p) => !p.is_online && !onlineUsers.has(p.user_id),
+    (p) => !p.is_online && !onlineUsers.includes(p.user_id),
   );
 
   return (

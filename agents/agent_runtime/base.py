@@ -58,6 +58,10 @@ class StableAgent:
 
     agent_type: str = "base"
     system_prompt: str = "You are a helpful AI agent on the Stable platform."
+    # Optional: the Brigade agent this Stable agent routes through. Subclasses
+    # set this when they act as a Brigade-backed agent (persona + memory come
+    # from Brigade instead of being inline on the Stable side).
+    brigade_agent_id: str | None = None
 
     def __init__(self, settings: AgentSettings | None = None) -> None:
         self._settings: AgentSettings = settings or get_agent_settings()
@@ -65,6 +69,9 @@ class StableAgent:
         self._agent_token: str = ""
         self._room_id: str = ""
         self._room_name: str = ""
+        # Captured from the first human participant in the room — used as the
+        # user_id on Brigade requests so memory is isolated to the real human.
+        self._human_user_id: str | None = None
 
         self.tools: ToolRegistry = ToolRegistry(
             backend_url=self._settings.stable_backend_url,
@@ -105,6 +112,19 @@ class StableAgent:
 
         # 1. Obtain agent identity and token from the backend
         await self._acquire_identity()
+
+        # 1b. Capture the human user_id from the room so Brigade memory is
+        #     scoped to the real human, not the agent. Humans' participant
+        #     identity is their Keycloak `sub` (per the backend's LiveKit
+        #     token minting). Agents' identities start with "agent-".
+        try:
+            for p in ctx.room.remote_participants.values():
+                pid = getattr(p, "identity", "") or ""
+                if pid and not pid.startswith("agent-"):
+                    self._human_user_id = pid
+                    break
+        except Exception:
+            logger.debug("human_user_id_capture_failed", exc_info=True)
 
         # 2. Initialize subsystems
         self.tools = ToolRegistry(

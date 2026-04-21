@@ -13,10 +13,10 @@ import {
   Mic,
   Phone,
   AtSign,
-  X,
 } from "lucide-react";
 import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
+import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
 
 interface MessageInputProps {
@@ -40,7 +40,7 @@ export function MessageInput({ roomId, onSend, onTyping }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const participants = useAppStore((s) => s.participants[roomId] ?? []);
+  const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const agents = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
   const voiceActive = useAppStore((s) => s.voiceActive);
