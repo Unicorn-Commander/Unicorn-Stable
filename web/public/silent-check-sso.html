@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><title>SSO check</title></head>
+<body>
+<script>
+// Keycloak JS adapter uses this page in a hidden iframe to silently
+// check whether the user still has an SSO session. It just needs to
+// post the current URL (which Keycloak redirected to) back to the
+// parent frame.
+parent.postMessage(location.href, location.origin);
+</script>
+</body>
+</html>
