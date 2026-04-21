@@ -16,7 +16,11 @@ from typing import Any
 
 import structlog
 from livekit.agents import JobContext
-from livekit.agents.pipeline import VoicePipelineAgent
+# VoicePipelineAgent removed in livekit-agents 1.5; use AgentSession for voice
+try:
+    from livekit.agents.pipeline import VoicePipelineAgent  # type: ignore
+except ImportError:
+    VoicePipelineAgent = None  # type: ignore
 from livekit.plugins import silero
 
 from agent_runtime.base import StableAgent

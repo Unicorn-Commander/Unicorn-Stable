@@ -56,7 +56,7 @@ services:
     container_name: stable-redis
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      - "6381:6379"  # remapped (6380 taken by FalkorDB)
     volumes:
       - redis_data:/data
     command: >
@@ -99,7 +99,11 @@ services:
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-uchub}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-stable}
       - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET:-}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:8401}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-https://auth.unicorncommander.ai}
+      - BRIGADE_BASE_URL=${BRIGADE_BASE_URL:-https://brigade.magicunicorn.dev/api/v1/openai/v1}
+      - BRIGADE_API_KEY=${BRIGADE_API_KEY:-}
+      - BRIGADE_WORKER_AGENT_NAME=${BRIGADE_WORKER_AGENT_NAME:-stable-brigade}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:8401,https://stable.magicunicorn.dev}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       postgres:
@@ -110,6 +114,14 @@ services:
         condition: service_healthy
     networks:
       - stable-net
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.stable-api.rule=Host(`stable.magicunicorn.dev`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.stable-api.entrypoints=websecure"
+      - "traefik.http.routers.stable-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stable-api.loadbalancer.server.port=8400"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/health')"]
       interval: 15s
@@ -125,6 +137,7 @@ services:
       dockerfile: Dockerfile
     container_name: stable-agents
     restart: unless-stopped
+    command: ["start"]
     volumes:
       - ./agents:/app
     environment:
@@ -139,6 +152,8 @@ services:
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
+      - BRIGADE_BASE_URL=${BRIGADE_BASE_URL:-https://brigade.magicunicorn.dev/api/v1/openai/v1}
+      - BRIGADE_API_KEY=${BRIGADE_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       livekit:
@@ -163,11 +178,23 @@ services:
       - backend
     networks:
       - stable-net
-
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.stable.rule=Host(`stable.magicunicorn.dev`)"
+      - "traefik.http.routers.stable.entrypoints=websecure"
+      - "traefik.http.routers.stable.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stable.loadbalancer.server.port=80"
+      - "traefik.http.routers.stable-http.rule=Host(`stable.magicunicorn.dev`)"
+      - "traefik.http.routers.stable-http.entrypoints=web"
+      - "traefik.http.routers.stable-http.service=stable"
 networks:
   stable-net:
     driver: bridge
     name: stable-network
+  web:
+    external: true
 
 volumes:
   postgres_data:

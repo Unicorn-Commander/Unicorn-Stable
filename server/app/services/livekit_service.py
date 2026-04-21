@@ -6,9 +6,9 @@ from typing import Any
 import structlog
 from livekit.api import AccessToken, LiveKitAPI, VideoGrants
 from livekit.api.room_service import CreateRoomRequest, DeleteRoomRequest, ListRoomsRequest
-from livekit.api.room_service import MuteRoomParticipantRequest, RoomParticipantIdentity
+from livekit.api.room_service import MuteRoomTrackRequest, RoomParticipantIdentity
 from livekit.api.room_service import SendDataRequest, UpdateRoomMetadataRequest
-from livekit.protocol.room import Room as LKRoom
+from livekit.protocol.models import Room as LKRoom
 
 try:
     # LiveKit >=1.5 ships agent dispatch on AgentDispatchService
@@ -123,7 +123,7 @@ class LiveKitService:
         self, room_name: str, identity: str, muted: bool
     ) -> None:
         """Mute or unmute a participant in a LiveKit room."""
-        request = MuteRoomParticipantRequest(
+        request = MuteRoomTrackRequest(
             room=room_name,
             identity=identity,
             muted=muted,

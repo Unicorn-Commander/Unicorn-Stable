@@ -132,6 +132,7 @@ def main() -> None:
             api_secret=settings.livekit_api_secret,
             ws_url=settings.livekit_url,
             num_idle_processes=settings.worker_num_idle,
+            agent_name="stable-brigade",  # matches backend's dispatch_agent() default
         ),
     )
 

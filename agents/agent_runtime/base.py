@@ -10,7 +10,11 @@ import httpx
 import structlog
 from livekit import rtc
 from livekit.agents import JobContext, llm, utils
-from livekit.agents.pipeline import VoicePipelineAgent
+# VoicePipelineAgent removed in livekit-agents 1.5; use AgentSession for voice
+try:
+    from livekit.agents.pipeline import VoicePipelineAgent  # type: ignore
+except ImportError:
+    VoicePipelineAgent = None  # type: ignore
 
 from agent_runtime.chat import ChatHandler, MessageType
 from agent_runtime.config import AgentSettings, get_agent_settings
