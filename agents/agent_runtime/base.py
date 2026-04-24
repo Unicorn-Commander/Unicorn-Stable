@@ -160,9 +160,16 @@ class StableAgent:
         self._pipeline = await self.build_pipeline(ctx)
 
         if self._pipeline is not None:
-            self._pipeline.on("user_speech_committed", self._on_user_speech_committed)
-            self._pipeline.on("function_calls_collected", self._on_function_calls_collected)
-            self._pipeline.start(ctx.room)
+            # livekit-agents 1.5: AgentSession exposes a start_room() shim from
+            # BrigadeBackedAgent.build_pipeline. Old VoicePipelineAgent path
+            # would have .on() event subscriptions and .start(room).
+            if hasattr(self._pipeline, "start_room"):
+                await self._pipeline.start_room(ctx.room)
+            else:
+                # Legacy VoicePipelineAgent
+                self._pipeline.on("user_speech_committed", self._on_user_speech_committed)
+                self._pipeline.on("function_calls_collected", self._on_function_calls_collected)
+                self._pipeline.start(ctx.room)
 
         # 5. Log the run to the backend
         await self._log_agent_event("agent_started", {"room": self._room_name})

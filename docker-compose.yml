@@ -176,6 +176,11 @@ services:
       - "8401:80"
     depends_on:
       - backend
+    volumes:
+      # Survive image rebuilds — these public assets are not bundled by Vite,
+      # they live alongside the dist output in /usr/share/nginx/html.
+      - ./web/public/favicon.svg:/usr/share/nginx/html/favicon.svg:ro
+      - ./web/public/silent-check-sso.html:/usr/share/nginx/html/silent-check-sso.html:ro
     networks:
       - stable-net
       - web
