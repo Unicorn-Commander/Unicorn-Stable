@@ -1,64 +1,81 @@
-"""STT plugin configuration — Deepgram Nova-2 with fallback."""
+"""STT plugin configuration.
+
+Three providers via a unified OpenAI-compatible interface:
+
+- ``whisper`` (default) — self-hosted faster-whisper. Free, local, fast.
+  Default endpoint: ``http://unicorn-whisper:8000/v1``.
+- ``deepgram`` — Nova-2 cloud (needs DEEPGRAM_API_KEY).
+- ``openai`` — OpenAI hosted transcription (needs OPENAI_API_KEY).
+
+faster-whisper-server exposes the OpenAI audio/transcriptions API, so the
+LiveKit openai.STT plugin works against it unchanged.
+"""
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
-from livekit.plugins import deepgram
+from livekit.plugins import openai as lk_openai
 
 from agent_runtime.config import AgentSettings, get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
 
+DEFAULT_WHISPER_BASE_URL = os.getenv(
+    "WHISPER_BASE_URL", "http://unicorn-whisper:8000/v1"
+)
+DEFAULT_WHISPER_MODEL = os.getenv("WHISPER_MODEL", "Systran/faster-whisper-large-v3")
+
+
 def get_stt_plugin(
-    provider: str = "deepgram",
+    provider: str = "whisper",
     *,
     settings: AgentSettings | None = None,
-    language: str = "en-US",
-    smart_format: bool = True,
-    punctuate: bool = True,
-    diarize: bool = False,
-    model: str = "nova-2",
-    interim_results: bool = True,
+    language: str = "en",
+    model: str | None = None,
 ) -> Any:
-    """Return a configured STT plugin instance.
-
-    Args:
-        provider: STT provider to use. Currently only ``"deepgram"`` is supported.
-        settings: Agent settings (auto-loaded if not provided).
-        language: BCP-47 language code.
-        smart_format: Enable Deepgram smart formatting.
-        punctuate: Enable automatic punctuation.
-        diarize: Enable speaker diarization.
-        model: Deepgram model name.
-        interim_results: Stream partial transcription results.
-
-    Returns:
-        A configured LiveKit STT plugin ready for VoicePipelineAgent.
-    """
     cfg = settings or get_agent_settings()
+    provider = provider.lower()
 
-    if provider == "deepgram":
-        if not cfg.deepgram_api_key:
-            raise ValueError("DEEPGRAM_API_KEY is required for Deepgram STT")
-
-        stt = deepgram.STT(
-            api_key=cfg.deepgram_api_key,
-            model=model,
+    if provider == "whisper":
+        stt = lk_openai.STT(
+            base_url=DEFAULT_WHISPER_BASE_URL,
+            api_key="not-needed",
+            model=model or DEFAULT_WHISPER_MODEL,
             language=language,
-            smart_format=smart_format,
-            punctuate=punctuate,
-            diarize=diarize,
-            interim_results=interim_results,
         )
         logger.info(
             "stt_configured",
-            provider=provider,
-            model=model,
+            provider="whisper",
+            base_url=DEFAULT_WHISPER_BASE_URL,
+            model=model or DEFAULT_WHISPER_MODEL,
+        )
+        return stt
+
+    if provider == "deepgram":
+        from livekit.plugins import deepgram
+        if not cfg.deepgram_api_key:
+            raise ValueError("DEEPGRAM_API_KEY is required for Deepgram STT")
+        stt = deepgram.STT(
+            api_key=cfg.deepgram_api_key,
+            model=model or "nova-2",
             language=language,
         )
+        logger.info("stt_configured", provider="deepgram", model=model or "nova-2")
+        return stt
+
+    if provider == "openai":
+        if not cfg.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required for openai STT")
+        stt = lk_openai.STT(
+            api_key=cfg.openai_api_key,
+            model=model or "gpt-4o-mini-transcribe",
+            language=language,
+        )
+        logger.info("stt_configured", provider="openai", model=model or "gpt-4o-mini-transcribe")
         return stt
 
     raise ValueError(f"Unsupported STT provider: {provider}")

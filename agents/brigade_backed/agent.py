@@ -34,7 +34,7 @@ class BrigadeBackedAgent(StableAgent):
         super().__init__(settings)
         self._brigade_agent_id: str = "the-general"
         self._tts_provider: str = "kokoro"
-        self._stt_provider: str = "parakeet"
+        self._stt_provider: str = "whisper"
         self._session: AgentSession | None = None
         self._lk_agent: Agent | None = None
 

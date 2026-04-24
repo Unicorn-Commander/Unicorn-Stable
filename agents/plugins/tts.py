@@ -1,119 +1,113 @@
-"""TTS plugin configuration — ElevenLabs (primary), Cartesia (fallback)."""
+"""TTS plugin configuration.
+
+Four providers. Kokoro is the default (self-hosted, free, local). All
+OpenAI-compatible providers use LiveKit's openai.TTS plugin, varying
+only by base_url/voice/model.
+"""
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
-from livekit.plugins import cartesia, elevenlabs
+from livekit.plugins import openai as lk_openai
 
 from agent_runtime.config import AgentSettings, get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
 
-# Presets map agent personality names to provider-specific voice IDs.
-VOICE_PRESETS: dict[str, dict[str, str]] = {
-    "triage": {
-        "elevenlabs": "pNInz6obpgDQGcFmaJgB",  # Adam
-        "cartesia": "a0e99841-438c-4a64-b679-ae501e7d6091",  # Barbershop Man
-    },
-    "analyst": {
-        "elevenlabs": "ErXwobaYiN019PkySvjV",  # Antoni
-        "cartesia": "f114a467-c40a-4db8-964d-aaba89cd08fa",  # Reading Man
-    },
-    "commander": {
-        "elevenlabs": "VR6AewLTigWG4xSOukaG",  # Arnold
-        "cartesia": "87748186-23bb-4571-91d0-4eb3e052ed0f",  # Confident Man
-    },
-    "default": {
-        "elevenlabs": "pNInz6obpgDQGcFmaJgB",
-        "cartesia": "a0e99841-438c-4a64-b679-ae501e7d6091",
-    },
+DEFAULT_KOKORO_BASE_URL = os.getenv("KOKORO_BASE_URL", "http://unicorn-kokoro:8880/v1")
+DEFAULT_KOKORO_MODEL = os.getenv("KOKORO_MODEL", "kokoro")
+
+# Per-agent Kokoro voice presets. Kokoro voice format: <accent><gender>_<name>.
+# af = American female, am = American male, bf = British female, bm = British male.
+KOKORO_VOICE_PRESETS: dict[str, str] = {
+    "the-general": "am_michael",
+    "gunny": "am_adam",
+    "judge-advocate": "bm_lewis",
+    "detective-holmes": "bm_daniel",
+    "doc-medresearch": "af_nicole",
+    "col-finance": "bm_lewis",
+    "cpt-fullstack": "am_adam",
+    "code-reviewer": "am_michael",
+    "maj-devops": "am_michael",
+    "sgt-cipher": "am_adam",
+    "sgt-scribe": "af_bella",
+    "prof-datasci": "af_bella",
+    "sql-analyst": "af_bella",
+    "lt-docanalyst": "af_nicole",
+    "lt-taxstrat": "bm_lewis",
+    "maj-leadgen": "af_bella",
+    "support-agent": "af_bella",
+    "evidence-correlator": "bm_daniel",
+    "gap-analyzer": "bm_daniel",
+    "timeline-builder": "bm_daniel",
+    "triage": "am_michael",
+    "default": "af_bella",
 }
 
 
-def _resolve_voice_id(provider: str, voice_id: str | None, personality: str) -> str:
-    """Resolve voice_id: explicit > preset > default."""
-    if voice_id:
-        return voice_id
-    preset = VOICE_PRESETS.get(personality, VOICE_PRESETS["default"])
-    return preset.get(provider, preset.get("elevenlabs", ""))
+def _resolve_kokoro_voice(personality: str, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    return KOKORO_VOICE_PRESETS.get(personality, KOKORO_VOICE_PRESETS["default"])
 
 
 def get_tts_plugin(
-    provider: str = "elevenlabs",
+    provider: str = "kokoro",
     *,
-    voice_id: str | None = None,
-    personality: str = "default",
     settings: AgentSettings | None = None,
-    stability: float = 0.5,
-    similarity_boost: float = 0.75,
-    speed: float = 1.0,
+    personality: str = "default",
+    voice_id: str | None = None,
+    model: str | None = None,
 ) -> Any:
-    """Return a configured TTS plugin instance.
-
-    Args:
-        provider: ``"elevenlabs"`` (primary) or ``"cartesia"`` (fallback).
-        voice_id: Explicit voice ID. If None, resolved from ``personality`` presets.
-        personality: Agent personality key used to look up a voice preset.
-        settings: Agent settings (auto-loaded if not provided).
-        stability: ElevenLabs stability parameter (0.0-1.0).
-        similarity_boost: ElevenLabs similarity boost (0.0-1.0).
-        speed: Playback speed multiplier.
-
-    Returns:
-        A configured LiveKit TTS plugin ready for VoicePipelineAgent.
-    """
     cfg = settings or get_agent_settings()
-    resolved_voice = _resolve_voice_id(provider, voice_id, personality)
+    provider = provider.lower()
+
+    if provider == "kokoro":
+        voice = _resolve_kokoro_voice(personality, voice_id)
+        tts = lk_openai.TTS(
+            base_url=DEFAULT_KOKORO_BASE_URL,
+            api_key="not-needed",
+            model=model or DEFAULT_KOKORO_MODEL,
+            voice=voice,
+        )
+        logger.info("tts_configured", provider="kokoro", voice=voice, personality=personality)
+        return tts
 
     if provider == "elevenlabs":
+        from livekit.plugins import elevenlabs
         if not cfg.elevenlabs_api_key:
-            logger.warning("elevenlabs_key_missing, falling back to cartesia")
-            return get_tts_plugin(
-                "cartesia",
-                voice_id=voice_id,
-                personality=personality,
-                settings=cfg,
-                speed=speed,
-            )
-
+            raise ValueError("ELEVENLABS_API_KEY is required for ElevenLabs TTS")
         tts = elevenlabs.TTS(
             api_key=cfg.elevenlabs_api_key,
-            voice_id=resolved_voice,
-            model="eleven_turbo_v2_5",
-            stability=stability,
-            similarity_boost=similarity_boost,
-            speed=speed,
+            voice_id=voice_id or "pNInz6obpgDQGcFmaJgB",
         )
-        logger.info(
-            "tts_configured",
-            provider=provider,
-            voice_id=resolved_voice,
-            model="eleven_turbo_v2_5",
-        )
+        logger.info("tts_configured", provider="elevenlabs", voice_id=voice_id)
         return tts
 
     if provider == "cartesia":
+        from livekit.plugins import cartesia
         if not cfg.cartesia_api_key:
-            raise ValueError(
-                "No TTS provider available: both ELEVENLABS_API_KEY and CARTESIA_API_KEY are missing"
-            )
-
-        resolved_voice = _resolve_voice_id("cartesia", voice_id, personality)
+            raise ValueError("CARTESIA_API_KEY is required for Cartesia TTS")
         tts = cartesia.TTS(
             api_key=cfg.cartesia_api_key,
-            voice_id=resolved_voice,
-            model="sonic-2",
-            speed=speed,
+            voice=voice_id or "a0e99841-438c-4a64-b679-ae501e7d6091",
         )
-        logger.info(
-            "tts_configured",
-            provider=provider,
-            voice_id=resolved_voice,
-            model="sonic-2",
+        logger.info("tts_configured", provider="cartesia", voice=voice_id)
+        return tts
+
+    if provider == "openai":
+        if not cfg.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required for openai TTS")
+        tts = lk_openai.TTS(
+            api_key=cfg.openai_api_key,
+            model=model or "gpt-4o-mini-tts",
+            voice=voice_id or "ash",
         )
+        logger.info("tts_configured", provider="openai", voice=voice_id)
         return tts
 
     raise ValueError(f"Unsupported TTS provider: {provider}")
