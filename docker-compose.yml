@@ -179,6 +179,11 @@ services:
       - BRIGADE_BASE_URL=${BRIGADE_BASE_URL:-https://brigade.magicunicorn.dev/api/v1/openai/v1}
       - BRIGADE_API_KEY=${BRIGADE_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Self-hosted voice services (live on uc-1 over Tailscale).
+      # Amanuensis STT (OpenAI-compatible) + Orator TTS (native).
+      - WHISPER_BASE_URL=${WHISPER_BASE_URL:-http://100.78.236.160:9000/v1}
+      - WHISPER_MODEL=${WHISPER_MODEL:-whisper-1}
+      - KOKORO_BASE_URL=${KOKORO_BASE_URL:-http://100.78.236.160:8880}
     depends_on:
       livekit:
         condition: service_healthy

@@ -9,12 +9,7 @@ from typing import Any
 import httpx
 import structlog
 from livekit import rtc
-from livekit.agents import JobContext, llm, utils
-# VoicePipelineAgent removed in livekit-agents 1.5; use AgentSession for voice
-try:
-    from livekit.agents.pipeline import VoicePipelineAgent  # type: ignore
-except ImportError:
-    VoicePipelineAgent = None  # type: ignore
+from livekit.agents import AgentSession, JobContext, llm, utils
 
 from agent_runtime.chat import ChatHandler, MessageType
 from agent_runtime.config import AgentSettings, get_agent_settings
@@ -52,12 +47,12 @@ class _RateLimiter:
 class StableAgent:
     """Base class that all Stable agents extend.
 
-    Wraps LiveKit's VoicePipelineAgent, manages agent identity, connection lifecycle,
+    Wraps a LiveKit AgentSession, manages agent identity, connection lifecycle,
     tools, stage video track, data-channel chat, and audit logging.
 
     Subclasses MUST override:
         - ``agent_type`` (class variable)
-        - ``build_pipeline(ctx)`` to return a configured VoicePipelineAgent
+        - ``build_pipeline(ctx)`` to return a configured AgentSession
     """
 
     agent_type: str = "base"
@@ -83,7 +78,7 @@ class StableAgent:
         self.stage: StageTrack = StageTrack()
         self.chat: ChatHandler | None = None
 
-        self._pipeline: VoicePipelineAgent | None = None
+        self._pipeline: AgentSession | None = None
         self._job_ctx: JobContext | None = None
         self._http: httpx.AsyncClient | None = None
         self._msg_limiter = _RateLimiter(self._settings.rate_limit_messages_per_minute)
@@ -160,16 +155,16 @@ class StableAgent:
         self._pipeline = await self.build_pipeline(ctx)
 
         if self._pipeline is not None:
-            # livekit-agents 1.5: AgentSession exposes a start_room() shim from
-            # BrigadeBackedAgent.build_pipeline. Old VoicePipelineAgent path
-            # would have .on() event subscriptions and .start(room).
+            # livekit-agents 1.5: build_pipeline returns an AgentSession exposing
+            # a start_room(room) shim that calls AgentSession.start(agent=, room=).
+            # The session drives STT -> LLM -> TTS and in-room media itself.
             if hasattr(self._pipeline, "start_room"):
                 await self._pipeline.start_room(ctx.room)
             else:
-                # Legacy VoicePipelineAgent
-                self._pipeline.on("user_speech_committed", self._on_user_speech_committed)
-                self._pipeline.on("function_calls_collected", self._on_function_calls_collected)
-                self._pipeline.start(ctx.room)
+                logger.warning(
+                    "pipeline_missing_start_room",
+                    pipeline_type=type(self._pipeline).__name__,
+                )
 
         # 5. Log the run to the backend
         await self._log_agent_event("agent_started", {"room": self._room_name})
@@ -204,10 +199,12 @@ class StableAgent:
 
     # ---------- subclass hooks ----------
 
-    async def build_pipeline(self, ctx: JobContext) -> VoicePipelineAgent | None:
-        """Subclasses override this to return a configured VoicePipelineAgent.
+    async def build_pipeline(self, ctx: JobContext) -> AgentSession | None:
+        """Subclasses override this to return a configured AgentSession.
 
-        Return None if this agent is text-only (no voice).
+        The returned session must expose a ``start_room(room)`` coroutine (see
+        BrigadeBackedAgent / TriageAgent). Return None if this agent is
+        text-only (no in-room voice/media).
         """
         raise NotImplementedError("Subclasses must implement build_pipeline()")
 
@@ -225,17 +222,45 @@ class StableAgent:
 
     # ---------- internal event wiring ----------
 
-    async def _handle_chat_message(self, message: dict[str, Any]) -> None:
-        # When the Stable backend owns text replies (default), the voice
-        # agent stays silent on the data-channel chat to avoid double
-        # responses. The text path lives in
-        # server/app/services/agent_chat_responder.py. Set
-        # STABLE_TEXT_PATH_OWNS_CHAT=false to fall back to the legacy
-        # voice-agent-replies-to-text behavior.
+    @staticmethod
+    def _server_owns_text() -> bool:
+        """Double-reply policy gate.
+
+        Stable has two independent reply producers for a room that has an
+        agent in it:
+
+          1. The SERVER-SIDE text path
+             (server/app/services/agent_chat_responder.py, the shipping
+             default) — owns TEXT replies. It runs whether or not a LiveKit
+             worker is dispatched, so plain text DMs work even with no voice.
+          2. The DISPATCHED worker (this process) — owns VOICE / in-room
+             media. Its AgentSession does STT -> LLM -> TTS and shows work on
+             the stage track. It must NOT also post a duplicate TEXT reply.
+
+        When STABLE_TEXT_PATH_OWNS_CHAT is truthy (default), the worker stays
+        silent on the data-channel chat so the user gets exactly one text
+        reply (from the server). This MUST stay in agreement with the
+        server'''s `stable_text_agent_path_enabled` config:
+
+          - server text path ON  + worker gate ON  (defaults) -> server texts,
+            worker does voice/media only.  [ONE reply]
+          - both OFF -> worker handles text+voice itself (legacy behavior).
+          - mismatched -> either zero or two replies; don'''t do that.
+
+        Set STABLE_TEXT_PATH_OWNS_CHAT=false ONLY together with
+        stable_text_agent_path_enabled=false.
+        """
         import os as _os_text_gate
-        if _os_text_gate.environ.get(
+
+        return _os_text_gate.environ.get(
             "STABLE_TEXT_PATH_OWNS_CHAT", "true"
-        ).lower() in ("1", "true", "yes"):
+        ).strip().lower() in ("1", "true", "yes")
+
+    async def _handle_chat_message(self, message: dict[str, Any]) -> None:
+        # Double-reply policy: when the server owns text (default), the
+        # dispatched worker stays silent here and only does voice/media via its
+        # AgentSession. See _server_owns_text() for the full policy.
+        if self._server_owns_text():
             return
 
         if not await self._msg_limiter.acquire():
