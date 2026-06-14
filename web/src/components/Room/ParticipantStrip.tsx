@@ -42,12 +42,8 @@ function RoleBadge({ role }: { role: RoomMember["role"] }) {
 
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
-  const rooms = useAppStore((s) => s.rooms);
   const onlineUsers = useAppStore((s) => s.onlineUsers);
   const qc = useQueryClient();
-
-  const room = rooms.find((r) => r.id === roomId);
-  const lkName = (room as { display_name?: string } | undefined)?.display_name; // unused fallback
 
   // Split members by participant_type. Agents come from the same /members
   // endpoint as humans now (they're auto-joined on /invite-brigade-agent).
@@ -78,7 +74,6 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
       alert("Couldn't remove agent: " + (e as Error).message);
     }
   }
-  void lkName;
 
   return (
     <aside
