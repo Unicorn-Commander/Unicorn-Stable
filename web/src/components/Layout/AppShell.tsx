@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/services/api";
@@ -19,10 +18,6 @@ export function AppShell() {
   useGlobalNotifications();
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
-  const { roomId: routeRoomId } = useParams<{ roomId: string }>();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const setRooms = useAppStore((s) => s.setRooms);
   const setAgents = useAppStore((s) => s.setAgents);
   const createRoomModalOpen = useAppStore((s) => s.ui.createRoomModalOpen);
@@ -86,36 +81,13 @@ export function AppShell() {
     }
   }, [rooms, setRooms]);
 
-  // Legacy deep-link shim: /?room=X(&message=Y) → /c/X(?message=Y).
-  // Permalinks shared before URL routing still resolve.
   useEffect(() => {
-    const legacyRoom = searchParams.get("room");
-    if (!legacyRoom) return;
-    const msg = searchParams.get("message");
-    navigate(`/c/${legacyRoom}${msg ? `?message=${msg}` : ""}`, { replace: true });
-  }, [searchParams, navigate]);
-
-  // URL → store: the route param is the source of truth for the active room.
-  useEffect(() => {
-    if (routeRoomId && routeRoomId !== activeRoomId) {
-      setActiveRoomId(routeRoomId);
+    if (!rooms || activeRoomId) return;
+    const roomId = new URLSearchParams(window.location.search).get("room");
+    if (roomId && rooms.some((room) => room.id === roomId)) {
+      useAppStore.getState().setActiveRoomId(roomId);
     }
-    // Landing on "/" (no room) after a room was open should clear it.
-    if (!routeRoomId && activeRoomId && !searchParams.get("room")) {
-      setActiveRoomId(null);
-    }
-  }, [routeRoomId, activeRoomId, setActiveRoomId, searchParams]);
-
-  // store → URL: clicking a room in the sidebar / quick-switcher updates the
-  // store; reflect that into the path so refresh + back/forward stay in sync.
-  useEffect(() => {
-    if (searchParams.get("room")) return; // let the legacy shim run first
-    if (activeRoomId && activeRoomId !== routeRoomId) {
-      navigate(`/c/${activeRoomId}`);
-    } else if (!activeRoomId && routeRoomId) {
-      navigate("/");
-    }
-  }, [activeRoomId, routeRoomId, navigate, searchParams]);
+  }, [rooms, activeRoomId]);
 
   useEffect(() => {
     if (agents) {

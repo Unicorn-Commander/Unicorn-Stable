@@ -235,17 +235,25 @@ function AuthGate({ children }: { children: ReactNode }) {
 
 export function App() {
   return (
-    <AuthGate>
-      <Routes>
-        {/* Login path is vestigial — auth is a top-level Keycloak redirect.
-            Bounce it home so a stale /login deep-link still works. */}
-        <Route path="/login" element={<Navigate to="/" replace />} />
-        {/* Canonical room route + message permalink (?message= preserved). */}
-        <Route path="/c/:roomId" element={<AppShell />} />
-        <Route path="/" element={<AppShell />} />
-        {/* Unknown paths fall back home. */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AuthGate>
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          isAuthenticated() ? (
+            <Navigate to="/" replace />
+          ) : (
+            <Navigate to="/" replace />
+          )
+        }
+      />
+      <Route
+        path="/*"
+        element={
+          <AuthGate>
+            <AppShell />
+          </AuthGate>
+        }
+      />
+    </Routes>
   );
 }
