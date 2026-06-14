@@ -156,18 +156,9 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(ws_router, tags=["WebSocket"])
 
-    # Static file serving for uploaded attachments. Mounted outside /api so
-    # the <img> / <a href> tags in messages can reference clean URLs.
-    from pathlib import Path as _Path
-    from fastapi.staticfiles import StaticFiles
-
-    _upload_dir = _Path("/home/stable/server/uploads")
-    _upload_dir.mkdir(parents=True, exist_ok=True)
-    app.mount(
-        "/uploads",
-        StaticFiles(directory=str(_upload_dir)),
-        name="uploads",
-    )
+    # Uploaded attachments are served ONLY by the authenticated signed-URL route
+    # at /api/v1/uploads/{stored_name} (app/api/uploads.py). The old public
+    # StaticFiles mount at /uploads was removed to close an open file-read hole.
 
     return app
 

@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     # Authorization header) while still gating who can mint a URL.
     upload_url_secret: str = ""
     # How long a signed upload URL stays valid, in seconds (default 1 hour).
-    upload_url_ttl_seconds: int = 3600
+    upload_url_ttl_seconds: int = 2592000  # 30d internal; public needs read-time re-signing
 
     # -- Rate limiting (Redis token-bucket; see app.deps.rate_limit) --
     # Master switch. When False, rate limiting is a no-op (useful for tests).
