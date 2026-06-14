@@ -60,6 +60,32 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
     }
   }
 
+  // Thread replies live in react-query (not the room store), so edit/delete
+  // hit the message-scoped API directly and refetch. Mirrors what ChatPanel
+  // wires for the main timeline; the room query is invalidated so reply_count
+  // and last_message badges stay in sync.
+  async function handleEdit(messageId: string, content: string) {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    try {
+      await api.editMessage(roomId, messageId, trimmed);
+      await refetch();
+      qc.invalidateQueries({ queryKey: ["room", roomId] });
+    } catch (e) {
+      console.error("thread edit failed", e);
+    }
+  }
+
+  async function handleDelete(messageId: string) {
+    try {
+      await api.deleteMessage(roomId, messageId);
+      await refetch();
+      qc.invalidateQueries({ queryKey: ["room", roomId] });
+    } catch (e) {
+      console.error("thread delete failed", e);
+    }
+  }
+
   return (
     <motion.aside
       initial={{ x: 320, opacity: 0 }}
@@ -121,8 +147,8 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
                 showAvatar={i === 0 || arr[i - 1]?.sender_id !== r.sender_id}
                 isOwn={r.sender_id === currentUser?.id}
                 onReply={() => {}}
-                onEdit={async () => {}}
-                onDelete={async () => {}}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
               />
             ))
           )}
