@@ -1,18 +1,36 @@
-"""Tool registry and built-in tools for Stable agents."""
+"""Tool registry and built-in tools for Stable agents.
+
+Tool model (livekit-agents 1.5):
+    Agents register plain async handlers via the ``@tool`` decorator into a
+    ``ToolRegistry``. The registry serves two consumers:
+
+      1. The REST/runtime path — ``registry.execute(name, args)`` and
+         ``registry.http`` are used by the data-channel ChatHandler and by
+         agent code that invokes tools directly.
+      2. The LiveKit voice/LLM path — ``registry.as_function_tools()`` adapts
+         every registered handler into a ``livekit.agents.FunctionTool`` (via
+         ``livekit.agents.function_tool``) so they can be passed to
+         ``Agent(tools=[...])``.
+
+    livekit-agents 1.5 removed ``llm.FunctionContext`` /
+    ``fnc_ctx._register_ai_function``. The 1.5 replacement is the
+    ``@function_tool`` / ``FunctionTool`` / ``Agent(tools=...)`` API, which
+    ``as_function_tools()`` targets.
+"""
 
 from __future__ import annotations
 
 import functools
 import inspect
 import json
-from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Self
+from dataclasses import dataclass
+from typing import Any, Callable, Coroutine
 
 import httpx
 import structlog
-from livekit.agents import llm
+from livekit.agents import FunctionTool, function_tool
 
-from agent_runtime.config import AgentSettings, get_agent_settings
+from agent_runtime.config import get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -28,7 +46,11 @@ class ToolDefinition:
 
 
 def _extract_json_schema(fn: Callable[..., Any]) -> dict[str, Any]:
-    """Build a minimal JSON Schema 'properties' dict from a function's type hints."""
+    """Build a minimal JSON Schema (object/properties) from a function's type hints.
+
+    Used for the REST/audit description of a tool. The LiveKit FunctionTool
+    path derives its own schema from the same type hints via function_tool().
+    """
     sig = inspect.signature(fn)
     hints = fn.__annotations__
     properties: dict[str, Any] = {}
@@ -100,7 +122,7 @@ def tool(
 
 
 class ToolRegistry:
-    """Manages tools available to an agent, and converts them to LiveKit FunctionContext."""
+    """Manages tools available to an agent and adapts them to LiveKit 1.5 FunctionTools."""
 
     def __init__(self, *, agent_token: str = "", backend_url: str = "") -> None:
         self._tools: dict[str, ToolDefinition] = {}
@@ -163,14 +185,34 @@ class ToolRegistry:
         logger.info("tool_result", tool=name, result_type=type(result).__name__)
         return result
 
-    # -- LiveKit FnContext bridge --
+    # -- LiveKit 1.5 FunctionTool bridge --
 
-    def to_function_context(self) -> llm.FunctionContext:
-        """Build a LiveKit FunctionContext from the registered tools."""
-        fn_ctx = llm.FunctionContext()
+    def as_function_tools(self) -> list[FunctionTool]:
+        """Adapt every registered tool into a livekit-agents 1.5 FunctionTool.
+
+        Pass the result to ``Agent(tools=...)``. Replaces the removed
+        ``to_function_context()`` (livekit-agents <1.5 ``llm.FunctionContext``).
+
+        Each handler is wrapped by ``function_tool(handler, name=..., description=...)``.
+        livekit-agents derives the JSON parameter schema from the handler's
+        type hints, so the same annotations that drive ``_extract_json_schema``
+        also drive the LLM-facing schema.
+        """
+        tools: list[FunctionTool] = []
         for defn in self._tools.values():
-            fn_ctx._register_ai_function(defn.handler)  # type: ignore[arg-type]
-        return fn_ctx
+            try:
+                ft = function_tool(
+                    defn.handler,
+                    name=defn.name,
+                    description=defn.description or defn.name,
+                )
+                tools.append(ft)
+            except Exception:
+                logger.warning(
+                    "function_tool_adapt_failed", tool=defn.name, exc_info=True
+                )
+        logger.info("function_tools_built", count=len(tools))
+        return tools
 
     # -- built-in tools --
 
