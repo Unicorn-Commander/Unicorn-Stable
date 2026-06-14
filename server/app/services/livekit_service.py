@@ -158,16 +158,28 @@ class LiveKitService:
         agent_name: str = "stable-brigade",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Dispatch a worker job to a room so an agent joins as a participant.
+        """Explicitly dispatch a worker job so an agent joins the room as a
+        participant (the real LiveKit in-room path).
 
-        `agent_name` is the `WorkerOptions.agent_name` the worker registered
-        with. `metadata` is serialized into the dispatch and also the room so
-        the worker can read which Brigade agent to act as.
+        This is the in-room/voice leg of Stable'''s reversible-default design:
+        the SERVER-SIDE text responder (services/agent_chat_responder.py) keeps
+        answering TEXT, while this dispatch puts the agent into the LiveKit room
+        for voice + media. The dispatched worker is told to stay silent on text
+        (STABLE_TEXT_PATH_OWNS_CHAT, see agents/agent_runtime/base.py) so there
+        is exactly one text reply.
+
+        `agent_name` must equal the worker'''s `WorkerOptions.agent_name`
+        (registered as "stable-brigade"). `metadata` is serialized into BOTH
+        the dispatch and the room metadata, so the worker can read
+        `brigade_agent_id` from `ctx.room.metadata` regardless of how it was
+        assigned the job.
         """
         metadata_str = json.dumps(metadata or {})
 
-        # Also bake metadata into the room so the worker's job handler can
-        # read brigade_agent_id from ctx.room.metadata.
+        # Bake metadata into the room first so the worker'''s job handler can
+        # read brigade_agent_id from ctx.room.metadata. This also means that if
+        # explicit dispatch fails below, an auto-accepting worker can still pick
+        # the job up with the right metadata.
         try:
             await self.update_room_metadata(room_name, metadata_str)
         except Exception:
@@ -177,12 +189,14 @@ class LiveKitService:
                 exc_info=True,
             )
 
+        # The installed livekit-api exposes AgentDispatchService; this branch is
+        # the supported path. It is only skipped on an SDK too old to ship it.
         if not _HAS_AGENT_DISPATCH or CreateAgentDispatchRequest is None:
             logger.warning(
                 "livekit_agent_dispatch_unavailable",
                 note="SDK does not expose AgentDispatchService; metadata was "
                      "applied to the room but no explicit dispatch was sent. "
-                     "Workers with auto_accept will still pick up the job.",
+                     "A worker registered for this room can still auto-accept.",
             )
             return {
                 "dispatched": False,
@@ -195,17 +209,37 @@ class LiveKitService:
             room=room_name,
             metadata=metadata_str,
         )
-        resp = await self._api.agent_dispatch.create_dispatch(request)
+        try:
+            resp = await self._api.agent_dispatch.create_dispatch(request)
+        except Exception as exc:
+            # Surface the failure without 500-ing the invite: the room metadata
+            # is already set, so the agent is still reachable via auto-accept,
+            # and the server text path keeps working regardless.
+            logger.error(
+                "livekit_agent_dispatch_failed",
+                room=room_name,
+                agent_name=agent_name,
+                error=repr(exc),
+                exc_info=True,
+            )
+            return {
+                "dispatched": False,
+                "reason": f"dispatch_error: {exc.__class__.__name__}",
+                "agent_name": agent_name,
+                "metadata": metadata or {},
+            }
+
+        dispatch_id = getattr(resp, "id", "")
         logger.info(
             "livekit_agent_dispatched",
             room=room_name,
             agent_name=agent_name,
-            dispatch_id=getattr(resp, "id", ""),
+            dispatch_id=dispatch_id,
             metadata=metadata or {},
         )
         return {
             "dispatched": True,
-            "dispatch_id": getattr(resp, "id", ""),
+            "dispatch_id": dispatch_id,
             "agent_name": agent_name,
             "metadata": metadata or {},
         }

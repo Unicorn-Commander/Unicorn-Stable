@@ -193,6 +193,11 @@ async def invite_brigade_agent(
             detail=f"Unknown Brigade agent: {body.brigade_agent_id}",
         )
 
+    # Dual-path design: the SERVER text responder
+    # (services/agent_chat_responder.py) answers chat regardless of this call,
+    # so a False/degraded dispatch is not a hard failure -- it just means the
+    # agent has no live in-room (voice/media) presence yet. dispatch_agent also
+    # writes room metadata, so even an auto-accept worker gets brigade_agent_id.
     result = await livekit.dispatch_agent(
         room_name=room_name,
         agent_name=settings.brigade_worker_agent_name,

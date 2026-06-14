@@ -222,17 +222,45 @@ class StableAgent:
 
     # ---------- internal event wiring ----------
 
-    async def _handle_chat_message(self, message: dict[str, Any]) -> None:
-        # When the Stable backend owns text replies (default), the voice
-        # agent stays silent on the data-channel chat to avoid double
-        # responses. The text path lives in
-        # server/app/services/agent_chat_responder.py. Set
-        # STABLE_TEXT_PATH_OWNS_CHAT=false to fall back to the legacy
-        # voice-agent-replies-to-text behavior.
+    @staticmethod
+    def _server_owns_text() -> bool:
+        """Double-reply policy gate.
+
+        Stable has two independent reply producers for a room that has an
+        agent in it:
+
+          1. The SERVER-SIDE text path
+             (server/app/services/agent_chat_responder.py, the shipping
+             default) — owns TEXT replies. It runs whether or not a LiveKit
+             worker is dispatched, so plain text DMs work even with no voice.
+          2. The DISPATCHED worker (this process) — owns VOICE / in-room
+             media. Its AgentSession does STT -> LLM -> TTS and shows work on
+             the stage track. It must NOT also post a duplicate TEXT reply.
+
+        When STABLE_TEXT_PATH_OWNS_CHAT is truthy (default), the worker stays
+        silent on the data-channel chat so the user gets exactly one text
+        reply (from the server). This MUST stay in agreement with the
+        server'''s `stable_text_agent_path_enabled` config:
+
+          - server text path ON  + worker gate ON  (defaults) -> server texts,
+            worker does voice/media only.  [ONE reply]
+          - both OFF -> worker handles text+voice itself (legacy behavior).
+          - mismatched -> either zero or two replies; don'''t do that.
+
+        Set STABLE_TEXT_PATH_OWNS_CHAT=false ONLY together with
+        stable_text_agent_path_enabled=false.
+        """
         import os as _os_text_gate
-        if _os_text_gate.environ.get(
+
+        return _os_text_gate.environ.get(
             "STABLE_TEXT_PATH_OWNS_CHAT", "true"
-        ).lower() in ("1", "true", "yes"):
+        ).strip().lower() in ("1", "true", "yes")
+
+    async def _handle_chat_message(self, message: dict[str, Any]) -> None:
+        # Double-reply policy: when the server owns text (default), the
+        # dispatched worker stays silent here and only does voice/media via its
+        # AgentSession. See _server_owns_text() for the full policy.
+        if self._server_owns_text():
             return
 
         if not await self._msg_limiter.acquire():
