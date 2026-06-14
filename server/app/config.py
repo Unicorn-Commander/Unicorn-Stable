@@ -88,6 +88,36 @@ class Settings(BaseSettings):
     environment: str = "development"
     port: int = 8400
 
+    # -- Backend hardening (appended; see feat/backend-hardening) --
+
+    # Local filesystem directory where uploaded attachments are written.
+    # Overridable via UPLOAD_DIR so the path isn't hardcoded to one box.
+    upload_dir: str = "/home/stable/server/uploads"
+
+    # Secret used to HMAC-sign upload download URLs. Falls back to the
+    # LiveKit secret when unset so a fresh deploy still has a non-empty key,
+    # but set this explicitly in production. Signed URLs let the browser
+    # render private attachments via <img src> (which cannot send an
+    # Authorization header) while still gating who can mint a URL.
+    upload_url_secret: str = ""
+    # How long a signed upload URL stays valid, in seconds (default 1 hour).
+    upload_url_ttl_seconds: int = 3600
+
+    # -- Rate limiting (Redis token-bucket; see app.deps.rate_limit) --
+    # Master switch. When False, rate limiting is a no-op (useful for tests).
+    rate_limit_enabled: bool = True
+    # Per-user limits, expressed as "max requests per window seconds".
+    # message send
+    rate_limit_message_send_per_min: int = 60
+    # file upload
+    rate_limit_upload_per_min: int = 20
+    # LiveKit token mint
+    rate_limit_token_mint_per_min: int = 30
+    # inbound webhook (keyed per room, not per user)
+    rate_limit_webhook_per_min: int = 120
+    # agent-chat trigger fallback (used when an agent has no rate_limit_rpm)
+    rate_limit_agent_chat_per_min: int = 30
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:

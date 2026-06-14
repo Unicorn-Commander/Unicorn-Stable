@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 import uuid
-from typing import Annotated, Any, AsyncGenerator
+from typing import Annotated, Any, AsyncGenerator, Callable
 
 import structlog
 from fastapi import Depends, HTTPException, Request, status
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import Settings, get_settings
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
+from app.models.room import RoomMember
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
 
@@ -79,11 +81,6 @@ async def get_current_user(
             client_id=settings.keycloak_client_id,
         )
     except JWTError as exc:
-        import traceback
-        with open("/tmp/jwt-debug.log", "a") as f:
-            f.write(f"===== {exc} =====\n")
-            f.write(traceback.format_exc())
-            f.write("=====\n")
         logger.warning("jwt_validation_failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -148,3 +145,156 @@ async def get_current_user(
 
     user_identity["participant_id"] = participant.id
     return user_identity
+
+
+# ---------------------------------------------------------------------------
+# Room membership authorization
+# ---------------------------------------------------------------------------
+#
+# Many read/interact routes historically trusted "authenticated == authorized"
+# and let any logged-in user touch any room by UUID. These helpers centralize
+# the membership check so every room-scoped route enforces it the same way.
+# The pattern mirrors the existing inline checks in tokens.py / rooms.py pins.
+
+
+async def is_room_member(
+    db: AsyncSession,
+    room_id: uuid.UUID | str,
+    participant_id: uuid.UUID | str,
+) -> bool:
+    """Return True if the participant is a member of the room."""
+    result = await db.execute(
+        select(RoomMember.id).where(
+            RoomMember.room_id == room_id,
+            RoomMember.participant_id == participant_id,
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def ensure_room_member(
+    db: AsyncSession,
+    room_id: uuid.UUID | str,
+    user: dict[str, Any],
+) -> None:
+    """Raise 403 unless ``user`` is a member of ``room_id``.
+
+    Use this from inside a handler that already loaded ``db`` + ``user`` when a
+    dedicated path-param dependency isn't convenient (e.g. message-scoped
+    routes that resolve the room from the message first).
+    """
+    if not await is_room_member(db, room_id, user["participant_id"]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a member of this room",
+        )
+
+
+async def require_room_member(
+    room_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """FastAPI dependency: authenticate, then require room membership.
+
+    Drop into any route that takes a ``room_id`` path param::
+
+        @router.get("/rooms/{room_id}/...")
+        async def handler(
+            room_id: uuid.UUID,
+            user: Annotated[dict, Depends(require_room_member)],
+            ...
+        ): ...
+
+    Returns the same user dict ``get_current_user`` returns, so existing
+    handler bodies keep working after swapping the dependency.
+    """
+    await ensure_room_member(db, room_id, user)
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (Redis token-bucket)
+# ---------------------------------------------------------------------------
+#
+# slowapi / limits aren't installed, but redis.asyncio is already wired into
+# app.state. This is a small fixed-window counter keyed in Redis. It's
+# atomic (INCR + EXPIRE), shared across workers, and self-expiring. Good
+# enough for abuse protection on a handful of write paths; not a precise
+# distributed token bucket, which we don't need here.
+
+
+async def _rate_limit_hit(
+    redis: Redis,
+    *,
+    bucket: str,
+    identifier: str,
+    limit: int,
+    window_seconds: int = 60,
+) -> None:
+    """Increment a fixed-window counter; raise 429 when over ``limit``.
+
+    Fails OPEN: if Redis is unreachable we log and allow the request rather
+    than hard-failing user traffic on an infra blip.
+    """
+    if limit <= 0:
+        return
+    # Window-aligned key so counters reset cleanly and old keys self-expire.
+    window = int(time.time()) // window_seconds
+    key = f"ratelimit:{bucket}:{identifier}:{window}"
+    try:
+        current = await redis.incr(key)
+        if current == 1:
+            # First hit in this window — set TTL slightly beyond the window.
+            await redis.expire(key, window_seconds + 1)
+    except Exception:
+        logger.warning("rate_limit_redis_error", bucket=bucket, exc_info=True)
+        return
+
+    if current > limit:
+        logger.info(
+            "rate_limited",
+            bucket=bucket,
+            identifier=identifier,
+            count=current,
+            limit=limit,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Slow down and try again shortly.",
+            headers={"Retry-After": str(window_seconds)},
+        )
+
+
+def rate_limit(
+    bucket: str,
+    limit_attr: str,
+    *,
+    window_seconds: int = 60,
+) -> Callable[..., Any]:
+    """Build a FastAPI dependency that rate-limits the current user.
+
+    ``bucket`` namespaces the counter; ``limit_attr`` is the Settings field
+    holding the per-window cap. Keyed per participant_id.
+
+        user: Annotated[dict, Depends(get_current_user)]
+        _rl: Annotated[None, Depends(rate_limit("msg_send", "rate_limit_message_send_per_min"))]
+    """
+
+    async def _dep(
+        user: Annotated[dict[str, Any], Depends(get_current_user)],
+        redis: Annotated[Redis, Depends(get_redis)],
+        settings: Annotated[Settings, Depends(get_settings_dep)],
+    ) -> None:
+        if not settings.rate_limit_enabled:
+            return
+        limit = int(getattr(settings, limit_attr, 0) or 0)
+        await _rate_limit_hit(
+            redis,
+            bucket=bucket,
+            identifier=str(user["participant_id"]),
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+
+    return _dep
