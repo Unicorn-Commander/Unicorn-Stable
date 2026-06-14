@@ -328,6 +328,14 @@ class StableApiClient {
     );
   }
 
+  async leaveRoom(roomId: string): Promise<void> {
+    return this.request<void>(
+      "POST",
+      `/api/v1/rooms/${roomId}/leave`,
+      {},
+    );
+  }
+
   async searchUsers(q: string): Promise<UserSearchResult[]> {
     const query = q ? `?q=${encodeURIComponent(q)}` : "";
     return this.request<UserSearchResult[]>("GET", `/api/v1/users/search${query}`);
@@ -525,17 +533,21 @@ class StableApiClient {
     messageId: string,
     content: string,
   ): Promise<Message> {
+    // Backend route is message-scoped (membership/authorship enforced
+    // server-side); the roomId arg is kept for the optimistic-UI caller.
+    void roomId;
     return this.request<Message>(
       "PATCH",
-      `/api/v1/rooms/${roomId}/messages/${messageId}`,
+      `/api/v1/messages/${messageId}`,
       { content },
     );
   }
 
   async deleteMessage(roomId: string, messageId: string): Promise<void> {
+    void roomId;
     return this.request<void>(
       "DELETE",
-      `/api/v1/rooms/${roomId}/messages/${messageId}`,
+      `/api/v1/messages/${messageId}`,
     );
   }
 }
