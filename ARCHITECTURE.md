@@ -22,12 +22,24 @@ inviting non-employees or standing up a second instance.
             └──────────────────────────────┘    └──────────────────────────────┘
 ```
 
-## Today (2026-04)
+## Today (2026-06)
 
 - ✅ INTERNAL is live: `stable.magicunicorn.dev` + `livekit.magicunicorn.dev`,
   Keycloak realm `uchub`, Tailscale-only voice.
 - ❌ PUBLIC instance does not exist yet. When it does, mirror the same
   containers with a different `.env` and a new realm.
+
+## Voice topology
+
+Speech-to-Text (Whisper via amanuensis) and Text-to-Speech (Kokoro via orator)
+run on the **uc-1** appliance box (Tailscale IP 100.78.236.160):
+
+- **amanuensis:** Whisper STT on port 9000
+- **orator:** Kokoro TTS on port 8880
+
+Both are reachable from bigboy and the stable-agents container via Tailscale.
+Environment variables `WHISPER_BASE_URL` and `KOKORO_BASE_URL` point agents to
+these endpoints. See `DEPLOYMENT.md` for voice services troubleshooting.
 
 ## Decision points the public instance has to answer
 
@@ -54,6 +66,8 @@ These are flagged so we don't paint ourselves into a corner.
   per-workspace branding or a generic `noreply@stable.app` domain.
 - **Tailscale-IP-as-WebRTC-candidate**. PUBLIC must `use_external_ip: true`
   AND have a TURN deployment; flip the toggle in `livekit.yaml` per instance.
+- **Tailscale-only voice.** PUBLIC will need amanuensis/orator reachable from
+  browsers (either co-hosted on the public instance or behind a reverse proxy).
 
 ## Migration path (when PUBLIC needs to ship)
 
@@ -63,14 +77,17 @@ These are flagged so we don't paint ourselves into a corner.
    social IdPs (Google, Microsoft, GitHub).
 3. Deploy coturn (1 VPS w/ public IP) or sign up for LiveKit Cloud; set
    `LIVEKIT_PUBLIC_URL` accordingly.
-4. New DNS subdomains under `unicorncommander.ai`.
-5. Copy the same backend image, point it at the new Postgres + Keycloak.
-6. The ONLY code change should be making the realm name + whether to use
-   Tailscale-IP-as-WebRTC-candidate configurable. If you find yourself
-   writing more, stop and refactor.
+4. Deploy amanuensis/orator on the public instance or point to a shared voice
+   appliance accessible from the internet.
+5. New DNS subdomains under `unicorncommander.ai`.
+6. Copy the same backend image, point it at the new Postgres + Keycloak.
+7. The ONLY code change should be making the realm name, voice endpoints,
+   and whether to use Tailscale-IP-as-WebRTC-candidate configurable. If you
+   find yourself writing more, stop and refactor.
 
 ## Cross-reference
 
 - `DEPLOYMENT.md` — operational runbook for THIS instance (internal).
+- `CLAUDE.md` — developer quick-start and env var docs.
 - `server/livekit.yaml` — switch `use_external_ip` + `node_ip` per deployment.
 - `server/app/config.py` — all per-deployment settings live here.

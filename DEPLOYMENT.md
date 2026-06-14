@@ -1,6 +1,6 @@
 # Unicorn Stable — Deployment Runbook
 
-End-to-end production checklist for deploying Stable. Last verified 2026-04-24.
+End-to-end production checklist for deploying Stable. Last verified 2026-06-14.
 
 ## Architecture
 
@@ -15,8 +15,15 @@ Browser ───wss───► Cloudflare ──► Traefik (bigboy:443) ─�
                                                            ▼
                                                     stable-agents (LiveKit Agents)
                                                            │
-                                                           ▼
-                                                    Brigade (LLM, memory, tools)
+                                                    ┌──────┴──────┐
+                                                    │             │
+                                              Brigade    Voice Pipeline
+                                             (LLM,         │
+                                             memory,    uc-1 box
+                                              tools)    ├─ amanuensis STT
+                                                        │  (port 9000)
+                                                        └─ orator TTS
+                                                           (port 8880)
 ```
 
 ## Required services per host
@@ -24,7 +31,8 @@ Browser ───wss───► Cloudflare ──► Traefik (bigboy:443) ─�
 | Host | Services | Notes |
 | --- | --- | --- |
 | commander | uchub-keycloak, traefik (public 443) | OIDC realm `uchub` |
-| bigboy | stable-web, stable-backend, stable-livekit, stable-agents, stable-postgres, stable-redis, traefik | Compose file: `Unicorn-Stable/docker-compose.yml` |
+| bigboy | stable-web, stable-backend, stable-livekit, stable-agents, stable-postgres, stable-redis, traefik, infinity (embeddings/reranking) | Compose file: `Unicorn-Stable/docker-compose.yml` |
+| uc-1 | amanuensis (Whisper STT), orator (Kokoro TTS), livekit appliance | Voice services reachable at Tailscale IP 100.78.236.160 |
 
 ## Prerequisites (one-time)
 
@@ -99,6 +107,10 @@ LIVEKIT_PUBLIC_URL=wss://livekit.magicunicorn.dev
 LIVEKIT_API_KEY=APIStable2026
 LIVEKIT_API_SECRET=<long random string>
 
+# Voice services (uc-1 box, Tailscale)
+WHISPER_BASE_URL=http://100.78.236.160:9000
+KOKORO_BASE_URL=http://100.78.236.160:8880
+
 # Brigade (optional — Brigade-backed agents need an admin/user key)
 BRIGADE_BASE_URL=https://brigade.magicunicorn.dev/api/v1/openai/v1
 BRIGADE_API_KEY=<your Brigade key>
@@ -108,6 +120,26 @@ CORS_ORIGINS=["https://stable.magicunicorn.dev"]
 
 LOG_LEVEL=INFO
 ```
+
+## Voice services
+
+**STT (Speech-to-Text):** amanuensis (self-hosted Whisper)
+- **Host:** uc-1 (Tailscale IP 100.78.236.160)
+- **Port:** 9000 (HTTP)
+- **URL:** `http://100.78.236.160:9000`
+- **Used by:** stable-agents container (via `WHISPER_BASE_URL` env)
+
+**TTS (Text-to-Speech):** orator (self-hosted Kokoro)
+- **Host:** uc-1 (Tailscale IP 100.78.236.160)
+- **Port:** 8880 (HTTP)
+- **URL:** `http://100.78.236.160:8880`
+- **Used by:** stable-agents container (via `KOKORO_BASE_URL` env)
+
+Both services are on the internal Tailscale mesh and reachable from bigboy. If either is unreachable:
+1. Check uc-1 is online: `ping 100.78.236.160`
+2. Check port 9000/8880 are listening on uc-1: `ssh uc-1 'netstat -tlnp | grep -E :(9000|8880)'`
+3. Check stable-agents env vars are set correctly
+4. View agent logs: `docker logs stable-agents`
 
 ## Deploy
 
@@ -138,6 +170,10 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 # 4. LiveKit signaling reachable from public internet
 curl -sI https://livekit.magicunicorn.dev | grep -E '^HTTP|server'
+
+# 5. Voice services reachable from bigboy
+docker exec stable-backend curl -s http://100.78.236.160:9000/health | jq   # amanuensis
+docker exec stable-backend curl -s http://100.78.236.160:8880/health | jq   # orator
 ```
 
 ## Troubleshooting
@@ -149,5 +185,6 @@ curl -sI https://livekit.magicunicorn.dev | grep -E '^HTTP|server'
 | `audience must be a string or None` | python-jose can't take a list audience | Already fixed in `server/app/auth/keycloak.py` (manual aud check) |
 | `relation "participants" does not exist` | Migrations didn't run | Entrypoint runs them now; or run manually: `docker exec stable-backend alembic upgrade head` |
 | `invalid input value for enum participant_type_enum: "HUMAN"` | SQLAlchemy enum sends names instead of values | Fixed via `values_callable` on Enum columns |
-| Agent joins room then drops with `STT does not support streaming` | livekit-plugins-openai STT needs a VAD | Fixed — `silero.VAD.load()` is added in `agents/brigade_backed/agent.py` |
+| Agent joins room then drops with `STT does not support streaming` | Missing VAD (voice activity detection) | Fixed — `silero.VAD.load()` is added in `agents/brigade_backed/agent.py` |
 | WebRTC media stalls but signaling works | Router not forwarding 7881/7882 | Forward those to bigboy in router admin |
+| Agent can't reach voice services (amanuensis/orator) | uc-1 offline or services not running | Ping 100.78.236.160; SSH to uc-1 and check service status; add health checks to smoke tests above |
