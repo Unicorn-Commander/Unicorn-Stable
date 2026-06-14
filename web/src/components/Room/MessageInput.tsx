@@ -137,8 +137,6 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
-  const agents = useAppStore((s) => s.agents);
-  const rooms = useAppStore((s) => s.rooms);
   const voiceActive = useAppStore((s) => s.voiceActive);
   const { connect: lkConnect, isConnected } = useStableRoom(
     voiceActive ? roomId : null,
@@ -152,10 +150,6 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
     queryFn: () => api.getBrigadeAgents(),
     staleTime: 5 * 60_000,
   });
-
-  // suppress lint: rooms/agents not used here anymore but kept for future
-  void rooms;
-  void agents;
 
   const mentionSuggestions: MentionSuggestion[] = useCallback(() => {
     const q = mentionQuery.toLowerCase();

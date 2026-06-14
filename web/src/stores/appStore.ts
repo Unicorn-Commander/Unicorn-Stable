@@ -60,6 +60,7 @@ interface AppState {
   setCurrentUser: (user: CurrentUser | null) => void;
   setRooms: (rooms: Room[]) => void;
   updateRoom: (roomId: string, updates: Partial<Room>) => void;
+  removeRoom: (roomId: string) => void;
   setActiveRoomId: (id: string | null) => void;
   setMessages: (roomId: string, data: RoomMessages) => void;
   prependMessages: (roomId: string, messages: Message[], nextCursor: string | null, hasMore: boolean) => void;
@@ -131,6 +132,24 @@ export const useAppStore = create<AppState>((set) => ({
         r.id === roomId ? { ...r, ...updates } : r,
       ),
     })),
+
+  removeRoom: (roomId) =>
+    set((state) => {
+      const nextUnread = { ...state.unreadCounts };
+      delete nextUnread[roomId];
+      const nextMessages = { ...state.messages };
+      delete nextMessages[roomId];
+      const nextParticipants = { ...state.participants };
+      delete nextParticipants[roomId];
+      return {
+        rooms: state.rooms.filter((r) => r.id !== roomId),
+        unreadCounts: nextUnread,
+        messages: nextMessages,
+        participants: nextParticipants,
+        activeRoomId:
+          state.activeRoomId === roomId ? null : state.activeRoomId,
+      };
+    }),
 
   setActiveRoomId: (id) => set({ activeRoomId: id }),
 

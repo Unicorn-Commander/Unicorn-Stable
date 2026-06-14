@@ -37,6 +37,11 @@ export function savePrefs(p: NotificationPrefs) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(p));
 }
 
+const KEYCLOAK_BASE =
+  import.meta.env.VITE_KEYCLOAK_URL || "https://auth.unicorncommander.ai";
+const KEYCLOAK_REALM = import.meta.env.VITE_KEYCLOAK_REALM || "uchub";
+const ACCOUNT_URL = `${KEYCLOAK_BASE.replace(/\/+$/, "")}/realms/${KEYCLOAK_REALM}/account/`;
+
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const currentUser = useAppStore((s) => s.currentUser);
   const prefs = loadPrefs();
@@ -100,7 +105,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <p className="mt-1 text-[11px] text-slate-500">
                 Edit your profile + photo at{" "}
                 <a
-                  href="https://auth.unicorncommander.ai/realms/uchub/account/"
+                  href={ACCOUNT_URL}
                   target="_blank"
                   rel="noreferrer"
                   className="text-stable-purple hover:underline"

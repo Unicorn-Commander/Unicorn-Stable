@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bell, BellOff, Hash, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, Hash, LogOut, MoreVertical, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
@@ -27,14 +27,30 @@ export function RoomView({ roomId }: RoomViewProps) {
   const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
   const voiceActive = useAppStore((s) => s.voiceActive);
   const setParticipants = useAppStore((s) => s.setParticipants);
+  const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [pinsOpen, setPinsOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const overflowRef = useRef<HTMLDivElement>(null);
   const [muted, setMuted] = useState(() => isMuted(roomId));
   useEffect(() => {
     setMuted(isMuted(roomId));
     return onMutedChange(() => setMuted(isMuted(roomId)));
   }, [roomId]);
+
+  // Close the overflow menu on outside-click.
+  useEffect(() => {
+    if (!overflowOpen) return;
+    function onDown(e: MouseEvent) {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setOverflowOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [overflowOpen]);
 
   const { data: roomDetail } = useQuery({
     queryKey: ["room", roomId],
@@ -93,6 +109,25 @@ export function RoomView({ roomId }: RoomViewProps) {
     } catch (e) {
       console.error("name save failed", e);
       alert("Couldn't rename: " + (e as Error).message);
+    }
+  }
+
+  async function handleLeave() {
+    if (leaving) return;
+    setOverflowOpen(false);
+    if (!confirm(`Leave "${displayName}"? You can rejoin from Browse channels.`)) {
+      return;
+    }
+    setLeaving(true);
+    try {
+      await api.leaveRoom(roomId);
+      removeRoom(roomId);
+      await qc.invalidateQueries({ queryKey: ["rooms"] });
+    } catch (e) {
+      console.error("leave room failed", e);
+      alert("Couldn't leave: " + (e as Error).message);
+    } finally {
+      setLeaving(false);
     }
   }
 
@@ -198,6 +233,34 @@ export function RoomView({ roomId }: RoomViewProps) {
           >
             <Users className="h-4 w-4" />
           </button>
+          <div className="relative" ref={overflowRef}>
+            <button
+              onClick={() => setOverflowOpen((v) => !v)}
+              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              aria-label="More room actions"
+              aria-haspopup="menu"
+              aria-expanded={overflowOpen}
+              title="More"
+            >
+              <MoreVertical className="h-4 w-4" />
+            </button>
+            {overflowOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 py-1 shadow-xl"
+              >
+                <button
+                  role="menuitem"
+                  onClick={handleLeave}
+                  disabled={leaving}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <LogOut className="h-4 w-4" />
+                  {leaving ? "Leaving…" : "Leave room"}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

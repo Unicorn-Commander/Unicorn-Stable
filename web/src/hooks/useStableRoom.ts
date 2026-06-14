@@ -93,6 +93,14 @@ export function useStableRoom(roomId: string | null): UseStableRoomReturn {
         updateParticipants(lkRoom);
       });
 
+      lkRoom.on(RoomEvent.LocalTrackPublished, () => {
+        updateParticipants(lkRoom);
+      });
+
+      lkRoom.on(RoomEvent.LocalTrackUnpublished, () => {
+        updateParticipants(lkRoom);
+      });
+
       lkRoom.on(RoomEvent.TrackMuted, () => {
         updateParticipants(lkRoom);
       });

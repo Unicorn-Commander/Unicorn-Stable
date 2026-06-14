@@ -48,7 +48,7 @@ function buildDescriptionPreview(message: Message, note: string) {
     message.content.length > 2048
       ? `${message.content.slice(0, 2048).trimEnd()}\n\n[Stable message truncated at 2048 characters]`
       : message.content;
-  const permalink = `${window.location.origin}/?room=${message.room_id}&message=${message.id}`;
+  const permalink = `${window.location.origin}/c/${message.room_id}?message=${message.id}`;
   const parts = [];
   if (note.trim()) {
     parts.push(note.trim(), "");
@@ -1247,7 +1247,7 @@ export function MessageBubble({
           <li>
             <button
               onClick={() => {
-                const url = `${window.location.origin}/?room=${message.room_id}#m-${message.id}`;
+                const url = `${window.location.origin}/c/${message.room_id}#m-${message.id}`;
                 void navigator.clipboard.writeText(url);
                 setCtxMenu(null);
               }}
