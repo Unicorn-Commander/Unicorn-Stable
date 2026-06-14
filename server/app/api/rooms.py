@@ -9,7 +9,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_current_user, get_db, get_livekit, get_presence
+from app.deps import (
+    get_current_user,
+    get_db,
+    get_livekit,
+    get_presence,
+    require_room_member,
+)
 from app.models.room import Room, RoomMember
 from app.schemas.message import MessageResponse
 from app.schemas.room import (
@@ -203,12 +209,12 @@ async def list_rooms(
 @router.get("/rooms/{room_id}", response_model=RoomResponse)
 async def get_room(
     room_id: uuid.UUID,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
 ) -> RoomResponse:
-    """Get room details."""
+    """Get room details. Caller must be a member of the room."""
     svc = _build_room_service(db, livekit, presence)
     result = await svc.get_room(room_id)
     return _room_to_response(
@@ -269,11 +275,16 @@ async def join_room(
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
 ) -> RoomMemberResponse:
-    """Join a room as a member."""
+    """Join a room as a member.
+
+    Only public channels are self-joinable; DMs and group DMs are
+    invite-only (enforced in RoomService.join_room via ``self_join``).
+    """
     svc = _build_room_service(db, livekit, presence)
     membership = await svc.join_room(
         room_id=room_id,
         participant_id=user["participant_id"],
+        self_join=True,
     )
     return RoomMemberResponse(
         id=membership.id,
@@ -616,12 +627,12 @@ async def leave_room(
 @router.get("/rooms/{room_id}/members", response_model=list[RoomMemberResponse])
 async def list_members(
     room_id: uuid.UUID,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
 ) -> list[RoomMemberResponse]:
-    """List members of a room."""
+    """List members of a room. Caller must be a member of the room."""
     svc = _build_room_service(db, livekit, presence)
     members = await svc.get_members(room_id)
     return [

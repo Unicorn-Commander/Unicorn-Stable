@@ -186,8 +186,17 @@ class RoomService:
         room_id: uuid.UUID,
         participant_id: uuid.UUID,
         role: str = "member",
+        self_join: bool = False,
     ) -> RoomMember:
-        """Add a participant to a room."""
+        """Add a participant to a room.
+
+        ``self_join`` distinguishes a user joining themselves (the public
+        ``POST /rooms/{id}/join`` endpoint) from an authorized add — invite,
+        agent residency, webhook bot. Only ``channel`` rooms are open to
+        self-join; DMs and group DMs are invite-only, so a self-join into one
+        is rejected. Internal callers (invite/agent/webhook) leave
+        ``self_join`` False and may add members to any room type.
+        """
         # Check room exists
         room_result = await self._db.execute(select(Room).where(Room.id == room_id))
         room = room_result.scalar_one_or_none()
@@ -195,6 +204,22 @@ class RoomService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Room not found",
+            )
+
+        # Private/invite-only gate: a user may only self-join public channels.
+        # DM / group_dm membership comes exclusively from an invite (or being
+        # the original DM counterpart), never by knowing the room UUID.
+        if self_join and room.room_type != RoomType.CHANNEL:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This room is invite-only",
+            )
+
+        # Archived channels are closed to new self-joins.
+        if self_join and room.is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This room is archived",
             )
 
         # Check not already a member
