@@ -1,5 +1,5 @@
 import { useMemo, useCallback } from "react";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Volume2, Bot } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Volume2, Bot, MonitorUp } from "lucide-react";
 import clsx from "clsx";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useAppStore } from "@/stores/appStore";
@@ -93,6 +93,32 @@ function ParticipantTile({
   );
 }
 
+interface ScreenShareTileProps {
+  label: string;
+  videoRef: (el: HTMLVideoElement | null) => void;
+}
+
+function ScreenShareTile({ label, videoRef }: ScreenShareTileProps) {
+  return (
+    <div
+      className="relative flex shrink-0 flex-col items-center gap-1 rounded-xl bg-slate-950/60 p-2 ring-1 ring-stable-cyan/30"
+      style={{ width: 180, minHeight: 80 }}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="aspect-video w-full rounded-lg bg-black object-contain"
+      />
+      <div className="flex max-w-full items-center gap-1 text-[10px] font-medium text-stable-cyan">
+        <MonitorUp className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate">{label}</span>
+      </div>
+    </div>
+  );
+}
+
 export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const {
     room,
@@ -124,6 +150,50 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     [localVideoTrack],
   );
 
+  // Local screen-share (started from the call controls). Track.Source
+  // is the string "screen_share" in livekit-client 2.x.
+  const localScreenTrack = useMemo(() => {
+    if (!localParticipant) return null;
+    const pub = Array.from(localParticipant.trackPublications.values()).find(
+      (t) => t.kind === "video" && t.track && t.source === "screen_share",
+    );
+    return pub?.track ?? null;
+  }, [localParticipant]);
+
+  const attachLocalScreen = useCallback(
+    (el: HTMLVideoElement | null) => {
+      if (el && localScreenTrack) {
+        localScreenTrack.attach(el);
+        return () => {
+          localScreenTrack.detach(el);
+        };
+      }
+    },
+    [localScreenTrack],
+  );
+
+  // Remote screen-shares: one tile per remote participant publishing one.
+  const remoteScreenShares = useMemo(() => {
+    const out: {
+      sid: string;
+      label: string;
+      track: NonNullable<ReturnType<typeof getScreenTrack>>;
+    }[] = [];
+    function getScreenTrack(p: (typeof remoteParticipants)[number]) {
+      const pub = Array.from(p.trackPublications.values()).find(
+        (t) => t.kind === "video" && t.track && t.source === "screen_share",
+      );
+      return pub?.track ?? null;
+    }
+    for (const p of remoteParticipants) {
+      const track = getScreenTrack(p);
+      if (track) {
+        out.push({ sid: p.sid, label: p.name || p.identity, track });
+      }
+    }
+    return out;
+  }, [remoteParticipants]);
+
   if (!isConnected || !room) {
     return null;
   }
@@ -154,6 +224,20 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       aria-label="Voice and video call"
     >
       <div className="flex flex-1 items-center gap-2 overflow-x-auto py-1">
+        {localScreenTrack && (
+          <ScreenShareTile label="You — screen" videoRef={attachLocalScreen} />
+        )}
+
+        {remoteScreenShares.map((share) => (
+          <ScreenShareTile
+            key={`screen-${share.sid}`}
+            label={`${share.label} — screen`}
+            videoRef={(el) => {
+              if (el) share.track.attach(el);
+            }}
+          />
+        ))}
+
         <ParticipantTile
           name="You"
           isAgent={false}
