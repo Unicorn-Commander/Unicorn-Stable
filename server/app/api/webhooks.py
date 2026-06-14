@@ -8,11 +8,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from livekit.api import WebhookReceiver
 from livekit.api.access_token import TokenVerifier
 from pydantic import BaseModel
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.deps import get_db, get_livekit, get_presence, get_settings_dep
+from app.deps import (
+    _rate_limit_hit,
+    get_db,
+    get_livekit,
+    get_presence,
+    get_redis,
+    get_settings_dep,
+)
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember
 from app.services.livekit_service import LiveKitService
@@ -310,6 +318,7 @@ async def incoming_webhook(
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
+    redis: Annotated[Redis, Depends(get_redis)] = None,
 ) -> dict[str, str]:
     """Slack-shaped incoming webhook → posts a message into a Stable channel.
 
@@ -322,17 +331,32 @@ async def incoming_webhook(
     The rendered content lands in the named room as a message from a
     per-room agent participant (``webhook-<room>``), so threads, history,
     mentions, and read state all behave as first-class chat.
+
+    Rate-limited per room so a leaked URL can't flood a channel.
     """
+    import hmac as _hmac
+
     expected = settings.incoming_webhook_secret
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Incoming webhooks not configured",
         )
-    if secret != expected:
+    # Constant-time comparison so the secret can't be recovered by timing.
+    if not _hmac.compare_digest(secret, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Bad webhook secret",
+        )
+
+    # Per-room rate limit (no authenticated user here — key on room name).
+    if redis is not None and settings.rate_limit_enabled:
+        await _rate_limit_hit(
+            redis,
+            bucket="webhook_incoming",
+            identifier=room_name,
+            limit=settings.rate_limit_webhook_per_min,
+            window_seconds=60,
         )
 
     room = (

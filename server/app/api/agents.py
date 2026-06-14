@@ -185,7 +185,13 @@ async def request_agent_action(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AgentRunResponse:
-    """Request an agent action, creating an AgentRun for the approval flow."""
+    """Request an agent action, creating an AgentRun for the approval flow.
+
+    Admin-only. These rows feed a human approval queue; creating them is a
+    privileged operation, not something any authenticated user may do.
+    """
+    _require_admin(user)
+
     # Verify agent exists
     config_result = await db.execute(
         select(AgentConfig).where(AgentConfig.id == agent_id)
@@ -235,7 +241,17 @@ async def approve_agent_run(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AgentRunResponse:
-    """Approve a pending agent action."""
+    """Approve a pending agent action — NOT YET IMPLEMENTED.
+
+    Admin-only. This endpoint historically set status=APPROVED and claimed
+    success, but nothing in the system consumes ``AgentRunStatus.APPROVED``:
+    there is no executor that runs an approved action, and ``EXECUTED`` is
+    never reached. Rather than imply an action ran, we admin-gate the route
+    and return 501 without mutating state. When an execution engine is built,
+    replace this body with the real approve→execute transition.
+    """
+    _require_admin(user)
+
     result = await db.execute(
         select(AgentRun).where(AgentRun.id == run_id)
     )
@@ -252,29 +268,17 @@ async def approve_agent_run(
             detail=f"Cannot approve run with status: {run.status.value}",
         )
 
-    run.status = AgentRunStatus.APPROVED
-    run.approved_by = user["participant_id"]
-    run.started_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(run)
-
-    logger.info(
-        "agent_run_approved",
+    logger.warning(
+        "agent_run_approve_not_implemented",
         run_id=str(run_id),
-        approved_by=str(user["participant_id"]),
+        requested_by=str(user["participant_id"]),
     )
-
-    return AgentRunResponse(
-        id=run.id,
-        agent_config_id=run.agent_config_id,
-        room_id=run.room_id,
-        action_type=run.action_type,
-        action_detail=run.action_detail,
-        status=run.status.value,
-        approved_by=run.approved_by,
-        started_at=run.started_at,
-        completed_at=run.completed_at,
-        error_message=run.error_message,
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            "Agent action approval is not implemented: no executor consumes "
+            "approved runs. The run remains pending. Use /reject to dismiss it."
+        ),
     )
 
 
@@ -284,7 +288,9 @@ async def reject_agent_run(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AgentRunResponse:
-    """Reject a pending agent action."""
+    """Reject a pending agent action. Admin-only."""
+    _require_admin(user)
+
     result = await db.execute(
         select(AgentRun).where(AgentRun.id == run_id)
     )

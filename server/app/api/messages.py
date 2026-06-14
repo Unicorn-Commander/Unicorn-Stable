@@ -13,7 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.deps import get_current_user, get_db, get_livekit
+from app.deps import (
+    ensure_room_member,
+    get_current_user,
+    get_db,
+    get_livekit,
+    rate_limit,
+    require_room_member,
+)
 from app.schemas.message import (
     MessageCreate,
     MessageListResponse,
@@ -93,8 +100,16 @@ async def send_message(
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     request: Request = None,  # type: ignore[assignment]
+    _rl: Annotated[
+        None, Depends(rate_limit("msg_send", "rate_limit_message_send_per_min"))
+    ] = None,
 ) -> MessageResponse:
-    """Send a message to a room."""
+    """Send a message to a room.
+
+    Membership is enforced inside MessageService.send_message. Rate-limited
+    per user. The internal agent path calls this function directly (not via
+    HTTP) so it bypasses the DI-injected rate limit, which is intended.
+    """
     svc = _build_message_service(db, livekit)
     # Normalize friendly aliases to the underlying ContentType enum values.
     ct_aliases = {"action": "agent_action", "image": "text", "file": "text"}
@@ -126,16 +141,30 @@ async def send_message(
     # agent can respond without the LiveKit voice pipeline. See
     # services/agent_chat_responder.py. Filtered out for agent-authored
     # messages and disabled-by-config cases inside schedule_response itself.
+    #
+    # Before scheduling, enforce the agent's own rate budget
+    # (agent_configs.rate_limit_rpm). If the resident agent has already
+    # answered rate_limit_rpm times this minute, we skip auto-replying — the
+    # user's message still posts; the agent just stays quiet until the window
+    # rolls over. This protects the (paid) Brigade backend from a chatty room.
     try:
         if request is not None:
-            schedule_agent_chat_response(
+            settings_now = get_settings()
+            redis_now = getattr(request.app.state, "redis", None)
+            if await _agent_chat_within_budget(
+                db=db,
+                redis=redis_now,
+                settings=settings_now,
                 room_id=room_id,
-                message_id=msg.id,
-                sender_id=user.get("participant_id"),
-                settings=get_settings(),
-                session_factory=request.app.state.db_session_factory,
-                livekit=livekit,
-            )
+            ):
+                schedule_agent_chat_response(
+                    room_id=room_id,
+                    message_id=msg.id,
+                    sender_id=user.get("participant_id"),
+                    settings=settings_now,
+                    session_factory=request.app.state.db_session_factory,
+                    livekit=livekit,
+                )
     except Exception:
         logger.warning("agent_chat_responder_schedule_failed", exc_info=True)
 
@@ -240,6 +269,78 @@ async def _maybe_dispatch_mention_emails(
 
     for p in targets:
         _asyncio.create_task(_send_one(p))
+
+
+async def _agent_chat_within_budget(
+    *,
+    db: AsyncSession,
+    redis: Any,
+    settings: Any,
+    room_id: uuid.UUID,
+) -> bool:
+    """Return True if the room's resident agent may auto-reply right now.
+
+    Resolves the room's Brigade agent → its AgentConfig.rate_limit_rpm and
+    enforces it as a per-minute Redis counter. Rooms with no resident agent
+    always return True (nothing to throttle). Fails OPEN on any error so a
+    Redis/DB blip never silences agents.
+    """
+    if not getattr(settings, "rate_limit_enabled", True):
+        return True
+    if redis is None:
+        return True
+    try:
+        from sqlalchemy import select as _select
+
+        from app.models.agent import AgentConfig as _AC
+        from app.models.participant import Participant as _P
+        from app.models.room import Room as _Room
+
+        room = (
+            await db.execute(_select(_Room).where(_Room.id == room_id))
+        ).scalar_one_or_none()
+        if room is None or not room.metadata_:
+            return True
+        brigade_agent_id = room.metadata_.get("brigade_agent_id") if isinstance(room.metadata_, dict) else None
+        if not brigade_agent_id:
+            # No canonical agent declared on the room → nothing to throttle here.
+            return True
+
+        agent_p = (
+            await db.execute(
+                _select(_P).where(_P.keycloak_sub == f"brigade:{brigade_agent_id}")
+            )
+        ).scalar_one_or_none()
+
+        # Per-minute budget: the agent's own rate_limit_rpm if it has a config,
+        # else the suite-wide default.
+        rpm = int(getattr(settings, "rate_limit_agent_chat_per_min", 30) or 30)
+        if agent_p is not None:
+            cfg = (
+                await db.execute(
+                    _select(_AC).where(_AC.participant_id == agent_p.id)
+                )
+            ).scalar_one_or_none()
+            if cfg is not None and cfg.rate_limit_rpm:
+                rpm = int(cfg.rate_limit_rpm)
+
+        window = int(time.time()) // 60
+        key = f"ratelimit:agent_chat:{brigade_agent_id}:{window}"
+        current = await redis.incr(key)
+        if current == 1:
+            await redis.expire(key, 61)
+        if current > rpm:
+            logger.info(
+                "agent_chat_rate_limited",
+                brigade_agent_id=brigade_agent_id,
+                count=current,
+                limit=rpm,
+            )
+            return False
+        return True
+    except Exception:
+        logger.warning("agent_chat_budget_check_failed", exc_info=True)
+        return True
 
 
 class AgentMessageBody(BaseModel):
@@ -794,13 +895,16 @@ async def post_agent_typing(
 @router.get("/rooms/{room_id}/messages", response_model=MessageListResponse)
 async def get_messages(
     room_id: uuid.UUID,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
 ) -> MessageListResponse:
-    """Get cursor-paginated messages for a room (newest first)."""
+    """Get cursor-paginated messages for a room (newest first).
+
+    Caller must be a member of the room.
+    """
     svc = _build_message_service(db, livekit)
     result = await svc.get_messages(
         room_id=room_id,
@@ -861,7 +965,21 @@ async def get_thread(
     cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
 ) -> MessageListResponse:
-    """Get thread replies under a parent message."""
+    """Get thread replies under a parent message.
+
+    Caller must be a member of the parent message's room.
+    """
+    from app.models.message import Message as _Msg
+
+    parent_room_id = (
+        await db.execute(
+            select(_Msg.room_id).where(_Msg.id == message_id)
+        )
+    ).scalar_one_or_none()
+    if parent_room_id is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await ensure_room_member(db, parent_room_id, user)
+
     svc = _build_message_service(db, livekit)
     result = await svc.get_thread(
         parent_id=message_id,
@@ -899,6 +1017,8 @@ async def decide_action(
     metadata and broadcasts so other clients (including the requesting agent)
     can react.
     """
+    from datetime import datetime, timezone
+
     from sqlalchemy import select as _select
 
     from app.models.message import Message as _Msg
@@ -909,13 +1029,16 @@ async def decide_action(
     ).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
+    # Caller must be a member of the room this action lives in.
+    await ensure_room_member(db, msg.room_id, user)
     meta = dict(msg.metadata_ or {})
     if "decision" in meta:
         return _msg_to_response(msg)
     meta["decision"] = body.decision
     meta["decided_by"] = str(user["participant_id"])
     meta["decided_by_name"] = user.get("display_name") or user.get("username") or ""
-    meta["decided_at"] = msg.created_at.isoformat()
+    # Real decision time — NOT the message's created_at (prior bug).
+    meta["decided_at"] = datetime.now(timezone.utc).isoformat()
     msg.metadata_ = meta
     await db.commit()
     await db.refresh(msg)
@@ -957,11 +1080,20 @@ async def toggle_save(
 
     from app.models.message import Message as _Msg
 
+    # Lock the row for the duration of the read-modify-write so concurrent
+    # save toggles on the same message don't clobber each other (the JSONB
+    # column is a whole-value replace, so without the lock it's last-writer-
+    # wins on the entire saved_by list).
     msg = (
-        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+        await db.execute(
+            _select(_Msg).where(_Msg.id == message_id).with_for_update()
+        )
     ).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
+
+    # Caller must be a member of the room to save its messages.
+    await ensure_room_member(db, msg.room_id, user)
 
     pid = str(user["participant_id"])
     meta = dict(msg.metadata_ or {})
@@ -984,28 +1116,29 @@ async def list_saved(
     limit: int = Query(100, ge=1, le=500),
 ) -> list[MessageResponse]:
     """Return the caller's saved messages, newest first."""
+    import json as _json
+
     from sqlalchemy import desc, select as _select
 
     from app.models.message import Message as _Msg
 
     pid = str(user["participant_id"])
-    # Use jsonb @> to filter rows whose metadata.saved_by contains the pid
+    # Correct JSONB containment: match rows whose metadata.saved_by array
+    # contains this participant id. ``@>`` is index-backed by the GIN index
+    # on the metadata column (migration 002). The previous ``LIKE '%pid%'``
+    # on the cast text was unindexed and prone to substring false positives
+    # (one id being a prefix/substring of another).
+    containment_param = _json.dumps({"saved_by": [pid]})
     rows = (
         await db.execute(
             _select(_Msg)
-            .where(_Msg.metadata_["saved_by"].as_string().like(f"%{pid}%"))
+            .where(_Msg.metadata_.op("@>")(containment_param))
+            .where(_Msg.is_deleted == False)  # noqa: E712
             .order_by(desc(_Msg.created_at))
-            .limit(limit * 2)
+            .limit(limit)
         )
     ).scalars().all()
-    out = []
-    for m in rows:
-        sb = (m.metadata_ or {}).get("saved_by") or []
-        if pid in sb:
-            out.append(_msg_to_response(m))
-        if len(out) >= limit:
-            break
-    return out
+    return [_msg_to_response(m) for m in rows]
 
 
 @router.post("/messages/{message_id}/reactions", response_model=MessageResponse)
@@ -1024,13 +1157,20 @@ async def toggle_reaction(
     from sqlalchemy import select as _select
     from app.models.message import Message as _Msg
     from app.ws.handler import manager as _ws_manager
-    import json
 
+    # Lock the row across the read-modify-write so concurrent reactions on
+    # the same message don't clobber each other's emoji lists (the JSONB
+    # reactions map is replaced wholesale, so it's otherwise last-writer-wins).
     msg = (
-        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+        await db.execute(
+            _select(_Msg).where(_Msg.id == message_id).with_for_update()
+        )
     ).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
+
+    # Caller must be a member of the room to react to its messages.
+    await ensure_room_member(db, msg.room_id, user)
 
     pid = str(user["participant_id"])
     meta = dict(msg.metadata_ or {})
@@ -1079,12 +1219,12 @@ async def toggle_reaction(
 async def search_messages(
     room_id: uuid.UUID,
     q: str = Query(..., min_length=1, max_length=500),
-    user: Annotated[dict[str, Any], Depends(get_current_user)] = None,
+    user: Annotated[dict[str, Any], Depends(require_room_member)] = None,
     db: Annotated[AsyncSession, Depends(get_db)] = None,
     livekit: Annotated[LiveKitService, Depends(get_livekit)] = None,
     limit: int = Query(20, ge=1, le=100),
 ) -> list[MessageResponse]:
-    """Search messages in a room using full-text search."""
+    """Search messages in a room. Caller must be a member of the room."""
     svc = _build_message_service(db, livekit)
     messages = await svc.search_messages(
         room_id=room_id,

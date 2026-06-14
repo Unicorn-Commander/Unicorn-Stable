@@ -9,7 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.deps import get_current_user, get_db, get_livekit, get_settings_dep
+from app.deps import (
+    get_current_user,
+    get_db,
+    get_livekit,
+    get_settings_dep,
+    rate_limit,
+)
 from app.models.room import Room, RoomMember
 from app.schemas.auth import TokenRequest, TokenResponse
 from app.services.livekit_service import LiveKitService
@@ -26,6 +32,9 @@ async def generate_livekit_token(
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
+    _rl: Annotated[
+        None, Depends(rate_limit("token_mint", "rate_limit_token_mint_per_min"))
+    ] = None,
 ) -> TokenResponse:
     """Generate a LiveKit access token for the authenticated user to join a room."""
     # Find the room by LiveKit room name or by room name
