@@ -1,4 +1,14 @@
-"""TriageAgent — routes requests, answers questions, coordinates between humans and agents."""
+"""TriageAgent — routes requests, answers questions, coordinates between humans and agents.
+
+Migrated to livekit-agents 1.5: builds an ``Agent`` + ``AgentSession`` (the
+``VoicePipelineAgent`` / ``llm.FunctionContext`` APIs were removed in 1.5).
+Triage-specific tools are adapted to 1.5 ``FunctionTool`` objects via
+``ToolRegistry.as_function_tools()`` and passed to ``Agent(tools=[...])``.
+
+Voice (STT/TTS) is wired only when the plugins build successfully; otherwise the
+Agent is LLM-only and text replies flow through the data-channel ChatHandler /
+the server-side text path. The server text path remains the shipping default.
+"""
 
 from __future__ import annotations
 
@@ -7,19 +17,11 @@ import re
 from typing import Any
 
 import structlog
-from livekit.agents import JobContext
-# VoicePipelineAgent removed in livekit-agents 1.5; use AgentSession for voice
-try:
-    from livekit.agents.pipeline import VoicePipelineAgent  # type: ignore
-except ImportError:
-    VoicePipelineAgent = None  # type: ignore
-from livekit.plugins import anthropic, openai, silero
+from livekit.agents import Agent, AgentSession, JobContext
 
 from agent_runtime.base import StableAgent
-from agent_runtime.config import AgentSettings, get_agent_settings
+from agent_runtime.config import AgentSettings
 from agent_runtime.tools import tool
-from plugins.stt import get_stt_plugin
-from plugins.tts import get_tts_plugin
 
 logger = structlog.get_logger(__name__)
 
@@ -74,42 +76,85 @@ class TriageAgent(StableAgent):
         self._tts_provider: str = "kokoro"
         self._tts_voice_id: str | None = None
         self._stt_provider: str = "whisper"
+        self._session: AgentSession | None = None
+        self._lk_agent: Agent | None = None
 
-    async def build_pipeline(self, ctx: JobContext) -> VoicePipelineAgent:
-        """Assemble the full voice pipeline: VAD + STT + LLM + TTS."""
+    async def build_pipeline(self, ctx: JobContext) -> Any:
+        """Assemble the LiveKit Agent + AgentSession (VAD + STT + LLM + TTS + tools).
+
+        Returns the AgentSession, exposing a ``start_room(room)`` shim so
+        base.py's lifecycle (which calls ``self._pipeline.start_room(room)``)
+        works the same way it did for the old VoicePipelineAgent.
+        """
         cfg = self._settings
 
-        # VAD
-        vad = silero.VAD.load()
-
-        # STT
-        stt = get_stt_plugin(self._stt_provider, settings=cfg)
-
-        # TTS
-        tts = get_tts_plugin(
-            self._tts_provider,
-            voice_id=self._tts_voice_id,
-            personality="triage",
-            settings=cfg,
-        )
-
-        # LLM — Anthropic Claude primary, OpenAI fallback
+        # LLM — Brigade primary, then Anthropic / OpenAI / OpenRouter.
         llm_plugin = self._build_llm(cfg)
 
-        # Register triage-specific tools
+        # Register triage-specific tools on top of the built-in platform tools,
+        # then adapt the whole registry to 1.5 FunctionTools for the Agent.
         self._register_triage_tools()
+        function_tools = self.tools.as_function_tools()
 
-        pipeline = VoicePipelineAgent(
-            vad=vad,
-            stt=stt,
-            llm=llm_plugin,
-            tts=tts,
-            chat_ctx=self._build_chat_context(),
-            fnc_ctx=self.tools.to_function_context(),
+        # Optional voice plugins. Failure here keeps the agent text-only.
+        stt_plugin = None
+        tts_plugin = None
+        vad_plugin = None
+        try:
+            from plugins.stt import get_stt_plugin
+            stt_plugin = get_stt_plugin(self._stt_provider, settings=cfg)
+        except Exception as e:
+            logger.info("triage_no_stt", reason=str(e))
+        try:
+            from plugins.tts import get_tts_plugin
+            tts_plugin = get_tts_plugin(
+                self._tts_provider,
+                voice_id=self._tts_voice_id,
+                personality="triage",
+                settings=cfg,
+            )
+        except Exception as e:
+            logger.info("triage_no_tts", reason=str(e))
+        if stt_plugin is not None:
+            # Whisper-compat STT does not stream; a VAD slices audio into
+            # utterances before STT.
+            try:
+                from livekit.plugins import silero
+                vad_plugin = silero.VAD.load()
+            except Exception as e:
+                logger.info("triage_no_vad", reason=str(e))
+
+        agent_kwargs: dict[str, Any] = {
+            "instructions": self.system_prompt,
+            "llm": llm_plugin,
+            "tools": function_tools,
+        }
+        if stt_plugin is not None:
+            agent_kwargs["stt"] = stt_plugin
+        if vad_plugin is not None:
+            agent_kwargs["vad"] = vad_plugin
+        if tts_plugin is not None:
+            agent_kwargs["tts"] = tts_plugin
+
+        self._lk_agent = Agent(**agent_kwargs)
+
+        session = AgentSession()
+        self._session = session
+
+        async def _start(room: Any) -> None:
+            await session.start(agent=self._lk_agent, room=room)
+
+        session.start_room = _start  # type: ignore[attr-defined]
+
+        logger.info(
+            "triage_session_built",
+            llm=type(llm_plugin).__name__,
+            num_tools=len(function_tools),
+            has_stt=stt_plugin is not None,
+            has_tts=tts_plugin is not None,
+            has_vad=vad_plugin is not None,
         )
-
-        logger.info("triage_pipeline_built", llm=type(llm_plugin).__name__)
-        return pipeline
+        return session
 
     def _build_llm(self, cfg: AgentSettings) -> Any:
         """Build the LLM plugin.
@@ -138,6 +183,8 @@ class TriageAgent(StableAgent):
                 user_id=user_id,
             )
 
+        from livekit.plugins import anthropic, openai
+
         if cfg.anthropic_api_key:
             logger.info("triage_llm_provider", provider="anthropic")
             return anthropic.LLM(
@@ -164,14 +211,6 @@ class TriageAgent(StableAgent):
             "No LLM provider configured. Set BRIGADE_API_KEY, ANTHROPIC_API_KEY, "
             "OPENAI_API_KEY, or OPENROUTER_API_KEY."
         )
-
-    def _build_chat_context(self) -> Any:
-        """Build the initial chat context with the system prompt."""
-        from livekit.agents import llm as lk_llm
-
-        chat_ctx = lk_llm.ChatContext()
-        chat_ctx.append(role="system", text=self.system_prompt)
-        return chat_ctx
 
     def _register_triage_tools(self) -> None:
         """Register triage-specific tools on top of the built-in platform tools."""
@@ -294,8 +333,8 @@ class TriageAgent(StableAgent):
                 )
 
     async def on_user_speech(self, text: str) -> None:
-        """Handle transcribed speech — the pipeline LLM handles response generation,
-        but we log and can trigger stage content here."""
+        """Handle transcribed speech — the AgentSession LLM handles response
+        generation, but we log and can trigger stage content here."""
         logger.info("triage_user_speech", text_length=len(text), preview=text[:100])
         await self._log_agent_event("user_speech", {"text": text})
 
