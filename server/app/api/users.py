@@ -1,0 +1,152 @@
+"""User directory + invite endpoints.
+
+Source of truth is Keycloak (uchub realm). People who've signed into Stable
+once also exist as Participant rows locally. Search merges both so you can
+invite anyone in the realm, whether or not they've logged in yet.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any
+from uuid import UUID
+
+import structlog
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings
+from app.deps import get_current_user, get_db, get_settings_dep
+from app.models.participant import Participant, ParticipantType
+from app.services.keycloak_admin import KeycloakAdmin
+
+logger = structlog.get_logger(__name__)
+
+router = APIRouter()
+
+
+class UserResult(BaseModel):
+    # When the user has signed in, we have a local Participant row with id.
+    # When they haven't, we only know their Keycloak sub. The frontend uses
+    # whichever is present and the backend resolves/creates Participant on invite.
+    id: UUID | None = None
+    keycloak_sub: str
+    username: str
+    display_name: str
+    email: str | None
+    avatar_url: str | None
+    signed_in: bool
+
+
+@router.get("/users/search", response_model=list[UserResult])
+async def search_users(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    q: str = Query("", min_length=0, max_length=100),
+    limit: int = Query(20, ge=1, le=50),
+) -> list[UserResult]:
+    """Search humans in the Keycloak realm.
+
+    Returns users with `signed_in=true` if they have a local Participant row
+    (seen them before), otherwise false. Invite flow handles both.
+    """
+    admin = KeycloakAdmin(settings)
+    try:
+        kc_users = await admin.search_users(q, limit=limit)
+    except Exception as e:
+        logger.warning("keycloak_search_failed", error=str(e))
+        kc_users = []
+
+    # Exclude the caller's own account
+    caller_sub = user.get("sub")
+    kc_users = [u for u in kc_users if u.get("id") and u.get("id") != caller_sub]
+
+    # Batch-lookup local participants by sub
+    subs = [u["id"] for u in kc_users]
+    existing: dict[str, Participant] = {}
+    if subs:
+        rows = (
+            await db.execute(
+                select(Participant).where(
+                    Participant.keycloak_sub.in_(subs),
+                    Participant.participant_type == ParticipantType.HUMAN,
+                )
+            )
+        ).scalars().all()
+        existing = {p.keycloak_sub: p for p in rows}
+
+    results: list[UserResult] = []
+    for u in kc_users:
+        sub = u["id"]
+        p = existing.get(sub)
+        first = (u.get("firstName") or "").strip()
+        last = (u.get("lastName") or "").strip()
+        name = " ".join(x for x in (first, last) if x) or u.get("username") or ""
+        results.append(
+            UserResult(
+                id=p.id if p else None,
+                keycloak_sub=sub,
+                username=u.get("username") or "",
+                display_name=name,
+                email=u.get("email"),
+                avatar_url=p.avatar_url if p else None,
+                signed_in=p is not None,
+            )
+        )
+    return results
+
+
+async def _load_keycloak_email_for_sub(sub: str) -> str | None:
+    """Fetch a user's email from Keycloak by their sub."""
+    from app.config import get_settings
+
+    try:
+        admin = KeycloakAdmin(get_settings())
+        kc_user = await admin.get_user(sub)
+        return (kc_user or {}).get("email") or None
+    except Exception:
+        logger.debug("keycloak_email_lookup_failed", exc_info=True)
+        return None
+
+
+async def resolve_or_create_participant(
+    db: AsyncSession,
+    settings: Settings,
+    keycloak_sub: str,
+) -> Participant:
+    """Return the Participant for a Keycloak user, creating it on first invite.
+
+    This mirrors the upsert that happens on first login in get_current_user
+    so we can invite users who haven't signed in yet. They'll link up to this
+    row the first time they log into Stable (same keycloak_sub).
+    """
+    existing = (
+        await db.execute(
+            select(Participant).where(Participant.keycloak_sub == keycloak_sub)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    admin = KeycloakAdmin(settings)
+    kc_user = await admin.get_user(keycloak_sub)
+    if kc_user is None:
+        raise ValueError(f"Keycloak user not found: {keycloak_sub}")
+
+    first = (kc_user.get("firstName") or "").strip()
+    last = (kc_user.get("lastName") or "").strip()
+    display = " ".join(x for x in (first, last) if x) or kc_user.get("username") or ""
+    username = kc_user.get("username") or keycloak_sub
+
+    p = Participant(
+        keycloak_sub=keycloak_sub,
+        username=username,
+        display_name=display,
+        participant_type=ParticipantType.HUMAN,
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return p

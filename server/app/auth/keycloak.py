@@ -103,19 +103,30 @@ async def validate_token(
 
     expected_issuer = f"{keycloak_url}/realms/{realm}"
 
+    # python-jose requires audience to be a string (not list), so verify
+    # signature/issuer/expiry via jose and accept any of our valid audiences
+    # manually. Keycloak tokens typically have aud="account" for user tokens
+    # or aud=client_id for tokens minted for a specific resource.
     claims = jwt.decode(
         token,
         rsa_key,
         algorithms=["RS256"],
-        audience=["account", client_id],
         issuer=expected_issuer,
         options={
-            "verify_aud": True,
+            "verify_aud": False,
             "verify_iss": True,
             "verify_exp": True,
             "verify_iat": True,
         },
     )
+
+    token_aud = claims.get("aud")
+    aud_list = [token_aud] if isinstance(token_aud, str) else list(token_aud or [])
+    accepted = {"account", client_id}
+    if not (accepted & set(aud_list)):
+        raise JWTError(
+            f"Token audience {aud_list!r} does not include any of {sorted(accepted)!r}"
+        )
 
     return claims
 
@@ -135,11 +146,22 @@ def extract_user_identity(claims: dict[str, Any]) -> dict[str, Any]:
     is_agent = "agent-service" in roles or claims.get("azp", "").endswith("-agent")
     participant_type = "agent" if is_agent else "human"
 
+    # Avatar precedence: explicit picture claim → Gravatar derived from email
+    avatar_url: str | None = claims.get("picture") or None
+    if not avatar_url:
+        email = (claims.get("email") or "").strip().lower()
+        if email:
+            import hashlib
+
+            digest = hashlib.md5(email.encode("utf-8")).hexdigest()  # noqa: S324
+            avatar_url = f"https://www.gravatar.com/avatar/{digest}?d=404&s=128"
+
     return {
         "sub": claims["sub"],
         "username": claims.get("preferred_username", claims["sub"]),
         "email": claims.get("email"),
         "display_name": claims.get("name", claims.get("preferred_username", "")),
+        "avatar_url": avatar_url,
         "roles": roles,
         "participant_type": participant_type,
     }

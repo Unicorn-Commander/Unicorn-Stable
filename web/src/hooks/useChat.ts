@@ -9,10 +9,16 @@ interface UseChatReturn {
   messages: Message[];
   hasMore: boolean;
   loading: boolean;
-  sendMessage: (content: string, threadId?: string) => Promise<void>;
+  sendMessage: (
+    content: string,
+    threadId?: string,
+    attachments?: { url: string; filename: string; content_type: string; size: number }[],
+    extraMetadata?: Record<string, unknown>,
+  ) => Promise<void>;
   loadMore: () => Promise<void>;
   editMessage: (messageId: string, content: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
+  retryMessage: (messageId: string) => Promise<void>;
 }
 
 export function useChat(roomId: string | null): UseChatReturn {
@@ -133,9 +139,24 @@ export function useChat(roomId: string | null): UseChatReturn {
   }, [roomId, loading, hasMore, messagesState, setMessages, prependMessages]);
 
   const sendMessage = useCallback(
-    async (content: string, threadId?: string) => {
-      if (!roomId || !content.trim()) return;
+    async (
+      content: string,
+      threadId?: string,
+      attachments?: {
+        url: string;
+        filename: string;
+        content_type: string;
+        size: number;
+      }[],
+      extraMetadata?: Record<string, unknown>,
+    ) => {
+      const trimmedContent = content.trim();
+      if (!roomId) return;
+      if (!trimmedContent && (!attachments || attachments.length === 0)) return;
 
+      const hasImage = (attachments || []).some((a) =>
+        a.content_type.startsWith("image/"),
+      );
       const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const optimisticMessage: Message = {
         id: optimisticId,
@@ -144,23 +165,32 @@ export function useChat(roomId: string | null): UseChatReturn {
         sender_type: "human",
         sender_name: currentUser?.displayName ?? "You",
         sender_avatar: currentUser?.avatarUrl ?? null,
-        content: content.trim(),
-        content_type: "text",
+        content: trimmedContent,
+        content_type: hasImage ? "image" : attachments?.length ? "file" : "text",
         thread_id: threadId ?? null,
         reply_count: 0,
         edited: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        metadata: {},
+        metadata: {
+          ...(attachments?.length ? { attachments } : {}),
+          ...(extraMetadata ?? {}),
+        },
       };
 
       addMessage(roomId, optimisticMessage);
 
       try {
         const request: SendMessageRequest = {
-          content: content.trim(),
-          content_type: "text",
+          content: trimmedContent,
+          content_type: (optimisticMessage.content_type as SendMessageRequest["content_type"]),
         };
+        const meta: Record<string, unknown> = {};
+        if (attachments?.length) meta.attachments = attachments;
+        if (extraMetadata) Object.assign(meta, extraMetadata);
+        if (Object.keys(meta).length > 0) {
+          request.metadata = meta;
+        }
         if (threadId) {
           request.thread_id = threadId;
         }
@@ -169,12 +199,66 @@ export function useChat(roomId: string | null): UseChatReturn {
           id: serverMessage.id,
           created_at: serverMessage.created_at,
           updated_at: serverMessage.updated_at,
+          metadata: {
+            ...(optimisticMessage.metadata ?? {}),
+            ...(serverMessage.metadata ?? {}),
+            failed: false,
+          },
         });
-      } catch {
-        removeMessage(roomId, optimisticId);
+      } catch (err) {
+        // Keep the optimistic message in-place so the user can retry.
+        // Stuff the original request into metadata so retryMessage can replay it.
+        updateMessage(roomId, optimisticId, {
+          metadata: {
+            ...(optimisticMessage.metadata ?? {}),
+            failed: true,
+            failed_error: (err as Error)?.message || "Send failed",
+            failed_request: {
+              content: trimmedContent,
+              thread_id: threadId,
+              attachments,
+              extraMetadata,
+            },
+          },
+        });
       }
     },
     [roomId, currentUser, addMessage, updateMessage, removeMessage],
+  );
+
+  const retryMessage = useCallback(
+    async (messageId: string) => {
+      if (!roomId) return;
+      const m = messages.find((x) => x.id === messageId);
+      if (!m) return;
+      const req = (m.metadata as { failed_request?: { content: string; thread_id?: string; attachments?: Array<{ url: string; filename: string; content_type: string; size: number }>; extraMetadata?: Record<string, unknown> } } | null)?.failed_request;
+      if (!req) return;
+      // Optimistically clear failed flag so the bubble UI updates.
+      updateMessage(roomId, messageId, {
+        metadata: { ...(m.metadata ?? {}), failed: false, failed_error: null },
+      });
+      try {
+        const request: SendMessageRequest = {
+          content: req.content,
+          content_type: m.content_type as SendMessageRequest["content_type"],
+        };
+        if (req.attachments?.length) request.metadata = { attachments: req.attachments };
+        if (req.extraMetadata) request.metadata = { ...(request.metadata ?? {}), ...req.extraMetadata };
+        if (req.thread_id) request.thread_id = req.thread_id;
+        const serverMessage = await api.sendMessage(roomId, request);
+        updateMessage(roomId, messageId, {
+          id: serverMessage.id,
+          created_at: serverMessage.created_at,
+          updated_at: serverMessage.updated_at,
+          metadata: { ...(m.metadata ?? {}), failed: false, failed_request: null },
+        });
+      } catch (err) {
+        updateMessage(roomId, messageId, {
+          metadata: { ...(m.metadata ?? {}), failed: true, failed_error: (err as Error)?.message || "Send failed" },
+        });
+      }
+    },
+    [roomId, messages, updateMessage],
   );
 
   const editMessage = useCallback(
@@ -222,5 +306,6 @@ export function useChat(roomId: string | null): UseChatReturn {
     loadMore,
     editMessage,
     deleteMessage,
+    retryMessage,
   };
 }

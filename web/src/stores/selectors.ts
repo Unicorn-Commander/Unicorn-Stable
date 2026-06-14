@@ -18,3 +18,4 @@ export const EMPTY_AGENTS: Agent[] = [];
 export const EMPTY_MESSAGES: Message[] = [];
 export const EMPTY_TYPING: TypingUser[] = [];
 export const EMPTY_STRINGS: string[] = [];
+export const EMPTY_READ_RECEIPTS: Record<string, string> = {};

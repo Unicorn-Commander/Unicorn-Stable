@@ -34,12 +34,22 @@ class Participant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     participant_type: Mapped[ParticipantType] = mapped_column(
-        Enum(ParticipantType, name="participant_type_enum", native_enum=True),
+        Enum(
+            ParticipantType,
+            name="participant_type_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=ParticipantType.HUMAN,
     )
     status: Mapped[ParticipantStatus] = mapped_column(
-        Enum(ParticipantStatus, name="participant_status_enum", native_enum=True),
+        Enum(
+            ParticipantStatus,
+            name="participant_status_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=ParticipantStatus.OFFLINE,
     )

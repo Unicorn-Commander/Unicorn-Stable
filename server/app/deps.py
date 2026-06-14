@@ -79,6 +79,11 @@ async def get_current_user(
             client_id=settings.keycloak_client_id,
         )
     except JWTError as exc:
+        import traceback
+        with open("/tmp/jwt-debug.log", "a") as f:
+            f.write(f"===== {exc} =====\n")
+            f.write(traceback.format_exc())
+            f.write("=====\n")
         logger.warning("jwt_validation_failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -86,7 +91,22 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user_identity = extract_user_identity(claims)
+    try:
+        user_identity = extract_user_identity(claims)
+    except KeyError as exc:
+        logger.warning(
+            "token_missing_claim",
+            missing=str(exc),
+            claim_keys=list(claims.keys()),
+            azp=claims.get("azp"),
+            aud=claims.get("aud"),
+            preferred_username=claims.get("preferred_username"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token missing required claim: {exc}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Ensure the participant exists in our database (upsert)
     result = await db.execute(
@@ -99,6 +119,7 @@ async def get_current_user(
             keycloak_sub=user_identity["sub"],
             username=user_identity["username"],
             display_name=user_identity.get("display_name") or user_identity["username"],
+            avatar_url=user_identity.get("avatar_url"),
             participant_type=ParticipantType(user_identity["participant_type"]),
             status=ParticipantStatus.ONLINE,
         )
@@ -111,11 +132,15 @@ async def get_current_user(
             username=participant.username,
         )
     else:
-        # Update display name / email if changed
+        # Sync mutable fields if Keycloak changed them
         changed = False
         new_display = user_identity.get("display_name")
         if new_display and new_display != participant.display_name:
             participant.display_name = new_display
+            changed = True
+        new_avatar = user_identity.get("avatar_url")
+        if new_avatar and new_avatar != participant.avatar_url:
+            participant.avatar_url = new_avatar
             changed = True
         if changed:
             await db.commit()

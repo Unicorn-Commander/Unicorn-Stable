@@ -44,7 +44,12 @@ class Message(Base, UUIDPrimaryKeyMixin):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_type: Mapped[ContentType] = mapped_column(
-        Enum(ContentType, name="content_type_enum", native_enum=True),
+        Enum(
+            ContentType,
+            name="content_type_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=ContentType.TEXT,
     )

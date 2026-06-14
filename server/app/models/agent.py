@@ -45,7 +45,12 @@ class AgentConfig(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     agent_type: Mapped[AgentType] = mapped_column(
-        Enum(AgentType, name="agent_type_enum", native_enum=True),
+        Enum(
+            AgentType,
+            name="agent_type_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=AgentType.CUSTOM,
     )
@@ -103,7 +108,12 @@ class AgentRun(Base, UUIDPrimaryKeyMixin):
         JSONB, nullable=True, default=dict
     )
     status: Mapped[AgentRunStatus] = mapped_column(
-        Enum(AgentRunStatus, name="agent_run_status_enum", native_enum=True),
+        Enum(
+            AgentRunStatus,
+            name="agent_run_status_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=AgentRunStatus.PENDING_APPROVAL,
     )

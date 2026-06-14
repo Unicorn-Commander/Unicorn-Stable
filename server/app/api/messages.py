@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+import time
 import uuid
 from typing import Annotated, Any
 
+import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.deps import get_current_user, get_db, get_livekit
 from app.schemas.message import (
     MessageCreate,
@@ -15,6 +21,7 @@ from app.schemas.message import (
     MessageUpdate,
     SenderInfo,
 )
+from app.services.agent_chat_responder import schedule_response as schedule_agent_chat_response
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 
@@ -32,6 +39,9 @@ def _build_message_service(
 
 def _msg_to_response(msg: Any, reply_count: int = 0) -> MessageResponse:
     sender_info: SenderInfo | None = None
+    sender_name = ""
+    sender_avatar: str | None = None
+    sender_type = "human"
     if msg.sender:
         sender_info = SenderInfo(
             id=msg.sender.id,
@@ -40,19 +50,32 @@ def _msg_to_response(msg: Any, reply_count: int = 0) -> MessageResponse:
             avatar_url=msg.sender.avatar_url,
             participant_type=msg.sender.participant_type.value,
         )
+        sender_name = msg.sender.display_name or msg.sender.username
+        sender_avatar = msg.sender.avatar_url
+        sender_type = msg.sender.participant_type.value
 
+    # Wire-format aliases so the frontend's friendlier names match what the
+    # backend stores in its ContentType enum.
+    ct_value = msg.content_type.value
+    ct_out = {"agent_action": "action"}.get(ct_value, ct_value)
     return MessageResponse(
         id=msg.id,
         room_id=msg.room_id,
         sender_id=msg.sender_id,
+        sender_type=sender_type,
+        sender_name=sender_name,
+        sender_avatar=sender_avatar,
         content=msg.content,
-        content_type=msg.content_type.value,
-        metadata_=msg.metadata_,
+        content_type=ct_out,
+        metadata=msg.metadata_ or {},
+        thread_id=msg.parent_id,
         parent_id=msg.parent_id,
+        edited=msg.is_edited,
         is_edited=msg.is_edited,
         edited_at=msg.edited_at,
         is_deleted=msg.is_deleted,
         created_at=msg.created_at,
+        updated_at=msg.edited_at or msg.created_at,
         sender=sender_info,
         reply_count=reply_count,
     )
@@ -69,18 +92,703 @@ async def send_message(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    request: Request = None,  # type: ignore[assignment]
 ) -> MessageResponse:
     """Send a message to a room."""
     svc = _build_message_service(db, livekit)
+    # Normalize friendly aliases to the underlying ContentType enum values.
+    ct_aliases = {"action": "agent_action", "image": "text", "file": "text"}
+    ct = ct_aliases.get(body.content_type, body.content_type)
     msg = await svc.send_message(
         room_id=room_id,
         sender_id=user["participant_id"],
         content=body.content,
-        content_type=body.content_type,
+        content_type=ct,
         metadata=body.metadata,
         parent_id=body.parent_id,
     )
+
+    # Mention emails — resolve recipients with the request's db, then dispatch
+    # actual sends as fire-and-forget tasks so the response isn't blocked.
+    try:
+        await _maybe_dispatch_mention_emails(
+            db=db,
+            content=body.content or "",
+            room_id=room_id,
+            sender_name=user.get("display_name") or user.get("username") or "Someone",
+            sender_email=user.get("email"),
+        )
+    except Exception:
+        logger.warning("mention_email_dispatch_error", exc_info=True)
+
+    # Text-only agent reply path. If the room is agent-attached, route the
+    # user's message through Brigade's chat API in a background task so the
+    # agent can respond without the LiveKit voice pipeline. See
+    # services/agent_chat_responder.py. Filtered out for agent-authored
+    # messages and disabled-by-config cases inside schedule_response itself.
+    try:
+        if request is not None:
+            schedule_agent_chat_response(
+                room_id=room_id,
+                message_id=msg.id,
+                sender_id=user.get("participant_id"),
+                settings=get_settings(),
+                session_factory=request.app.state.db_session_factory,
+                livekit=livekit,
+            )
+    except Exception:
+        logger.warning("agent_chat_responder_schedule_failed", exc_info=True)
+
+    # Note: MessageService.send_message already broadcasts the message onto
+    # the LiveKit data channel as `{type: "new_message", ...}` for any agents
+    # in the room. No second fanout needed here.
+
     return _msg_to_response(msg)
+
+
+_MENTION_RE = None
+
+
+async def _maybe_dispatch_mention_emails(
+    db: AsyncSession,
+    content: str,
+    room_id: uuid.UUID,
+    sender_name: str,
+    sender_email: str | None,
+) -> None:
+    """Find @mentioned offline humans, queue async emails to each."""
+    import asyncio as _asyncio
+    import re
+
+    from sqlalchemy import select as _select
+
+    from app.api.users import _load_keycloak_email_for_sub
+    from app.config import get_settings
+    from app.models.participant import (
+        Participant as _P,
+        ParticipantStatus as _PS,
+        ParticipantType as _PT,
+    )
+    from app.models.room import Room as _Room
+    from app.services.email_sender import GraphEmailSender
+
+    global _MENTION_RE
+    if _MENTION_RE is None:
+        _MENTION_RE = re.compile(r"@([A-Za-z0-9_.\-]{2,64})")
+    handles = {m.lower() for m in _MENTION_RE.findall(content)}
+    if not handles:
+        return
+
+    cfg = get_settings()
+    sender = GraphEmailSender(
+        tenant_id=cfg.ms_graph_tenant_id,
+        client_id=cfg.ms_graph_client_id,
+        client_secret=cfg.ms_graph_client_secret,
+        from_address=cfg.ms_graph_from_address,
+    )
+    if not sender.is_configured:
+        return
+
+    room = (
+        await db.execute(_select(_Room).where(_Room.id == room_id))
+    ).scalar_one_or_none()
+    if room is None:
+        return
+
+    rows = (
+        await db.execute(
+            _select(_P).where(
+                _P.participant_type == _PT.HUMAN,
+                _P.status != _PS.ONLINE,
+            )
+        )
+    ).scalars().all()
+    targets = [p for p in rows if (p.username or "").lower() in handles]
+    if not targets:
+        return
+
+    quote = content if len(content) <= 280 else content[:280] + "…"
+    link = f"{cfg.public_base_url}/?room={room.id}"
+    subject = f"{sender_name} mentioned you in {room.display_name}"
+
+    async def _send_one(p: _P) -> None:
+        try:
+            email = await _load_keycloak_email_for_sub(p.keycloak_sub)
+            if not email:
+                return
+            html = f"""
+<!doctype html>
+<html><body style="font-family:-apple-system,system-ui,sans-serif;color:#1e293b;line-height:1.5;">
+<p>Hi {p.display_name or p.username},</p>
+<p><strong>{sender_name}</strong> mentioned you in
+   <strong>{room.display_name}</strong> on Stable:</p>
+<blockquote style="border-left:3px solid #7c3aed;padding-left:12px;margin:12px 0;color:#475569;">
+{quote}
+</blockquote>
+<p><a href="{link}" style="display:inline-block;padding:10px 18px;background:#7c3aed;
+   color:#fff;text-decoration:none;border-radius:6px;">Open Stable</a></p>
+</body></html>
+"""
+            await sender.send(
+                to=email,
+                subject=subject,
+                html_body=html,
+                reply_to=sender_email,
+            )
+        except Exception:
+            logger.warning("mention_email_send_error", exc_info=True)
+
+    for p in targets:
+        _asyncio.create_task(_send_one(p))
+
+
+class AgentMessageBody(BaseModel):
+    livekit_room_name: str
+    brigade_agent_id: str
+    content: str
+    parent_id: uuid.UUID | None = None
+
+
+class AgentMessageUpdateBody(BaseModel):
+    content: str
+    finalize: bool = False  # set true on the LAST chunk so we stop "typing"
+
+
+class AgentTypingBody(BaseModel):
+    livekit_room_name: str
+    brigade_agent_id: str
+    typing: bool
+
+
+class PromoteToProjectOpsBody(BaseModel):
+    project_number: str = Field(..., min_length=1, max_length=32)
+    title: str | None = Field(None, max_length=255)
+    description: str | None = Field(None, max_length=4000)
+    priority: str = Field("MEDIUM", pattern=r"^(LOW|MEDIUM|HIGH|URGENT)$")
+
+
+class ProjectOpsTaskResponse(BaseModel):
+    task_id: str
+    project_number: str
+    task_url: str
+    task_number: str | None = None
+
+
+class ProjectOpsProject(BaseModel):
+    id: str
+    projectNumber: str
+    title: str
+    status: str | None = None
+
+
+_PO_PROJECTS_CACHE: dict[str, Any] = {"expires_at": 0.0, "projects": None}
+
+
+def _extract_sse_json(text: str) -> dict[str, Any]:
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data and data != "[DONE]":
+            return json.loads(data)
+    return json.loads(text)
+
+
+def _maybe_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if not value:
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _extract_mcp_value(payload: dict[str, Any]) -> Any:
+    if "error" in payload:
+        err = payload["error"]
+        message = err.get("message") if isinstance(err, dict) else str(err)
+        raise HTTPException(status_code=502, detail=message or "Project Ops MCP error")
+
+    result = payload.get("result")
+    if isinstance(result, dict):
+        for key in ("structuredContent", "structured_content"):
+            if key in result:
+                return result[key]
+
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            text_parts = [
+                item.get("text")
+                for item in content
+                if isinstance(item, dict) and isinstance(item.get("text"), str)
+            ]
+            if text_parts:
+                parsed = _maybe_json("\n".join(text_parts))
+                if isinstance(parsed, dict) and "result" in parsed:
+                    return parsed["result"]
+                return parsed
+        return result
+
+    return payload
+
+
+async def _call_projectops_tool(name: str, arguments: dict[str, Any]) -> Any:
+    cfg = get_settings()
+    if not cfg.projectops_service_jwt:
+        raise HTTPException(
+            status_code=502,
+            detail="Project Ops service JWT is not configured",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                cfg.projectops_mcp_url,
+                headers={
+                    "Authorization": f"Bearer {cfg.projectops_service_jwt}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments},
+                },
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=resp.text[:1000])
+
+    try:
+        return _extract_mcp_value(_extract_sse_json(resp.text))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not parse Project Ops MCP response: {exc}",
+        ) from exc
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in ("projects", "data", "items", "result"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return nested
+    return []
+
+
+def _normalize_projects(value: Any) -> list[ProjectOpsProject]:
+    projects: list[ProjectOpsProject] = []
+    for item in _as_list(value):
+        if not isinstance(item, dict):
+            continue
+        project_id = item.get("id")
+        project_number = item.get("projectNumber") or item.get("project_number")
+        title = item.get("title") or item.get("name")
+        if not project_id or not project_number or not title:
+            continue
+        projects.append(
+            ProjectOpsProject(
+                id=str(project_id),
+                projectNumber=str(project_number),
+                title=str(title),
+                status=str(item["status"]) if item.get("status") else None,
+            )
+        )
+    return projects
+
+
+async def _list_projectops_projects_cached() -> list[ProjectOpsProject]:
+    now = time.monotonic()
+    cached = _PO_PROJECTS_CACHE.get("projects")
+    if cached is not None and float(_PO_PROJECTS_CACHE.get("expires_at") or 0) > now:
+        return cached
+
+    projects = _normalize_projects(await _call_projectops_tool("list_my_projects", {}))
+    _PO_PROJECTS_CACHE["projects"] = projects
+    _PO_PROJECTS_CACHE["expires_at"] = now + 60
+    return projects
+
+
+def _extract_task(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        for key in ("task", "data", "result"):
+            nested = value.get(key)
+            if isinstance(nested, dict):
+                return nested
+        return value
+    return {}
+
+
+def _default_task_title(content: str) -> str:
+    compact = " ".join((content or "").split())
+    return (compact[:77] + "...") if len(compact) > 80 else (compact or "Stable message follow-up")
+
+
+async def _load_visible_message(
+    message_id: uuid.UUID,
+    user: dict[str, Any],
+    db: AsyncSession,
+) -> Any:
+    from app.models.message import Message as _Msg
+    from app.models.room import Room as _Room, RoomMember as _RM
+
+    row = (
+        await db.execute(
+            select(_Msg, _Room)
+            .join(_Room, _Room.id == _Msg.room_id)
+            .join(
+                _RM,
+                (_RM.room_id == _Msg.room_id)
+                & (_RM.participant_id == user["participant_id"]),
+            )
+            .where(_Msg.id == message_id)
+        )
+    ).one_or_none()
+    if row is None:
+        exists = (
+            await db.execute(select(_Msg.id).where(_Msg.id == message_id))
+        ).scalar_one_or_none()
+        if exists is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+        raise HTTPException(status_code=403, detail="Not a member of this room")
+    return row
+
+
+def _build_projectops_description(msg: Any, room: Any, body: PromoteToProjectOpsBody) -> str:
+    cfg = get_settings()
+    sender_name = ""
+    if msg.sender:
+        sender_name = msg.sender.display_name or msg.sender.username or str(msg.sender_id)
+    else:
+        sender_name = str(msg.sender_id or "Unknown")
+
+    content = msg.content or ""
+    if len(content) > 2048:
+        content = content[:2048].rstrip() + "\n\n[Stable message truncated at 2048 characters]"
+
+    permalink = f"{cfg.public_base_url}/?room={room.id}&message={msg.id}"
+    parts = []
+    if body.description:
+        parts.append(body.description.strip())
+        parts.append("")
+    parts.extend(
+        [
+            "Stable source message",
+            f"Room: {room.display_name or room.name}",
+            f"Permalink: {permalink}",
+            f"Sender: {sender_name}",
+            f"Timestamp: {msg.created_at.isoformat()}",
+            "",
+            "Message:",
+            content,
+        ]
+    )
+
+    if msg.metadata_:
+        parts.extend(["", "Metadata:", json.dumps(msg.metadata_, indent=2, sort_keys=True, default=str)])
+
+    return "\n".join(parts).strip()
+
+
+@router.get("/po/projects", response_model=list[ProjectOpsProject])
+async def list_projectops_projects(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> list[ProjectOpsProject]:
+    """List Project Ops projects visible to the service account for the picker."""
+    _ = user
+    return await _list_projectops_projects_cached()
+
+
+@router.post(
+    "/messages/{message_id}/promote-to-po-task",
+    response_model=ProjectOpsTaskResponse,
+)
+async def promote_message_to_projectops_task(
+    message_id: uuid.UUID,
+    body: PromoteToProjectOpsBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ProjectOpsTaskResponse:
+    """Promote a visible Stable message into a Project Ops task."""
+    msg, room = await _load_visible_message(message_id, user, db)
+    description = _build_projectops_description(msg, room, body)
+    task_args = {
+        "projectNumber": body.project_number,
+        "title": (body.title or _default_task_title(msg.content or "")).strip(),
+        "description": description,
+        "priority": body.priority,
+    }
+
+    task = _extract_task(await _call_projectops_tool("create_task", task_args))
+    task_id = task.get("id") or task.get("taskId") or task.get("task_id")
+    if not task_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Project Ops did not return a task id",
+        )
+
+    project_number = (
+        task.get("projectNumber")
+        or task.get("project_number")
+        or body.project_number
+    )
+    task_number = task.get("taskNumber") or task.get("task_number") or task.get("number")
+    project_id = task.get("projectId") or task.get("project_id")
+    if not project_id and isinstance(task.get("project"), dict):
+        project_id = task["project"].get("id")
+    if not project_id:
+        for project in await _list_projectops_projects_cached():
+            if project.projectNumber == project_number:
+                project_id = project.id
+                break
+
+    cfg = get_settings()
+    task_url = f"{cfg.projectops_dashboard_url}/dashboard/projects/{project_id or project_number}"
+
+    meta = dict(msg.metadata_ or {})
+    meta["projectops_task"] = {
+        "id": str(task_id),
+        "project_number": str(project_number),
+        "task_number": str(task_number) if task_number else None,
+        "task_url": task_url,
+        "promoted_by": str(user["participant_id"]),
+        "promoted_by_name": user.get("display_name") or user.get("username") or "",
+        "promoted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    msg.metadata_ = meta
+    await db.commit()
+
+    return ProjectOpsTaskResponse(
+        task_id=str(task_id),
+        project_number=str(project_number),
+        task_url=task_url,
+        task_number=str(task_number) if task_number else None,
+    )
+
+
+@router.post(
+    "/internal/agent-messages",
+    response_model=MessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_agent_message(
+    body: AgentMessageBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> MessageResponse:
+    """Post a message as a Brigade agent. Agent workers call this.
+
+    Authenticated via the shared LiveKit secret (the same secret the agent
+    worker uses to mint LiveKit tokens). On first call for a given
+    brigade_agent_id, an agent-typed Participant row is auto-created so
+    everything downstream (history, threads, mentions) treats the agent
+    as a first-class participant.
+    """
+    from sqlalchemy import select as _select
+
+    from app.config import get_settings
+    from app.models.participant import (
+        Participant as _P,
+        ParticipantStatus as _PS,
+        ParticipantType as _PT,
+    )
+    from app.models.room import Room as _Room
+
+    cfg = get_settings()
+    expected = cfg.livekit_api_secret
+    auth = request.headers.get("Authorization", "")
+    if not expected or auth != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Bad agent secret")
+
+    room = (
+        await db.execute(
+            _select(_Room).where(_Room.livekit_room_name == body.livekit_room_name)
+        )
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Find or create an agent-typed participant for this brigade agent.
+    pseudo_sub = f"brigade:{body.brigade_agent_id}"
+    pseudo_username = f"agent-{body.brigade_agent_id}"
+    agent_p = (
+        await db.execute(_select(_P).where(_P.keycloak_sub == pseudo_sub))
+    ).scalar_one_or_none()
+    if agent_p is None:
+        # Friendly display name: convert "col-finance" → "Col Finance"
+        display = body.brigade_agent_id.replace("-", " ").title()
+        agent_p = _P(
+            keycloak_sub=pseudo_sub,
+            username=pseudo_username,
+            display_name=display,
+            participant_type=_PT.AGENT,
+            status=_PS.ONLINE,
+        )
+        db.add(agent_p)
+        await db.commit()
+        await db.refresh(agent_p)
+
+    # Ensure the agent is a member of the room (send_message gates on this).
+    from app.models.room import MemberRole as _MR, RoomMember as _RM
+
+    existing_member = (
+        await db.execute(
+            _select(_RM).where(
+                _RM.room_id == room.id,
+                _RM.participant_id == agent_p.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_member is None:
+        db.add(
+            _RM(
+                room_id=room.id,
+                participant_id=agent_p.id,
+                role=_MR.MEMBER,
+            )
+        )
+        await db.commit()
+
+    # Build a synthetic user dict and re-use send_message's plumbing
+    fake_user = {
+        "participant_id": agent_p.id,
+        "sub": pseudo_sub,
+        "username": agent_p.username,
+        "display_name": agent_p.display_name,
+        "email": None,
+    }
+    return await send_message(
+        room_id=room.id,
+        body=MessageCreate(
+            content=body.content,
+            content_type="text",
+            metadata={"agent_id": body.brigade_agent_id},
+            parent_id=body.parent_id,
+        ),
+        user=fake_user,
+        db=db,
+        livekit=livekit,
+        request=request,
+    )
+
+
+@router.patch(
+    "/internal/agent-messages/{message_id}",
+    response_model=MessageResponse,
+)
+async def update_agent_message(
+    message_id: uuid.UUID,
+    body: AgentMessageUpdateBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> MessageResponse:
+    """Update an agent message in-place. Used to stream chunks: agent posts
+    an empty/initial message, then PATCHes content as it arrives from the LLM.
+
+    Authenticated via the LiveKit shared secret.
+    """
+    from sqlalchemy import select as _select
+
+    from app.config import get_settings
+    from app.models.message import Message as _Msg
+    from app.models.room import Room as _Room
+
+    cfg = get_settings()
+    expected = cfg.livekit_api_secret
+    auth = request.headers.get("Authorization", "")
+    if not expected or auth != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Bad agent secret")
+
+    msg = (
+        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    msg.content = body.content
+    if body.finalize:
+        msg.is_edited = True
+    await db.commit()
+    await db.refresh(msg)
+
+    # Broadcast the update via LiveKit data channel so other agents/clients
+    # can re-render. Browsers also receive a separate WS event from the
+    # message router on edit; this covers the agent-data-channel path too.
+    try:
+        room = (
+            await db.execute(_select(_Room).where(_Room.id == msg.room_id))
+        ).scalar_one_or_none()
+        if room and room.livekit_room_name:
+            await livekit.send_data(
+                room_name=room.livekit_room_name,
+                data={
+                    "type": "message_updated",
+                    "message_id": str(msg.id),
+                    "room_id": str(msg.room_id),
+                    "content": msg.content,
+                    "finalize": body.finalize,
+                },
+            )
+    except Exception:
+        logger.debug("livekit_update_fanout_failed", exc_info=True)
+
+    return _msg_to_response(msg)
+
+
+@router.post("/internal/agent-typing", status_code=status.HTTP_204_NO_CONTENT)
+async def post_agent_typing(
+    body: AgentTypingBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> None:
+    """Broadcast a typing/working indicator for an agent over LiveKit data."""
+    from sqlalchemy import select as _select
+
+    from app.config import get_settings
+    from app.models.room import Room as _Room
+
+    cfg = get_settings()
+    expected = cfg.livekit_api_secret
+    auth = request.headers.get("Authorization", "")
+    if not expected or auth != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Bad agent secret")
+
+    room = (
+        await db.execute(
+            _select(_Room).where(_Room.livekit_room_name == body.livekit_room_name)
+        )
+    ).scalar_one_or_none()
+    if room is None:
+        return None
+
+    try:
+        await livekit.send_data(
+            room_name=room.livekit_room_name,
+            data={
+                "type": "agent_typing",
+                "room_id": str(room.id),
+                "brigade_agent_id": body.brigade_agent_id,
+                "typing": body.typing,
+            },
+        )
+    except Exception:
+        logger.debug("typing_fanout_failed", exc_info=True)
+    return None
 
 
 @router.get("/rooms/{room_id}/messages", response_model=MessageListResponse)
@@ -169,6 +877,202 @@ async def get_thread(
         cursor=result["cursor"],
         has_more=result["has_more"],
     )
+
+
+class ReactBody(BaseModel):
+    emoji: str = Field(..., min_length=1, max_length=32)
+
+
+class DecideBody(BaseModel):
+    decision: str = Field(..., pattern=r"^(approved|rejected)$")
+
+
+@router.post("/messages/{message_id}/decide", response_model=MessageResponse)
+async def decide_action(
+    message_id: uuid.UUID,
+    body: DecideBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> MessageResponse:
+    """Approve or reject an action_request message. Records the decision in
+    metadata and broadcasts so other clients (including the requesting agent)
+    can react.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.message import Message as _Msg
+    from app.models.room import Room as _Room
+
+    msg = (
+        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    meta = dict(msg.metadata_ or {})
+    if "decision" in meta:
+        return _msg_to_response(msg)
+    meta["decision"] = body.decision
+    meta["decided_by"] = str(user["participant_id"])
+    meta["decided_by_name"] = user.get("display_name") or user.get("username") or ""
+    meta["decided_at"] = msg.created_at.isoformat()
+    msg.metadata_ = meta
+    await db.commit()
+    await db.refresh(msg)
+
+    # Broadcast over LiveKit data so the requesting agent can react.
+    try:
+        room = (
+            await db.execute(_select(_Room).where(_Room.id == msg.room_id))
+        ).scalar_one_or_none()
+        if room and room.livekit_room_name:
+            await livekit.send_data(
+                room_name=room.livekit_room_name,
+                data={
+                    "type": "action_decision",
+                    "message_id": str(msg.id),
+                    "room_id": str(msg.room_id),
+                    "decision": body.decision,
+                    "decided_by": meta["decided_by"],
+                    "decided_by_name": meta["decided_by_name"],
+                },
+            )
+    except Exception:
+        logger.debug("decision_fanout_failed", exc_info=True)
+    return _msg_to_response(msg)
+
+
+@router.post("/messages/{message_id}/save", response_model=MessageResponse)
+async def toggle_save(
+    message_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> MessageResponse:
+    """Toggle saving a message into the caller's personal Saved list.
+
+    Stored as ``messages.metadata.saved_by`` (list of participant_ids).
+    Idempotent — calling twice removes the save.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.message import Message as _Msg
+
+    msg = (
+        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    pid = str(user["participant_id"])
+    meta = dict(msg.metadata_ or {})
+    saved_by = list(meta.get("saved_by") or [])
+    if pid in saved_by:
+        saved_by.remove(pid)
+    else:
+        saved_by.append(pid)
+    meta["saved_by"] = saved_by
+    msg.metadata_ = meta
+    await db.commit()
+    await db.refresh(msg)
+    return _msg_to_response(msg)
+
+
+@router.get("/saved", response_model=list[MessageResponse])
+async def list_saved(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(100, ge=1, le=500),
+) -> list[MessageResponse]:
+    """Return the caller's saved messages, newest first."""
+    from sqlalchemy import desc, select as _select
+
+    from app.models.message import Message as _Msg
+
+    pid = str(user["participant_id"])
+    # Use jsonb @> to filter rows whose metadata.saved_by contains the pid
+    rows = (
+        await db.execute(
+            _select(_Msg)
+            .where(_Msg.metadata_["saved_by"].as_string().like(f"%{pid}%"))
+            .order_by(desc(_Msg.created_at))
+            .limit(limit * 2)
+        )
+    ).scalars().all()
+    out = []
+    for m in rows:
+        sb = (m.metadata_ or {}).get("saved_by") or []
+        if pid in sb:
+            out.append(_msg_to_response(m))
+        if len(out) >= limit:
+            break
+    return out
+
+
+@router.post("/messages/{message_id}/reactions", response_model=MessageResponse)
+async def toggle_reaction(
+    message_id: uuid.UUID,
+    body: ReactBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> MessageResponse:
+    """Toggle a single emoji reaction by the current user on a message.
+
+    Reactions live in messages.metadata.reactions as ``{emoji: [user_id, ...]}``.
+    Idempotent — calling twice with the same (message, user, emoji) removes it.
+    """
+    from sqlalchemy import select as _select
+    from app.models.message import Message as _Msg
+    from app.ws.handler import manager as _ws_manager
+    import json
+
+    msg = (
+        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    pid = str(user["participant_id"])
+    meta = dict(msg.metadata_ or {})
+    reactions = dict(meta.get("reactions") or {})
+    users_for_emoji = list(reactions.get(body.emoji) or [])
+    if pid in users_for_emoji:
+        users_for_emoji.remove(pid)
+    else:
+        users_for_emoji.append(pid)
+    if users_for_emoji:
+        reactions[body.emoji] = users_for_emoji
+    else:
+        reactions.pop(body.emoji, None)
+    meta["reactions"] = reactions
+    msg.metadata_ = meta
+    await db.commit()
+    await db.refresh(msg)
+
+    # Fanout to room members
+    try:
+        # Build list of recipients
+        from app.models.room import RoomMember as _RM
+
+        member_ids = (
+            await db.execute(
+                _select(_RM.participant_id).where(_RM.room_id == msg.room_id)
+            )
+        ).scalars().all()
+        await _ws_manager.broadcast_to_room(
+            [str(m) for m in member_ids],
+            {
+                "type": "message_reaction",
+                "message_id": str(msg.id),
+                "room_id": str(msg.room_id),
+                "reactions": reactions,
+            },
+        )
+    except Exception:
+        logger.warning("reaction_fanout_failed", exc_info=True)
+
+    # reply_count not needed here; pass 0
+    return _msg_to_response(msg, 0)
 
 
 @router.get("/rooms/{room_id}/messages/search", response_model=list[MessageResponse])

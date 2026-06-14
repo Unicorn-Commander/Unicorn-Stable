@@ -89,13 +89,22 @@ class MessageService:
         from app.models.room import Room
 
         room_result = await self._db.execute(
-            select(Room.livekit_room_name).where(Room.id == room_id)
+            select(Room.livekit_room_name, Room.room_type).where(Room.id == room_id)
         )
-        lk_room_name = room_result.scalar_one_or_none()
+        room_row = room_result.one_or_none()
+        lk_room_name = room_row[0] if room_row else None
+        room_type_str = room_row[1].value if room_row and room_row[1] else "channel"
 
         if lk_room_name:
+            lower_content = (message.content or "").lower()
+            broad_mention = (
+                "channel" if "@channel" in lower_content else
+                ("here" if "@here" in lower_content else None)
+            )
             broadcast_data = {
                 "type": "new_message",
+                "room_type": room_type_str,
+                "broad_mention": broad_mention,
                 "message": {
                     "id": str(message.id),
                     "room_id": str(message.room_id),

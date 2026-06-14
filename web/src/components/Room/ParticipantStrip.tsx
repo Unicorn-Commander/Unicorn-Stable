@@ -1,8 +1,10 @@
-import { Bot, Crown, Shield, Mic } from "lucide-react";
+import { Crown, Shield, Mic, X } from "lucide-react";
 import clsx from "clsx";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
-import type { RoomMember } from "@/services/api";
+import { api, type RoomMember } from "@/services/api";
+import { Avatar } from "@/components/Avatar";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -40,95 +42,89 @@ function RoleBadge({ role }: { role: RoomMember["role"] }) {
 
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
-  const agents = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
   const onlineUsers = useAppStore((s) => s.onlineUsers);
-  const setStageAgentId = useAppStore((s) => s.setStageAgentId);
-  const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
+  const qc = useQueryClient();
 
   const room = rooms.find((r) => r.id === roomId);
-  const roomAgents = room?.agents ?? [];
-  const roomAgentDetails = roomAgents
-    .map((ra) => agents.find((a) => a.id === ra.id) ?? ra)
-    .filter(Boolean);
+  const lkName = (room as { display_name?: string } | undefined)?.display_name; // unused fallback
 
-  const humanParticipants = participants.filter(Boolean);
+  // Split members by participant_type. Agents come from the same /members
+  // endpoint as humans now (they're auto-joined on /invite-brigade-agent).
+  const humanParticipants = participants.filter(
+    (p) => (p.participant_type ?? "human") !== "agent",
+  );
+  const agentMembers = participants.filter(
+    (p) => p.participant_type === "agent",
+  );
+
   const onlineHumans = humanParticipants.filter(
-    (p) => p.is_online || onlineUsers.includes(p.user_id),
+    (p) => p.is_online || onlineUsers.includes(p.user_id || p.participant_id || ""),
   );
   const offlineHumans = humanParticipants.filter(
-    (p) => !p.is_online && !onlineUsers.includes(p.user_id),
+    (p) => !p.is_online && !onlineUsers.includes(p.user_id || p.participant_id || ""),
   );
+
+  async function removeAgent(member: RoomMember) {
+    // Username is "agent-<brigade_id>"; strip the prefix back out.
+    const slug = (member.username ?? "").replace(/^agent-/, "");
+    if (!slug) return;
+    if (!confirm(`Remove ${member.display_name} from this channel?`)) return;
+    try {
+      await api.removeBrigadeAgent(roomId, slug);
+      await qc.invalidateQueries({ queryKey: ["room-members", roomId] });
+    } catch (e) {
+      console.error("remove agent failed", e);
+      alert("Couldn't remove agent: " + (e as Error).message);
+    }
+  }
+  void lkName;
 
   return (
     <aside
       className="flex h-full w-60 flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
       aria-label="Room participants"
     >
-      {roomAgentDetails.length > 0 && (
+      {agentMembers.length > 0 && (
         <section className="mb-4">
           <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Agents ({roomAgentDetails.length})
+            Agents ({agentMembers.length})
           </h3>
           <ul role="list" className="flex flex-col gap-1">
-            {roomAgentDetails.map((agent) => {
-              const isStage = stageAgentId === agent.id;
-              return (
-                <li key={agent.id}>
-                  <button
-                    onClick={() =>
-                      setStageAgentId(isStage ? null : agent.id)
-                    }
-                    className={clsx(
-                      "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
-                      isStage
-                        ? "bg-stable-cyan/10 text-stable-cyan"
-                        : "text-slate-300 hover:bg-slate-800/60",
-                    )}
-                    aria-label={`${agent.display_name} - ${agent.status}`}
-                  >
-                    <div className="relative shrink-0">
-                      {agent.avatar_url ? (
-                        <img
-                          src={agent.avatar_url}
-                          alt={agent.display_name}
-                          className="h-7 w-7 rounded-full object-cover ring-1 ring-stable-cyan/30"
-                        />
-                      ) : (
-                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-stable-cyan/20">
-                          <Bot className="h-3.5 w-3.5 text-stable-cyan" />
-                        </div>
-                      )}
-                      <span
-                        className={clsx(
-                          "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900",
-                          agent.status === "active" && "bg-green-500",
-                          agent.status === "working" &&
-                            "bg-yellow-500 animate-pulse-soft",
-                          agent.status === "idle" && "bg-slate-500",
-                          agent.status === "offline" && "bg-slate-700",
-                        )}
-                      />
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium">
-                        {agent.display_name}
-                      </p>
-                      <p className="truncate text-[10px] text-slate-500">
-                        {agent.status === "working"
-                          ? "Working..."
-                          : agent.status}
-                      </p>
-                    </div>
-
-                    {isStage && (
-                      <Mic className="h-3 w-3 shrink-0 text-stable-cyan" />
-                    )}
-                  </button>
-                </li>
-              );
-            })}
+            {agentMembers.map((m) => (
+              <li
+                key={m.id || m.participant_id || m.username}
+                className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 hover:bg-slate-800/60"
+              >
+                <div className="relative shrink-0">
+                  <Avatar
+                    name={m.display_name}
+                    src={m.avatar_url}
+                    size="sm"
+                    isAgent
+                  />
+                  <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-green-500" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium">
+                    {m.display_name}
+                  </p>
+                  <p className="truncate text-[10px] text-slate-500">
+                    @{(m.username ?? "").replace(/^agent-/, "")}
+                  </p>
+                </div>
+                <button
+                  onClick={() => removeAgent(m)}
+                  className="hidden shrink-0 rounded p-1 text-slate-500 hover:bg-red-500/20 hover:text-red-400 group-hover:block"
+                  aria-label={`Remove ${m.display_name}`}
+                  title="Remove from channel"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+                {/* Mic icon retained as visual marker for future stage feature */}
+                <Mic className="hidden h-3 w-3 shrink-0 text-stable-cyan" />
+              </li>
+            ))}
           </ul>
         </section>
       )}
@@ -147,17 +143,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-200"
               >
                 <div className="relative shrink-0">
-                  {member.avatar_url ? (
-                    <img
-                      src={member.avatar_url}
-                      alt={member.display_name}
-                      className="h-7 w-7 rounded-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-stable-purple/20 text-xs font-semibold text-stable-purple-light">
-                      {member.display_name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
+                  <Avatar name={member.display_name} src={member.avatar_url} size="sm" />
                   <OnlineIndicator online={true} />
                 </div>
                 <span className="min-w-0 flex-1 truncate text-xs font-medium">
@@ -181,18 +167,8 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 key={member.user_id}
                 className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-500"
               >
-                <div className="relative shrink-0">
-                  {member.avatar_url ? (
-                    <img
-                      src={member.avatar_url}
-                      alt={member.display_name}
-                      className="h-7 w-7 rounded-full object-cover opacity-50"
-                    />
-                  ) : (
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-600">
-                      {member.display_name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
+                <div className="relative shrink-0 opacity-60">
+                  <Avatar name={member.display_name} src={member.avatar_url} size="sm" />
                   <OnlineIndicator online={false} />
                 </div>
                 <span className="min-w-0 flex-1 truncate text-xs font-medium">

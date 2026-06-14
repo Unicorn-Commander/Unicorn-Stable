@@ -6,6 +6,25 @@ const keycloak = new Keycloak({
   clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID || "stable-web",
 });
 
+// keycloak-js 26.x still probes /3p-cookies/step1.html which the Keycloak
+// server no longer ships (404 noise in the console). The probe guard skips
+// when endpoints.thirdPartyCookiesIframe isn't a function, so intercept the
+// endpoints assignment during init() and null out that one method. PKCE +
+// silentCheckSsoRedirectUri cover our SSO flow without the iframe check.
+let endpointsStore: Record<string, unknown> | null = null;
+Object.defineProperty(keycloak, "endpoints", {
+  configurable: true,
+  get() {
+    return endpointsStore;
+  },
+  set(value: Record<string, unknown>) {
+    if (value && typeof value === "object") {
+      value.thirdPartyCookiesIframe = null;
+    }
+    endpointsStore = value;
+  },
+});
+
 let initialized = false;
 let refreshIntervalId: ReturnType<typeof setInterval> | null = null;
 
@@ -28,10 +47,12 @@ export async function initAuth(): Promise<boolean> {
     return keycloak.authenticated ?? false;
   }
 
+  // We don't use silentCheckSsoRedirectUri because Cloudflare injects
+  // X-Frame-Options: SAMEORIGIN on auth.unicorncommander.ai, which blocks
+  // the hidden iframe. Without it, check-sso does a top-level redirect the
+  // first time — no iframe, no frame-ancestors issue.
   const authenticated = await keycloak.init({
     onLoad: "check-sso",
-    silentCheckSsoRedirectUri:
-      window.location.origin + "/silent-check-sso.html",
     checkLoginIframe: false,
     pkceMethod: "S256",
   });

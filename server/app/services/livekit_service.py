@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 
 import structlog
@@ -99,7 +100,7 @@ class LiveKitService:
             .with_identity(identity)
             .with_name(name or identity)
             .with_grants(grants)
-            .with_ttl(ttl)
+            .with_ttl(timedelta(seconds=ttl))
         )
         jwt_str = token.to_jwt()
         logger.info(

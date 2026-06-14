@@ -13,11 +13,23 @@ services:
     volumes:
       - ./server/livekit.yaml:/etc/livekit.yaml:ro
     command: ["--config", "/etc/livekit.yaml"]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.stable-livekit.rule=Host(`livekit.magicunicorn.dev`)"
+      - "traefik.http.routers.stable-livekit.entrypoints=websecure"
+      - "traefik.http.routers.stable-livekit.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.stable-livekit.service=stable-livekit"
+      - "traefik.http.services.stable-livekit.loadbalancer.server.port=7880"
+      - "traefik.http.routers.stable-livekit-http.rule=Host(`livekit.magicunicorn.dev`)"
+      - "traefik.http.routers.stable-livekit-http.entrypoints=web"
+      - "traefik.http.routers.stable-livekit-http.service=stable-livekit"
     depends_on:
       redis:
         condition: service_healthy
     networks:
       - stable-net
+      - web
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880"]
       interval: 10s
@@ -42,6 +54,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stable_dev_password_2026}
     networks:
       - stable-net
+      - web
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U stable -d stable"]
       interval: 10s
@@ -66,6 +79,7 @@ services:
       --maxmemory-policy allkeys-lru
     networks:
       - stable-net
+      - web
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -85,13 +99,14 @@ services:
       - "8400:8400"
     volumes:
       - ./server:/app
-      - backend_uploads:/app/uploads
+      - backend_uploads:/home/stable/server/uploads
     environment:
       - ENVIRONMENT=development
       - PORT=8400
       - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@postgres:5432/stable
       - REDIS_URL=redis://redis:6379/0
       - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-wss://livekit.magicunicorn.dev}
       - LIVEKIT_API_URL=http://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
@@ -104,6 +119,15 @@ services:
       - BRIGADE_API_KEY=${BRIGADE_API_KEY:-}
       - BRIGADE_WORKER_AGENT_NAME=${BRIGADE_WORKER_AGENT_NAME:-stable-brigade}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:8401,https://stable.magicunicorn.dev}
+      - MS_GRAPH_TENANT_ID=${MS_GRAPH_TENANT_ID:-}
+      - MS_GRAPH_CLIENT_ID=${MS_GRAPH_CLIENT_ID:-}
+      - MS_GRAPH_CLIENT_SECRET=${MS_GRAPH_CLIENT_SECRET:-}
+      - MS_GRAPH_FROM_ADDRESS=${MS_GRAPH_FROM_ADDRESS:-}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://stable.magicunicorn.dev}
+      - INCOMING_WEBHOOK_SECRET=${INCOMING_WEBHOOK_SECRET:-}
+      - PROJECTOPS_SERVICE_JWT=${PROJECTOPS_SERVICE_JWT:-}
+      - PROJECTOPS_MCP_URL=${PROJECTOPS_MCP_URL:-https://api.projectops.magicunicorn.dev/api/v1/mcp}
+      - PROJECTOPS_DASHBOARD_URL=${PROJECTOPS_DASHBOARD_URL:-https://projectops.magicunicorn.dev}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       postgres:
@@ -162,6 +186,7 @@ services:
         condition: service_healthy
     networks:
       - stable-net
+      - web
 
   # ==========================================================================
   # Web Client — React/TypeScript served by nginx

@@ -6,13 +6,17 @@ from typing import Annotated, Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from livekit.api import WebhookReceiver
+from livekit.api.access_token import TokenVerifier
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.deps import get_db, get_presence, get_settings_dep
-from app.models.participant import Participant, ParticipantStatus
-from app.models.room import Room
+from app.deps import get_db, get_livekit, get_presence, get_settings_dep
+from app.models.participant import Participant, ParticipantStatus, ParticipantType
+from app.models.room import MemberRole, Room, RoomMember
+from app.services.livekit_service import LiveKitService
+from app.services.message_service import MessageService
 from app.services.presence_service import PresenceService
 
 logger = structlog.get_logger(__name__)
@@ -36,10 +40,12 @@ async def livekit_webhook(
     body = await request.body()
     auth_header = request.headers.get("Authorization", "")
 
-    # Validate webhook signature
+    # Validate webhook signature (livekit-api 1.x takes a TokenVerifier)
     receiver = WebhookReceiver(
-        api_key=settings.livekit_api_key,
-        api_secret=settings.livekit_api_secret,
+        TokenVerifier(
+            api_key=settings.livekit_api_key,
+            api_secret=settings.livekit_api_secret,
+        )
     )
 
     try:
@@ -234,3 +240,184 @@ def _extract_participant_id(identity: str) -> str | None:
         except ValueError:
             pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Slack-shaped incoming webhook
+# ---------------------------------------------------------------------------
+
+
+class IncomingWebhookBody(BaseModel):
+    """Slack-style incoming-webhook payload.
+
+    Either ``text`` or ``blocks`` (or both) must be present. ``username`` and
+    ``icon_emoji`` are honored where they map; unknown fields are ignored.
+    """
+
+    text: str | None = None
+    blocks: list[dict[str, Any]] | None = None
+    username: str | None = None
+    icon_emoji: str | None = None
+
+
+def _render_slack_blocks_to_markdown(blocks: list[dict[str, Any]]) -> str:
+    """Best-effort render of Slack block-kit blocks to plain markdown.
+
+    Handles the block types we actually see from Brigade tripwires + the
+    common GitHub/Sentry shapes: header, section (text + fields), context,
+    divider. Unknown blocks fall back to any nested ``text.text`` we can find
+    so messages aren't silently dropped.
+    """
+    parts: list[str] = []
+    for block in blocks:
+        bt = block.get("type")
+        if bt == "header":
+            txt = (block.get("text") or {}).get("text", "").strip()
+            if txt:
+                parts.append(f"## {txt}")
+        elif bt == "section":
+            txt = (block.get("text") or {}).get("text", "").strip()
+            if txt:
+                parts.append(txt)
+            for f in block.get("fields", []) or []:
+                ftxt = (f or {}).get("text", "").strip()
+                if ftxt:
+                    parts.append(ftxt)
+        elif bt == "context":
+            chunks = [
+                (e or {}).get("text", "").strip()
+                for e in (block.get("elements") or [])
+                if isinstance(e, dict)
+            ]
+            chunks = [c for c in chunks if c]
+            if chunks:
+                parts.append("_" + " · ".join(chunks) + "_")
+        elif bt == "divider":
+            parts.append("---")
+        else:
+            # Unknown block type: salvage whatever inline text we can.
+            inner = (block.get("text") or {}).get("text")
+            if isinstance(inner, str) and inner.strip():
+                parts.append(inner.strip())
+    return "\n\n".join(p for p in parts if p)
+
+
+@router.post("/webhooks/incoming/{secret}/{room_name}")
+async def incoming_webhook(
+    secret: str,
+    room_name: str,
+    body: IncomingWebhookBody,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> dict[str, str]:
+    """Slack-shaped incoming webhook → posts a message into a Stable channel.
+
+    URL  : ``POST /webhooks/incoming/<secret>/<room-name>``
+    Auth : the URL secret must match ``settings.incoming_webhook_secret``
+           (matches Slack's URL-as-auth convention so any tool that already
+           speaks Slack webhooks plugs in by changing one env var).
+    Body : Slack block-kit shape. ``text`` and/or ``blocks`` required.
+
+    The rendered content lands in the named room as a message from a
+    per-room agent participant (``webhook-<room>``), so threads, history,
+    mentions, and read state all behave as first-class chat.
+    """
+    expected = settings.incoming_webhook_secret
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Incoming webhooks not configured",
+        )
+    if secret != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bad webhook secret",
+        )
+
+    room = (
+        await db.execute(select(Room).where(Room.name == room_name))
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Room '{room_name}' not found",
+        )
+
+    if body.blocks:
+        content = _render_slack_blocks_to_markdown(body.blocks)
+        if not content and body.text:
+            content = body.text
+    elif body.text:
+        content = body.text
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Payload must include 'text' or 'blocks'",
+        )
+
+    if not content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Rendered content is empty",
+        )
+
+    sender_name = (body.username or "Webhook").strip()[:60] or "Webhook"
+    pseudo_sub = f"webhook:{room_name}"
+    pseudo_username = f"webhook-{room_name}"[:60]
+
+    agent_p = (
+        await db.execute(
+            select(Participant).where(Participant.keycloak_sub == pseudo_sub)
+        )
+    ).scalar_one_or_none()
+    if agent_p is None:
+        agent_p = Participant(
+            keycloak_sub=pseudo_sub,
+            username=pseudo_username,
+            display_name=sender_name,
+            participant_type=ParticipantType.AGENT,
+            status=ParticipantStatus.ONLINE,
+        )
+        db.add(agent_p)
+        await db.commit()
+        await db.refresh(agent_p)
+    elif agent_p.display_name != sender_name:
+        agent_p.display_name = sender_name
+        await db.commit()
+
+    membership = (
+        await db.execute(
+            select(RoomMember).where(
+                RoomMember.room_id == room.id,
+                RoomMember.participant_id == agent_p.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if membership is None:
+        db.add(
+            RoomMember(
+                room_id=room.id,
+                participant_id=agent_p.id,
+                role=MemberRole.MEMBER,
+            )
+        )
+        await db.commit()
+
+    svc = MessageService(db=db, livekit=livekit)
+    msg = await svc.send_message(
+        room_id=room.id,
+        sender_id=agent_p.id,
+        content=content,
+        content_type="text",
+        metadata={"source": "webhook", "username": sender_name},
+    )
+
+    logger.info(
+        "incoming_webhook_posted",
+        room=room_name,
+        sender=sender_name,
+        message_id=str(msg.id),
+        content_len=len(content),
+    )
+    return {"status": "ok", "message_id": str(msg.id)}

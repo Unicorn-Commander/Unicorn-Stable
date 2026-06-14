@@ -17,6 +17,7 @@ export interface PaginatedResponse<T> {
 export interface Room {
   id: string;
   name: string;
+  display_name?: string;
   description: string;
   type: "channel" | "group_dm" | "dm";
   created_at: string;
@@ -29,13 +30,36 @@ export interface Room {
 }
 
 export interface RoomMember {
-  user_id: string;
+  id?: string;
+  participant_id?: string;
+  user_id?: string;
   username: string;
   display_name: string;
-  avatar_url: string | null;
+  avatar_url?: string | null;
   role: "owner" | "admin" | "member";
-  is_online: boolean;
+  participant_type?: "human" | "agent";
+  is_online?: boolean;
+  is_muted?: boolean;
   joined_at: string;
+  last_read_at?: string | null;
+  status?: string;
+}
+
+export interface UploadedAttachment {
+  url: string;
+  filename: string;
+  size: number;
+  content_type: string;
+}
+
+export interface UserSearchResult {
+  id: string | null;
+  keycloak_sub: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  avatar_url: string | null;
+  signed_in: boolean;
 }
 
 export interface Message {
@@ -78,6 +102,27 @@ export interface InviteBrigadeAgentResponse {
   dispatched: boolean;
   dispatch_id: string | null;
   reason: string | null;
+}
+
+export interface ProjectOpsProject {
+  id: string;
+  projectNumber: string;
+  title: string;
+  status: string | null;
+}
+
+export interface PromoteToProjectOpsTaskRequest {
+  project_number: string;
+  title?: string;
+  description?: string;
+  priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+}
+
+export interface PromoteToProjectOpsTaskResponse {
+  task_id: string;
+  project_number: string;
+  task_url: string;
+  task_number: string | null;
 }
 
 export interface LiveKitTokenResponse {
@@ -164,15 +209,191 @@ class StableApiClient {
   }
 
   async getRooms(): Promise<Room[]> {
-    return this.request<Room[]>("GET", "/api/v1/rooms");
+    // Backend returns { rooms: [{ ..., room_type, display_name, ... }] }
+    // Map to the client's Room shape (type, name, description, …).
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+      online_count: number;
+    };
+    const resp = await this.request<{ rooms: Raw[] }>("GET", "/api/v1/rooms");
+    return (resp.rooms ?? []).map((r) => ({
+      id: r.id,
+      name: r.display_name || r.name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    }));
   }
 
   async createRoom(data: CreateRoomRequest): Promise<Room> {
-    return this.request<Room>("POST", "/api/v1/rooms", data);
+    // Translate the client shape to the backend's RoomCreate schema.
+    // Slug-name max length ~80, generated from display_name if not provided.
+    const display_name = data.name.trim();
+    const slug =
+      display_name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80) || `room-${Date.now()}`;
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+    };
+    const r = await this.request<Raw>("POST", "/api/v1/rooms", {
+      name: slug,
+      display_name,
+      description: data.description || null,
+      room_type: data.type,
+    });
+    return {
+      id: r.id,
+      name: r.display_name || r.name,
+      display_name: r.display_name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    };
+  }
+
+  async updateRoom(
+    roomId: string,
+    patch: { display_name?: string; description?: string },
+  ): Promise<Room> {
+    return this.request<Room>("PATCH", `/api/v1/rooms/${roomId}`, patch);
+  }
+
+  async bootstrapDefaultRooms(): Promise<Room[]> {
+    return this.request<Room[]>("POST", "/api/v1/rooms/bootstrap-defaults");
+  }
+
+  async browseChannels(q = ""): Promise<Room[]> {
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+    };
+    const url = `/api/v1/rooms/browse${q ? `?q=${encodeURIComponent(q)}` : ""}`;
+    const rows = await this.request<Raw[]>("GET", url);
+    return (rows ?? []).map((r) => ({
+      id: r.id,
+      name: r.display_name || r.name,
+      display_name: r.display_name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    }));
+  }
+
+  async joinRoom(roomId: string): Promise<RoomMember> {
+    return this.request<RoomMember>(
+      "POST",
+      `/api/v1/rooms/${roomId}/join`,
+      {},
+    );
+  }
+
+  async searchUsers(q: string): Promise<UserSearchResult[]> {
+    const query = q ? `?q=${encodeURIComponent(q)}` : "";
+    return this.request<UserSearchResult[]>("GET", `/api/v1/users/search${query}`);
+  }
+
+  async inviteUserToRoom(
+    roomId: string,
+    target: { participant_id?: string; keycloak_sub?: string },
+  ): Promise<RoomMember> {
+    return this.request<RoomMember>(
+      "POST",
+      `/api/v1/rooms/${roomId}/invite`,
+      target,
+    );
+  }
+
+  async getRoomMembers(roomId: string): Promise<RoomMember[]> {
+    return this.request<RoomMember[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/members`,
+    );
+  }
+
+  async uploadFile(file: File): Promise<UploadedAttachment> {
+    const headers = await this.getAuthHeaders();
+    delete headers["Content-Type"];
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await fetch(`${BASE_URL}/api/v1/uploads`, {
+      method: "POST",
+      headers,
+      body: fd,
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`Upload failed (${resp.status}): ${body}`);
+    }
+    return resp.json();
   }
 
   async getRoom(roomId: string): Promise<Room> {
-    return this.request<Room>("GET", `/api/v1/rooms/${roomId}`);
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+    };
+    const r = await this.request<Raw>("GET", `/api/v1/rooms/${roomId}`);
+    return {
+      id: r.id,
+      name: r.display_name || r.name,
+      display_name: r.display_name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    };
   }
 
   async getMessages(
@@ -209,6 +430,13 @@ class StableApiClient {
     return this.request<BrigadeAgent[]>("GET", "/api/v1/brigade/agents");
   }
 
+  async removeBrigadeAgent(roomName: string, brigadeAgentId: string): Promise<void> {
+    await this.request<void>(
+      "DELETE",
+      `/api/v1/rooms/${encodeURIComponent(roomName)}/brigade-agents/${encodeURIComponent(brigadeAgentId)}`,
+    );
+  }
+
   async inviteBrigadeAgent(
     roomName: string,
     brigadeAgentId: string,
@@ -218,6 +446,78 @@ class StableApiClient {
       `/api/v1/rooms/${encodeURIComponent(roomName)}/invite-brigade-agent`,
       { brigade_agent_id: brigadeAgentId },
     );
+  }
+
+  async togglePin(roomId: string, messageId: string): Promise<string[]> {
+    return this.request<string[]>(
+      "POST",
+      `/api/v1/rooms/${roomId}/pins`,
+      { message_id: messageId },
+    );
+  }
+
+  async getPins(roomId: string): Promise<Message[]> {
+    return this.request<Message[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/pins`,
+    );
+  }
+
+  async toggleSave(messageId: string): Promise<Message> {
+    return this.request<Message>("POST", `/api/v1/messages/${messageId}/save`);
+  }
+
+  async decideAction(
+    messageId: string,
+    decision: "approved" | "rejected",
+  ): Promise<Message> {
+    return this.request<Message>(
+      "POST",
+      `/api/v1/messages/${messageId}/decide`,
+      { decision },
+    );
+  }
+
+  async getSaved(): Promise<Message[]> {
+    return this.request<Message[]>("GET", "/api/v1/saved");
+  }
+
+  async getProjectOpsProjects(): Promise<ProjectOpsProject[]> {
+    return this.request<ProjectOpsProject[]>("GET", "/api/v1/po/projects");
+  }
+
+  async promoteToProjectOpsTask(
+    messageId: string,
+    data: PromoteToProjectOpsTaskRequest,
+  ): Promise<PromoteToProjectOpsTaskResponse> {
+    return this.request<PromoteToProjectOpsTaskResponse>(
+      "POST",
+      `/api/v1/messages/${messageId}/promote-to-po-task`,
+      data,
+    );
+  }
+
+  async toggleReaction(messageId: string, emoji: string): Promise<Message> {
+    return this.request<Message>(
+      "POST",
+      `/api/v1/messages/${messageId}/reactions`,
+      { emoji },
+    );
+  }
+
+  async searchMessages(roomId: string, q: string): Promise<Message[]> {
+    return this.request<Message[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/messages/search?q=${encodeURIComponent(q)}`,
+    );
+  }
+
+  async getThread(messageId: string): Promise<Message[]> {
+    const resp = await this.request<{ messages: Message[] }>(
+      "GET",
+      `/api/v1/messages/${messageId}/thread`,
+    );
+    return resp.messages ?? [];
   }
 
   async editMessage(

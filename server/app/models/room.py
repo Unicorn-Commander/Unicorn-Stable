@@ -42,7 +42,12 @@ class Room(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     room_type: Mapped[RoomType] = mapped_column(
-        Enum(RoomType, name="room_type_enum", native_enum=True),
+        Enum(
+            RoomType,
+            name="room_type_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=RoomType.CHANNEL,
     )
@@ -96,7 +101,12 @@ class RoomMember(Base, UUIDPrimaryKeyMixin):
         index=True,
     )
     role: Mapped[MemberRole] = mapped_column(
-        Enum(MemberRole, name="member_role_enum", native_enum=True),
+        Enum(
+            MemberRole,
+            name="member_role_enum",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=MemberRole.MEMBER,
     )

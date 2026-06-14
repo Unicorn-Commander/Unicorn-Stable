@@ -9,6 +9,7 @@ import {
   Phone,
   PhoneOff,
   Users,
+  Bookmark,
   Settings,
   LogOut,
 } from "lucide-react";
@@ -17,6 +18,8 @@ import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
+import { Avatar } from "@/components/Avatar";
+import { SavedPanel } from "./SavedPanel";
 
 export function Header() {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
@@ -24,6 +27,7 @@ export function Header() {
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const [savedOpen, setSavedOpen] = useState(false);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -82,7 +86,6 @@ export function Header() {
     }
   }
 
-  const userInitial = currentUser?.displayName?.charAt(0).toUpperCase() ?? "U";
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
@@ -198,6 +201,15 @@ export function Header() {
         )}
 
         <button
+          onClick={() => setSavedOpen(true)}
+          className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+          aria-label="Saved messages"
+          title="Saved messages"
+        >
+          <Bookmark className="h-4 w-4" />
+        </button>
+
+        <button
           onClick={toggleSettings}
           className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
           aria-label="Settings"
@@ -205,22 +217,20 @@ export function Header() {
           <Settings className="h-4 w-4" />
         </button>
 
+        {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} />}
+
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setUserMenuOpen(!userMenuOpen)}
-            className="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-stable-purple text-xs font-semibold text-white transition-opacity hover:opacity-90"
+            className="ml-1 transition-opacity hover:opacity-80"
             aria-label="User menu"
             aria-expanded={userMenuOpen}
           >
-            {currentUser?.avatarUrl ? (
-              <img
-                src={currentUser.avatarUrl}
-                alt={currentUser.displayName}
-                className="h-full w-full rounded-full object-cover"
-              />
-            ) : (
-              userInitial
-            )}
+            <Avatar
+              name={currentUser?.displayName ?? "U"}
+              src={currentUser?.avatarUrl}
+              size="sm"
+            />
           </button>
 
           {userMenuOpen && (

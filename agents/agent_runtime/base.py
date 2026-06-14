@@ -226,10 +226,71 @@ class StableAgent:
     # ---------- internal event wiring ----------
 
     async def _handle_chat_message(self, message: dict[str, Any]) -> None:
+        # When the Stable backend owns text replies (default), the voice
+        # agent stays silent on the data-channel chat to avoid double
+        # responses. The text path lives in
+        # server/app/services/agent_chat_responder.py. Set
+        # STABLE_TEXT_PATH_OWNS_CHAT=false to fall back to the legacy
+        # voice-agent-replies-to-text behavior.
+        import os as _os_text_gate
+        if _os_text_gate.environ.get(
+            "STABLE_TEXT_PATH_OWNS_CHAT", "true"
+        ).lower() in ("1", "true", "yes"):
+            return
+
         if not await self._msg_limiter.acquire():
             logger.warning("rate_limited_message", identity=self._identity)
             return
+
+        # Only respond when explicitly @mentioned OR when the room is a DM
+        # (one human + one agent). This prevents agents from talking over each
+        # other in multi-agent rooms and stops them from replying to every
+        # human message. Mention format is @<agent_id> or @<display_name>.
+        content = (message.get("content") or "").strip()
+        sender_type = (message.get("sender_type") or message.get("senderType") or "").lower()
+        if sender_type == "agent":
+            # Don't chain-react to other agents
+            return
+
+        # In a DM, treat every human message as addressed to the agent —
+        # the room IS the conversation. Channels still require an explicit
+        # @mention so multiple agents don't all chime in.
+        room_type = (message.get("room_type") or "channel").lower()
+        is_dm = room_type in ("dm", "group_dm")
+        mentioned = is_dm or self._is_mentioned(content)
+        logger.info(
+            "agent_mention_check",
+            identity=self._identity,
+            room=self._room_name,
+            room_type=room_type,
+            content_preview=content[:80],
+            mentioned=mentioned,
+            brigade_agent_id=getattr(self, "_brigade_agent_id", None),
+            agent_type=self.agent_type,
+        )
+        if not mentioned:
+            return
+
         await self.on_message(message)
+
+    def _is_mentioned(self, content: str) -> bool:
+        """True if this agent is addressed in the message.
+
+        Matches ``@<agent_type>`` or ``@<brigade_agent_id>`` (case-insensitive),
+        or bare ``@everyone``/``@all``. Overridden by subclasses to add the
+        specific persona name (e.g. ``@col-finance``).
+        """
+        if not content:
+            return False
+        lc = content.lower()
+        if "@everyone" in lc or "@all" in lc:
+            return True
+        needles = {self.agent_type.lower()}
+        brigade_id = getattr(self, "_brigade_agent_id", None)
+        if brigade_id:
+            needles.add(str(brigade_id).lower())
+            needles.add(str(brigade_id).replace("-", " ").lower())
+        return any(f"@{n}" in lc for n in needles if n)
 
     async def _handle_command_message(self, message: dict[str, Any]) -> None:
         content = message.get("content", "")

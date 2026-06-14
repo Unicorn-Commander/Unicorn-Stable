@@ -73,7 +73,7 @@ async def generate_livekit_token(
 
     return TokenResponse(
         token=token,
-        ws_url=settings.livekit_url,
+        ws_url=settings.livekit_public_url or settings.livekit_url,
         room_name=room.livekit_room_name,
         participant_name=body.participant_name,
     )

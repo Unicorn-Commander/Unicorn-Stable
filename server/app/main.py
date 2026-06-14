@@ -18,6 +18,8 @@ from app.api.health import router as health_router
 from app.api.messages import router as messages_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
+from app.api.uploads import router as uploads_router
+from app.api.users import router as users_router
 from app.api.webhooks import router as webhooks_router
 from app.auth.keycloak import fetch_jwks, start_jwks_refresh_task
 from app.config import get_settings
@@ -149,8 +151,23 @@ def create_app() -> FastAPI:
     app.include_router(tokens_router, prefix="/api/v1", tags=["Tokens"])
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
+    app.include_router(users_router, prefix="/api/v1", tags=["Users"])
+    app.include_router(uploads_router, prefix="/api/v1", tags=["Uploads"])
     app.include_router(webhooks_router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(ws_router, tags=["WebSocket"])
+
+    # Static file serving for uploaded attachments. Mounted outside /api so
+    # the <img> / <a href> tags in messages can reference clean URLs.
+    from pathlib import Path as _Path
+    from fastapi.staticfiles import StaticFiles
+
+    _upload_dir = _Path("/home/stable/server/uploads")
+    _upload_dir.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/uploads",
+        StaticFiles(directory=str(_upload_dir)),
+        name="uploads",
+    )
 
     return app
 

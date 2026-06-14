@@ -129,7 +129,16 @@ class StableWebSocket {
         return;
       }
 
-      this.emit(parsed.type, parsed.payload);
+      // Backend events are sometimes framed as { type, payload } (new code)
+      // and sometimes flat with fields at top level (legacy typing/presence).
+      // Accept both by falling back to the whole message (minus `type`) when
+      // `payload` isn't present.
+      const raw = parsed as unknown as Record<string, unknown>;
+      const payload =
+        raw.payload !== undefined
+          ? (raw.payload as WsEventPayload)
+          : ({ ...raw } as unknown as WsEventPayload);
+      this.emit(parsed.type, payload);
     };
 
     this.ws.onclose = () => {

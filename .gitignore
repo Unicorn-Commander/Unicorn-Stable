@@ -51,3 +51,7 @@ server/alembic/versions/__pycache__/
 htmlcov/
 .pytest_cache/
 coverage/
+
+# Backups (auto-added by checkpoint)
+*.bak
+*.bak-*

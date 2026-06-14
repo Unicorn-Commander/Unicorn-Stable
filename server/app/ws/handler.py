@@ -181,20 +181,33 @@ async def _handle_client_events(
                 room_id = data.get("room_id")
                 message_id = data.get("message_id")
                 if room_id:
-                    logger.debug(
-                        "mark_read",
-                        participant_id=participant_id,
-                        room_id=room_id,
-                        message_id=message_id,
-                    )
-                    # Update last_read_at in database would be done here
-                    # For now, publish the event so other clients see it
+                    # Persist last_read_at on the room_member row, then
+                    # broadcast a read_receipt event to everyone in the room
+                    # so their UI can show "seen by …".
+                    from datetime import datetime, timezone
+
+                    from sqlalchemy import update as _update
+                    from app.models.room import RoomMember as _RM
+
+                    session_factory = websocket.app.state.db_session_factory
+                    async with session_factory() as db:
+                        await db.execute(
+                            _update(_RM)
+                            .where(
+                                _RM.room_id == room_id,
+                                _RM.participant_id == participant_id,
+                            )
+                            .values(last_read_at=datetime.now(timezone.utc))
+                        )
+                        await db.commit()
                     await redis.publish(
-                        f"user:{participant_id}",
+                        f"room:{room_id}",
                         json.dumps({
                             "type": "read_receipt",
                             "room_id": room_id,
+                            "participant_id": participant_id,
                             "message_id": message_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
                         }),
                     )
 

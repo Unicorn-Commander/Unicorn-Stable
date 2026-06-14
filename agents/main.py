@@ -65,7 +65,14 @@ _registry: AgentRegistry | None = None
 def _get_registry() -> AgentRegistry:
     global _registry
     if _registry is None:
-        raise RuntimeError("AgentRegistry not initialized")
+        # livekit-agents spawns each job in a fresh subprocess that doesn't
+        # inherit module globals from the parent worker. Lazy-init here so
+        # every subprocess can build its own registry on first access.
+        settings = get_agent_settings()
+        _configure_logging(settings.log_level)
+        _registry = AgentRegistry(settings=settings)
+        _registry.register(TriageAgent)
+        _registry.register(BrigadeBackedAgent)
     return _registry
 
 

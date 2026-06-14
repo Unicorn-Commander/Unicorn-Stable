@@ -20,6 +20,24 @@ class MessageType(StrEnum):
     ACTION_RESPONSE = "action_response"
 
 
+# Map external/server-side wire types onto our internal MessageType.
+_TYPE_ALIASES: dict[str, MessageType] = {
+    "new_message": MessageType.CHAT,  # server emits this for chat messages
+}
+
+# Broadcasts the agent legitimately ignores (typing dots, streaming patches,
+# UI-only acks). Listed so we silently drop them instead of WARN-logging.
+_IGNORED_TYPES: set[str] = {
+    "agent_typing",
+    "message_updated",
+    "action_decision",
+    "read_receipt",
+    "pins_changed",
+    "reaction",
+    "message_deleted",
+}
+
+
 _PROTOCOL_VERSION: int = 1
 
 
@@ -96,7 +114,28 @@ class ChatHandler:
             headers={"Authorization": f"Bearer {self._agent_token}"},
             timeout=httpx.Timeout(15.0, connect=5.0),
         )
-        room.on("data_received", self._on_data_received)
+        # livekit-rtc 1.x: data_received emits a single DataPacket arg with
+        # .data / .kind / .participant. Older versions used (data, participant,
+        # kind). Accept both shapes for compatibility.
+        def _sync_data_received(*args: Any, **kwargs: Any) -> None:
+            import asyncio as _asyncio
+            data_b: bytes
+            participant: Any = None
+            kind: Any = None
+            if len(args) == 1 and hasattr(args[0], "data"):
+                packet = args[0]
+                data_b = packet.data
+                participant = getattr(packet, "participant", None)
+                kind = getattr(packet, "kind", None)
+            else:
+                data_b = args[0] if args else b""
+                participant = args[1] if len(args) > 1 else None
+                kind = args[2] if len(args) > 2 else None
+            _asyncio.create_task(
+                self._on_data_received(data_b, participant, kind)
+            )
+
+        room.on("data_received", _sync_data_received)
         logger.info("chat_handler_started", room_id=self._room_id)
 
     async def shutdown(self) -> None:
@@ -210,22 +249,52 @@ class ChatHandler:
         if parsed is None:
             return
 
+        # Server-side broadcasts wrap the message: {type: "new_message",
+        # room_type: "channel"|"dm"|..., message: {sender:{...}, content, ...}}.
+        # Flatten for our handlers but preserve room_type so the agent can
+        # decide whether to require an @mention.
+        if "message" in parsed and isinstance(parsed["message"], dict):
+            inner = parsed["message"]
+            sender_obj = inner.get("sender") or {}
+            parsed = {
+                "type": parsed.get("type"),
+                "room_type": parsed.get("room_type", "channel"),
+                "sender": (
+                    sender_obj.get("display_name")
+                    or sender_obj.get("username")
+                    or ""
+                ),
+                "sender_id": inner.get("sender_id"),
+                "sender_type": (sender_obj.get("participant_type") or "human"),
+                "content": inner.get("content", ""),
+                "message_id": inner.get("id"),
+                "metadata": inner.get("metadata") or {},
+            }
+
         sender: str = parsed.get("sender", "")
-        if sender == self._agent_identity:
-            return  # ignore own messages
+        sender_type = (parsed.get("sender_type") or "").lower()
+        # Skip own + skip ALL agent-typed senders (no agent-talks-to-agent
+        # echo loops). Sender display-name comparison was unreliable because
+        # the agent identity is a random hex while sender is a friendly name.
+        if sender == self._agent_identity or sender_type == "agent":
+            return
 
         raw_type: str = parsed.get("type", "")
         try:
             msg_type = MessageType(raw_type)
         except ValueError:
-            logger.warning("chat_unknown_type", raw_type=raw_type)
-            return
+            mapped = _TYPE_ALIASES.get(raw_type)
+            if mapped is None:
+                if raw_type not in _IGNORED_TYPES:
+                    logger.warning("chat_unknown_type", raw_type=raw_type)
+                return
+            msg_type = mapped
 
-        logger.debug(
+        logger.info(
             "chat_received",
             msg_type=msg_type,
             sender=sender,
-            content_length=len(parsed.get("content", "")),
+            content_preview=str(parsed.get("content", ""))[:80],
         )
 
         for handler in self._handlers[msg_type]:

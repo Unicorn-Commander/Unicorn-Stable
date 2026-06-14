@@ -175,13 +175,27 @@ class AgentRegistry:
             await agent.start(ctx)
             # The agent stays alive until the job context shuts it down.
             # We wait on the context's shutdown signal.
+            # livekit-agents 1.5 expects shutdown callbacks to return an
+            # awaitable. Provide an async no-op that also resolves the
+            # wait-future so the agent loop exits cleanly.
             disconnect_future: asyncio.Future[None] = asyncio.Future()
-            ctx.add_shutdown_callback(lambda: disconnect_future.set_result(None))
+
+            async def _on_shutdown() -> None:
+                if not disconnect_future.done():
+                    disconnect_future.set_result(None)
+
+            ctx.add_shutdown_callback(_on_shutdown)
             await disconnect_future
         except asyncio.CancelledError:
             logger.info("agent_run_cancelled", run_key=run_key)
-        except Exception:
-            logger.error("agent_run_error", run_key=run_key, exc_info=True)
+        except Exception as exc:
+            import traceback
+            logger.error(
+                "agent_run_error",
+                run_key=run_key,
+                error=repr(exc),
+                tb=traceback.format_exc(),
+            )
         finally:
             self._running.pop(run_key, None)
             logger.info(

@@ -18,6 +18,7 @@ interface UIState {
   sidebarOpen: boolean;
   participantPanelOpen: boolean;
   settingsOpen: boolean;
+  cheatsheetOpen: boolean;
   threadMessageId: string | null;
   stageAgentId: string | null;
   createRoomModalOpen: boolean;
@@ -32,6 +33,14 @@ interface CurrentUser {
   roles: string[];
 }
 
+export interface Toast {
+  id: string;
+  title: string;
+  body?: string;
+  roomId?: string;
+  createdAt: number;
+}
+
 interface AppState {
   currentUser: CurrentUser | null;
   rooms: Room[];
@@ -41,6 +50,10 @@ interface AppState {
   agents: Agent[];
   typing: Record<string, TypingUser[]>;
   onlineUsers: string[];
+  unreadCounts: Record<string, number>;
+  // Per-room: { participant_id → last_read_at iso }
+  readReceipts: Record<string, Record<string, string>>;
+  toasts: Toast[];
   ui: UIState;
   voiceActive: boolean;
 
@@ -66,9 +79,22 @@ interface AppState {
   toggleSidebar: () => void;
   toggleParticipantPanel: () => void;
   toggleSettings: () => void;
+  toggleCheatsheet: () => void;
   setThreadMessageId: (id: string | null) => void;
   setStageAgentId: (id: string | null) => void;
   setCreateRoomModalOpen: (open: boolean) => void;
+
+  incrementUnread: (roomId: string, by?: number) => void;
+  clearUnread: (roomId: string) => void;
+  setReadReceipt: (roomId: string, participantId: string, at: string) => void;
+  pushToast: (toast: Omit<Toast, "id" | "createdAt">) => void;
+  dismissToast: (id: string) => void;
+
+  // Transient: when set, the active room's MessageInput will prepend this
+  // text into its draft and clear the slot. Used by Quote-reply.
+  pendingInsert: { roomId: string; text: string } | null;
+  requestInsert: (roomId: string, text: string) => void;
+  consumeInsert: (roomId: string) => string | null;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -80,10 +106,15 @@ export const useAppStore = create<AppState>((set) => ({
   agents: [],
   typing: {},
   onlineUsers: [],
+  unreadCounts: {},
+  readReceipts: {},
+  toasts: [],
+  pendingInsert: null,
   ui: {
     sidebarOpen: true,
     participantPanelOpen: true,
     settingsOpen: false,
+    cheatsheetOpen: false,
     threadMessageId: null,
     stageAgentId: null,
     createRoomModalOpen: false,
@@ -262,6 +293,10 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       ui: { ...state.ui, settingsOpen: !state.ui.settingsOpen },
     })),
+  toggleCheatsheet: () =>
+    set((state) => ({
+      ui: { ...state.ui, cheatsheetOpen: !state.ui.cheatsheetOpen },
+    })),
   setThreadMessageId: (id) =>
     set((state) => ({
       ui: { ...state.ui, threadMessageId: id },
@@ -274,4 +309,55 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       ui: { ...state.ui, createRoomModalOpen: open },
     })),
+
+  incrementUnread: (roomId, by = 1) =>
+    set((state) => ({
+      unreadCounts: {
+        ...state.unreadCounts,
+        [roomId]: (state.unreadCounts[roomId] ?? 0) + by,
+      },
+    })),
+  clearUnread: (roomId) =>
+    set((state) => {
+      if (!(roomId in state.unreadCounts)) return {} as Partial<AppState>;
+      const next = { ...state.unreadCounts };
+      delete next[roomId];
+      return { unreadCounts: next };
+    }),
+  setReadReceipt: (roomId, participantId, at) =>
+    set((state) => ({
+      readReceipts: {
+        ...state.readReceipts,
+        [roomId]: {
+          ...(state.readReceipts[roomId] ?? {}),
+          [participantId]: at,
+        },
+      },
+    })),
+  pushToast: (toast) =>
+    set((state) => ({
+      toasts: [
+        ...state.toasts,
+        {
+          ...toast,
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          createdAt: Date.now(),
+        },
+      ],
+    })),
+  dismissToast: (id) =>
+    set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  requestInsert: (roomId, text) =>
+    set({ pendingInsert: { roomId, text } }),
+  consumeInsert: (roomId) => {
+    let out: string | null = null;
+    set((state) => {
+      const p = state.pendingInsert;
+      if (!p || p.roomId !== roomId) return {} as Partial<AppState>;
+      out = p.text;
+      return { pendingInsert: null };
+    });
+    return out;
+  },
 }));

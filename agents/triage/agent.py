@@ -71,9 +71,9 @@ class TriageAgent(StableAgent):
 
     def __init__(self, settings: AgentSettings | None = None) -> None:
         super().__init__(settings)
-        self._tts_provider: str = "elevenlabs"
+        self._tts_provider: str = "kokoro"
         self._tts_voice_id: str | None = None
-        self._stt_provider: str = "deepgram"
+        self._stt_provider: str = "whisper"
 
     async def build_pipeline(self, ctx: JobContext) -> VoicePipelineAgent:
         """Assemble the full voice pipeline: VAD + STT + LLM + TTS."""
