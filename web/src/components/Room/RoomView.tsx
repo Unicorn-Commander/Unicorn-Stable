@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bell, BellOff, Hash, LogOut, MoreVertical, Pin, Search, UserPlus, Users } from "lucide-react";
@@ -14,6 +15,7 @@ import { InviteMembersModal } from "./InviteMembersModal";
 import { ThreadPanel } from "./ThreadPanel";
 import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
+import { LeaveRoomModal } from "./LeaveRoomModal";
 
 interface RoomViewProps {
   roomId: string;
@@ -32,7 +34,9 @@ export function RoomView({ roomId }: RoomViewProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [pinsOpen, setPinsOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const navigate = useNavigate();
   const overflowRef = useRef<HTMLDivElement>(null);
   const [muted, setMuted] = useState(() => isMuted(roomId));
   useEffect(() => {
@@ -112,20 +116,25 @@ export function RoomView({ roomId }: RoomViewProps) {
     }
   }
 
-  async function handleLeave() {
-    if (leaving) return;
+  function openLeave() {
     setOverflowOpen(false);
-    if (!confirm(`Leave "${displayName}"? You can rejoin from Browse channels.`)) {
-      return;
-    }
+    setLeaveOpen(true);
+  }
+
+  async function confirmLeave() {
+    if (leaving) return;
     setLeaving(true);
     try {
       await api.leaveRoom(roomId);
       removeRoom(roomId);
       await qc.invalidateQueries({ queryKey: ["rooms"] });
+      setLeaveOpen(false);
+      // URL is the source of truth for the active room (see AppShell), so we
+      // must navigate home; otherwise the route param would re-select the
+      // room we just left on the next render.
+      navigate("/");
     } catch (e) {
       console.error("leave room failed", e);
-      alert("Couldn't leave: " + (e as Error).message);
     } finally {
       setLeaving(false);
     }
@@ -251,7 +260,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               >
                 <button
                   role="menuitem"
-                  onClick={handleLeave}
+                  onClick={openLeave}
                   disabled={leaving}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -287,6 +296,17 @@ export function RoomView({ roomId }: RoomViewProps) {
             roomId={roomId}
             roomName={displayName}
             onClose={() => setInviteOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {leaveOpen && (
+          <LeaveRoomModal
+            roomName={displayName}
+            leaving={leaving}
+            onConfirm={confirmLeave}
+            onClose={() => setLeaveOpen(false)}
           />
         )}
       </AnimatePresence>
