@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/services/api";
@@ -18,6 +19,9 @@ export function AppShell() {
   useGlobalNotifications();
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
+  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const { roomId: routeRoomId } = useParams<{ roomId: string }>();
+  const navigate = useNavigate();
   const setRooms = useAppStore((s) => s.setRooms);
   const setAgents = useAppStore((s) => s.setAgents);
   const createRoomModalOpen = useAppStore((s) => s.ui.createRoomModalOpen);
@@ -81,13 +85,46 @@ export function AppShell() {
     }
   }, [rooms, setRooms]);
 
+  // ---------------------------------------------------------------------------
+  // ROUTING: the URL is the SINGLE, ONE-DIRECTIONAL source of truth for the
+  // active room. The flow is always URL -> store, never store -> URL:
+  //
+  //   user action (sidebar click, quick-switcher, create/leave, deep-link)
+  //     -> navigate("/c/<id>")        (handlers navigate; they never setActiveRoomId)
+  //     -> routeRoomId changes
+  //     -> the single effect below sets activeRoomId
+  //     -> RoomView mounts off activeRoomId
+  //
+  // There is intentionally NO store -> URL effect. A prior attempt (reverted,
+  // commit 6c36874) had TWO effects syncing both ways plus a branch that nulled
+  // activeRoomId when the route param had not caught up; they raced every render
+  // and settled with activeRoomId=null, leaving the main pane on the welcome
+  // empty-state even though the URL + sidebar updated. DO NOT re-add a
+  // store->URL effect or call setActiveRoomId from a click handler: navigate()
+  // is the only entry point and this single idempotent effect is the only writer.
+
+  // Legacy permalink shim: /?room=X(&message=Y) -> /c/X(?message=Y). This is a
+  // URL -> URL redirect (not store -> URL), so it cannot join a sync loop;
+  // previously-shared ?room= links still resolve.
   useEffect(() => {
-    if (!rooms || activeRoomId) return;
-    const roomId = new URLSearchParams(window.location.search).get("room");
-    if (roomId && rooms.some((room) => room.id === roomId)) {
-      useAppStore.getState().setActiveRoomId(roomId);
-    }
-  }, [rooms, activeRoomId]);
+    const search = new URLSearchParams(window.location.search);
+    const legacyRoom = search.get("room");
+    if (!legacyRoom) return;
+    const msg = search.get("message");
+    navigate(
+      `/c/${legacyRoom}${msg ? `?message=${encodeURIComponent(msg)}` : ""}`,
+      { replace: true },
+    );
+  }, [navigate]);
+
+  // URL -> store: the ONLY writer of activeRoomId from routing. Depends on
+  // routeRoomId alone and is idempotent, so it converges in a single pass for
+  // every entry path (sidebar click, deep-link, refresh on /c/:id, browser
+  // back/forward) and is safe under React StrictMode double-invocation.
+  // The "/" route (no param) clears the active room.
+  useEffect(() => {
+    setActiveRoomId(routeRoomId ?? null);
+  }, [routeRoomId, setActiveRoomId]);
 
   useEffect(() => {
     if (agents) {

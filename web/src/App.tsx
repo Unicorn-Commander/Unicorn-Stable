@@ -182,8 +182,11 @@ function AuthGate({ children }: { children: ReactNode }) {
         { user_id: "agent-coder", username: "coder", display_name: "Coder Agent", avatar_url: null, role: "member", is_online: false, joined_at: now },
       ]);
 
-      // Auto-select the general room
-      store.setActiveRoomId("room-general");
+      // NB: we deliberately do NOT auto-select a room here. The URL (route param)
+      // is the single source of truth for the active room (see AppShell). In dev
+      // you land on the welcome empty-state; click a seeded channel to open it
+      // (which navigates to /c/:roomId). Setting activeRoomId here would just be
+      // clobbered by the route->store effect on the "/" route anyway.
 
       return <>{children}</>;
     }
@@ -235,25 +238,19 @@ function AuthGate({ children }: { children: ReactNode }) {
 
 export function App() {
   return (
-    <Routes>
-      <Route
-        path="/login"
-        element={
-          isAuthenticated() ? (
-            <Navigate to="/" replace />
-          ) : (
-            <Navigate to="/" replace />
-          )
-        }
-      />
-      <Route
-        path="/*"
-        element={
-          <AuthGate>
-            <AppShell />
-          </AuthGate>
-        }
-      />
-    </Routes>
+    <AuthGate>
+      <Routes>
+        {/* Login is vestigial -- auth is a top-level Keycloak redirect, so just
+            bounce any stale /login deep-link home. */}
+        <Route path="/login" element={<Navigate to="/" replace />} />
+        {/* Canonical room route + its empty-state sibling. /c/:roomId is the
+            SINGLE source of truth for the active room (see AppShell); the
+            ?message= query param rides along for permalink scroll/highlight. */}
+        <Route path="/c/:roomId" element={<AppShell />} />
+        <Route path="/" element={<AppShell />} />
+        {/* Unknown paths fall back home. */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthGate>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bell, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
@@ -8,7 +9,7 @@ const AUTO_DISMISS_MS = 6000;
 export function ToastStack() {
   const toasts = useAppStore((s) => s.toasts);
   const dismissToast = useAppStore((s) => s.dismissToast);
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (toasts.length === 0) return;
@@ -33,7 +34,7 @@ export function ToastStack() {
           >
             <button
               onClick={() => {
-                if (t.roomId) setActiveRoomId(t.roomId);
+                if (t.roomId) navigate(`/c/${t.roomId}`);
                 dismissToast(t.id);
               }}
               className="flex w-full items-start gap-2.5 p-3 text-left hover:bg-slate-800/60"

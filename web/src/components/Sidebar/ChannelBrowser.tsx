@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Hash, Search, X } from "lucide-react";
 import { api, type Room } from "@/services/api";
-import { useAppStore } from "@/stores/appStore";
 
 interface ChannelBrowserProps {
   onClose: () => void;
 }
 
 export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
@@ -46,8 +46,8 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
         qc.invalidateQueries({ queryKey: ["rooms"] }),
         refetch(),
       ]);
-      setActiveRoomId(room.id);
       onClose();
+      navigate(`/c/${room.id}`);
     } catch (err) {
       console.error("join failed", err);
       alert("Couldn't join — " + (err as Error).message);

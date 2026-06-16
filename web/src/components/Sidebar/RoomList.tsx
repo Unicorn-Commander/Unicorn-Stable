@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { Hash, MessageSquare, Plus, Search, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -9,17 +10,19 @@ import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 
 export function RoomList() {
+  const navigate = useNavigate();
   const rooms = useAppStore((s) => s.rooms);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
-  const setActiveRoomIdRaw = useAppStore((s) => s.setActiveRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const onlineUsers = useAppStore((s) => s.onlineUsers);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
-  const setActiveRoomId = (id: string) => {
-    setActiveRoomIdRaw(id);
+  // Open a room by navigating; the route param drives activeRoomId (see
+  // AppShell). We still clear unread locally for snappy badge feedback.
+  const openRoom = (id: string) => {
     clearUnread(id);
+    navigate(`/c/${id}`);
   };
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const [createDmOpen, setCreateDmOpen] = useState(false);
@@ -136,7 +139,7 @@ export function RoomList() {
             {channels.map((room) => (
               <li key={room.id}>
                 <button
-                  onClick={() => setActiveRoomId(room.id)}
+                  onClick={() => openRoom(room.id)}
                   className={clsx(
                     "relative flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
                     activeRoomId === room.id
@@ -212,7 +215,7 @@ export function RoomList() {
               return (
               <li key={room.id}>
                 <button
-                  onClick={() => setActiveRoomId(room.id)}
+                  onClick={() => openRoom(room.id)}
                   className={clsx(
                     "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
                     activeRoomId === room.id

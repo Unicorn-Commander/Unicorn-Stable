@@ -1,17 +1,17 @@
 import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, X } from "lucide-react";
 import { api, type Message } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
-import { useAppStore } from "@/stores/appStore";
 
 interface SavedPanelProps {
   onClose: () => void;
 }
 
 export function SavedPanel({ onClose }: SavedPanelProps) {
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const { data: saved = [] } = useQuery({
     queryKey: ["saved"],
@@ -90,8 +90,8 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
                       <div className="mt-1.5 flex gap-3 text-[10px]">
                         <button
                           onClick={() => {
-                            setActiveRoomId(m.room_id);
                             onClose();
+                            navigate(`/c/${m.room_id}`);
                           }}
                           className="text-slate-500 hover:text-slate-300"
                         >

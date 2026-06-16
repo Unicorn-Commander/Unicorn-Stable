@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, X, Check, Bot, User as UserIcon } from "lucide-react";
 import { api, type Room, type BrigadeAgent } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
-import { useAppStore } from "@/stores/appStore";
 
 interface CreateDmModalProps {
   onClose: () => void;
@@ -34,7 +34,7 @@ function pickedKey(p: Picked): string {
 }
 
 export function CreateDmModal({ onClose }: CreateDmModalProps) {
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("people");
   const [q, setQ] = useState("");
@@ -168,8 +168,8 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
       }
 
       await qc.invalidateQueries({ queryKey: ["rooms"] });
-      setActiveRoomId(room.id);
       onClose();
+      navigate(`/c/${room.id}`);
     } catch (err) {
       console.error("dm create failed", err);
       alert("Couldn't start DM — " + (err as Error).message);

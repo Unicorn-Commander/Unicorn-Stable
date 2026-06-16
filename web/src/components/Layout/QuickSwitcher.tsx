@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, Hash, MessageSquare, Search, User } from "lucide-react";
@@ -37,7 +38,7 @@ function fuzzyScore(needle: string, hay: string): number {
 
 export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
   const rooms = useAppStore((s) => s.rooms);
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -103,7 +104,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
 
   function activate(it: Item) {
     if (it.kind === "channel" || it.kind === "dm") {
-      setActiveRoomId(it.id);
+      navigate(`/c/${it.id}`);
     } else if (it.kind === "agent" || it.kind === "user") {
       // Future: open compose-DM-with flow. For now just close.
     }

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { X, Hash, MessageSquare, Users, Bot, Check } from "lucide-react";
 import clsx from "clsx";
@@ -11,7 +12,7 @@ type RoomType = "channel" | "group_dm" | "dm";
 
 export function CreateRoomModal() {
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
-  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const navigate = useNavigate();
   const agents = useAppStore((s) => s.agents);
   const queryClient = useQueryClient();
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -41,8 +42,8 @@ export function CreateRoomModal() {
     mutationFn: (data: CreateRoomRequest) => api.createRoom(data),
     onSuccess: (room: Room) => {
       queryClient.invalidateQueries({ queryKey: ["rooms"] });
-      setActiveRoomId(room.id);
       setCreateRoomModalOpen(false);
+      navigate(`/c/${room.id}`);
     },
   });
 

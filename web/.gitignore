@@ -1,0 +1,3 @@
+# Local build artifacts (not committed)
+tsconfig.tsbuildinfo
+*.tsbuildinfo
