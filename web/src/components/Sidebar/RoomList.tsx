@@ -23,6 +23,14 @@ export function RoomList() {
   const openRoom = (id: string) => {
     clearUnread(id);
     navigate(`/c/${id}`);
+    // On mobile the sidebar is an overlay drawer; close it after selecting a
+    // room so the chat is visible. Desktop (>=768px) keeps it open.
+    if (
+      window.matchMedia("(max-width: 767px)").matches &&
+      useAppStore.getState().ui.sidebarOpen
+    ) {
+      useAppStore.getState().toggleSidebar();
+    }
   };
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const [createDmOpen, setCreateDmOpen] = useState(false);

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class TokenRequest(BaseModel):
     room_name: str = Field(..., min_length=1, max_length=255)
-    participant_name: str = Field(..., min_length=1, max_length=255)
+    participant_name: str | None = Field(None, max_length=255)
 
 
 class TokenResponse(BaseModel):

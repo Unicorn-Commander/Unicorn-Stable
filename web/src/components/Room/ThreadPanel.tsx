@@ -92,7 +92,7 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: 320, opacity: 0 }}
       transition={{ duration: 0.18 }}
-      className="flex h-full w-80 shrink-0 flex-col border-l border-slate-700/50 bg-slate-900/95"
+      className="fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,320px)] flex-col border-l border-slate-700/50 bg-slate-900/95 shadow-2xl md:static md:z-auto md:w-80 md:shadow-none"
       aria-label="Thread"
     >
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700/50 px-3">

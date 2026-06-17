@@ -77,7 +77,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
 
   return (
     <aside
-      className="flex h-full w-60 flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
+      className="flex h-full w-full md:w-60 flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
       aria-label="Room participants"
     >
       {agentMembers.length > 0 && (

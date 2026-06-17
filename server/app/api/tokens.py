@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -37,13 +37,14 @@ async def generate_livekit_token(
     ] = None,
 ) -> TokenResponse:
     """Generate a LiveKit access token for the authenticated user to join a room."""
-    # Find the room by LiveKit room name or by room name
-    result = await db.execute(
-        select(Room).where(
-            (Room.livekit_room_name == body.room_name)
-            | (Room.name == body.room_name)
-        )
-    )
+    # Find the room by UUID id, LiveKit room name, or (slug) name. The web
+    # client sends the room UUID, so the id match is what makes voice join work.
+    conds = [Room.livekit_room_name == body.room_name, Room.name == body.room_name]
+    try:
+        conds.append(Room.id == uuid.UUID(body.room_name))
+    except (ValueError, TypeError):
+        pass
+    result = await db.execute(select(Room).where(or_(*conds)))
     room = result.scalar_one_or_none()
     if room is None:
         raise HTTPException(
@@ -69,7 +70,7 @@ async def generate_livekit_token(
     token = livekit.generate_token(
         room_name=room.livekit_room_name,
         identity=identity,
-        name=body.participant_name or user.get("display_name", user["username"]),
+        name=body.participant_name or user.get("display_name") or user["username"],
         api_key=settings.livekit_api_key,
         api_secret=settings.livekit_api_secret,
     )
@@ -84,5 +85,5 @@ async def generate_livekit_token(
         token=token,
         ws_url=settings.livekit_public_url or settings.livekit_url,
         room_name=room.livekit_room_name,
-        participant_name=body.participant_name,
+        participant_name=body.participant_name or user.get("display_name") or user["username"],
     )

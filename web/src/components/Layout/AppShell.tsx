@@ -18,6 +18,7 @@ import { RoomView } from "@/components/Room/RoomView";
 export function AppShell() {
   useGlobalNotifications();
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
+  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
   const { roomId: routeRoomId } = useParams<{ roomId: string }>();
@@ -172,6 +173,14 @@ export function AppShell() {
           </motion.aside>
         )}
       </AnimatePresence>
+
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-slate-950/60 md:hidden"
+          aria-hidden="true"
+          onClick={toggleSidebar}
+        />
+      )}
 
       <main className="flex min-w-0 flex-1 flex-col">
         <Header />

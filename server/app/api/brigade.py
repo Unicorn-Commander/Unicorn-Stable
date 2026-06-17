@@ -193,13 +193,29 @@ async def invite_brigade_agent(
             detail=f"Unknown Brigade agent: {body.brigade_agent_id}",
         )
 
+    # Resolve the room (UUID id | slug name | LiveKit name) to its LiveKit room
+    # name so the dispatched agent joins the SAME LiveKit room the human's token
+    # targets (the web client sends the room UUID).
+    import uuid as _uuid_rr
+    from sqlalchemy import or_ as _or_rr, select as _sel_rr
+    from app.models.room import Room as _Room_rr
+    _rr_conds = [_Room_rr.livekit_room_name == room_name, _Room_rr.name == room_name]
+    try:
+        _rr_conds.append(_Room_rr.id == _uuid_rr.UUID(room_name))
+    except (ValueError, TypeError):
+        pass
+    _resolved_room = (
+        await db.execute(_sel_rr(_Room_rr).where(_or_rr(*_rr_conds)))
+    ).scalar_one_or_none()
+    lk_name = _resolved_room.livekit_room_name if _resolved_room else room_name
+
     # Dual-path design: the SERVER text responder
     # (services/agent_chat_responder.py) answers chat regardless of this call,
     # so a False/degraded dispatch is not a hard failure -- it just means the
     # agent has no live in-room (voice/media) presence yet. dispatch_agent also
     # writes room metadata, so even an auto-accept worker gets brigade_agent_id.
     result = await livekit.dispatch_agent(
-        room_name=room_name,
+        room_name=lk_name,
         agent_name=settings.brigade_worker_agent_name,
         metadata={
             "agent_type": "brigade",
@@ -212,7 +228,7 @@ async def invite_brigade_agent(
     # the agent Participant + room membership now (instead of waiting for the
     # agent to post its first message).
     try:
-        await _ensure_agent_member(db, room_name, body.brigade_agent_id)
+        await _ensure_agent_member(db, lk_name, body.brigade_agent_id)
     except Exception:
         logger.warning("agent_member_create_failed", exc_info=True)
 
@@ -251,7 +267,7 @@ async def invite_brigade_agent(
         logger.warning("room_metadata_brigade_id_set_failed", exc_info=True)
 
     return InviteAgentResponse(
-        room_name=room_name,
+        room_name=lk_name,
         brigade_agent_id=body.brigade_agent_id,
         dispatched=bool(result.get("dispatched")),
         dispatch_id=result.get("dispatch_id"),

@@ -27,6 +27,12 @@ export interface Room {
   last_message: Message | null;
   members: RoomMember[];
   agents: Agent[];
+  /**
+   * Brigade persona id of the room's resident agent, if any. Populated by
+   * getRoom() from the server's room metadata; used to dispatch the agent
+   * into a voice call. null for human-only rooms.
+   */
+  brigade_agent_id?: string | null;
 }
 
 export interface RoomMember {
@@ -204,7 +210,7 @@ class StableApiClient {
     return this.request<LiveKitTokenResponse>(
       "POST",
       "/api/v1/tokens/livekit",
-      { room_id: roomId },
+      { room_name: roomId },
     );
   }
 
@@ -386,8 +392,16 @@ class StableApiClient {
       created_at: string;
       updated_at: string;
       member_count: number;
+      // RoomResponse serializes the column as `metadata_` (alias). The
+      // resident Brigade agent's id is persisted here by the invite path
+      // (server: brigade.py writes room.metadata_.brigade_agent_id).
+      metadata_?: Record<string, unknown> | null;
     };
     const r = await this.request<Raw>("GET", `/api/v1/rooms/${roomId}`);
+    const brigadeAgentId =
+      typeof r.metadata_?.brigade_agent_id === "string"
+        ? (r.metadata_.brigade_agent_id as string)
+        : null;
     return {
       id: r.id,
       name: r.display_name || r.name,
@@ -401,6 +415,7 @@ class StableApiClient {
       last_message: null,
       members: [],
       agents: [],
+      brigade_agent_id: brigadeAgentId,
     };
   }
 

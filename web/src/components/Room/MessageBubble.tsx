@@ -1140,7 +1140,7 @@ export function MessageBubble({
       </div>
 
       {hovered && !editing && (
-        <div className="absolute -top-3 right-2 flex items-center gap-0.5 rounded-lg border border-slate-700/50 bg-slate-800 p-0.5 shadow-lg animate-fade-in">
+        <div className="absolute -top-3 right-2 z-10 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-lg border border-slate-700/50 bg-slate-800 p-0.5 shadow-lg animate-fade-in md:max-w-none md:flex-nowrap">
           <QuickReact messageId={message.id} />
           <button
             onClick={() => onReply(message.id)}

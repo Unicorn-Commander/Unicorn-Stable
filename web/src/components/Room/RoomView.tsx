@@ -204,7 +204,7 @@ export function RoomView({ roomId }: RoomViewProps) {
         <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={() => setSearchOpen(true)}
-            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             aria-label="Search messages"
             title="Search this channel"
           >
@@ -212,7 +212,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </button>
           <button
             onClick={() => setPinsOpen((v) => !v)}
-            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             aria-label="Show pinned messages"
             title="Pinned messages"
           >
@@ -220,7 +220,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </button>
           <button
             onClick={() => setMuted(toggleMute(roomId))}
-            className={`rounded-md p-1.5 ${muted ? "text-amber-400" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+            className={`rounded-md p-2.5 md:p-1.5 ${muted ? "text-amber-400" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
             aria-label={muted ? "Unmute channel" : "Mute channel"}
             title={muted ? "Channel muted — click to unmute" : "Mute notifications for this channel"}
           >
@@ -236,7 +236,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </button>
           <button
             onClick={toggleParticipantPanel}
-            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             aria-label="Toggle participants panel"
             title="Show/hide members & agents"
           >
@@ -245,7 +245,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           <div className="relative" ref={overflowRef}>
             <button
               onClick={() => setOverflowOpen((v) => !v)}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
               aria-label="More room actions"
               aria-haspopup="menu"
               aria-expanded={overflowOpen}
@@ -326,6 +326,17 @@ export function RoomView({ roomId }: RoomViewProps) {
       </AnimatePresence>
 
       <div className="flex min-h-0 flex-1">
+        {(participantPanelOpen || pinsOpen || threadMessageId) && (
+          <div
+            className="fixed inset-0 z-30 bg-slate-950/60 md:hidden"
+            aria-hidden="true"
+            onClick={() => {
+              if (participantPanelOpen) toggleParticipantPanel();
+              setPinsOpen(false);
+              setThreadMessageId(null);
+            }}
+          />
+        )}
         <div className="flex min-w-0 flex-1 flex-col">
           <AnimatePresence>
             {stageAgentId && (
@@ -364,11 +375,11 @@ export function RoomView({ roomId }: RoomViewProps) {
         <AnimatePresence>
           {participantPanelOpen && (
             <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 240, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
+              initial={{ x: "100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="shrink-0 overflow-hidden border-l border-slate-700/50 flex flex-col"
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-auto md:bg-transparent md:shadow-none"
             >
               <ParticipantStrip roomId={roomId} />
               <div className="border-t border-slate-700/50 shrink-0">

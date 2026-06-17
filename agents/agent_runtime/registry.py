@@ -204,21 +204,42 @@ class AgentRegistry:
                 running_count=len(self._running),
             )
 
+    @staticmethod
+    def _agent_type_from_metadata(meta_str: str) -> str | None:
+        """Parse a JSON metadata string and return its ``agent_type``.
+
+        Defensive: returns ``None`` for empty/missing/malformed metadata or
+        when ``agent_type`` is absent.
+        """
+        if not meta_str:
+            return None
+        try:
+            import json
+
+            metadata = json.loads(meta_str)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        agent_type = metadata.get("agent_type")
+        return agent_type if isinstance(agent_type, str) and agent_type else None
+
     def _resolve_agent_type(self, req: JobRequest) -> str | None:
-        """Extract the requested agent type from a JobRequest."""
-        metadata: dict[str, Any] = {}
-        room_meta_str: str = getattr(req.room, "metadata", "") or "" if req.room else ""
+        """Extract the requested agent type from a JobRequest.
 
-        if room_meta_str:
-            try:
-                import json
+        The dispatch (job) metadata is the source of truth for this dispatch
+        (it carries ``{"agent_type": "brigade", ...}`` from the backend's
+        ``dispatch_agent``), so we read it FIRST, then fall back to room
+        metadata, then to the ``triage`` default.
+        """
+        job_meta_str: str = getattr(getattr(req, "job", None), "metadata", "") or ""
+        room_meta_str: str = (
+            getattr(req.room, "metadata", "") or "" if req.room else ""
+        )
 
-                metadata = json.loads(room_meta_str)
-            except (ValueError, TypeError):
-                pass
-
-        agent_type: str | None = metadata.get("agent_type")
-
+        agent_type = self._agent_type_from_metadata(job_meta_str)
+        if agent_type is None:
+            agent_type = self._agent_type_from_metadata(room_meta_str)
         if agent_type is None:
             # Default to triage if no specific type is requested
             agent_type = "triage" if "triage" in self._agent_classes else None
@@ -226,19 +247,20 @@ class AgentRegistry:
         return agent_type
 
     def _resolve_agent_type_from_ctx(self, ctx: JobContext) -> str | None:
-        """Extract the requested agent type from a JobContext."""
-        metadata: dict[str, Any] = {}
+        """Extract the requested agent type from a JobContext.
+
+        The dispatch (job) metadata is the source of truth for a single
+        dispatch -- it carries ``{"agent_type": "brigade", ...}`` written by
+        the backend's ``dispatch_agent``. We honour it FIRST, falling back to
+        room metadata (which may be stale or only partially written if the
+        room-metadata bake failed) and finally to the ``triage`` default.
+        """
+        job_meta_str: str = getattr(getattr(ctx, "job", None), "metadata", "") or ""
         room_meta_str: str = getattr(ctx.room, "metadata", "") or ""
 
-        if room_meta_str:
-            try:
-                import json
-
-                metadata = json.loads(room_meta_str)
-            except (ValueError, TypeError):
-                pass
-
-        agent_type: str | None = metadata.get("agent_type")
+        agent_type = self._agent_type_from_metadata(job_meta_str)
+        if agent_type is None:
+            agent_type = self._agent_type_from_metadata(room_meta_str)
         if agent_type is None:
             agent_type = "triage" if "triage" in self._agent_classes else None
         return agent_type
