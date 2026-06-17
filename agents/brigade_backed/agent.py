@@ -322,11 +322,20 @@ class BrigadeBackedAgent(StableAgent):
         return session
 
     def _resolve_brigade_agent_id(self, ctx: JobContext) -> str:
-        meta_raw: str = getattr(ctx.room, "metadata", "") or ""
-        if not meta_raw:
-            return "the-general"
-        try:
-            meta = json.loads(meta_raw)
-        except (ValueError, TypeError):
-            return "the-general"
-        return str(meta.get("brigade_agent_id") or "the-general")
+        # Prefer the DISPATCH (job) metadata — it reliably carries
+        # brigade_agent_id; room metadata can be empty/stale when the room is
+        # freshly created (same lesson as the registry agent_type resolution).
+        candidates = [
+            getattr(getattr(ctx, "job", None), "metadata", "") or "",
+            getattr(ctx.room, "metadata", "") or "",
+        ]
+        for meta_raw in candidates:
+            if not meta_raw:
+                continue
+            try:
+                meta = json.loads(meta_raw)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(meta, dict) and meta.get("brigade_agent_id"):
+                return str(meta["brigade_agent_id"])
+        return "the-general"
