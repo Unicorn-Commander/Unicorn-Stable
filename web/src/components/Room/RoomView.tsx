@@ -379,7 +379,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: "100%", opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-auto md:bg-transparent md:shadow-none"
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-60 md:bg-transparent md:shadow-none"
             >
               <ParticipantStrip roomId={roomId} />
               <div className="border-t border-slate-700/50 shrink-0">
