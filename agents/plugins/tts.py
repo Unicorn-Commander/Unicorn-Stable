@@ -57,6 +57,9 @@ _ORATOR_NUM_CHANNELS = 1
 # af = American female, am = American male, bf = British female, bm = British male.
 # All of these are served by Orator (verified in its /voices list).
 KOKORO_VOICE_PRESETS: dict[str, str] = {
+    # Majik — the flagship "Chat with Majik" agent — uses Kokoro's af_heart
+    # (warm American female, kokoro-onnx; verified present in Orator /voices).
+    "majik": "af_heart",
     "the-general": "am_michael",
     "gunny": "am_adam",
     "judge-advocate": "bm_lewis",
