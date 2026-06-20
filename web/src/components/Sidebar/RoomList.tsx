@@ -121,7 +121,7 @@ export function RoomList() {
               </button>
               <button
                 onClick={() => setCreateRoomModalOpen(true)}
-                className="rounded p-0.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+                className="rounded p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 md:p-0.5"
                 aria-label="Create channel"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -149,7 +149,7 @@ export function RoomList() {
                 <button
                   onClick={() => openRoom(room.id)}
                   className={clsx(
-                    "relative flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
+                    "relative flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
                     activeRoomId === room.id
                       ? "bg-stable-purple/20 text-slate-50 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
                       : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
@@ -194,7 +194,7 @@ export function RoomList() {
             </h3>
             <button
               onClick={() => setCreateDmOpen(true)}
-              className="rounded p-0.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+              className="rounded p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 md:p-0.5"
               aria-label="Create direct message"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -225,7 +225,7 @@ export function RoomList() {
                 <button
                   onClick={() => openRoom(room.id)}
                   className={clsx(
-                    "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
+                    "flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
                     activeRoomId === room.id
                       ? "bg-stable-purple/15 text-slate-100"
                       : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",

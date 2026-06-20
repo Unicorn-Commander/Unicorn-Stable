@@ -47,6 +47,15 @@ export async function initAuth(): Promise<boolean> {
     return keycloak.authenticated ?? false;
   }
 
+  // Local preview without a Keycloak server: `vite dev` with no VITE_KEYCLOAK_URL
+  // set. Skip the SSO redirect (which would bounce to a non-existent IdP and
+  // error out) so App's dev-mock seed renders the UI. `import.meta.env.DEV` is
+  // statically false in production builds, so this branch is dead-code-eliminated
+  // and can never weaken the real auth flow.
+  if (import.meta.env.DEV && !import.meta.env.VITE_KEYCLOAK_URL) {
+    throw new Error("dev: Keycloak disabled (no VITE_KEYCLOAK_URL)");
+  }
+
   // We don't use silentCheckSsoRedirectUri because Cloudflare injects
   // X-Frame-Options: SAMEORIGIN on auth.unicorncommander.ai, which blocks
   // the hidden iframe. Without it, check-sso does a top-level redirect the

@@ -180,7 +180,10 @@ export function Header() {
         </button>
 
         {activeRoom && (
-          <div className="flex flex-col">
+          // The room identity also lives in the RoomView sub-header (with topic
+          // + actions). On phones that one is enough — hide this duplicate so the
+          // top bar stays uncluttered. Desktop shows both.
+          <div className="hidden flex-col md:flex">
             <h2 className="text-sm font-semibold text-slate-100">
               {activeRoom.type === "channel" ? "#" : ""} {activeRoom.name}
             </h2>
@@ -197,7 +200,10 @@ export function Header() {
         {activeRoomId && (
           <>
             {(lkConnected || lkConnecting) && (
-              <>
+              // In-call mic/cam/screen controls are duplicated by the
+              // VoiceVideoBar (which is always visible during a call). Hide them
+              // here on phones; keep the call start/end toggle below.
+              <span className="hidden md:contents">
                 <button
                   onClick={handleToggleMic}
                   className={clsx(
@@ -239,7 +245,7 @@ export function Header() {
                 >
                   <MonitorUp className="h-4 w-4" />
                 </button>
-              </>
+              </span>
             )}
 
             <button
@@ -260,39 +266,46 @@ export function Header() {
               )}
             </button>
 
-            <div className="mx-1 h-5 w-px bg-slate-700" />
+            {/* Participants toggle is duplicated in the RoomView sub-header;
+                hide this one (and its divider) on phones. */}
+            <span className="hidden md:contents">
+              <div className="mx-1 h-5 w-px bg-slate-700" />
 
-            <button
-              onClick={toggleParticipantPanel}
-              className={clsx(
-                "rounded-lg p-2.5 transition-colors md:p-2",
-                participantPanelOpen
-                  ? "bg-slate-800 text-slate-200"
-                  : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
-              )}
-              aria-label="Toggle participant panel"
-            >
-              <Users className="h-4 w-4" />
-            </button>
+              <button
+                onClick={toggleParticipantPanel}
+                className={clsx(
+                  "rounded-lg p-2.5 transition-colors md:p-2",
+                  participantPanelOpen
+                    ? "bg-slate-800 text-slate-200"
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                )}
+                aria-label="Toggle participant panel"
+              >
+                <Users className="h-4 w-4" />
+              </button>
+            </span>
           </>
         )}
 
-        <button
-          onClick={() => setSavedOpen(true)}
-          className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
-          aria-label="Saved messages"
-          title="Saved messages"
-        >
-          <Bookmark className="h-4 w-4" />
-        </button>
+        {/* On phones these fold into the avatar menu (below) to save space. */}
+        <span className="hidden md:contents">
+          <button
+            onClick={() => setSavedOpen(true)}
+            className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
+            aria-label="Saved messages"
+            title="Saved messages"
+          >
+            <Bookmark className="h-4 w-4" />
+          </button>
 
-        <button
-          onClick={toggleSettings}
-          className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
-          aria-label="Settings"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
+          <button
+            onClick={toggleSettings}
+            className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
+            aria-label="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </span>
 
         {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} />}
 
@@ -320,6 +333,28 @@ export function Header() {
                   {currentUser?.email}
                 </p>
               </div>
+              {/* On phones, Saved + Settings live here (their toolbar buttons
+                  are hidden < md to keep the top bar from overflowing). */}
+              <button
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  setSavedOpen(true);
+                }}
+                className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+              >
+                <Bookmark className="h-4 w-4" />
+                Saved messages
+              </button>
+              <button
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  toggleSettings();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+              >
+                <Settings className="h-4 w-4" />
+                Settings
+              </button>
               <button
                 onClick={() => {
                   setUserMenuOpen(false);

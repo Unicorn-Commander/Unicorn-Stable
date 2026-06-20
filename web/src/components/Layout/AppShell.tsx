@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
+import { X } from "lucide-react";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
+import { useAppHeight } from "@/hooks/useAppHeight";
 import { Header } from "./Header";
 import { ToastStack } from "./ToastStack";
 import { CheatsheetModal } from "./CheatsheetModal";
@@ -17,6 +19,8 @@ import { RoomView } from "@/components/Room/RoomView";
 
 export function AppShell() {
   useGlobalNotifications();
+  // Keep the app pinned to the visible viewport (collapsing toolbar + keyboard).
+  useAppHeight();
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
@@ -136,7 +140,10 @@ export function AppShell() {
   // Auto-close sidebar on small screens when a room is opened
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(max-width: 768px)");
+    // <768px = phone (the off-canvas drawer). 768px itself is desktop (Tailwind
+    // `md`), so use 767 — at exactly 768 the sidebar is in-flow and must NOT be
+    // auto-collapsed.
+    const mq = window.matchMedia("(max-width: 767px)");
     const apply = (small: boolean) => {
       const ui = useAppStore.getState().ui;
       if (small && activeRoomId && ui.sidebarOpen) {
@@ -152,7 +159,18 @@ export function AppShell() {
   }, [activeRoomId]);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-900">
+    <div
+      className="relative flex w-screen overflow-hidden bg-slate-900"
+      style={{
+        // Fill the visible viewport exactly (see useAppHeight). Reserve the
+        // notch/status-bar inset up top so content clears it in standalone PWA
+        // mode. No left/right inset here on purpose: the drawers + backdrop are
+        // `fixed` (viewport-anchored), so insetting only the root would leave a
+        // seam in landscape — edge-to-edge is correct for those overlays.
+        height: "var(--app-height, 100dvh)",
+        paddingTop: "env(safe-area-inset-top)",
+      }}
+    >
       <AnimatePresence mode="wait">
         {sidebarOpen && (
           <motion.aside
@@ -164,10 +182,20 @@ export function AppShell() {
             className="absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-slate-700/50 bg-slate-900 md:static md:z-auto"
             aria-label="Room list sidebar"
           >
-            <div className="flex h-14 shrink-0 items-center border-b border-slate-700/50 px-4">
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
               <h1 className="gradient-text text-lg font-bold tracking-tight">
                 Stable
               </h1>
+              {/* The hamburger is hidden behind the open drawer on phones, so
+                  give the drawer its own close affordance. Desktop closes via
+                  the header toggle. */}
+              <button
+                onClick={toggleSidebar}
+                className="-mr-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:hidden"
+                aria-label="Close sidebar"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
             <RoomList />
           </motion.aside>

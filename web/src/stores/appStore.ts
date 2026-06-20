@@ -112,8 +112,12 @@ export const useAppStore = create<AppState>((set) => ({
   toasts: [],
   pendingInsert: null,
   ui: {
-    sidebarOpen: true,
-    participantPanelOpen: true,
+    // On phones (<768px) the sidebar is an off-canvas overlay drawer; default
+    // it CLOSED so the app opens to content (welcome / active room) with the
+    // hamburger to reveal it — otherwise the 280px drawer covers the whole
+    // screen on load. Desktop keeps it open in-flow.
+    sidebarOpen: typeof window !== "undefined" ? window.innerWidth >= 768 : true,
+    participantPanelOpen: typeof window !== "undefined" ? window.innerWidth >= 768 : true,
     settingsOpen: false,
     cheatsheetOpen: false,
     threadMessageId: null,

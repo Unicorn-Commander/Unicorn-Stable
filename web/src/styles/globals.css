@@ -11,6 +11,20 @@
 }
 
 @layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    /* No rubber-band/pull-to-refresh bounce — the app owns its own scroll
+       regions; the page itself must never scroll on mobile. */
+    overscroll-behavior: none;
+    /* Kill the grey tap flash on touch; our buttons have their own states. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
   *,
   *::before,
   *::after {
@@ -39,6 +53,18 @@
   ::selection {
     background-color: rgba(139, 92, 246, 0.3);
     color: #f8fafc;
+  }
+}
+
+/* Unlayered so it beats Tailwind's utility layer (e.g. text-sm). iOS Safari
+   auto-zooms the page when you focus an input whose font is < 16px (and leaves
+   it zoomed). Force 16px on phones so focusing the composer / search never
+   triggers that jarring zoom. Desktop keeps the compact utility sizes. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
   }
 }
 

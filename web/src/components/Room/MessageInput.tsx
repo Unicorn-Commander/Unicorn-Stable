@@ -630,7 +630,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
         <div className="flex shrink-0 items-center gap-0.5 pb-1">
           <button
             onClick={handleFileSelect}
-            className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+            className="rounded-lg p-2.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 md:p-1.5"
             aria-label="Attach file"
           >
             <Paperclip className="h-4 w-4" />
@@ -654,14 +654,14 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
             onPaste={handlePaste}
             placeholder="Type a message, paste images, or drop files…"
             rows={1}
-            className="w-full resize-none rounded-xl bg-slate-800/80 px-4 py-2.5 pr-10 text-sm text-slate-100 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50"
+            className="w-full resize-none rounded-xl bg-slate-800/80 px-4 py-2.5 pr-12 text-sm text-slate-100 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50 md:pr-10"
             aria-label="Message input"
           />
 
           {content.trim() ? (
             <button
               onClick={handleSend}
-              className="absolute bottom-2 right-2 rounded-lg bg-stable-purple p-1.5 text-white transition-colors hover:bg-stable-purple-light"
+              className="absolute bottom-1.5 right-1.5 rounded-lg bg-stable-purple p-2.5 text-white transition-colors hover:bg-stable-purple-light md:bottom-2 md:right-2 md:p-1.5"
               aria-label="Send message"
             >
               <Send className="h-3.5 w-3.5" />
@@ -670,7 +670,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
             <button
               onClick={handleStartCall}
               className={clsx(
-                "absolute bottom-2 right-2 rounded-lg p-1.5 transition-colors",
+                "absolute bottom-1.5 right-1.5 rounded-lg p-2.5 transition-colors md:bottom-2 md:right-2 md:p-1.5",
                 isConnected
                   ? "text-green-400"
                   : "text-slate-500 hover:text-slate-300",
@@ -685,7 +685,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
         {!isConnected && !voiceActive && (
           <button
             onClick={handleStartCall}
-            className="shrink-0 rounded-lg p-1.5 pb-2.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-green-400"
+            className="shrink-0 rounded-lg p-2.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-green-400 md:p-1.5 md:pb-2.5"
             aria-label="Start call"
           >
             <Phone className="h-4 w-4" />

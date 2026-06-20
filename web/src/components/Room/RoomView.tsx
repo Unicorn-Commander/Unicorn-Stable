@@ -141,7 +141,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   }
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Room header */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
         <div className="flex items-center gap-2 min-w-0">
@@ -172,6 +172,10 @@ export function RoomView({ roomId }: RoomViewProps) {
               {displayName}
             </button>
           )}
+          {/* Topic + its separator are secondary — hide on phones so a long
+              topic can't squeeze the room name down to a couple letters. The
+              name then takes the full width. md:contents keeps desktop identical. */}
+          <span className="hidden md:contents">
           <span className="text-slate-700">·</span>
           {editingTopic ? (
             <input
@@ -200,39 +204,44 @@ export function RoomView({ roomId }: RoomViewProps) {
               {roomDetail?.description || "Add a topic…"}
             </button>
           )}
+          </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            onClick={() => setSearchOpen(true)}
-            className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-            aria-label="Search messages"
-            title="Search this channel"
-          >
-            <Search className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setPinsOpen((v) => !v)}
-            className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-            aria-label="Show pinned messages"
-            title="Pinned messages"
-          >
-            <Pin className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setMuted(toggleMute(roomId))}
-            className={`rounded-md p-2.5 md:p-1.5 ${muted ? "text-amber-400" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
-            aria-label={muted ? "Unmute channel" : "Mute channel"}
-            title={muted ? "Channel muted — click to unmute" : "Mute notifications for this channel"}
-          >
-            {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-          </button>
+          {/* Phones: search / pins / mute move into the ⋮ menu below so the
+              room name has room to breathe. Desktop keeps them inline. */}
+          <span className="hidden md:contents">
+            <button
+              onClick={() => setSearchOpen(true)}
+              className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              aria-label="Search messages"
+              title="Search this channel"
+            >
+              <Search className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setPinsOpen((v) => !v)}
+              className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              aria-label="Show pinned messages"
+              title="Pinned messages"
+            >
+              <Pin className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setMuted(toggleMute(roomId))}
+              className={`rounded-md p-2.5 md:p-1.5 ${muted ? "text-amber-400" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+              aria-label={muted ? "Unmute channel" : "Mute channel"}
+              title={muted ? "Channel muted — click to unmute" : "Mute notifications for this channel"}
+            >
+              {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+            </button>
+          </span>
           <button
             onClick={() => setInviteOpen(true)}
-            className="flex items-center gap-1 rounded-md bg-stable-purple/20 px-2.5 py-1 text-xs text-stable-purple hover:bg-stable-purple/30"
+            className="flex items-center gap-1 rounded-md bg-stable-purple/20 p-2.5 text-xs text-stable-purple hover:bg-stable-purple/30 md:px-2.5 md:py-1"
             aria-label="Invite members"
           >
             <UserPlus className="h-3.5 w-3.5" />
-            Invite
+            <span className="hidden md:inline">Invite</span>
           </button>
           <button
             onClick={toggleParticipantPanel}
@@ -258,6 +267,42 @@ export function RoomView({ roomId }: RoomViewProps) {
                 role="menu"
                 className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 py-1 shadow-xl"
               >
+                {/* Phones: search / pins / mute live here (their inline buttons
+                    are hidden < md). Desktop only sees Leave. */}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setSearchOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                >
+                  <Search className="h-4 w-4" />
+                  Search
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setPinsOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                >
+                  <Pin className="h-4 w-4" />
+                  Pinned messages
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setMuted(toggleMute(roomId));
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                >
+                  {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                  {muted ? "Unmute channel" : "Mute channel"}
+                </button>
+                <div className="my-1 h-px bg-slate-700/60 md:hidden" />
                 <button
                   role="menuitem"
                   onClick={openLeave}
@@ -375,9 +420,9 @@ export function RoomView({ roomId }: RoomViewProps) {
         <AnimatePresence>
           {participantPanelOpen && (
             <motion.div
-              initial={{ x: "100%", opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: "100%", opacity: 0 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
               className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-60 md:bg-transparent md:shadow-none"
             >
