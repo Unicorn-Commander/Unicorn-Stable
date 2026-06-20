@@ -4,6 +4,7 @@ import { initAuth, isAuthenticated, login, getUserProfile } from "@/services/aut
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { AppShell } from "@/components/Layout/AppShell";
+import { VoiceProvider } from "@/contexts/VoiceProvider";
 
 function AuthGate({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
@@ -239,6 +240,7 @@ function AuthGate({ children }: { children: ReactNode }) {
 export function App() {
   return (
     <AuthGate>
+      <VoiceProvider>
       <Routes>
         {/* Login is vestigial -- auth is a top-level Keycloak redirect, so just
             bounce any stale /login deep-link home. */}
@@ -251,6 +253,7 @@ export function App() {
         {/* Unknown paths fall back home. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </VoiceProvider>
     </AuthGate>
   );
 }

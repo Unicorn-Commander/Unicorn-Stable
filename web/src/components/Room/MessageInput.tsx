@@ -138,68 +138,13 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
 
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const voiceActive = useAppStore((s) => s.voiceActive);
-  const setVoiceActive = useAppStore((s) => s.setVoiceActive);
+  // Shared call (VoiceProvider): tapping the phone/mic just calls connect();
+  // mic publish + agent dispatch + audio playback all happen in the provider.
   const {
-    room: lkRoom,
     connect: lkConnect,
     isConnected,
     isConnecting,
-  } = useStableRoom(voiceActive ? roomId : null);
-
-  // Room detail carries the resident Brigade agent id. Same query key as
-  // RoomView/Header so react-query dedupes the fetch (no extra round-trip).
-  const { data: roomDetail } = useQuery({
-    queryKey: ["room", roomId],
-    queryFn: () => api.getRoom(roomId),
-    staleTime: 30_000,
-  });
-  const brigadeAgentId = roomDetail?.brigade_agent_id ?? null;
-
-  // Call guards: enable mic + dispatch the resident agent once per connection;
-  // wantCall captures the user's intent so only this surface initiates connect.
-  const micEnabledOnConnect = useRef(false);
-  const agentDispatched = useRef(false);
-  const wantCall = useRef(false);
-
-  // Drive connect once the hook re-arms with a real roomId (voiceActive true).
-  useEffect(() => {
-    if (
-      wantCall.current &&
-      voiceActive &&
-      roomId &&
-      !isConnected &&
-      !isConnecting
-    ) {
-      void lkConnect();
-    }
-  }, [voiceActive, roomId, isConnected, isConnecting, lkConnect]);
-
-  // On connect: publish the human's mic on the SAME room instance lkConnect()
-  // connected, and dispatch the room's resident Brigade agent into the call.
-  useEffect(() => {
-    if (!isConnected || !lkRoom) {
-      if (!isConnected) {
-        micEnabledOnConnect.current = false;
-        agentDispatched.current = false;
-      }
-      return;
-    }
-    if (!micEnabledOnConnect.current) {
-      micEnabledOnConnect.current = true;
-      void lkRoom.localParticipant
-        .setMicrophoneEnabled(true)
-        .catch((err) => {
-          console.error("failed to enable microphone on call start", err);
-        });
-    }
-    if (!agentDispatched.current && roomId && brigadeAgentId) {
-      agentDispatched.current = true;
-      // A failed agent dispatch must never break the human's call.
-      void api.inviteBrigadeAgent(roomId, brigadeAgentId).catch((err) => {
-        console.error("failed to dispatch agent into voice call", err);
-      });
-    }
-  }, [isConnected, lkRoom, roomId, brigadeAgentId]);
+  } = useStableRoom();
 
   // Brigade roster — all 22 personas. Fetched once, cached in react-query.
   // We let users @mention any agent regardless of room membership; the agent
@@ -505,11 +450,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
 
   function handleStartCall() {
     if (isConnected || isConnecting) return;
-    // Capture intent + arm the hook. The connect-arming effect calls
-    // lkConnect() once the hook re-renders with the real roomId; the
-    // mic-publish + agent-dispatch effect fires when the call connects.
-    wantCall.current = true;
-    setVoiceActive(true);
+    void lkConnect();
   }
 
   return (

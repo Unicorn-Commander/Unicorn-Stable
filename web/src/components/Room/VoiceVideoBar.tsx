@@ -125,6 +125,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     localParticipant,
     remoteParticipants,
     isConnected,
+    isConnecting,
+    audioBlocked,
+    startAudio,
     disconnect,
   } = useStableRoom(roomId);
 
@@ -194,8 +197,26 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     return out;
   }, [remoteParticipants]);
 
-  if (!isConnected || !room) {
+  if (!isConnected && !isConnecting) {
     return null;
+  }
+
+  // Connecting — the Room isn't ready yet; show a minimal bar with a cancel.
+  if (!room) {
+    return (
+      <div className="flex items-center justify-between border-b border-slate-700/50 bg-slate-900/80 px-4 py-2">
+        <span className="animate-pulse-soft text-sm text-slate-400">
+          Connecting to the call…
+        </span>
+        <button
+          onClick={disconnect}
+          className="rounded-lg bg-red-500/20 p-2 text-red-400 transition-colors hover:bg-red-500/30"
+          aria-label="Cancel call"
+        >
+          <PhoneOff className="h-4 w-4" />
+        </button>
+      </div>
+    );
   }
 
   const isMicOn = localParticipant?.isMicrophoneEnabled ?? false;
@@ -218,11 +239,21 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   }
 
   return (
-    <div
-      className="flex items-center gap-3 border-b border-slate-700/50 bg-slate-900/80 px-4 py-2"
-      role="region"
-      aria-label="Voice and video call"
-    >
+    <div className="flex flex-col">
+      {audioBlocked && (
+        <button
+          onClick={() => void startAudio()}
+          className="flex w-full items-center justify-center gap-2 bg-amber-500/25 px-4 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/35"
+        >
+          <Volume2 className="h-4 w-4" />
+          Tap to hear the call
+        </button>
+      )}
+      <div
+        className="flex items-center gap-3 border-b border-slate-700/50 bg-slate-900/80 px-4 py-2"
+        role="region"
+        aria-label="Voice and video call"
+      >
       <div className="flex flex-1 items-center gap-2 overflow-x-auto py-1">
         {localScreenTrack && (
           <ScreenShareTile label="You — screen" videoRef={attachLocalScreen} />
@@ -320,6 +351,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         >
           <PhoneOff className="h-4 w-4" />
         </button>
+      </div>
       </div>
     </div>
   );

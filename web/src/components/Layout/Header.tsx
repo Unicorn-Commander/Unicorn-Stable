@@ -15,10 +15,8 @@ import {
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import clsx from "clsx";
-import { useQuery } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { useStableRoom } from "@/hooks/useStableRoom";
-import { api } from "@/services/api";
 import { logout } from "@/services/auth";
 import { Avatar } from "@/components/Avatar";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
@@ -38,28 +36,17 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
-  const voiceActive = useAppStore((s) => s.voiceActive);
-  const setVoiceActive = useAppStore((s) => s.setVoiceActive);
-
   const activeRoom = rooms.find((r) => r.id === activeRoomId);
 
+  // Shared call (VoiceProvider): connect/disconnect drive the one Room. Mic
+  // publish + agent dispatch + audio playback all happen in the provider now.
   const {
     room,
     isConnected: lkConnected,
     isConnecting: lkConnecting,
     connect: lkConnect,
     disconnect: lkDisconnect,
-  } = useStableRoom(voiceActive ? activeRoomId : null);
-
-  // Room detail carries the resident Brigade agent id (metadata.brigade_agent_id).
-  // Same query key/shape as RoomView so react-query dedupes the fetch.
-  const { data: roomDetail } = useQuery({
-    queryKey: ["room", activeRoomId],
-    queryFn: () => api.getRoom(activeRoomId as string),
-    enabled: !!activeRoomId,
-    staleTime: 30_000,
-  });
-  const brigadeAgentId = roomDetail?.brigade_agent_id ?? null;
+  } = useStableRoom();
 
   const [micEnabled, setMicEnabled] = useState(true);
   const [camEnabled, setCamEnabled] = useState(false);
@@ -67,65 +54,6 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const avatarBtnRef = useRef<HTMLButtonElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  // Guards so a single call-start enables the mic + dispatches the agent
-  // exactly once per connection (toggling the button must not re-fire).
-  const micEnabledOnConnect = useRef(false);
-  const agentDispatched = useRef(false);
-  // The user pressed "call" and wants this surface to connect. We can't call
-  // lkConnect() synchronously from the click: the hook is armed off
-  // `voiceActive` (null roomId until it flips true), so a cold-start click
-  // captures a no-op connect. Instead we set the intent + arm voiceActive,
-  // then connect from an effect once the hook re-arms with the real roomId.
-  const wantCall = useRef(false);
-
-  // When the call connects, publish the human's mic on the SAME room instance
-  // that lkConnect() connected (this hook's `room`), and dispatch the room's
-  // resident Brigade agent into the voice session — once per connection.
-  useEffect(() => {
-    if (!lkConnected || !room) {
-      // Reset guards when the call ends so the next call re-arms them.
-      if (!lkConnected) {
-        micEnabledOnConnect.current = false;
-        agentDispatched.current = false;
-      }
-      return;
-    }
-
-    if (!micEnabledOnConnect.current) {
-      micEnabledOnConnect.current = true;
-      void room.localParticipant
-        .setMicrophoneEnabled(true)
-        .then(() => setMicEnabled(true))
-        .catch((err) => {
-          console.error("failed to enable microphone on call start", err);
-        });
-    }
-
-    if (!agentDispatched.current && activeRoomId && brigadeAgentId) {
-      agentDispatched.current = true;
-      // A failed agent dispatch must never break the human's call.
-      void api
-        .inviteBrigadeAgent(activeRoomId, brigadeAgentId)
-        .catch((err) => {
-          console.error("failed to dispatch agent into voice call", err);
-        });
-    }
-  }, [lkConnected, room, activeRoomId, brigadeAgentId]);
-
-  // Drive the actual connect once the hook has re-armed with a real roomId
-  // (voiceActive flipped true). Only this surface, having captured the user's
-  // intent in wantCall, initiates the connection.
-  useEffect(() => {
-    if (
-      wantCall.current &&
-      voiceActive &&
-      activeRoomId &&
-      !lkConnected &&
-      !lkConnecting
-    ) {
-      void lkConnect();
-    }
-  }, [voiceActive, activeRoomId, lkConnected, lkConnecting, lkConnect]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -164,14 +92,9 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
   function handleCallToggle() {
     if (lkConnected || lkConnecting) {
-      wantCall.current = false;
       lkDisconnect();
     } else {
-      // Capture intent + arm the hook. The connect-arming effect calls
-      // lkConnect() once the hook re-renders with the real roomId. The
-      // mic-publish + agent-dispatch effect fires when the call connects.
-      wantCall.current = true;
-      setVoiceActive(true);
+      void lkConnect();
     }
   }
 
