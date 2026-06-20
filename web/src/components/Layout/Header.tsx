@@ -21,15 +21,20 @@ import { useStableRoom } from "@/hooks/useStableRoom";
 import { api } from "@/services/api";
 import { logout } from "@/services/auth";
 import { Avatar } from "@/components/Avatar";
-import { SavedPanel } from "./SavedPanel";
+import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 
-export function Header() {
+// `hideOnMobile` lets AppShell collapse this top bar on phones when a room is
+// active — there the RoomView sub-header (with a hamburger) is the single bar,
+// so a second bar here would just waste vertical space. Desktop always shows it.
+export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
-  const [savedOpen, setSavedOpen] = useState(false);
+  // SavedPanel is now rendered once at the AppShell level (so the mobile drawer
+  // account section can open it); here we only need the opener.
+  const setSavedOpen = useAppStore((s) => s.setSavedOpen);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -60,6 +65,8 @@ export function Header() {
   const [camEnabled, setCamEnabled] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const avatarBtnRef = useRef<HTMLButtonElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   // Guards so a single call-start enables the mic + dispatches the agent
   // exactly once per connection (toggling the button must not re-fire).
   const micEnabledOnConnect = useRef(false);
@@ -130,6 +137,11 @@ export function Header() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Keyboard model for the account menu (focus-in, arrows, Esc-to-close).
+  useMenuKeyboard(userMenuOpen, userMenuRef, avatarBtnRef, () =>
+    setUserMenuOpen(false),
+  );
+
   async function handleToggleMic() {
     if (!room) return;
     const next = !micEnabled;
@@ -165,7 +177,14 @@ export function Header() {
 
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
+    <header
+      className={clsx(
+        "flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4",
+        // On phones, collapse this bar when a room is active (the RoomView
+        // sub-header is the single bar there). Always shown >= md.
+        hideOnMobile && "max-md:hidden",
+      )}
+    >
       <div className="flex items-center gap-3">
         <button
           onClick={toggleSidebar}
@@ -307,13 +326,15 @@ export function Header() {
           </button>
         </span>
 
-        {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} />}
-
-        <div className="relative" ref={menuRef}>
+        {/* Account menu — desktop only; on phones account lives in the sidebar
+            drawer's footer (see AppShell). */}
+        <div className="relative hidden md:block" ref={menuRef}>
           <button
+            ref={avatarBtnRef}
             onClick={() => setUserMenuOpen(!userMenuOpen)}
             className="ml-1 transition-opacity hover:opacity-80"
             aria-label="User menu"
+            aria-haspopup="menu"
             aria-expanded={userMenuOpen}
           >
             <Avatar
@@ -324,7 +345,11 @@ export function Header() {
           </button>
 
           {userMenuOpen && (
-            <div className="glass absolute right-0 top-full z-50 mt-2 w-56 rounded-xl p-2 shadow-xl animate-fade-in">
+            <div
+              ref={userMenuRef}
+              role="menu"
+              className="glass absolute right-0 top-full z-50 mt-2 w-56 rounded-xl p-2 shadow-xl animate-fade-in"
+            >
               <div className="border-b border-slate-700/50 px-3 py-2">
                 <p className="text-sm font-medium text-slate-100">
                   {currentUser?.displayName}
@@ -333,29 +358,8 @@ export function Header() {
                   {currentUser?.email}
                 </p>
               </div>
-              {/* On phones, Saved + Settings live here (their toolbar buttons
-                  are hidden < md to keep the top bar from overflowing). */}
               <button
-                onClick={() => {
-                  setUserMenuOpen(false);
-                  setSavedOpen(true);
-                }}
-                className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
-              >
-                <Bookmark className="h-4 w-4" />
-                Saved messages
-              </button>
-              <button
-                onClick={() => {
-                  setUserMenuOpen(false);
-                  toggleSettings();
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
-              >
-                <Settings className="h-4 w-4" />
-                Settings
-              </button>
-              <button
+                role="menuitem"
                 onClick={() => {
                   setUserMenuOpen(false);
                   logout();

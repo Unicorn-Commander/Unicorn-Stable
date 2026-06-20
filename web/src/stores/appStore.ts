@@ -17,6 +17,9 @@ interface RoomMessages {
 interface UIState {
   sidebarOpen: boolean;
   participantPanelOpen: boolean;
+  // Lifted to the store (was Header-local) so the mobile account section in the
+  // sidebar drawer can open Saved messages while the Header bar is hidden.
+  savedOpen: boolean;
   settingsOpen: boolean;
   cheatsheetOpen: boolean;
   threadMessageId: string | null;
@@ -84,6 +87,7 @@ interface AppState {
   setThreadMessageId: (id: string | null) => void;
   setStageAgentId: (id: string | null) => void;
   setCreateRoomModalOpen: (open: boolean) => void;
+  setSavedOpen: (open: boolean) => void;
 
   incrementUnread: (roomId: string, by?: number) => void;
   clearUnread: (roomId: string) => void;
@@ -118,6 +122,7 @@ export const useAppStore = create<AppState>((set) => ({
     // screen on load. Desktop keeps it open in-flow.
     sidebarOpen: typeof window !== "undefined" ? window.innerWidth >= 768 : true,
     participantPanelOpen: typeof window !== "undefined" ? window.innerWidth >= 768 : true,
+    savedOpen: false,
     settingsOpen: false,
     cheatsheetOpen: false,
     threadMessageId: null,
@@ -331,6 +336,10 @@ export const useAppStore = create<AppState>((set) => ({
   setCreateRoomModalOpen: (open) =>
     set((state) => ({
       ui: { ...state.ui, createRoomModalOpen: open },
+    })),
+  setSavedOpen: (open) =>
+    set((state) => ({
+      ui: { ...state.ui, savedOpen: open },
     })),
 
   incrementUnread: (roomId, by = 1) =>

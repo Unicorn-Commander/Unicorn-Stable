@@ -2,15 +2,18 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { X } from "lucide-react";
+import { X, Bookmark, Settings, LogOut } from "lucide-react";
 import { api } from "@/services/api";
+import { logout } from "@/services/auth";
 import { useAppStore } from "@/stores/appStore";
+import { Avatar } from "@/components/Avatar";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import { Header } from "./Header";
 import { ToastStack } from "./ToastStack";
 import { CheatsheetModal } from "./CheatsheetModal";
 import { SettingsModal } from "./SettingsModal";
+import { SavedPanel } from "./SavedPanel";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
@@ -32,6 +35,9 @@ export function AppShell() {
   const createRoomModalOpen = useAppStore((s) => s.ui.createRoomModalOpen);
   const settingsOpen = useAppStore((s) => s.ui.settingsOpen);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const savedOpen = useAppStore((s) => s.ui.savedOpen);
+  const setSavedOpen = useAppStore((s) => s.setSavedOpen);
+  const currentUser = useAppStore((s) => s.currentUser);
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // Tab title shows total unread so background tabs can notify.
@@ -198,6 +204,53 @@ export function AppShell() {
               </button>
             </div>
             <RoomList />
+            {/* Mobile-only account footer. On phones the top Header (with the
+                avatar menu) is hidden while a room is open, so account actions
+                live at the foot of the drawer. Desktop keeps the Header menu. */}
+            <div className="shrink-0 border-t border-slate-700/50 p-2 md:hidden">
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <Avatar
+                  name={currentUser?.displayName ?? "U"}
+                  src={currentUser?.avatarUrl}
+                  size="sm"
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-100">
+                    {currentUser?.displayName}
+                  </p>
+                  <p className="truncate text-xs text-slate-400">
+                    {currentUser?.email}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setSavedOpen(true);
+                  toggleSidebar();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+              >
+                <Bookmark className="h-4 w-4" />
+                Saved messages
+              </button>
+              <button
+                onClick={() => {
+                  toggleSettings();
+                  toggleSidebar();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+              >
+                <Settings className="h-4 w-4" />
+                Settings
+              </button>
+              <button
+                onClick={() => logout()}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign Out
+              </button>
+            </div>
           </motion.aside>
         )}
       </AnimatePresence>
@@ -211,7 +264,7 @@ export function AppShell() {
       )}
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <Header />
+        <Header hideOnMobile={!!activeRoomId} />
         <div className="flex min-h-0 flex-1">
           {activeRoomId ? (
             <ErrorBoundary key={activeRoomId}>
@@ -244,6 +297,10 @@ export function AppShell() {
 
       <AnimatePresence>
         {settingsOpen && <SettingsModal onClose={toggleSettings} />}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} />}
       </AnimatePresence>
 
       <AnimatePresence>

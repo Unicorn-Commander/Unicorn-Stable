@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bell, BellOff, Hash, LogOut, MoreVertical, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, Hash, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { ChatPanel } from "./ChatPanel";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { StageView } from "./StageView";
@@ -24,6 +25,7 @@ interface RoomViewProps {
 export function RoomView({ roomId }: RoomViewProps) {
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
+  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const threadMessageId = useAppStore((s) => s.ui.threadMessageId);
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
@@ -38,6 +40,8 @@ export function RoomView({ roomId }: RoomViewProps) {
   const [leaving, setLeaving] = useState(false);
   const navigate = useNavigate();
   const overflowRef = useRef<HTMLDivElement>(null);
+  const overflowBtnRef = useRef<HTMLButtonElement>(null);
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
   const [muted, setMuted] = useState(() => isMuted(roomId));
   useEffect(() => {
     setMuted(isMuted(roomId));
@@ -55,6 +59,11 @@ export function RoomView({ roomId }: RoomViewProps) {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [overflowOpen]);
+
+  // Keyboard model for the ⋮ menu (focus-in, arrows, Esc-to-close + restore).
+  useMenuKeyboard(overflowOpen, overflowMenuRef, overflowBtnRef, () =>
+    setOverflowOpen(false),
+  );
 
   const { data: roomDetail } = useQuery({
     queryKey: ["room", roomId],
@@ -145,6 +154,16 @@ export function RoomView({ roomId }: RoomViewProps) {
       {/* Room header */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
         <div className="flex items-center gap-2 min-w-0">
+          {/* Phones: this sub-header is the single top bar, so it owns the
+              drawer toggle. Hidden >= md (the AppShell Header's hamburger
+              takes over there). */}
+          <button
+            onClick={toggleSidebar}
+            className="-ml-1 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:hidden"
+            aria-label="Open sidebar"
+          >
+            <PanelLeftOpen className="h-5 w-5" />
+          </button>
           <Hash className="h-4 w-4 shrink-0 text-slate-500" />
           {editingName ? (
             <input
@@ -253,6 +272,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </button>
           <div className="relative" ref={overflowRef}>
             <button
+              ref={overflowBtnRef}
               onClick={() => setOverflowOpen((v) => !v)}
               className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
               aria-label="More room actions"
@@ -264,6 +284,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
             {overflowOpen && (
               <div
+                ref={overflowMenuRef}
                 role="menu"
                 className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 py-1 shadow-xl"
               >
