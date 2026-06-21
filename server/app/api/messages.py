@@ -169,6 +169,36 @@ async def send_message(
     except Exception:
         logger.warning("agent_chat_responder_schedule_failed", exc_info=True)
 
+    # Document RAG indexing. If the message carries document attachments,
+    # index them (extract → chunk → embed → qdrant, scoped to the room) in a
+    # fire-and-forget task so the room's agent can later answer FROM the docs.
+    # Fully fail-safe: any error is swallowed and never blocks message send.
+    # Imported lazily to avoid an import cycle at module load.
+    try:
+        settings_for_rag = get_settings()
+        attachments = None
+        if isinstance(body.metadata, dict):
+            attachments = body.metadata.get("attachments")
+        if (
+            getattr(settings_for_rag, "rag_enabled", False)
+            and isinstance(attachments, list)
+            and attachments
+        ):
+            import asyncio as _asyncio
+
+            from app.services.rag_service import rag_service as _rag_service
+
+            _asyncio.create_task(
+                _rag_service.index_message_attachments(
+                    settings=settings_for_rag,
+                    room_id=room_id,
+                    message_id=msg.id,
+                    attachments=attachments,
+                )
+            )
+    except Exception:
+        logger.warning("rag_index_schedule_failed", exc_info=True)
+
     # Note: MessageService.send_message already broadcasts the message onto
     # the LiveKit data channel as `{type: "new_message", ...}` for any agents
     # in the room. No second fanout needed here.

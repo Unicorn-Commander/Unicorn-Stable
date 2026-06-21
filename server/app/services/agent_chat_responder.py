@@ -145,6 +145,34 @@ async def _respond(
             agent_participant_id=agent_participant.id,
         )
 
+        # Document RAG: retrieve the most relevant excerpts from documents
+        # shared in this room and prepend them as a system message so the
+        # agent can answer FROM the documents ("chat with your documents").
+        # Fully fail-safe — any error is a no-op and the reply proceeds
+        # without injected context. Imported lazily to avoid an import cycle.
+        if getattr(settings, "rag_enabled", False):
+            try:
+                from app.services.rag_service import rag_service
+
+                hits = await rag_service.retrieve(
+                    settings=settings,
+                    room_id=str(room.id),
+                    query=msg.content or "",
+                )
+                if hits:
+                    context_block = rag_service.format_context(hits)
+                    if context_block:
+                        oai_history = [
+                            {"role": "system", "content": context_block}
+                        ] + oai_history
+                        logger.info(
+                            "rag_context_injected",
+                            room_id=str(room.id),
+                            hits=len(hits),
+                        )
+            except Exception:
+                logger.warning("rag_context_inject_failed", exc_info=True)
+
         await _send_typing(
             livekit=livekit,
             livekit_room_name=room.livekit_room_name,

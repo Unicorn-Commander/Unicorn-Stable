@@ -103,6 +103,23 @@ class Settings(BaseSettings):
     # How long a signed upload URL stays valid, in seconds (default 1 hour).
     upload_url_ttl_seconds: int = 2592000  # 30d internal; public needs read-time re-signing
 
+    # -- Document RAG ("chat with your documents") --
+    # When True, document attachments posted to a room are indexed (extract →
+    # chunk → embed → qdrant, scoped to the room) and the most relevant chunks
+    # are injected as context when the room's agent replies. All RAG work is
+    # fail-safe and fire-and-forget: any error is swallowed and never blocks
+    # message send or the chat reply. Flip to False to disable entirely.
+    rag_enabled: bool = True
+    # Qdrant vector store (no auth). Reachable from the backend container.
+    qdrant_url: str = "http://172.17.0.1:6333"
+    # Infinity proxy: OpenAI-shaped /embeddings + /rerank.
+    infinity_url: str = "http://172.17.0.1:8086"
+    # Collection name (pre-created: size 1024, distance Cosine).
+    rag_collection: str = "stable_documents"
+    # Embedding + rerank model names passed to Infinity.
+    embedding_model: str = "BAAI/bge-m3"
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+
     # -- Rate limiting (Redis token-bucket; see app.deps.rate_limit) --
     # Master switch. When False, rate limiting is a no-op (useful for tests).
     rate_limit_enabled: bool = True
