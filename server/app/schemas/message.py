@@ -21,6 +21,10 @@ class MessageCreate(BaseModel):
         default=None,
         validation_alias=AliasChoices("parent_id", "thread_id"),
     )
+    # Optional per-message LLM override (OpenWebUI-style model switcher). When
+    # set, the text agent responder forwards it to Brigade as the underlying
+    # model for this reply, overriding the persona's default. None = default.
+    model: str | None = Field(default=None, max_length=128)
 
 
 class MessageUpdate(BaseModel):

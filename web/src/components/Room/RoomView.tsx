@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
+import clsx from "clsx";
 import { Bell, BellOff, Hash, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
+import { useVoice } from "@/contexts/VoiceProvider";
 import { ChatPanel } from "./ChatPanel";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { StageView } from "./StageView";
 import { VoiceVideoBar } from "./VoiceVideoBar";
+import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { ThreadPanel } from "./ThreadPanel";
@@ -30,6 +33,25 @@ export function RoomView({ roomId }: RoomViewProps) {
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
   const voiceActive = useAppStore((s) => s.voiceActive);
+  // Shared call state: does anyone in the call have a live camera/screen track?
+  // Drives the call region's height — a full video stage when true, a compact
+  // bar when it's an audio-only call (so voice-only stays small).
+  const { localParticipant, remoteParticipants, version } = useVoice();
+  const callHasVideo = useMemo(() => {
+    const localHasVideo =
+      !!localParticipant &&
+      Array.from(localParticipant.trackPublications.values()).some(
+        (t) => t.kind === "video" && t.track,
+      );
+    const remoteHasVideo = remoteParticipants.some((p) =>
+      Array.from(p.trackPublications.values()).some(
+        (t) => t.kind === "video" && t.track,
+      ),
+    );
+    return localHasVideo || remoteHasVideo;
+    // `version` bumps on every track publish/unpublish/mute in the provider.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localParticipant, remoteParticipants, version]);
   const setParticipants = useAppStore((s) => s.setParticipants);
   const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -226,6 +248,12 @@ export function RoomView({ roomId }: RoomViewProps) {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* Mid-conversation model switcher. Desktop: inline. Phones: folds
+              into the ⋮ menu below (rendered there) so the single mobile header
+              bar doesn't get re-crowded. */}
+          <span className="hidden md:contents">
+            <ModelSwitcher roomId={roomId} />
+          </span>
           {/* Phones: search / pins / mute move into the ⋮ menu below so the
               room name has room to breathe. Desktop keeps them inline. */}
           <span className="hidden md:contents">
@@ -288,6 +316,16 @@ export function RoomView({ roomId }: RoomViewProps) {
                 role="menu"
                 className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 py-1 shadow-xl"
               >
+                {/* Phones: model switcher lives here (its inline trigger is
+                    hidden < md). Rendered as a labeled row; its own popover
+                    opens below and stays inside this menu's bounds. */}
+                <div className="px-3 py-1.5 md:hidden">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                    Model
+                  </div>
+                  <ModelSwitcher roomId={roomId} className="max-w-full" />
+                </div>
+                <div className="my-1 h-px bg-slate-700/60 md:hidden" />
                 {/* Phones: search / pins / mute live here (their inline buttons
                     are hidden < md). Desktop only sees Leave. */}
                 <button
@@ -381,10 +419,19 @@ export function RoomView({ roomId }: RoomViewProps) {
         {voiceActive && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
+            // Video call → a real stage that takes a meaningful share of the
+            // viewport (the bar lays out a responsive tile grid inside). Audio-
+            // only → height:auto keeps the compact voice bar small.
+            animate={{
+              height: callHasVideo ? "var(--call-stage-h)" : "auto",
+              opacity: 1,
+            }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="shrink-0 overflow-hidden"
+            className={clsx(
+              "shrink-0 overflow-hidden",
+              callHasVideo && "[--call-stage-h:40vh] md:[--call-stage-h:50vh]",
+            )}
           >
             <VoiceVideoBar roomId={roomId} />
           </motion.div>

@@ -28,6 +28,9 @@ class BrigadeAgent(BaseModel):
 
 class InviteAgentRequest(BaseModel):
     brigade_agent_id: str
+    # Optional per-conversation LLM override (model switcher), persisted on the
+    # room so both the voice dispatch and the text responder use it.
+    model: str | None = None
 
 
 class InviteAgentResponse(BaseModel):
@@ -83,6 +86,39 @@ async def list_brigade_agents(
     Brigade is the source of truth for agents.
     """
     return await _fetch_brigade_agents()
+
+
+class ChatModel(BaseModel):
+    id: str
+    label: str
+    family: str = ""
+
+
+# Curated set of underlying LLMs the model switcher offers. Each id is a valid
+# Brigade `model` override, verified to route 200 + clean (no <think>); Brigade
+# resolves these through litellm (no-think baked in for qwen). The first entry
+# is the default Majik runs on. Add new ids only after verifying they route.
+_SWITCHER_MODELS: list[dict[str, str]] = [
+    {"id": "qwen3.6-35b-a3b", "label": "Qwen 3.6 35B A3B", "family": "qwen"},
+    {"id": "qwen3.5-35b-a3b", "label": "Qwen 3.5 35B A3B", "family": "qwen"},
+    {"id": "llama-3.3-70b-instruct", "label": "Llama 3.3 70B", "family": "llama"},
+    {"id": "gpt-4o", "label": "GPT-4o", "family": "openai"},
+    {"id": "gpt-4o-mini", "label": "GPT-4o mini", "family": "openai"},
+]
+
+
+@router.get("/models", response_model=list[ChatModel])
+async def list_models(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> list[ChatModel]:
+    """List underlying LLMs for the mid-conversation model switcher.
+
+    Curated, not the raw Brigade persona roster nor the full litellm catalog —
+    each id is a verified-working Brigade ``model`` override. Local qwen models
+    are no-think. The first entry is Majik's default.
+    """
+    _ = user
+    return [ChatModel(**m) for m in _SWITCHER_MODELS]
 
 
 async def _ensure_agent_member(
@@ -220,6 +256,7 @@ async def invite_brigade_agent(
         metadata={
             "agent_type": "brigade",
             "brigade_agent_id": body.brigade_agent_id,
+            **({"model_override": body.model} if body.model else {}),
             "invited_by": user.get("sub") or user.get("preferred_username") or "",
         },
     )
@@ -261,6 +298,10 @@ async def invite_brigade_agent(
         if room_row is not None:
             meta = dict(room_row.metadata_ or {})
             meta["brigade_agent_id"] = body.brigade_agent_id
+            if body.model:
+                meta["model_override"] = body.model
+            else:
+                meta.pop("model_override", None)
             room_row.metadata_ = meta
             await db.commit()
     except Exception:

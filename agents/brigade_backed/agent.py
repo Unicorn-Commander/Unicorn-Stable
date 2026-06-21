@@ -258,11 +258,13 @@ class BrigadeBackedAgent(StableAgent):
         brigade_agent_id = self._resolve_brigade_agent_id(ctx)
         self._brigade_agent_id = brigade_agent_id
         user_id = self._human_user_id or self.identity
+        model_override = self._resolve_model_override(ctx)
 
         llm_plugin = build_brigade_llm(
             cfg,
             brigade_agent_id=brigade_agent_id,
             user_id=user_id,
+            model_override=model_override,
         )
 
         # Optional voice plugins
@@ -316,6 +318,7 @@ class BrigadeBackedAgent(StableAgent):
             "brigade_backed_session_built",
             brigade_agent_id=brigade_agent_id,
             user_id=user_id,
+            model_override=model_override,
             has_stt=stt_plugin is not None,
             has_tts=tts_plugin is not None,
         )
@@ -339,3 +342,21 @@ class BrigadeBackedAgent(StableAgent):
             if isinstance(meta, dict) and meta.get("brigade_agent_id"):
                 return str(meta["brigade_agent_id"])
         return "the-general"
+
+    def _resolve_model_override(self, ctx: JobContext) -> str | None:
+        # Per-conversation LLM override (model switcher), carried on the same
+        # dispatch/room metadata as brigade_agent_id. None → persona default.
+        candidates = [
+            getattr(getattr(ctx, "job", None), "metadata", "") or "",
+            getattr(ctx.room, "metadata", "") or "",
+        ]
+        for meta_raw in candidates:
+            if not meta_raw:
+                continue
+            try:
+                meta = json.loads(meta_raw)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(meta, dict) and meta.get("model_override"):
+                return str(meta["model_override"])
+        return None

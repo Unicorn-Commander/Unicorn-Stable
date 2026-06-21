@@ -102,6 +102,17 @@ export interface BrigadeAgent {
   description: string;
 }
 
+/**
+ * A selectable LLM for the mid-conversation model switcher. Returned by
+ * GET /api/v1/models. `family` groups related models in the picker (e.g.
+ * "qwen", "claude") and `label` is the human-readable name shown in the UI.
+ */
+export interface ChatModel {
+  id: string;
+  label: string;
+  family: string;
+}
+
 export interface InviteBrigadeAgentResponse {
   room_name: string;
   brigade_agent_id: string;
@@ -150,6 +161,12 @@ export interface SendMessageRequest {
   content_type: "text" | "action" | "image" | "file";
   thread_id?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Per-conversation LLM override (the mid-conversation model switcher). When
+   * present, the backend uses this model id instead of the room agent's
+   * default. Resolved from the client-side modelOverrides store in useChat.
+   */
+  model?: string;
 }
 
 class StableApiClient {
@@ -453,6 +470,11 @@ class StableApiClient {
     return this.request<BrigadeAgent[]>("GET", "/api/v1/brigade/agents");
   }
 
+  /** Selectable LLMs for the mid-conversation model switcher. */
+  async getModels(): Promise<ChatModel[]> {
+    return this.request<ChatModel[]>("GET", "/api/v1/models");
+  }
+
   async removeBrigadeAgent(roomName: string, brigadeAgentId: string): Promise<void> {
     await this.request<void>(
       "DELETE",
@@ -463,11 +485,17 @@ class StableApiClient {
   async inviteBrigadeAgent(
     roomName: string,
     brigadeAgentId: string,
+    model?: string,
   ): Promise<InviteBrigadeAgentResponse> {
+    const body: { brigade_agent_id: string; model?: string } = {
+      brigade_agent_id: brigadeAgentId,
+    };
+    // Only send the override when the room has one set; absent = agent default.
+    if (model) body.model = model;
     return this.request<InviteBrigadeAgentResponse>(
       "POST",
       `/api/v1/rooms/${encodeURIComponent(roomName)}/invite-brigade-agent`,
-      { brigade_agent_id: brigadeAgentId },
+      body,
     );
   }
 

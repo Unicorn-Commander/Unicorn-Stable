@@ -30,6 +30,7 @@ def build_brigade_llm(
     cfg: Any,
     brigade_agent_id: str,
     user_id: Optional[str] = None,
+    model_override: Optional[str] = None,
 ) -> Any:
     """Return a livekit.plugins.openai.LLM wired to Brigade's OpenAI-compat adapter.
 
@@ -69,4 +70,10 @@ def build_brigade_llm(
     }
     if user_id:
         kwargs["user"] = user_id
+    # Per-conversation LLM override (model switcher): Brigade's openai-compat
+    # adapter honors a `model_override` body field that swaps the underlying
+    # model while keeping the persona (`model`=brigade_agent_id). Forward it via
+    # the openai client's extra_body so live voice replies match the text thread.
+    if model_override:
+        kwargs["extra_body"] = {"model_override": model_override}
     return lk_openai.LLM(**kwargs)

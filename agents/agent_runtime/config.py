@@ -42,13 +42,14 @@ class AgentSettings(BaseSettings):
     elevenlabs_api_key: str = ""
     cartesia_api_key: str = ""
 
-    # Self-hosted voice services (live on uc-1 over Tailscale, reachable from
-    # the stable-agents container via the host tailnet). Override per-deploy.
-    # Amanuensis STT is OpenAI-compatible (/v1/audio/transcriptions); Orator
-    # TTS is native ({text,voice}) and driven by plugins/tts.py:OratorTTS.
+    # Self-hosted voice services over Tailscale (reachable from the stable-agents
+    # container via the host tailnet). Override per-deploy.
+    # Amanuensis STT (uc-1) is OpenAI-compatible (/v1/audio/transcriptions);
+    # Kokoro TTS (midboy2 GPU, GTX 1070) is OpenAI-compatible and driven by
+    # plugins/tts.py:OratorTTS.
     whisper_base_url: str = "http://100.78.236.160:9000/v1"
     whisper_model: str = "whisper-1"
-    kokoro_base_url: str = "http://100.78.236.160:8880"
+    kokoro_base_url: str = "http://100.66.42.57:8880"
 
     # Logging
     log_level: str = "INFO"

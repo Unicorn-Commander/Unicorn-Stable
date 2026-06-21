@@ -56,6 +56,9 @@ interface AppState {
   unreadCounts: Record<string, number>;
   // Per-room: { participant_id → last_read_at iso }
   readReceipts: Record<string, Record<string, string>>;
+  // Per-room LLM override for the mid-conversation model switcher:
+  // { roomId → model id }. Absent key = use the agent's default model.
+  modelOverrides: Record<string, string>;
   toasts: Toast[];
   ui: UIState;
   voiceActive: boolean;
@@ -92,6 +95,8 @@ interface AppState {
   incrementUnread: (roomId: string, by?: number) => void;
   clearUnread: (roomId: string) => void;
   setReadReceipt: (roomId: string, participantId: string, at: string) => void;
+  // Set (modelId) or clear (null) the per-room LLM override.
+  setModelOverride: (roomId: string, modelId: string | null) => void;
   pushToast: (toast: Omit<Toast, "id" | "createdAt">) => void;
   dismissToast: (id: string) => void;
 
@@ -113,6 +118,7 @@ export const useAppStore = create<AppState>((set) => ({
   onlineUsers: [],
   unreadCounts: {},
   readReceipts: {},
+  modelOverrides: {},
   toasts: [],
   pendingInsert: null,
   ui: {
@@ -366,6 +372,17 @@ export const useAppStore = create<AppState>((set) => ({
         },
       },
     })),
+  setModelOverride: (roomId, modelId) =>
+    set((state) => {
+      const next = { ...state.modelOverrides };
+      if (modelId) {
+        next[roomId] = modelId;
+      } else {
+        // null clears the override → fall back to the agent's default model.
+        delete next[roomId];
+      }
+      return { modelOverrides: next };
+    }),
   pushToast: (toast) =>
     set((state) => ({
       toasts: [

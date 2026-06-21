@@ -1,21 +1,21 @@
 """TTS plugin configuration.
 
-Default provider is ``kokoro`` — served by the self-hosted **Unicorn Orator**
-voice service on the live uc-1 box over Tailscale
-(``http://100.78.236.160:8880`` by default; override with ``KOKORO_BASE_URL``).
+Default provider is ``kokoro`` — served by the GPU-accelerated **Unicorn Kokoro**
+service on midboy2 (GTX 1070) over Tailscale
+(``http://100.66.42.57:8880`` by default; override with ``KOKORO_BASE_URL``).
 
-IMPORTANT — Orator is NOT OpenAI-body-compatible. Its ``POST /v1/audio/speech``
-takes a native ``{text, voice, speed, stream}`` body (field ``text``, *not* the
-OpenAI ``input``) and returns ``audio/wav``. Verified live: an OpenAI-shape body
-``{model,input,voice}`` is rejected with HTTP 422 ("Field required: text"),
-while ``{text,voice}`` returns 200 + WAV. The stock ``livekit.plugins.openai.TTS``
-sends ``input=`` via the OpenAI SDK, so it CANNOT drive Orator. We therefore ship
-a small native ``OratorTTS`` plugin (a ``livekit.agents.tts.TTS`` subclass) that
-speaks Orator's real contract.
+This is the stock ``kokoro-fastapi`` server, which IS OpenAI-body-compatible:
+``POST /v1/audio/speech`` takes ``{model, input, voice, response_format, speed}``
+(field ``input`` like the OpenAI SDK, *not* ``text``) and returns audio in the
+requested ``response_format``. We request ``wav`` so the ``AudioEmitter`` can parse
+the WAV container directly; output is 24 kHz mono. ``af_heart`` (Majik) and the
+rest of the preset voices below are all served.
 
-Orator advertises both pocket-tts custom voices (alba, javert, ...) and the
-kokoro voice set (am_michael, af_bella, bm_lewis, ...). The per-agent presets
-below map to kokoro voices, which Orator serves via its kokoro-onnx fallback.
+NOTE — this is the INVERSE of the older uc-1 Unicorn Orator (pocket-tts), which
+used a native ``{text, voice}`` body and rejected ``input``. We migrated to the
+midboy2 GPU Kokoro for speed; the ``OratorTTS`` plugin below now speaks the OpenAI
+``{model, input, voice}`` contract (kept over ``openai.TTS`` for its WAV chunk
+emit + per-agent voice presets).
 
 The other providers (elevenlabs, cartesia, openai) stay OpenAI/native-SDK based
 and are unchanged.
@@ -23,6 +23,7 @@ and are unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -44,10 +45,20 @@ from agent_runtime.config import AgentSettings, get_agent_settings
 logger = structlog.get_logger(__name__)
 
 
-# Deployed default = live Unicorn Orator on uc-1 (Tailscale), reachable from the
-# stable-agents container via the host tailnet.
-DEFAULT_KOKORO_BASE_URL = os.getenv("KOKORO_BASE_URL", "http://100.78.236.160:8880")
+# Deployed default = GPU Kokoro on midboy2 (GTX 1070) over Tailscale, reachable
+# from the stable-agents container. Override with KOKORO_BASE_URL.
+DEFAULT_KOKORO_BASE_URL = os.getenv("KOKORO_BASE_URL", "http://100.66.42.57:8880")
 DEFAULT_KOKORO_MODEL = os.getenv("KOKORO_MODEL", "kokoro")
+
+# --- Usage metering (best-effort) -------------------------------------------
+# Report TTS character counts to the ops-center metering bridge so voice usage
+# lands on the same Lago rail (metric ``tts_characters``) as the rest of the
+# platform. Fire-and-forget: a failed/unset report NEVER affects audio. No-op
+# unless METERING_REPORT_URL and METERING_KEY are set. The bridge skips exempt
+# orgs ("collect-don't-gate"), so an internal org is collected but not charged.
+_METERING_URL = os.getenv("METERING_REPORT_URL", "")
+_METERING_KEY = os.getenv("METERING_KEY", "")
+_METERING_ORG = os.getenv("STABLE_METERING_ORG_ID", "stable-internal")
 
 # Orator returns 24kHz mono WAV (per its /health: "sample_rate": 24000).
 _ORATOR_SAMPLE_RATE = int(os.getenv("KOKORO_SAMPLE_RATE", "24000"))
@@ -99,11 +110,10 @@ def _resolve_kokoro_voice(personality: str, explicit: str | None) -> str:
 
 
 class OratorTTS(tts.TTS):
-    """Native Unicorn Orator TTS plugin (livekit-agents 1.5).
+    """Native Kokoro-FastAPI TTS plugin (livekit-agents 1.5).
 
-    Speaks Orator's real ``POST /v1/audio/speech`` contract
-    (``{text, voice, speed}`` -> ``audio/wav``). NOT OpenAI-body-compatible,
-    which is exactly why this exists instead of ``openai.TTS``.
+    Speaks the OpenAI-compatible ``POST /v1/audio/speech`` contract of the
+    midboy2 GPU Kokoro (``{model, input, voice, response_format}`` -> WAV).
     """
 
     def __init__(
@@ -111,6 +121,8 @@ class OratorTTS(tts.TTS):
         *,
         base_url: str,
         voice: str,
+        model: str = DEFAULT_KOKORO_MODEL,
+        personality: str = "default",
         speed: float = 1.0,
         sample_rate: int = _ORATOR_SAMPLE_RATE,
         http_session: Any = None,
@@ -122,6 +134,8 @@ class OratorTTS(tts.TTS):
         )
         self._base_url = base_url.rstrip("/")
         self._voice = voice
+        self._model = model
+        self._personality = personality
         self._speed = speed
         # Optional explicit aiohttp session. Inside the agent worker the
         # managed job-context session is used (utils.http_context.http_session);
@@ -165,11 +179,14 @@ class OratorChunkedStream(tts.ChunkedStream):
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         url = f"{self._tts._base_url}/v1/audio/speech"
+        # OpenAI-compatible kokoro-fastapi body (field is ``input``, not ``text``).
+        # response_format=wav so the AudioEmitter parses the WAV container below.
         payload = {
-            "text": self.input_text,
+            "model": self._tts._model,
+            "input": self.input_text,
             "voice": self._tts._voice,
+            "response_format": "wav",
             "speed": self._tts._speed,
-            "stream": False,
         }
         session = self._tts._ensure_session()
         request_id = utils.shortuuid()
@@ -199,6 +216,14 @@ class OratorChunkedStream(tts.ChunkedStream):
                 async for chunk in resp.content.iter_chunked(8192):
                     output_emitter.push(chunk)
                 output_emitter.flush()
+                # Best-effort usage metering (fire-and-forget; never blocks audio).
+                asyncio.create_task(
+                    _report_tts_usage(
+                        len(self.input_text or ""),
+                        self._tts._voice,
+                        self._tts._personality,
+                    )
+                )
         except APIStatusError:
             raise
         except TimeoutError:
@@ -215,6 +240,39 @@ class OratorChunkedStream(tts.ChunkedStream):
         )
 
 
+async def _report_tts_usage(char_count: int, voice: str, personality: str) -> None:
+    """Fire-and-forget char-count report to the ops-center metering bridge.
+
+    Never raises into the TTS path. No-op when metering is unconfigured.
+    """
+    if not _METERING_URL or not _METERING_KEY or char_count <= 0:
+        return
+    try:
+        import aiohttp
+
+        session = utils.http_context.http_session()
+        async with session.post(
+            _METERING_URL,
+            json={
+                "service_type": "tts",
+                "quantity": char_count,
+                "org_id": _METERING_ORG,
+                "model": "kokoro",
+                "metadata": {
+                    "voice": voice,
+                    "personality": personality,
+                    "engine": "kokoro-fastapi",
+                },
+            },
+            headers={"X-Metering-Key": _METERING_KEY},
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as resp:
+            if resp.status >= 300:
+                logger.debug("tts_metering_non_2xx", status=resp.status)
+    except Exception as e:
+        logger.debug("tts_metering_report_failed", error=str(e))
+
+
 def get_tts_plugin(
     provider: str = "kokoro",
     *,
@@ -229,7 +287,9 @@ def get_tts_plugin(
     if provider == "kokoro":
         voice = _resolve_kokoro_voice(personality, voice_id)
         base_url = _cfg_get(cfg, "kokoro_base_url") or DEFAULT_KOKORO_BASE_URL
-        tts_plugin = OratorTTS(base_url=base_url, voice=voice)
+        tts_plugin = OratorTTS(
+            base_url=base_url, voice=voice, model=DEFAULT_KOKORO_MODEL, personality=personality
+        )
         logger.info(
             "tts_configured",
             provider="kokoro-orator",

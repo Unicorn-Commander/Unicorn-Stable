@@ -194,6 +194,12 @@ export function useChat(roomId: string | null): UseChatReturn {
         if (threadId) {
           request.thread_id = threadId;
         }
+        // Per-room LLM override (mid-conversation model switcher). Read from the
+        // store at send-time so MessageInput/ChatPanel signatures stay untouched.
+        const modelOverride = useAppStore.getState().modelOverrides[roomId];
+        if (modelOverride) {
+          request.model = modelOverride;
+        }
         const serverMessage = await api.sendMessage(roomId, request);
         updateMessage(roomId, optimisticId, {
           id: serverMessage.id,
@@ -245,6 +251,9 @@ export function useChat(roomId: string | null): UseChatReturn {
         if (req.attachments?.length) request.metadata = { attachments: req.attachments };
         if (req.extraMetadata) request.metadata = { ...(request.metadata ?? {}), ...req.extraMetadata };
         if (req.thread_id) request.thread_id = req.thread_id;
+        // Replay the room's currently-selected model on retry too.
+        const modelOverride = useAppStore.getState().modelOverrides[roomId];
+        if (modelOverride) request.model = modelOverride;
         const serverMessage = await api.sendMessage(roomId, request);
         updateMessage(roomId, messageId, {
           id: serverMessage.id,

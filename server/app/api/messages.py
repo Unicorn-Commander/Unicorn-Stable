@@ -164,6 +164,7 @@ async def send_message(
                     settings=settings_now,
                     session_factory=request.app.state.db_session_factory,
                     livekit=livekit,
+                    model=body.model,
                 )
     except Exception:
         logger.warning("agent_chat_responder_schedule_failed", exc_info=True)

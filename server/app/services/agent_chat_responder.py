@@ -48,10 +48,13 @@ def schedule_response(
     settings: Settings,
     session_factory: async_sessionmaker,
     livekit: LiveKitService,
+    model: str | None = None,
 ) -> None:
     """Fire-and-forget background task to generate an agent reply.
 
-    Returns immediately. Errors are logged, not raised.
+    Returns immediately. Errors are logged, not raised. ``model`` optionally
+    overrides the resident agent's underlying LLM for this reply (the
+    OpenWebUI-style mid-conversation model switcher).
     """
     if not settings.stable_text_agent_path_enabled:
         return
@@ -66,6 +69,7 @@ def schedule_response(
             settings=settings,
             session_factory=session_factory,
             livekit=livekit,
+            model=model,
         )
     )
 
@@ -89,6 +93,7 @@ async def _respond(
     settings: Settings,
     session_factory: async_sessionmaker,
     livekit: LiveKitService,
+    model: str | None = None,
 ) -> None:
     async with session_factory() as db:
         msg = (
@@ -160,6 +165,15 @@ async def _respond(
             },
         )
 
+        # Effective LLM override: explicit per-message model wins; otherwise a
+        # per-room override persisted on room metadata (set via the model
+        # switcher / invite). None → Brigade uses the persona's default model.
+        effective_model = model
+        if not effective_model and isinstance(room.metadata_, dict):
+            raw_override = room.metadata_.get("model_override")
+            if isinstance(raw_override, str) and raw_override:
+                effective_model = raw_override
+
         accumulated = ""
         try:
             accumulated = await _call_brigade(
@@ -167,6 +181,7 @@ async def _respond(
                 brigade_agent_id=brigade_agent_id,
                 user_id=str(sender_id) if sender_id else "anonymous",
                 messages=oai_history,
+                model=effective_model,
             )
         except Exception as exc:
             logger.exception("brigade_chat_call_failed")
@@ -344,6 +359,7 @@ async def _call_brigade(
     brigade_agent_id: str,
     user_id: str,
     messages: list[dict[str, str]],
+    model: str | None = None,
 ) -> str:
     """POST to Brigade's dedicated chat endpoint and return the reply text.
 
@@ -368,6 +384,10 @@ async def _call_brigade(
         "messages": messages,
         "user": user_id,
     }
+    # Per-conversation LLM override (model switcher). Brigade's /agents/{id}/chat
+    # honors a `model` field that overrides the persona's configured model.
+    if model:
+        payload["model"] = model
 
     async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as http:
         resp = await http.post(url, headers=headers, json=payload)

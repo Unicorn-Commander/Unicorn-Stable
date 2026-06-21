@@ -41,6 +41,16 @@ interface VoiceContextValue {
   error: string | null;
   /** Browser is blocking autoplay of remote audio → show a "tap to hear" prompt. */
   audioBlocked: boolean;
+  /**
+   * Monotonic counter bumped on every sync() — i.e. whenever a track is
+   * published/unpublished/muted or a participant joins/leaves. The LiveKit SDK
+   * reuses the SAME LocalParticipant/RemoteParticipant object across these
+   * events, so setState with that object reference is a React no-op and tile
+   * useMemos keyed only on the participant never recompute (the camera self-view
+   * stayed blank). Consumers include `version` in those dep arrays to force a
+   * recompute when the underlying track set changes.
+   */
+  version: number;
   connect: () => Promise<void>;
   disconnect: () => void;
   startAudio: () => Promise<void>;
@@ -62,6 +72,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
+  // Bumped on every sync() so consumers can detect track/participant changes
+  // even though LiveKit hands back the same participant object each time.
+  const [version, setVersion] = useState(0);
 
   const roomRef = useRef<Room | null>(null);
   const connectingRef = useRef(false);
@@ -69,6 +82,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const sync = useCallback((r: Room) => {
     setLocalParticipant(r.localParticipant);
     setRemoteParticipants(Array.from(r.remoteParticipants.values()));
+    setVersion((v) => v + 1);
   }, []);
 
   const disconnect = useCallback(() => {
@@ -82,6 +96,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setIsConnected(false);
     setIsConnecting(false);
     setAudioBlocked(false);
+    setVersion(0);
     setVoiceActive(false);
   }, [setVoiceActive]);
 
@@ -185,7 +200,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         const detail = await api.getRoom(roomId);
         const agentId = detail?.brigade_agent_id;
         if (agentId) {
-          await api.inviteBrigadeAgent(roomId, agentId);
+          // Honor the per-room model override (mid-conversation switcher) for
+          // the voice agent too, so the spoken agent uses the same chosen LLM.
+          const model = useAppStore.getState().modelOverrides[roomId];
+          await api.inviteBrigadeAgent(roomId, agentId, model);
         }
       } catch (e) {
         console.error("failed to dispatch agent into voice call", e);
@@ -227,6 +245,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         isConnecting,
         error,
         audioBlocked,
+        version,
         connect,
         disconnect,
         startAudio,
