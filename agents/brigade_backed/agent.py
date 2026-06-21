@@ -30,6 +30,10 @@ _ = asyncio  # keep import (used via httpx)
 from livekit.agents import Agent, AgentSession, JobContext
 
 from agent_runtime.base import StableAgent
+from agent_runtime.transcript_publisher import (
+    TranscriptPublisher,
+    _agent_display_name,
+)
 from agent_runtime.brigade_llm import build_brigade_llm
 from agent_runtime.config import AgentSettings, get_agent_settings
 
@@ -48,6 +52,7 @@ class BrigadeBackedAgent(StableAgent):
         self._stt_provider: str = "whisper"
         self._session: AgentSession | None = None
         self._lk_agent: Agent | None = None
+        self._transcript: TranscriptPublisher | None = None
 
     async def on_message(self, message: dict[str, Any]) -> None:
         """Reply to a chat by streaming from Brigade and posting incrementally.
@@ -305,6 +310,51 @@ class BrigadeBackedAgent(StableAgent):
 
         session = AgentSession()
         self._session = session
+
+        # --- Live transcript publishing (additive, fire-and-forget) ---
+        # Republish the human STT (interim + final) and Majik’s spoken
+        # replies as `transcript` data messages on the "stable" topic so the
+        # frontend TranscriptPanel shows captions in near-real-time. This is
+        # read-only w.r.t. the voice path and must never raise into it.
+        try:
+            # Use the room’s actual local-participant identity (the in-room
+            # "agent-<type>" set at job-accept) so the caption’s speaker
+            # correlates with the agent’s tile/roster; fall back to
+            # self.identity if the room handle isn’t populated yet.
+            agent_identity = (
+                getattr(
+                    getattr(ctx.room, "local_participant", None),
+                    "identity",
+                    "",
+                )
+                or self.identity
+                or f"agent-{brigade_agent_id}"
+            )
+            self._transcript = TranscriptPublisher(
+                room=ctx.room,
+                agent_identity=agent_identity,
+                agent_name=_agent_display_name(brigade_agent_id),
+            )
+            # livekit-agents 1.6 AgentSession events (verified in-container):
+            #   user_input_transcribed -> UserInputTranscribedEvent
+            #       (.transcript, .is_final, .speaker_id) = human STT.
+            #   conversation_item_added -> ConversationItemAddedEvent
+            #       (.item: ChatMessage with .role/.text_content) = replies.
+            session.on(
+                "user_input_transcribed", self._transcript.on_user_transcript
+            )
+            session.on(
+                "conversation_item_added", self._transcript.on_conversation_item
+            )
+            logger.info(
+                "transcript_publisher_wired",
+                agent_identity=agent_identity,
+                topic="stable",
+            )
+        except Exception:
+            # Captioning is best-effort; a wiring failure must not break
+            # the voice session.
+            logger.warning("transcript_publisher_wire_failed", exc_info=True)
 
         # Shim: provide start(room) the way the old VoicePipelineAgent did, so
         # base.py's existing `self._pipeline.start(ctx.room)` call works.
