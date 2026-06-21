@@ -15,6 +15,15 @@ import type {
 } from "livekit-client";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import {
+  decodeRoomData,
+  isAgentParticipant,
+} from "@/lib/roomDataProtocol";
+import {
+  useCallUiStore,
+  dispatchUiCommand,
+  setActiveCallRoom,
+} from "@/stores/callUiStore";
 
 /**
  * THE single LiveKit Room for the whole app.
@@ -98,6 +107,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setAudioBlocked(false);
     setVersion(0);
     setVoiceActive(false);
+    // No active call → agent ui_commands have no room to target.
+    setActiveCallRoom(null);
   }, [setVoiceActive]);
 
   const startAudio = useCallback(async () => {
@@ -175,7 +186,31 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         })
         .on(RoomEvent.AudioPlaybackStatusChanged, () => {
           setAudioBlocked(!r.canPlaybackAudio);
-        });
+        })
+        // Room data channel: transcript lines + agent UI commands. Transcript
+        // packets feed the live-transcript panel; ui_command packets drive the
+        // call UI but ONLY when the sender is an agent (the AG-UI seam).
+        .on(
+          RoomEvent.DataReceived,
+          (payload: Uint8Array, participant?: RemoteParticipant) => {
+            const msg = decodeRoomData(payload);
+            if (!msg) return;
+            if (msg.type === "transcript") {
+              useCallUiStore.getState().ingestTranscript(msg);
+              return;
+            }
+            if (msg.type === "ui_command") {
+              // Gate: only AI agents may drive the interface. A human peer's
+              // ui_command is dropped.
+              if (!isAgentParticipant(participant)) return;
+              dispatchUiCommand(msg, roomId);
+            }
+          },
+        );
+
+      // Tell the imperative uiCommandBus which room agent commands apply to
+      // (it runs outside React, so it can't read the active room itself).
+      setActiveCallRoom(roomId);
 
       await r.connect(ws_url, token);
       setRoom(r);

@@ -7,6 +7,7 @@ import { Bell, BellOff, Hash, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, 
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import { useCallUiStore } from "@/stores/callUiStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { useVoice } from "@/contexts/VoiceProvider";
 import { ChatPanel } from "./ChatPanel";
@@ -33,9 +34,12 @@ export function RoomView({ roomId }: RoomViewProps) {
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
   const voiceActive = useAppStore((s) => s.voiceActive);
+  // Modular call layout: the per-room view mode + the video/transcript toggles
+  // decide how (and where) the call surface renders.
+  const callViewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
+  const showCallVideo = useCallUiStore((s) => s.showVideo);
+  const showTranscript = useCallUiStore((s) => s.showTranscript);
   // Shared call state: does anyone in the call have a live camera/screen track?
-  // Drives the call region's height — a full video stage when true, a compact
-  // bar when it's an audio-only call (so voice-only stays small).
   const { localParticipant, remoteParticipants, version } = useVoice();
   const callHasVideo = useMemo(() => {
     const localHasVideo =
@@ -52,6 +56,16 @@ export function RoomView({ roomId }: RoomViewProps) {
     // `version` bumps on every track publish/unpublish/mute in the provider.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localParticipant, remoteParticipants, version]);
+
+  // The top call region is a tall "stage" for the video modes (focus/grid) when
+  // video is actually showing, and an auto-height slim bar for compact/audio.
+  // "sidebar" mode renders the call as a narrow right column instead (below),
+  // so the top region collapses there. Transcript adds height in the slim bar.
+  const callRendersVideo =
+    showCallVideo && callHasVideo && callViewMode !== "compact";
+  const callInSidebar = voiceActive && callViewMode === "sidebar";
+  const callInTopRegion = voiceActive && callViewMode !== "sidebar";
+  const callRegionTall = callInTopRegion && callRendersVideo;
   const setParticipants = useAppStore((s) => s.setParticipants);
   const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -416,21 +430,26 @@ export function RoomView({ roomId }: RoomViewProps) {
       </AnimatePresence>
 
       <AnimatePresence>
-        {voiceActive && (
+        {callInTopRegion && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            // Video call → a real stage that takes a meaningful share of the
-            // viewport (the bar lays out a responsive tile grid inside). Audio-
-            // only → height:auto keeps the compact voice bar small.
+            // Video modes (focus/grid) → a real stage that takes a meaningful
+            // share of the viewport. Compact/audio → height:auto keeps the slim
+            // voice bar small; an open transcript still needs room, so give it a
+            // fixed-ish height even in compact.
             animate={{
-              height: callHasVideo ? "var(--call-stage-h)" : "auto",
+              height: callRegionTall
+                ? "var(--call-stage-h)"
+                : showTranscript
+                  ? "16rem"
+                  : "auto",
               opacity: 1,
             }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
             className={clsx(
               "shrink-0 overflow-hidden",
-              callHasVideo && "[--call-stage-h:40vh] md:[--call-stage-h:50vh]",
+              callRegionTall && "[--call-stage-h:40vh] md:[--call-stage-h:50vh]",
             )}
           >
             <VoiceVideoBar roomId={roomId} />
@@ -482,6 +501,22 @@ export function RoomView({ roomId }: RoomViewProps) {
         <AnimatePresence>
           {pinsOpen && (
             <PinsPanel roomId={roomId} onClose={() => setPinsOpen(false)} />
+          )}
+        </AnimatePresence>
+
+        {/* Sidebar view mode: the call docks into a narrow right column so the
+            main area stays free for chat/canvas (the co-working layout). */}
+        <AnimatePresence>
+          {callInSidebar && (
+            <motion.div
+              initial={{ opacity: 0, width: 0 }}
+              animate={{ opacity: 1, width: "auto" }}
+              exit={{ opacity: 0, width: 0 }}
+              transition={{ duration: 0.2, ease: "easeInOut" }}
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,300px)] shrink-0 flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-72 md:shadow-none"
+            >
+              <VoiceVideoBar roomId={roomId} />
+            </motion.div>
           )}
         </AnimatePresence>
 
