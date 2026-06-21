@@ -8,6 +8,7 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
 from redis.asyncio import Redis
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,8 +111,23 @@ async def _subscribe_to_rooms(
     logger.debug("ws_subscribed_to_channels", channels=channels, participant_id=participant_id)
 
     try:
-        async for message in pubsub.listen():
-            if message["type"] != "message":
+        while True:
+            # Poll with an explicit per-read timeout rather than pubsub.listen().
+            # redis-py 8.x derives a *blocking* read's timeout from the connection's
+            # socket_timeout, so listen() — which is meant to block forever — instead
+            # raises TimeoutError whenever the subscriber connection sits idle past
+            # socket_timeout (~5s here). That escaped the loop, killed this task, and
+            # tore down the WebSocket every few seconds, silently breaking realtime
+            # message delivery (text chat) while LiveKit audio kept working.
+            # get_message(timeout=...) + swallowing the idle timeout keeps the
+            # subscription alive across quiet periods.
+            try:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+            except (RedisTimeoutError, asyncio.TimeoutError):
+                continue
+            if not message or message.get("type") != "message":
                 continue
             try:
                 data_raw = message["data"]
