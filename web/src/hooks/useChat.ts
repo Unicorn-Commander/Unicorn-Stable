@@ -212,16 +212,29 @@ export function useChat(roomId: string | null): UseChatReturn {
           request.model = modelOverride;
         }
         const serverMessage = await api.sendMessage(roomId, request);
-        updateMessage(roomId, optimisticId, {
-          id: serverMessage.id,
-          created_at: serverMessage.created_at,
-          updated_at: serverMessage.updated_at,
-          metadata: {
-            ...(optimisticMessage.metadata ?? {}),
-            ...(serverMessage.metadata ?? {}),
-            failed: false,
-          },
-        });
+        // The realtime WS echo of this same message can race ahead of this POST
+        // response and already be in the list under its server id. If so, drop
+        // our optimistic copy rather than renaming it to that id — renaming would
+        // produce two items with the same id and render the message twice (the
+        // duplicate-own-message bug). If the echo hasn't arrived yet, rename as
+        // usual; a later echo is then deduped by addMessage's id check.
+        const alreadyEchoed = (
+          useAppStore.getState().messages[roomId]?.items ?? []
+        ).some((m) => m.id === serverMessage.id);
+        if (alreadyEchoed) {
+          removeMessage(roomId, optimisticId);
+        } else {
+          updateMessage(roomId, optimisticId, {
+            id: serverMessage.id,
+            created_at: serverMessage.created_at,
+            updated_at: serverMessage.updated_at,
+            metadata: {
+              ...(optimisticMessage.metadata ?? {}),
+              ...(serverMessage.metadata ?? {}),
+              failed: false,
+            },
+          });
+        }
       } catch (err) {
         // Keep the optimistic message in-place so the user can retry.
         // Stuff the original request into metadata so retryMessage can replay it.
