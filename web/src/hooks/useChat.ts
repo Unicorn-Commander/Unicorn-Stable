@@ -84,6 +84,17 @@ export function useChat(roomId: string | null): UseChatReturn {
     const unsubMessage = ws.on("message", (data: WsEventPayload) => {
       const event = data as WsMessageEvent;
       if (event.room_id === roomId) {
+        // Skip the redis echo of our OWN messages: sendMessage already renders
+        // them optimistically and reconciles to the server id via the POST
+        // response. The echo races that response (it can arrive first), so the
+        // id-dedup in addMessage misses and the user sees a duplicate of what
+        // they just typed. Other participants' messages still come through here.
+        if (
+          event.message?.sender_id &&
+          event.message.sender_id === currentUser?.id
+        ) {
+          return;
+        }
         addMessage(roomId, event.message as Message);
       }
     });
@@ -111,7 +122,7 @@ export function useChat(roomId: string | null): UseChatReturn {
       unsubEdit();
       unsubDelete();
     };
-  }, [roomId, addMessage, updateMessage, removeMessage]);
+  }, [roomId, currentUser, addMessage, updateMessage, removeMessage]);
 
   const loadMore = useCallback(async () => {
     if (!roomId || loading || !hasMore) return;
