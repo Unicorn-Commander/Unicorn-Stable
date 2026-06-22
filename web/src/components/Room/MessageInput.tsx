@@ -10,7 +10,6 @@ import {
 import {
   Send,
   Paperclip,
-  Mic,
   Phone,
   AtSign,
 } from "lucide-react";
@@ -607,20 +606,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
             >
               <Send className="h-3.5 w-3.5" />
             </button>
-          ) : (
-            <button
-              onClick={handleStartCall}
-              className={clsx(
-                "absolute bottom-1.5 right-1.5 rounded-lg p-2.5 transition-colors md:bottom-2 md:right-2 md:p-1.5",
-                isConnected
-                  ? "text-green-400"
-                  : "text-slate-500 hover:text-slate-300",
-              )}
-              aria-label="Start voice call"
-            >
-              <Mic className="h-3.5 w-3.5" />
-            </button>
-          )}
+          ) : null}
         </div>
 
         {!isConnected && !voiceActive && (
