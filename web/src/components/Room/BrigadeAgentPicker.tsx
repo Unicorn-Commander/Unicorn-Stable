@@ -83,7 +83,7 @@ export function BrigadeAgentPicker({ roomName, onInvited, className = "" }: Prop
     return (
       <div className={`text-sm text-slate-500 ${className}`}>
         No Brigade agents available. Configure <code>BRIGADE_API_KEY</code> on
-        the Stable backend.
+        the Command Center backend.
       </div>
     );
   }

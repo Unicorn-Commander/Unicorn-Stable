@@ -19,6 +19,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
 import { RoomView } from "@/components/Room/RoomView";
+import { HomeDashboard } from "@/components/Home/HomeDashboard";
 
 export function AppShell() {
   useGlobalNotifications();
@@ -47,9 +48,12 @@ export function AppShell() {
       (a, b) => a + (b ?? 0),
       0,
     );
-    document.title = total > 0 ? `(${total > 99 ? "99+" : total}) Stable` : "Stable";
+    document.title =
+      total > 0
+        ? `(${total > 99 ? "99+" : total}) Unicorn Command Center`
+        : "Unicorn Command Center";
     return () => {
-      document.title = "Stable";
+      document.title = "Unicorn Command Center";
     };
   }, [unreadCounts]);
 
@@ -189,8 +193,11 @@ export function AppShell() {
             aria-label="Room list sidebar"
           >
             <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
-              <h1 className="gradient-text text-lg font-bold tracking-tight">
-                Stable
+              <h1
+                className="gradient-text text-lg font-bold tracking-tight"
+                title="Unicorn Command Center"
+              >
+                Command Center
               </h1>
               {/* The hamburger is hidden behind the open drawer on phones, so
                   give the drawer its own close affordance. Desktop closes via
@@ -271,20 +278,9 @@ export function AppShell() {
               <RoomView roomId={activeRoomId} />
             </ErrorBoundary>
           ) : (
-            <div className="flex flex-1 items-center justify-center">
-              <div className="flex flex-col items-center gap-3 text-center">
-                <div className="gradient-bg flex h-16 w-16 items-center justify-center rounded-2xl">
-                  <span className="text-2xl font-bold text-white">S</span>
-                </div>
-                <h2 className="text-lg font-semibold text-slate-200">
-                  Welcome to Stable
-                </h2>
-                <p className="max-w-sm text-sm text-slate-400">
-                  Select a room from the sidebar to start chatting, or create a
-                  new room to begin a conversation with humans and AI agents.
-                </p>
-              </div>
-            </div>
+            <ErrorBoundary>
+              <HomeDashboard />
+            </ErrorBoundary>
           )}
         </div>
       </main>

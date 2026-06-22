@@ -82,7 +82,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       kind: "user" as const,
       id: u.id || u.keycloak_sub,
       label: u.display_name || u.username,
-      sub: `@${u.username}${u.signed_in ? "" : " · not yet on Stable"}`,
+      sub: `@${u.username}${u.signed_in ? "" : " · not yet on Command Center"}`,
     }));
     const all = [...channelItems, ...dmItems, ...agentItems, ...userItems];
     if (!q.trim()) return all.slice(0, 12);

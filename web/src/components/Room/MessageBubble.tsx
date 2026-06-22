@@ -56,13 +56,13 @@ function artifactMeta(message: Message): { artifactId: string; artifactTitle: st
 
 function defaultTaskTitle(content: string) {
   const compact = content.replace(/\s+/g, " ").trim();
-  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact || "Stable message follow-up";
+  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact || "Command Center message follow-up";
 }
 
 function buildDescriptionPreview(message: Message, note: string) {
   const content =
     message.content.length > 2048
-      ? `${message.content.slice(0, 2048).trimEnd()}\n\n[Stable message truncated at 2048 characters]`
+      ? `${message.content.slice(0, 2048).trimEnd()}\n\n[Command Center message truncated at 2048 characters]`
       : message.content;
   const permalink = `${window.location.origin}/c/${message.room_id}?message=${message.id}`;
   const parts = [];
@@ -70,7 +70,7 @@ function buildDescriptionPreview(message: Message, note: string) {
     parts.push(note.trim(), "");
   }
   parts.push(
-    "Stable source message",
+    "Command Center source message",
     `Permalink: ${permalink}`,
     `Sender: ${message.sender_name}`,
     `Timestamp: ${message.created_at}`,

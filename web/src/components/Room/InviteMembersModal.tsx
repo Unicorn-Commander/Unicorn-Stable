@@ -187,8 +187,8 @@ export function InviteMembersModal({
         {/* Share link for new users */}
         <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
           <p className="mb-2 text-xs text-slate-400">
-            New to Stable? Share this link — they can register from the sign-in
-            page, then you can add them here.
+            New to Command Center? Share this link — they can register from the
+            sign-in page, then you can add them here.
           </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 truncate rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">

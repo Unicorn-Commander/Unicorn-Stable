@@ -52,7 +52,9 @@ function AuthGate({ children }: { children: ReactNode }) {
       <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
         <div className="flex flex-col items-center gap-4">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-stable-purple border-t-transparent" />
-          <p className="text-sm text-slate-400">Connecting to Stable...</p>
+          <p className="text-sm text-slate-400">
+            Connecting to Command Center…
+          </p>
         </div>
       </div>
     );
@@ -218,7 +220,9 @@ function AuthGate({ children }: { children: ReactNode }) {
       <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
         <div className="glass flex max-w-md flex-col items-center gap-6 rounded-2xl p-8 text-center">
           <div className="flex flex-col items-center gap-2">
-            <h1 className="gradient-text text-3xl font-bold">Stable</h1>
+            <h1 className="gradient-text text-3xl font-bold">
+              Unicorn Command Center
+            </h1>
             <p className="text-sm text-slate-400">
               Where humans and AI meet
             </p>

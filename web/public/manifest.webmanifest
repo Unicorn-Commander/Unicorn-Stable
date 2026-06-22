@@ -1,6 +1,6 @@
 {
-  "name": "Stable",
-  "short_name": "Stable",
+  "name": "Unicorn Command Center",
+  "short_name": "Command Center",
   "description": "Where humans and AI meet — chat, voice, and agents in one room.",
   "id": "/",
   "start_url": "/",
