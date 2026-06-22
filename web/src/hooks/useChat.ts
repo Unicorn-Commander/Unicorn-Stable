@@ -83,20 +83,37 @@ export function useChat(roomId: string | null): UseChatReturn {
 
     const unsubMessage = ws.on("message", (data: WsEventPayload) => {
       const event = data as WsMessageEvent;
-      if (event.room_id === roomId) {
-        // Skip the redis echo of our OWN messages: sendMessage already renders
-        // them optimistically and reconciles to the server id via the POST
-        // response. The echo races that response (it can arrive first), so the
-        // id-dedup in addMessage misses and the user sees a duplicate of what
-        // they just typed. Other participants' messages still come through here.
-        if (
-          event.message?.sender_id &&
-          event.message.sender_id === currentUser?.id
-        ) {
-          return;
-        }
-        addMessage(roomId, event.message as Message);
+      if (event.room_id !== roomId) return;
+      const incoming = event.message as Message;
+      // Skip the redis echo of our OWN just-sent message. A pending optimistic
+      // copy is already on screen, and the POST response reconciles it to the
+      // server id. If we add the echo too, the user sees a duplicate that then
+      // gets removed (the "deleted my reply / made the same reply" flicker).
+      // NOTE: incoming.sender_id is the participant UUID; currentUser.id is the
+      // Keycloak id — they never match — so match the pending optimistic copy
+      // (whose sender_id we set to currentUser.id) by content instead.
+      const items = useAppStore.getState().messages[roomId]?.items ?? [];
+      const ownPending = items.find(
+        (m) =>
+          m.id.startsWith("optimistic-") &&
+          m.content === incoming.content &&
+          m.sender_id === currentUser?.id,
+      );
+      if (ownPending) {
+        console.debug(
+          "[chat] ws echo of own message — skipped (optimistic %s pending)",
+          ownPending.id,
+          incoming.id,
+        );
+        return;
       }
+      console.debug(
+        "[chat] ws message in",
+        incoming.id,
+        incoming.sender_type,
+        incoming.sender_name,
+      );
+      addMessage(roomId, incoming);
     });
 
     const unsubEdit = ws.on("message_edit", (data: WsEventPayload) => {
@@ -189,6 +206,11 @@ export function useChat(roomId: string | null): UseChatReturn {
         },
       };
 
+      console.debug(
+        "[chat] send (optimistic %s): %s",
+        optimisticId,
+        trimmedContent.slice(0, 60),
+      );
       addMessage(roomId, optimisticMessage);
 
       try {
@@ -221,6 +243,12 @@ export function useChat(roomId: string | null): UseChatReturn {
         const alreadyEchoed = (
           useAppStore.getState().messages[roomId]?.items ?? []
         ).some((m) => m.id === serverMessage.id);
+        console.debug(
+          "[chat] POST ok %s -> server %s | echo already present: %s",
+          optimisticId,
+          serverMessage.id,
+          alreadyEchoed,
+        );
         if (alreadyEchoed) {
           removeMessage(roomId, optimisticId);
         } else {
