@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, Hash, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
+import { useCanvasStore } from "@/stores/canvasStore";
+import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { useVoice } from "@/contexts/VoiceProvider";
 import { ChatPanel } from "./ChatPanel";
@@ -20,7 +22,12 @@ import { InviteMembersModal } from "./InviteMembersModal";
 import { ThreadPanel } from "./ThreadPanel";
 import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
+import { CanvasPanel } from "./CanvasPanel";
 import { LeaveRoomModal } from "./LeaveRoomModal";
+
+// Lazy: the Knowledge panel (collection mgmt + file upload + doc lists) is a
+// distinct surface most sessions never open, so split it out of the main chunk.
+const KnowledgePanel = lazy(() => import("./KnowledgePanel"));
 
 interface RoomViewProps {
   roomId: string;
@@ -39,6 +46,27 @@ export function RoomView({ roomId }: RoomViewProps) {
   const callViewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
   const showCallVideo = useCallUiStore((s) => s.showVideo);
   const showTranscript = useCallUiStore((s) => s.showTranscript);
+  // Canvas (co-working artifacts) right-drawer. Open state is global (single
+  // active canvas); the toggle + the data-channel both drive it.
+  const canvasOpen = useCanvasStore((s) => s.panelOpen);
+  const toggleCanvas = useCanvasStore((s) => s.togglePanel);
+  const setCanvasRoom = useCanvasStore((s) => s.setRoom);
+  // Keep the canvas store scoped to the active room even while the panel is
+  // closed, so a live artifact event (or reopening the panel) always targets
+  // the right room. RoomView remounts per room (keyed in AppShell), so this
+  // fires exactly once per room. setRoom() no-ops if already scoped here.
+  useEffect(() => {
+    setCanvasRoom(roomId);
+  }, [roomId, setCanvasRoom]);
+  // Knowledge (KB collections) right-drawer. Like the canvas, open state is
+  // global (single active panel) and the store is scoped to the active room so
+  // the room's attached collections are always for the right room.
+  const knowledgeOpen = useKnowledgeStore((s) => s.panelOpen);
+  const toggleKnowledge = useKnowledgeStore((s) => s.togglePanel);
+  const setKnowledgeRoom = useKnowledgeStore((s) => s.setRoom);
+  useEffect(() => {
+    setKnowledgeRoom(roomId);
+  }, [roomId, setKnowledgeRoom]);
   // Shared call state: does anyone in the call have a live camera/screen track?
   const { localParticipant, remoteParticipants, version } = useVoice();
   const callHasVideo = useMemo(() => {
@@ -288,6 +316,24 @@ export function RoomView({ roomId }: RoomViewProps) {
               <Pin className="h-4 w-4" />
             </button>
             <button
+              onClick={toggleCanvas}
+              className={`rounded-md p-2.5 md:p-1.5 ${canvasOpen ? "bg-stable-purple/20 text-stable-purple-light" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+              aria-label="Toggle canvas"
+              aria-pressed={canvasOpen}
+              title="Canvas — co-working docs, code & diagrams"
+            >
+              <LayoutTemplate className="h-4 w-4" />
+            </button>
+            <button
+              onClick={toggleKnowledge}
+              className={`rounded-md p-2.5 md:p-1.5 ${knowledgeOpen ? "bg-stable-cyan/20 text-stable-cyan" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+              aria-label="Toggle knowledge bases"
+              aria-pressed={knowledgeOpen}
+              title="Knowledge — attach docs for the agent to search"
+            >
+              <Database className="h-4 w-4" />
+            </button>
+            <button
               onClick={() => setMuted(toggleMute(roomId))}
               className={`rounded-md p-2.5 md:p-1.5 ${muted ? "text-amber-400" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
               aria-label={muted ? "Unmute channel" : "Mute channel"}
@@ -363,6 +409,32 @@ export function RoomView({ roomId }: RoomViewProps) {
                 >
                   <Pin className="h-4 w-4" />
                   Pinned messages
+                </button>
+                {/* Canvas is reachable on every viewport (its inline button is
+                    hidden < md); the desktop toolbar button covers >= md. */}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    toggleCanvas();
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                >
+                  <LayoutTemplate className="h-4 w-4" />
+                  {canvasOpen ? "Hide canvas" : "Open canvas"}
+                </button>
+                {/* Knowledge is reachable on every viewport (its inline button is
+                    hidden < md); the desktop toolbar button covers >= md. */}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    toggleKnowledge();
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                >
+                  <Database className="h-4 w-4" />
+                  {knowledgeOpen ? "Hide knowledge" : "Knowledge bases"}
                 </button>
                 <button
                   role="menuitem"
@@ -501,6 +573,31 @@ export function RoomView({ roomId }: RoomViewProps) {
         <AnimatePresence>
           {pinsOpen && (
             <PinsPanel roomId={roomId} onClose={() => setPinsOpen(false)} />
+          )}
+        </AnimatePresence>
+
+        {/* Canvas (co-working artifacts). Mobile = full-screen takeover; desktop
+            = a wide docked right column beside chat. Open state is in the canvas
+            store so the data channel can surface agent-created artifacts later. */}
+        <AnimatePresence>
+          {canvasOpen && (
+            <CanvasPanel
+              roomId={roomId}
+              onClose={() => toggleCanvas()}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Knowledge bases (KB collection mgmt + room attach/detach). Same
+            right-drawer footprint as the canvas; lazy-loaded (see import). */}
+        <AnimatePresence>
+          {knowledgeOpen && (
+            <Suspense fallback={null}>
+              <KnowledgePanel
+                roomId={roomId}
+                onClose={() => toggleKnowledge()}
+              />
+            </Suspense>
           )}
         </AnimatePresence>
 

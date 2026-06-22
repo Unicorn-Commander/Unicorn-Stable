@@ -1,4 +1,16 @@
 import { getToken, refreshToken } from "./auth";
+import type {
+  ArtifactResponse,
+  VersionResponse,
+  CreateArtifactRequest,
+  RewriteArtifactRequest,
+  EditArtifactRequest,
+} from "@/types/artifact";
+import type {
+  Collection,
+  CreateCollectionRequest,
+  KbDocument,
+} from "@/types/knowledge";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -233,6 +245,8 @@ class StableApiClient {
 
   async getRooms(): Promise<Room[]> {
     // Backend returns { rooms: [{ ..., room_type, display_name, ... }] }
+    // ordered by updated_at DESC (most-recent conversation first — see
+    // room_service.list_rooms_for_user). We preserve that order.
     // Map to the client's Room shape (type, name, description, …).
     type Raw = {
       id: string;
@@ -244,6 +258,11 @@ class StableApiClient {
       updated_at: string;
       member_count: number;
       online_count: number;
+      // RoomResponse serializes the column as `metadata_` (alias). The list
+      // endpoint shares _room_to_response with getRoom(), so the resident
+      // Brigade agent's id rides along here too — used to group a persona's
+      // conversations (e.g. Majik) in the sidebar.
+      metadata_?: Record<string, unknown> | null;
     };
     const resp = await this.request<{ rooms: Raw[] }>("GET", "/api/v1/rooms");
     return (resp.rooms ?? []).map((r) => ({
@@ -258,6 +277,10 @@ class StableApiClient {
       last_message: null,
       members: [],
       agents: [],
+      brigade_agent_id:
+        typeof r.metadata_?.brigade_agent_id === "string"
+          ? (r.metadata_.brigade_agent_id as string)
+          : null,
     }));
   }
 
@@ -308,6 +331,34 @@ class StableApiClient {
     patch: { display_name?: string; description?: string },
   ): Promise<Room> {
     return this.request<Room>("PATCH", `/api/v1/rooms/${roomId}`, patch);
+  }
+
+  /**
+   * Start a fresh 1:1 conversation with a Brigade agent (the ChatGPT-style
+   * "New chat"). Creates a new DM room then binds the agent to it via the
+   * invite-brigade-agent path (which persists `metadata.brigade_agent_id` so
+   * the text + voice responders both know who lives in the room). Mirrors the
+   * create→invite sequence in CreateDmModal; returns the new room so the
+   * caller can navigate to it. The agent invite is best-effort — the room is
+   * still usable (and the agent re-invitable from within it) if it fails.
+   */
+  async createAgentDm(
+    brigadeAgentId: string,
+    displayName: string,
+  ): Promise<Room> {
+    const room = await this.createRoom({
+      name: displayName,
+      description: "",
+      type: "dm",
+      member_ids: [],
+      agent_ids: [],
+    });
+    try {
+      await this.inviteBrigadeAgent(room.id, brigadeAgentId);
+    } catch (err) {
+      console.warn("agent-invite failed for new chat", brigadeAgentId, err);
+    }
+    return { ...room, brigade_agent_id: brigadeAgentId };
   }
 
   async bootstrapDefaultRooms(): Promise<Room[]> {
@@ -591,6 +642,195 @@ class StableApiClient {
     return this.request<void>(
       "DELETE",
       `/api/v1/messages/${messageId}`,
+    );
+  }
+
+  /* ----------------------------- Artifacts ----------------------------- *
+   * The co-working canvas. Artifacts are room-scoped, versioned documents
+   * (markdown/code/html/svg/mermaid/react/sheet). See @/types/artifact.ts for
+   * the response shapes and the backend contract.
+   */
+
+  /** Create a new artifact (draft) in a room. */
+  async createArtifact(
+    roomId: string,
+    data: CreateArtifactRequest,
+  ): Promise<ArtifactResponse> {
+    return this.request<ArtifactResponse>(
+      "POST",
+      `/api/v1/rooms/${roomId}/artifacts`,
+      data,
+    );
+  }
+
+  /** List a room's artifacts (metadata; content may be null in the listing). */
+  async getRoomArtifacts(roomId: string): Promise<ArtifactResponse[]> {
+    return this.request<ArtifactResponse[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/artifacts`,
+    );
+  }
+
+  /** Fetch a single artifact, including its current `content` + `current_seq`. */
+  async getArtifact(artifactId: string): Promise<ArtifactResponse> {
+    return this.request<ArtifactResponse>(
+      "GET",
+      `/api/v1/artifacts/${artifactId}`,
+    );
+  }
+
+  /** Full version history of an artifact, oldest → newest by `seq`. */
+  async getArtifactVersions(artifactId: string): Promise<VersionResponse[]> {
+    return this.request<VersionResponse[]>(
+      "GET",
+      `/api/v1/artifacts/${artifactId}/versions`,
+    );
+  }
+
+  /** Replace the whole buffer → produces a new version. */
+  async rewriteArtifact(
+    artifactId: string,
+    data: RewriteArtifactRequest,
+  ): Promise<VersionResponse> {
+    return this.request<VersionResponse>(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/rewrite`,
+      data,
+    );
+  }
+
+  /**
+   * Apply search/replace edit blocks → a new version. The server returns
+   * HTTP 422 with a per-block error body when a block doesn't match; that
+   * surfaces here as a thrown {@link ApiError} (status 422) — callers should
+   * catch and present `detail` rather than treat it as a hard failure.
+   */
+  async editArtifact(
+    artifactId: string,
+    data: EditArtifactRequest,
+  ): Promise<VersionResponse> {
+    return this.request<VersionResponse>(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/edit`,
+      data,
+    );
+  }
+
+  /** Restore a previous version → appends it as a new current version. */
+  async restoreArtifactVersion(
+    artifactId: string,
+    versionId: string,
+  ): Promise<VersionResponse> {
+    return this.request<VersionResponse>(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/restore`,
+      { version_id: versionId },
+    );
+  }
+
+  /* ---------------------------- Knowledge Bases ---------------------------- *
+   * Collections are named buckets of uploaded documents (chunked + embedded).
+   * A room can have collections ATTACHED; the room's agent (Majik) searches the
+   * attached collections for context. See @/types/knowledge.ts for the shapes.
+   */
+
+  /** Create a new (empty) knowledge collection. */
+  async createCollection(
+    data: CreateCollectionRequest,
+  ): Promise<Collection> {
+    return this.request<Collection>(
+      "POST",
+      "/api/v1/knowledge/collections",
+      data,
+    );
+  }
+
+  /** List all knowledge collections the user can see. */
+  async listCollections(): Promise<Collection[]> {
+    return this.request<Collection[]>("GET", "/api/v1/knowledge/collections");
+  }
+
+  /** Fetch a single collection by id. */
+  async getCollection(collectionId: string): Promise<Collection> {
+    return this.request<Collection>(
+      "GET",
+      `/api/v1/knowledge/collections/${collectionId}`,
+    );
+  }
+
+  /**
+   * Upload a document into a collection (multipart, field name `file`). The
+   * returned document begins life `indexing`; poll {@link listKbDocuments} (or
+   * re-fetch) to watch it transition to `ready`/`failed`.
+   */
+  async uploadKbDocument(
+    collectionId: string,
+    file: File,
+  ): Promise<KbDocument> {
+    // Multipart: must NOT set Content-Type (the browser adds the boundary).
+    // Mirrors uploadFile() above.
+    const headers = await this.getAuthHeaders();
+    delete headers["Content-Type"];
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await fetch(
+      `${BASE_URL}/api/v1/knowledge/collections/${collectionId}/documents`,
+      { method: "POST", headers, body: fd },
+    );
+    if (!resp.ok) {
+      let detail: string | null = null;
+      try {
+        const body = (await resp.json()) as { detail?: string };
+        detail = body.detail ?? null;
+      } catch {
+        /* empty */
+      }
+      const error: ApiError = {
+        status: resp.status,
+        message: resp.statusText,
+        detail,
+      };
+      throw error;
+    }
+    return resp.json() as Promise<KbDocument>;
+  }
+
+  /** List the documents in a collection (with their indexing status). */
+  async listKbDocuments(collectionId: string): Promise<KbDocument[]> {
+    return this.request<KbDocument[]>(
+      "GET",
+      `/api/v1/knowledge/collections/${collectionId}/documents`,
+    );
+  }
+
+  /** Attach a collection to a room so the room's agent can search it. */
+  async attachRoomKnowledge(
+    roomId: string,
+    collectionId: string,
+  ): Promise<void> {
+    return this.request<void>(
+      "POST",
+      `/api/v1/rooms/${roomId}/knowledge`,
+      { collection_id: collectionId },
+    );
+  }
+
+  /** Detach a collection from a room. */
+  async detachRoomKnowledge(
+    roomId: string,
+    collectionId: string,
+  ): Promise<void> {
+    return this.request<void>(
+      "DELETE",
+      `/api/v1/rooms/${roomId}/knowledge/${collectionId}`,
+    );
+  }
+
+  /** List the collections currently attached to a room. */
+  async listRoomKnowledge(roomId: string): Promise<Collection[]> {
+    return this.request<Collection[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/knowledge`,
     );
   }
 }

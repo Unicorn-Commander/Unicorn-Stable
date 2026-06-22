@@ -8,13 +8,18 @@
  * framework-free: just TypeScript types + tiny encode/decode/guard helpers.
  * Mirror these definitions on the producer side.
  *
- * Two message families today:
+ * Three message families today:
  *   - `transcript` — near-real-time speaker-labeled caption lines (interim +
  *     final). Produced by the STT pipeline (Amanuensis) later; consumed by the
  *     live-transcript panel.
  *   - `ui_command`  — AG-UI-style imperative UI control ("change the call view",
  *     "focus this participant", …). Only honored when the sender is an AGENT —
  *     this is the seam that lets Majik drive the interface.
+ *   - artifact events (`artifact_created` / `artifact_updated`) — the canvas
+ *     co-working channel. The backend broadcasts these when an artifact gains a
+ *     new version (human OR agent edit); the canvas store re-fetches the
+ *     affected artifact so the panel live-updates. NOTE: these are tagged with
+ *     an `event` field (not `type`), matching the server's broadcast envelope.
  *
  * The envelope is JSON encoded as UTF-8 bytes (LiveKit data packets are
  * `Uint8Array`). Keep messages small; data packets are not a bulk channel.
@@ -84,11 +89,48 @@ export type UiCommandMessage = {
 } & UiCommandArgs;
 
 /* ------------------------------------------------------------------ *
+ * Artifact (canvas) events
+ * ------------------------------------------------------------------ */
+
+/**
+ * Broadcast when a room's artifact is created or gains a new version. The
+ * canvas store reacts by re-fetching the affected artifact (if it's the one
+ * open) and bumping the room's artifact list.
+ *
+ * Unlike transcript/ui_command (which discriminate on `type`), the backend
+ * tags these on an `event` field — both shapes are decoded on the same channel.
+ */
+export interface ArtifactEventMessage {
+  event: "artifact_created" | "artifact_updated";
+  room_id: string;
+  artifact_id: string;
+  /** The new current version's id (may be absent on some emits). */
+  current_version_id?: string | null;
+  /** The new current version's seq. */
+  seq?: number | null;
+  /** The edit op that produced the version, when the server includes it. */
+  op?: Record<string, unknown> | null;
+}
+
+export function isArtifactEventMessage(v: unknown): v is ArtifactEventMessage {
+  if (!v || typeof v !== "object") return false;
+  const m = v as Record<string, unknown>;
+  return (
+    (m.event === "artifact_created" || m.event === "artifact_updated") &&
+    typeof m.room_id === "string" &&
+    typeof m.artifact_id === "string"
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Union + codec
  * ------------------------------------------------------------------ */
 
 /** Every message that can travel on {@link ROOM_DATA_TOPIC}. */
-export type RoomDataMessage = TranscriptMessage | UiCommandMessage;
+export type RoomDataMessage =
+  | TranscriptMessage
+  | UiCommandMessage
+  | ArtifactEventMessage;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -112,11 +154,16 @@ export function decodeRoomData(payload: Uint8Array): RoomDataMessage | null {
   }
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
+  // Transcript + ui_command discriminate on `type`.
   if (obj.type === "transcript") {
     return isTranscriptMessage(obj) ? obj : null;
   }
   if (obj.type === "ui_command") {
     return isUiCommandMessage(obj) ? obj : null;
+  }
+  // Artifact events discriminate on `event` (server broadcast envelope).
+  if (obj.event === "artifact_created" || obj.event === "artifact_updated") {
+    return isArtifactEventMessage(obj) ? obj : null;
   }
   return null;
 }

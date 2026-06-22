@@ -15,11 +15,13 @@ import {
   Pin,
   Quote,
   Bookmark,
+  LayoutPanelLeft,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict, format } from "date-fns";
 import { api, type ApiError, type Message, type ProjectOpsProject } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import { useCanvasStore } from "@/stores/canvasStore";
 import { Avatar } from "@/components/Avatar";
 
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
@@ -36,6 +38,20 @@ function projectOpsMeta(message: Message) {
       task_url?: string;
     };
   } | undefined)?.projectops_task;
+}
+
+/**
+ * Reads the canvas-artifact pointer a Majik message carries when it authored an
+ * artifact. The backend stamps `metadata.artifact_id` (+ optional
+ * `metadata.artifact_title`); returns null when the message isn't tied to one.
+ */
+function artifactMeta(message: Message): { artifactId: string; artifactTitle: string | null } | null {
+  const meta = message.metadata as {
+    artifact_id?: string;
+    artifact_title?: string;
+  } | undefined;
+  if (!meta?.artifact_id) return null;
+  return { artifactId: meta.artifact_id, artifactTitle: meta.artifact_title ?? null };
 }
 
 function defaultTaskTitle(content: string) {
@@ -483,6 +499,7 @@ export function MessageBubble({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
   const promoted = projectOpsMeta(message);
+  const artifact = artifactMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
 
@@ -994,6 +1011,19 @@ export function MessageBubble({
                 {promoted.task_number || promoted.project_number}
               </a>
             )}
+            {artifact && (
+              <button
+                type="button"
+                onClick={() =>
+                  void useCanvasStore.getState().openArtifactById(artifact.artifactId)
+                }
+                className="inline-flex items-center gap-1 rounded bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light hover:bg-stable-purple/20"
+                title={artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
+              >
+                <LayoutPanelLeft className="h-3 w-3" />
+                {artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
+              </button>
+            )}
           </div>
         )}
 
@@ -1066,6 +1096,19 @@ export function MessageBubble({
                 <BriefcaseBusiness className="h-3 w-3" />
                 {promoted.task_number || promoted.project_number}
               </a>
+            )}
+            {artifact && !showAvatar && (
+              <button
+                type="button"
+                onClick={() =>
+                  void useCanvasStore.getState().openArtifactById(artifact.artifactId)
+                }
+                className="ml-2 inline-flex items-center gap-1 rounded bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light hover:bg-stable-purple/20"
+                title={artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
+              >
+                <LayoutPanelLeft className="h-3 w-3" />
+                {artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
+              </button>
             )}
             {Array.isArray(
               (message.metadata as { attachments?: unknown[] } | undefined)

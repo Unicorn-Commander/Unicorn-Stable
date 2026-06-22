@@ -24,6 +24,7 @@ import {
   dispatchUiCommand,
   setActiveCallRoom,
 } from "@/stores/callUiStore";
+import { handleArtifactEvent } from "@/stores/canvasStore";
 
 /**
  * THE single LiveKit Room for the whole app.
@@ -195,6 +196,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           (payload: Uint8Array, participant?: RemoteParticipant) => {
             const msg = decodeRoomData(payload);
             if (!msg) return;
+            // Artifact events are tagged with `event` (not `type`); handle them
+            // first. The canvas store re-fetches the affected artifact so the
+            // panel live-updates (cheap no-op when nothing relevant is open).
+            if ("event" in msg) {
+              handleArtifactEvent(msg);
+              return;
+            }
             if (msg.type === "transcript") {
               useCallUiStore.getState().ingestTranscript(msg);
               return;

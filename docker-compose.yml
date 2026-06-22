@@ -24,6 +24,12 @@ services:
       - "traefik.http.routers.stable-livekit-http.rule=Host(`livekit.magicunicorn.dev`)"
       - "traefik.http.routers.stable-livekit-http.entrypoints=web"
       - "traefik.http.routers.stable-livekit-http.service=stable-livekit"
+      - "traefik.tcp.routers.stable-turn.rule=HostSNI(`turn.magicunicorn.dev`)"
+      - "traefik.tcp.routers.stable-turn.entrypoints=websecure"
+      - "traefik.tcp.routers.stable-turn.tls=true"
+      - "traefik.tcp.routers.stable-turn.tls.certresolver=letsencrypt"
+      - "traefik.tcp.routers.stable-turn.service=stable-turn"
+      - "traefik.tcp.services.stable-turn.loadbalancer.server.port=443"
     depends_on:
       redis:
         condition: service_healthy
@@ -181,9 +187,15 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Self-hosted voice services (live on uc-1 over Tailscale).
       # Amanuensis STT (OpenAI-compatible) + Orator TTS (native).
-      - WHISPER_BASE_URL=${WHISPER_BASE_URL:-http://100.78.236.160:9000/v1}
-      - WHISPER_MODEL=${WHISPER_MODEL:-whisper-1}
-      - KOKORO_BASE_URL=${KOKORO_BASE_URL:-http://100.78.236.160:8880}
+      # STT moved to bigboy unicorn-whisper (faster-whisper, on stable-network) —
+      # was uc-1 Amanuensis @ 100.78.236.160:9000 which went OFFLINE (box down),
+      # silently breaking voice (STT request timeouts -> Majik couldn't hear). 2026-06-22
+      - WHISPER_BASE_URL=${WHISPER_BASE_URL:-http://unicorn-whisper:8000/v1}
+      - WHISPER_MODEL=${WHISPER_MODEL:-Systran/faster-whisper-base.en}
+      - KOKORO_BASE_URL=${KOKORO_BASE_URL:-http://100.66.42.57:8880}
+      - METERING_REPORT_URL=${METERING_REPORT_URL:-http://100.126.207.157:8084/api/v1/metered/report}
+      - STABLE_METERING_ORG_ID=${STABLE_METERING_ORG_ID:-stable-internal}
+      - METERING_KEY=${METERING_KEY:-}
     depends_on:
       livekit:
         condition: service_healthy
