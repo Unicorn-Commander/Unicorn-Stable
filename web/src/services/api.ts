@@ -263,6 +263,12 @@ class StableApiClient {
       // Brigade agent's id rides along here too — used to group a persona's
       // conversations (e.g. Majik) in the sidebar.
       metadata_?: Record<string, unknown> | null;
+      // Conversation-list extras. The backend MessageResponse already matches
+      // the client Message shape (getMessages passes it through unmapped), so
+      // last_message rides through directly. Both are optional for forward-
+      // compat: older backends omit them and the store merges a live value.
+      last_message?: Message | null;
+      unread_count?: number;
     };
     const resp = await this.request<{ rooms: Raw[] }>("GET", "/api/v1/rooms");
     return (resp.rooms ?? []).map((r) => ({
@@ -273,8 +279,8 @@ class StableApiClient {
       created_at: r.created_at,
       updated_at: r.updated_at,
       member_count: r.member_count,
-      unread_count: 0,
-      last_message: null,
+      unread_count: r.unread_count ?? 0,
+      last_message: r.last_message ?? null,
       members: [],
       agents: [],
       brigade_agent_id:

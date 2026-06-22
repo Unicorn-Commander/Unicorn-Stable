@@ -106,6 +106,7 @@ function loadHljs(): Promise<void> {
 
 function CodeBlock({ lang, content }: { lang: string | null; content: string }) {
   const [html, setHtml] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     let active = true;
     loadHljs().then(() => {
@@ -124,17 +125,47 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
       active = false;
     };
   }, [lang, content]);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — no-op */
+    }
+  }
   return (
-    <pre className="my-1 overflow-x-auto rounded-lg bg-slate-950/80 p-3 text-xs">
-      {html ? (
-        <code
-          className={`hljs ${lang ? `language-${lang}` : ""} text-slate-200`}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      ) : (
-        <code className="text-slate-300">{content}</code>
-      )}
-    </pre>
+    <div className="group/code relative my-1">
+      {/* Hover "Copy" — standard in OpenWebUI/Discord/Slack. The lang chip
+          doubles as a label when present. */}
+      <button
+        onClick={copy}
+        className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-slate-800/90 px-1.5 py-1 text-[10px] font-medium text-slate-300 opacity-0 ring-1 ring-slate-700/60 transition-opacity hover:bg-slate-700 hover:text-slate-100 focus:opacity-100 group-hover/code:opacity-100"
+        aria-label="Copy code"
+      >
+        {copied ? (
+          <>
+            <Check className="h-3 w-3 text-green-400" />
+            Copied
+          </>
+        ) : (
+          <>
+            <CopyIcon className="h-3 w-3" />
+            {lang || "Copy"}
+          </>
+        )}
+      </button>
+      <pre className="overflow-x-auto rounded-lg bg-slate-950/80 p-3 text-xs">
+        {html ? (
+          <code
+            className={`hljs ${lang ? `language-${lang}` : ""} text-slate-200`}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <code className="text-slate-300">{content}</code>
+        )}
+      </pre>
+    </div>
   );
 }
 
@@ -1242,7 +1273,13 @@ export function MessageBubble({
                 <Pencil className="h-3.5 w-3.5" />
               </button>
               <button
-                onClick={() => onDelete(message.id)}
+                onClick={() => {
+                  // Confirm here too — the hover toolbar deleted instantly
+                  // while only the context-menu path asked (easy mis-click).
+                  if (window.confirm("Delete this message?")) {
+                    void onDelete(message.id);
+                  }
+                }}
                 className="rounded p-1.5 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
                 aria-label="Delete message"
               >

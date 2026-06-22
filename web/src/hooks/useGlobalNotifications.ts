@@ -27,7 +27,15 @@ export function useGlobalNotifications() {
       const event = data as WsMessageEvent;
       if (!event?.message || !event.room_id) return;
 
-      // Ignore messages from self
+      // Keep the conversation-list preview fresh for EVERY room — active,
+      // muted, or background — regardless of sender. The sidebar + home feed
+      // read room.last_message, and the global handler is the only listener
+      // that sees messages for rooms other than the one currently open.
+      useAppStore
+        .getState()
+        .updateRoom(event.room_id, { last_message: event.message });
+
+      // Ignore messages from self (for unread/toast purposes)
       if (event.message.sender_id && event.message.sender_id === currentUser?.id) {
         return;
       }

@@ -139,7 +139,23 @@ export const useAppStore = create<AppState>((set) => ({
 
   setCurrentUser: (user) => set({ currentUser: user }),
 
-  setRooms: (rooms) => set({ rooms }),
+  setRooms: (rooms) =>
+    set((state) => {
+      const prevById = new Map(state.rooms.map((r) => [r.id, r]));
+      const nextUnread = { ...state.unreadCounts };
+      const merged = rooms.map((r) => {
+        // Seed the live unread map from the backend's cold-load count the
+        // FIRST time we see a room (so badges show on login, before any WS
+        // traffic); never clobber a count we're already tracking live.
+        if (!(r.id in nextUnread)) nextUnread[r.id] = r.unread_count ?? 0;
+        // Preserve the conversation-list preview across the 60s refetch: if
+        // this payload has no last_message (older backend), keep whatever the
+        // live WS path set. Without this, every refetch blanks the previews.
+        const prev = prevById.get(r.id);
+        return prev ? { ...r, last_message: r.last_message ?? prev.last_message } : r;
+      });
+      return { rooms: merged, unreadCounts: nextUnread };
+    }),
 
   updateRoom: (roomId, updates) =>
     set((state) => ({
@@ -254,9 +270,23 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   setParticipants: (roomId, members) =>
-    set((state) => ({
-      participants: { ...state.participants, [roomId]: members },
-    })),
+    set((state) => {
+      // Seed/reconcile global presence from the authoritative /members
+      // snapshot (refetched ~30s). Without this, onlineUsers only ever held
+      // live WS deltas, so anyone already online before you connected showed
+      // offline. WS presence events still handle real-time between refetches.
+      const online = new Set(state.onlineUsers);
+      for (const m of members) {
+        const id = m.participant_id || m.user_id;
+        if (!id) continue;
+        if (m.is_online === true) online.add(id);
+        else if (m.is_online === false) online.delete(id);
+      }
+      return {
+        participants: { ...state.participants, [roomId]: members },
+        onlineUsers: Array.from(online),
+      };
+    }),
 
   updateParticipantOnline: (userId, isOnline) =>
     set((state) => {
@@ -357,10 +387,11 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   clearUnread: (roomId) =>
     set((state) => {
-      if (!(roomId in state.unreadCounts)) return {} as Partial<AppState>;
-      const next = { ...state.unreadCounts };
-      delete next[roomId];
-      return { unreadCounts: next };
+      // Set to 0 (not delete) so the count stays authoritatively cleared: the
+      // display reads `unreadCounts[id] ?? room.unread_count`, and deleting
+      // would let it fall back to a stale backend cold-load seed.
+      if (state.unreadCounts[roomId] === 0) return {} as Partial<AppState>;
+      return { unreadCounts: { ...state.unreadCounts, [roomId]: 0 } };
     }),
   setReadReceipt: (roomId, participantId, at) =>
     set((state) => ({
