@@ -502,10 +502,20 @@ class StableApiClient {
     if (cursor) {
       params.set("cursor", cursor);
     }
-    return this.request<PaginatedResponse<Message>>(
-      "GET",
-      `/api/v1/rooms/${roomId}/messages?${params.toString()}`,
-    );
+    // Backend returns MessageListResponse = { messages, cursor, has_more }.
+    // Map it to the PaginatedResponse shape the chat hook reads (items /
+    // next_cursor) — same pattern getThread uses. Without this, response.items
+    // is undefined and the initial history load throws + renders empty.
+    const resp = await this.request<{
+      messages: Message[];
+      cursor: string | null;
+      has_more: boolean;
+    }>("GET", `/api/v1/rooms/${roomId}/messages?${params.toString()}`);
+    return {
+      items: resp.messages ?? [],
+      next_cursor: resp.cursor ?? null,
+      has_more: resp.has_more ?? false,
+    };
   }
 
   async sendMessage(
