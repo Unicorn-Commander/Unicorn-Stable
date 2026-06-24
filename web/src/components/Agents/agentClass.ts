@@ -128,6 +128,21 @@ export function toolCostInfo(agent: Agent): ToolCostInfo {
   };
 }
 
+// The clicked agent + its domain teammates (clicked one first), capped — used to
+// pre-load the chat popup so "talk to many at once" is one click.
+export function relatedByDomain(
+  agent: Agent,
+  agents: Agent[],
+  cap = 6,
+): Agent[] {
+  const d = (agent.domain || "").toLowerCase();
+  if (!d) return [agent];
+  const team = agents.filter(
+    (a) => a.id !== agent.id && (a.domain || "").toLowerCase() === d,
+  );
+  return [agent, ...team].slice(0, cap);
+}
+
 // Permission level (1..5) → a short human label for tooltips.
 export const PERMISSION_LABEL: Record<number, string> = {
   1: "Basic",

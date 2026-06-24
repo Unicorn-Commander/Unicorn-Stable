@@ -7,6 +7,7 @@ import { useAppStore } from "@/stores/appStore";
 import {
   AFFIL_META,
   TIER_META,
+  relatedByDomain,
   type Affiliation,
   type Tier,
 } from "./agentClass";
@@ -168,7 +169,11 @@ export function AgentsPage() {
 
         {/* Active view */}
         {view === "chart" ? (
-          <AgentOrgChart agents={filtered} onOpen={setModalAgent} />
+          <AgentOrgChart
+            agents={filtered}
+            onOpen={setModalAgent}
+            expandAll={query.trim().length > 0}
+          />
         ) : (
           <AgentList agents={filtered} onOpen={setModalAgent} />
         )}
@@ -179,6 +184,7 @@ export function AgentsPage() {
           <AgentChatModal
             focusAgent={modalAgent}
             agents={agents}
+            preselectIds={relatedByDomain(modalAgent, agents).map((a) => a.id)}
             onClose={() => setModalAgent(null)}
           />
         )}

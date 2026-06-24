@@ -28,16 +28,20 @@ function label(a: Agent): string {
 export function AgentChatModal({
   focusAgent,
   agents,
+  preselectIds,
   onClose,
 }: {
   focusAgent: Agent;
   agents: Agent[];
+  // Agents to pre-tick (the clicked agent's team) so a group chat is one click.
+  // Always includes focusAgent. Defaults to just the focused agent.
+  preselectIds?: string[];
   onClose: () => void;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set([focusAgent.id]),
+    () => new Set([focusAgent.id, ...(preselectIds || [])]),
   );
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
