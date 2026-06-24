@@ -14,7 +14,7 @@ import {
   Search,
 } from "lucide-react";
 import clsx from "clsx";
-import { api, type Room } from "@/services/api";
+import { api, type Room, type Agent } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 
 // Keep in sync with RoomList — Majik is the user's resident orchestrator
@@ -123,18 +123,24 @@ export function HomeDashboard() {
     navigate(`/c/${id}`);
   };
 
-  async function handleNewMajikChat() {
+  // Start (or resume) a 1:1 chat with any agent and jump into it. Used by the
+  // "New chat with Majik" button and by every row in the Agents rail.
+  async function handleAgentChat(agentId: string, label: string) {
     if (startingChat) return;
     setStartingChat(true);
     try {
-      const room = await api.createAgentDm(MAJIK_AGENT_ID, "Chat with Majik");
+      const room = await api.createAgentDm(agentId, label);
       await queryClient.invalidateQueries({ queryKey: ["rooms"] });
       open(room.id);
     } catch (err) {
-      console.error("new Majik chat failed", err);
+      console.error("agent chat failed", err);
     } finally {
       setStartingChat(false);
     }
+  }
+
+  function handleNewMajikChat() {
+    void handleAgentChat(MAJIK_AGENT_ID, "Chat with Majik");
   }
 
   async function handleSeedDefaults() {
@@ -166,47 +172,58 @@ export function HomeDashboard() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
-        {/* Hero */}
-        <header className="mb-8">
-          <div className="mb-2 flex items-center gap-2">
-            <span className="gradient-bg flex h-6 w-6 items-center justify-center rounded-md">
-              <Sparkles className="h-3.5 w-3.5 text-white" />
-            </span>
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              Unicorn Command Center
-            </span>
-          </div>
-          <h1 className="text-2xl font-bold text-slate-50 sm:text-3xl">
-            {greetingFor(hour)}, {firstName}
-          </h1>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
-            {statusBits.map((bit, i) => (
-              <span key={bit} className="flex items-center gap-2">
-                {i > 0 && (
-                  <span className="text-slate-600" aria-hidden="true">
-                    ·
-                  </span>
-                )}
-                {bit === "Majik is online" ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
-                    {bit}
-                  </span>
-                ) : (
-                  bit
-                )}
+      <div className="animate-fade-in mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
+        {/* Hero banner — gradient glow for color + presence */}
+        <header className="relative mb-6 overflow-hidden rounded-2xl border border-stable-glass-border bg-slate-800/30 px-6 py-7 sm:px-8 sm:py-8">
+          <div
+            className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-stable-purple/25 blur-3xl"
+            aria-hidden="true"
+          />
+          <div
+            className="pointer-events-none absolute -bottom-24 right-40 h-44 w-44 rounded-full bg-stable-cyan/20 blur-3xl"
+            aria-hidden="true"
+          />
+          <div className="relative">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="gradient-bg flex h-6 w-6 items-center justify-center rounded-md">
+                <Sparkles className="h-3.5 w-3.5 text-white" />
               </span>
-            ))}
-          </p>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+                Unicorn Command Center
+              </span>
+            </div>
+            <h1 className="text-2xl font-bold sm:text-3xl">
+              <span className="text-slate-50">{greetingFor(hour)}, </span>
+              <span className="gradient-text">{firstName}</span>
+            </h1>
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
+              {statusBits.map((bit, i) => (
+                <span key={bit} className="flex items-center gap-2">
+                  {i > 0 && (
+                    <span className="text-slate-600" aria-hidden="true">
+                      ·
+                    </span>
+                  )}
+                  {bit === "Majik is online" ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      {bit}
+                    </span>
+                  ) : (
+                    bit
+                  )}
+                </span>
+              ))}
+            </p>
+          </div>
         </header>
 
         {/* Quick actions */}
-        <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             onClick={handleNewMajikChat}
             disabled={startingChat}
-            className="gradient-bg group flex items-center gap-3 rounded-xl px-4 py-3.5 text-left text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="gradient-bg group flex items-center gap-3 rounded-xl px-4 py-3.5 text-left text-white shadow-lg shadow-stable-purple/20 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15">
               <SquarePen className="h-5 w-5" />
@@ -223,9 +240,9 @@ export function HomeDashboard() {
 
           <button
             onClick={() => setCreateRoomModalOpen(true)}
-            className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-purple/40 hover:bg-slate-800"
+            className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-cyan/40 hover:bg-slate-800"
           >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-700/60 text-slate-300 transition-colors group-hover:text-stable-purple-light">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan-light transition-colors group-hover:bg-stable-cyan/25">
               <Plus className="h-5 w-5" />
             </span>
             <span className="min-w-0">
@@ -237,7 +254,7 @@ export function HomeDashboard() {
           </button>
         </div>
 
-        {/* Stat ribbon */}
+        {/* Stat ribbon — each stat gets its own accent */}
         <div className="mb-6 grid grid-cols-3 gap-3">
           <button
             onClick={() => setFilter("unread")}
@@ -248,7 +265,7 @@ export function HomeDashboard() {
                 : "border-slate-700/50 bg-slate-800/30 hover:bg-slate-800/50",
             )}
           >
-            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-stable-purple-light">
               <Inbox className="h-3.5 w-3.5" />
               Unread
             </span>
@@ -256,8 +273,8 @@ export function HomeDashboard() {
               {totalUnread}
             </span>
           </button>
-          <div className="flex flex-col rounded-xl border border-slate-700/50 bg-slate-800/30 px-4 py-3">
-            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+          <div className="flex flex-col rounded-xl border border-stable-cyan/30 bg-stable-cyan/[0.07] px-4 py-3">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-stable-cyan-light">
               <MessagesSquare className="h-3.5 w-3.5" />
               Conversations
             </span>
@@ -265,8 +282,8 @@ export function HomeDashboard() {
               {rooms.length}
             </span>
           </div>
-          <div className="flex flex-col rounded-xl border border-slate-700/50 bg-slate-800/30 px-4 py-3">
-            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+          <div className="flex flex-col rounded-xl border border-emerald-500/30 bg-emerald-500/[0.07] px-4 py-3">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-emerald-400">
               <Bot className="h-3.5 w-3.5" />
               Agents online
             </span>
@@ -276,44 +293,45 @@ export function HomeDashboard() {
           </div>
         </div>
 
-        {/* Messages feed */}
-        <section>
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-slate-200">Messages</h2>
-            <div className="flex items-center gap-1 rounded-lg bg-slate-800/50 p-0.5">
-              {FILTERS.map((f) => (
-                <button
-                  key={f.key}
-                  onClick={() => setFilter(f.key)}
-                  className={clsx(
-                    "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                    filter === f.key
-                      ? "bg-stable-purple text-white shadow-sm"
-                      : "text-slate-400 hover:text-slate-200",
-                  )}
-                >
-                  {f.label}
-                  {f.key === "unread" && totalUnread > 0 && (
-                    <span className="ml-1 text-[10px] opacity-80">
-                      {totalUnread > 99 ? "99+" : totalUnread}
-                    </span>
-                  )}
-                </button>
-              ))}
+        {/* Main grid: messages feed (wide) + agents rail */}
+        <div className="grid gap-6 lg:grid-cols-3">
+          <section className="lg:col-span-2">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-slate-200">Messages</h2>
+              <div className="flex items-center gap-1 rounded-lg bg-slate-800/50 p-0.5">
+                {FILTERS.map((f) => (
+                  <button
+                    key={f.key}
+                    onClick={() => setFilter(f.key)}
+                    className={clsx(
+                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                      filter === f.key
+                        ? "bg-stable-purple text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200",
+                    )}
+                  >
+                    {f.label}
+                    {f.key === "unread" && totalUnread > 0 && (
+                      <span className="ml-1 text-[10px] opacity-80">
+                        {totalUnread > 99 ? "99+" : totalUnread}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
 
-          {shown.length === 0 ? (
-            <EmptyFeed
-              filter={filter}
-              hasRooms={rooms.length > 0}
-              seeding={seeding}
-              onSeed={handleSeedDefaults}
-              onNewChat={handleNewMajikChat}
-            />
-          ) : (
-            <ul className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/20">
-              {shown.map((room, i) => {
+            {shown.length === 0 ? (
+              <EmptyFeed
+                filter={filter}
+                hasRooms={rooms.length > 0}
+                seeding={seeding}
+                onSeed={handleSeedDefaults}
+                onNewChat={handleNewMajikChat}
+              />
+            ) : (
+              <ul className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/20">
+                {shown.map((room, i) => {
                 const unread = unreadFor(room);
                 const m = room.last_message;
                 const isMajik = room.brigade_agent_id === MAJIK_AGENT_ID;
@@ -393,10 +411,117 @@ export function HomeDashboard() {
               })}
             </ul>
           )}
-        </section>
+          </section>
+
+          <AgentsRail
+            agents={onlineAgents}
+            total={agents.length}
+            disabled={startingChat}
+            onChat={handleAgentChat}
+            onBrowse={() => setCreateRoomModalOpen(true)}
+          />
+        </div>
       </div>
     </div>
   );
+}
+
+/** Right-rail roster of online agents. Click one to open a 1:1 chat — a small
+ *  preview of the fuller org-chart view. */
+function AgentsRail({
+  agents,
+  total,
+  disabled,
+  onChat,
+  onBrowse,
+}: {
+  agents: Agent[];
+  total: number;
+  disabled: boolean;
+  onChat: (id: string, label: string) => void;
+  onBrowse: () => void;
+}) {
+  return (
+    <aside className="lg:col-span-1">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-slate-200">Agents</h2>
+        <span className="text-[11px] text-slate-500">
+          {agents.length} online · {total} total
+        </span>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/20">
+        {agents.length === 0 ? (
+          <p className="px-4 py-8 text-center text-xs text-slate-500">
+            No agents online right now.
+          </p>
+        ) : (
+          <ul>
+            {agents.map((a, i) => {
+              const label = a.display_name || a.name;
+              return (
+                <li key={a.id}>
+                  <button
+                    onClick={() => onChat(a.id, `Chat with ${label}`)}
+                    disabled={disabled}
+                    className={clsx(
+                      "flex w-full items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-slate-800/60 disabled:cursor-not-allowed disabled:opacity-60",
+                      i > 0 && "border-t border-slate-700/40",
+                    )}
+                  >
+                    <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-stable-purple-light">
+                      {a.avatar_url ? (
+                        <img
+                          src={a.avatar_url}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <Bot className="h-4 w-4" />
+                      )}
+                      <span
+                        className={clsx(
+                          "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900",
+                          statusDot(a.status),
+                        )}
+                      />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-slate-200">
+                        {label}
+                      </span>
+                      <span className="block truncate text-xs text-slate-500">
+                        {a.description || a.model}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+      <button
+        onClick={onBrowse}
+        className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700/50 bg-slate-800/30 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:border-stable-purple/40 hover:text-slate-200"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        New channel with agents
+      </button>
+    </aside>
+  );
+}
+
+function statusDot(status: Agent["status"]): string {
+  switch (status) {
+    case "working":
+      return "bg-amber-400";
+    case "active":
+      return "bg-emerald-400";
+    case "idle":
+      return "bg-slate-400";
+    default:
+      return "bg-slate-600";
+  }
 }
 
 function EmptyFeed({
