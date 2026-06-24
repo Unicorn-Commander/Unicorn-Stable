@@ -253,6 +253,9 @@ export function App() {
             SINGLE source of truth for the active room (see AppShell); the
             ?message= query param rides along for permalink scroll/highlight. */}
         <Route path="/c/:roomId" element={<AppShell />} />
+        {/* Agent roster / org-chart view — a top-level page rendered inside
+            AppShell (keeps the sidebar + header). */}
+        <Route path="/agents" element={<AppShell />} />
         <Route path="/" element={<AppShell />} />
         {/* Unknown paths fall back home. */}
         <Route path="*" element={<Navigate to="/" replace />} />

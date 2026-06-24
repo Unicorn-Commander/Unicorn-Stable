@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Bookmark, Settings, LogOut } from "lucide-react";
@@ -20,6 +20,7 @@ import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
 import { RoomView } from "@/components/Room/RoomView";
 import { HomeDashboard } from "@/components/Home/HomeDashboard";
+import { AgentsPage } from "@/components/Agents/AgentsPage";
 
 export function AppShell() {
   useGlobalNotifications();
@@ -30,6 +31,8 @@ export function AppShell() {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
   const { roomId: routeRoomId } = useParams<{ roomId: string }>();
+  const location = useLocation();
+  const isAgentsView = location.pathname === "/agents";
   const navigate = useNavigate();
   const setRooms = useAppStore((s) => s.setRooms);
   const setAgents = useAppStore((s) => s.setAgents);
@@ -276,6 +279,10 @@ export function AppShell() {
           {activeRoomId ? (
             <ErrorBoundary key={activeRoomId}>
               <RoomView roomId={activeRoomId} />
+            </ErrorBoundary>
+          ) : isAgentsView ? (
+            <ErrorBoundary>
+              <AgentsPage />
             </ErrorBoundary>
           ) : (
             <ErrorBoundary>

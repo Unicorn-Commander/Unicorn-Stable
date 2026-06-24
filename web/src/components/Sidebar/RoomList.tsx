@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
-import { Hash, MessageSquare, Plus, Search, Sparkles, SquarePen } from "lucide-react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { Bot, Hash, MessageSquare, Plus, Search, Sparkles, SquarePen } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
@@ -18,6 +18,7 @@ const MAJIK_AGENT_NAME = "Majik";
 
 export function RoomList() {
   const navigate = useNavigate();
+  const location = useLocation();
   const rooms = useAppStore((s) => s.rooms);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
@@ -163,6 +164,36 @@ export function RoomList() {
         className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4"
         aria-label="Room navigation"
       >
+        {/* Top-level: the agent roster / org-chart page. */}
+        <button
+          onClick={() => {
+            navigate("/agents");
+            if (
+              window.matchMedia("(max-width: 767px)").matches &&
+              useAppStore.getState().ui.sidebarOpen
+            ) {
+              useAppStore.getState().toggleSidebar();
+            }
+          }}
+          className={clsx(
+            "flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
+            location.pathname === "/agents"
+              ? "bg-stable-purple/20 text-slate-50 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
+              : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
+          )}
+          aria-current={location.pathname === "/agents" ? "page" : undefined}
+        >
+          <Bot
+            className={clsx(
+              "h-4 w-4 shrink-0",
+              location.pathname === "/agents"
+                ? "text-stable-purple-light"
+                : "opacity-60",
+            )}
+          />
+          <span className="truncate text-sm font-medium">Browse all agents</span>
+        </button>
+
         <section>
           <div className="flex items-center justify-between px-2 pb-1">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
