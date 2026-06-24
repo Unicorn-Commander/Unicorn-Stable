@@ -1,11 +1,28 @@
 import { useState, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Bot, Hash, MessageSquare, Plug, Plus, Search, Sparkles, SquarePen } from "lucide-react";
+import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
+  Hash,
+  MessageSquare,
+  MoreVertical,
+  Plug,
+  Plus,
+  Search,
+  Sparkles,
+  SquarePen,
+} from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, type Room } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import {
+  useChannelCategories,
+  distinctCategories,
+} from "@/stores/categoryStore";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 
@@ -96,6 +113,166 @@ export function RoomList() {
     () => filteredRooms.filter((r) => r.type === "channel"),
     [filteredRooms],
   );
+
+  // Personal channel categories (client-side; see categoryStore).
+  const categories = useChannelCategories((s) => s.categories);
+  const collapsed = useChannelCategories((s) => s.collapsed);
+  const setCategory = useChannelCategories((s) => s.setCategory);
+  const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
+  const [menuRoomId, setMenuRoomId] = useState<string | null>(null);
+
+  // Group the visible channels by the user's assigned category; everything else
+  // stays in a flat "ungrouped" list under the section header.
+  const { catGroups, ungrouped } = useMemo(() => {
+    const groups = new Map<string, Room[]>();
+    const ungrouped: Room[] = [];
+    for (const r of channels) {
+      const cat = categories[r.id];
+      if (cat) {
+        const arr = groups.get(cat);
+        if (arr) arr.push(r);
+        else groups.set(cat, [r]);
+      } else {
+        ungrouped.push(r);
+      }
+    }
+    const catGroups = [...groups.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0]),
+    );
+    return { catGroups, ungrouped };
+  }, [channels, categories]);
+
+  // Every category name the user has ever made (for the "move to" menu), even if
+  // its channels are currently filtered out.
+  const knownCategories = useMemo(
+    () => distinctCategories(categories),
+    [categories],
+  );
+
+  function assignCategory(roomId: string, category: string | null) {
+    setCategory(roomId, category);
+    setMenuRoomId(null);
+  }
+
+  function promptNewCategory(roomId: string) {
+    const name = window.prompt("New category name");
+    if (name && name.trim()) setCategory(roomId, name.trim());
+    setMenuRoomId(null);
+  }
+
+  function renderChannelRow(room: Room) {
+    const isActive = activeRoomId === room.id;
+    const unread = unreadCounts[room.id] ?? 0;
+    const cat = categories[room.id];
+    const menuOpen = menuRoomId === room.id;
+    return (
+      <li key={room.id} className="relative">
+        <div
+          className={clsx(
+            "group relative flex items-center rounded-lg transition-colors",
+            isActive
+              ? "bg-stable-purple/20 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
+              : "hover:bg-slate-800/60",
+          )}
+        >
+          <button
+            onClick={() => openRoom(room.id)}
+            className={clsx(
+              "flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left md:py-1.5",
+              isActive ? "text-slate-50" : "text-slate-400 group-hover:text-slate-200",
+            )}
+            aria-current={isActive ? "page" : undefined}
+          >
+            <Hash
+              className={clsx(
+                "h-4 w-4 shrink-0",
+                isActive ? "text-stable-purple-light" : "opacity-60",
+              )}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-sm font-medium">{room.name}</span>
+                {unread > 0 && (
+                  <span className="ml-1 flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-stable-purple px-1 text-[10px] font-bold text-white">
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
+              </div>
+              {room.last_message && (
+                <p className="truncate text-[11px] text-slate-500">
+                  {formatLastMessage(room.last_message.content)}
+                </p>
+              )}
+            </div>
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuRoomId(menuOpen ? null : room.id);
+            }}
+            className={clsx(
+              "mr-1 shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-slate-700/60 hover:text-slate-200 focus:opacity-100",
+              menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+            )}
+            aria-label="Channel options"
+            aria-haspopup="menu"
+          >
+            <MoreVertical className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {menuOpen && (
+          <>
+            <button
+              className="fixed inset-0 z-20 cursor-default"
+              aria-hidden="true"
+              tabIndex={-1}
+              onClick={() => setMenuRoomId(null)}
+            />
+            <div
+              role="menu"
+              className="absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-lg border border-slate-700/70 bg-slate-900 py-1 shadow-xl"
+            >
+              <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Move to category
+              </p>
+              {knownCategories.map((c) => (
+                <button
+                  key={c}
+                  role="menuitem"
+                  onClick={() => assignCategory(room.id, c)}
+                  className={clsx(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-800",
+                    c === cat ? "text-stable-purple-light" : "text-slate-300",
+                  )}
+                >
+                  <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
+                  <span className="truncate">{c}</span>
+                </button>
+              ))}
+              <button
+                role="menuitem"
+                onClick={() => promptNewCategory(room.id)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-800"
+              >
+                <FolderPlus className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                New category…
+              </button>
+              {cat && (
+                <button
+                  role="menuitem"
+                  onClick={() => assignCategory(room.id, null)}
+                  className="mt-0.5 flex w-full items-center gap-2 border-t border-slate-800 px-3 py-1.5 text-left text-sm text-slate-400 hover:bg-slate-800"
+                >
+                  Remove from “{cat}”
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </li>
+    );
+  }
 
   // Majik's 1:1 conversations get their own resumable-history section. The
   // rooms query is already ordered most-recent-first by the backend
@@ -357,48 +534,34 @@ export function RoomList() {
             </div>
           )}
 
-          <ul role="list">
-            {channels.map((room) => (
-              <li key={room.id}>
+          {/* Category groups (personal, collapsible) then ungrouped channels. */}
+          {catGroups.map(([cat, roomsInCat]) => {
+            const isCollapsed = collapsed[cat];
+            return (
+              <div key={cat} className="mb-0.5">
                 <button
-                  onClick={() => openRoom(room.id)}
-                  className={clsx(
-                    "relative flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
-                    activeRoomId === room.id
-                      ? "bg-stable-purple/20 text-slate-50 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
-                      : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
-                  )}
-                  aria-current={activeRoomId === room.id ? "page" : undefined}
+                  onClick={() => toggleCollapsed(cat)}
+                  className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:text-slate-300"
+                  aria-expanded={!isCollapsed}
                 >
-                  <Hash
-                    className={clsx(
-                      "h-4 w-4 shrink-0",
-                      activeRoomId === room.id ? "text-stable-purple-light" : "opacity-60",
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between">
-                      <span className="truncate text-sm font-medium">
-                        {room.name}
-                      </span>
-                      {(unreadCounts[room.id] ?? 0) > 0 && (
-                        <span className="ml-1 flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-stable-purple px-1 text-[10px] font-bold text-white">
-                          {(unreadCounts[room.id] ?? 0) > 99
-                            ? "99+"
-                            : unreadCounts[room.id]}
-                        </span>
-                      )}
-                    </div>
-                    {room.last_message && (
-                      <p className="truncate text-[11px] text-slate-500">
-                        {formatLastMessage(room.last_message.content)}
-                      </p>
-                    )}
-                  </div>
+                  {isCollapsed ? (
+                    <ChevronRight className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  )}
+                  <span className="truncate">{cat}</span>
+                  <span className="ml-auto text-slate-600">{roomsInCat.length}</span>
                 </button>
-              </li>
-            ))}
-          </ul>
+                {!isCollapsed && (
+                  <ul role="list" className="ml-1.5 border-l border-slate-800/70 pl-1">
+                    {roomsInCat.map((room) => renderChannelRow(room))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+
+          <ul role="list">{ungrouped.map((room) => renderChannelRow(room))}</ul>
         </section>
 
         <section>
