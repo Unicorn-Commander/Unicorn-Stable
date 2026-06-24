@@ -21,6 +21,7 @@ import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
 import { RoomView } from "@/components/Room/RoomView";
 import { HomeDashboard } from "@/components/Home/HomeDashboard";
 import { AgentsPage } from "@/components/Agents/AgentsPage";
+import { BridgePage } from "@/components/Bridge/BridgePage";
 
 export function AppShell() {
   useGlobalNotifications();
@@ -33,6 +34,7 @@ export function AppShell() {
   const { roomId: routeRoomId } = useParams<{ roomId: string }>();
   const location = useLocation();
   const isAgentsView = location.pathname === "/agents";
+  const isBridgeView = location.pathname === "/bridge";
   const navigate = useNavigate();
   const setRooms = useAppStore((s) => s.setRooms);
   const setAgents = useAppStore((s) => s.setAgents);
@@ -283,6 +285,10 @@ export function AppShell() {
           ) : isAgentsView ? (
             <ErrorBoundary>
               <AgentsPage />
+            </ErrorBoundary>
+          ) : isBridgeView ? (
+            <ErrorBoundary>
+              <BridgePage />
             </ErrorBoundary>
           ) : (
             <ErrorBoundary>

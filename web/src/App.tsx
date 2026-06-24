@@ -256,6 +256,9 @@ export function App() {
         {/* Agent roster / org-chart view — a top-level page rendered inside
             AppShell (keeps the sidebar + header). */}
         <Route path="/agents" element={<AppShell />} />
+        {/* Bridge / Connect page — how to wire an MCP client (Claude etc.) to
+            this Stable workspace. Top-level page inside AppShell. */}
+        <Route path="/bridge" element={<AppShell />} />
         <Route path="/" element={<AppShell />} />
         {/* Unknown paths fall back home. */}
         <Route path="*" element={<Navigate to="/" replace />} />

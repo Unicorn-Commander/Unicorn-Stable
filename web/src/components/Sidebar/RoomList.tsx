@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Bot, Hash, MessageSquare, Plus, Search, Sparkles, SquarePen } from "lucide-react";
+import { Bot, Hash, MessageSquare, Plug, Plus, Search, Sparkles, SquarePen } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
@@ -192,6 +192,36 @@ export function RoomList() {
             )}
           />
           <span className="truncate text-sm font-medium">Browse all agents</span>
+        </button>
+
+        {/* Top-level: the Bridge / Connect (MCP) page. */}
+        <button
+          onClick={() => {
+            navigate("/bridge");
+            if (
+              window.matchMedia("(max-width: 767px)").matches &&
+              useAppStore.getState().ui.sidebarOpen
+            ) {
+              useAppStore.getState().toggleSidebar();
+            }
+          }}
+          className={clsx(
+            "-mt-2 flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
+            location.pathname === "/bridge"
+              ? "bg-stable-purple/20 text-slate-50 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
+              : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
+          )}
+          aria-current={location.pathname === "/bridge" ? "page" : undefined}
+        >
+          <Plug
+            className={clsx(
+              "h-4 w-4 shrink-0",
+              location.pathname === "/bridge"
+                ? "text-stable-purple-light"
+                : "opacity-60",
+            )}
+          />
+          <span className="truncate text-sm font-medium">Bridge &amp; connect</span>
         </button>
 
         <section>

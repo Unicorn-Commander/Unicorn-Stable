@@ -12,6 +12,8 @@ import {
   MessagesSquare,
   Bot,
   Search,
+  Video,
+  Plug,
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type Room, type Agent } from "@/services/api";
@@ -21,6 +23,22 @@ import { useAppStore } from "@/stores/appStore";
 // persona. Rooms whose brigade_agent_id is "majik" are 1:1 Majik chats and get
 // the sparkle treatment in the feed.
 const MAJIK_AGENT_ID = "majik";
+
+// Standing always-on video rooms (mirrors the backend CONFERENCE_ROOMS list).
+// Entering one create-or-gets it and joins, then drops you into the room where
+// you can start the call.
+const CONFERENCE_ROOMS: { slug: string; name: string; blurb: string }[] = [
+  {
+    slug: "main-conference",
+    name: "Main Conference Hall",
+    blurb: "Always-on video room for the whole team.",
+  },
+  {
+    slug: "war-room",
+    name: "War Room",
+    blurb: "Incidents, deep work, live problem-solving.",
+  },
+];
 
 type Filter = "all" | "unread" | "channels" | "direct";
 
@@ -72,6 +90,7 @@ export function HomeDashboard() {
   const [filter, setFilter] = useState<Filter>("all");
   const [startingChat, setStartingChat] = useState(false);
   const [seeding, setSeeding] = useState(false);
+  const [enteringConf, setEnteringConf] = useState<string | null>(null);
 
   const unreadFor = (r: Room) => unreadCounts[r.id] ?? r.unread_count ?? 0;
 
@@ -141,6 +160,20 @@ export function HomeDashboard() {
 
   function handleNewMajikChat() {
     void handleAgentChat(MAJIK_AGENT_ID, "Chat with Majik");
+  }
+
+  async function enterConference(slug: string) {
+    if (enteringConf) return;
+    setEnteringConf(slug);
+    try {
+      const room = await api.enterConferenceRoom(slug);
+      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
+      open(room.id);
+    } catch (err) {
+      console.error("enter conference failed", err);
+    } finally {
+      setEnteringConf(null);
+    }
   }
 
   async function handleSeedDefaults() {
@@ -252,6 +285,57 @@ export function HomeDashboard() {
               </span>
             </span>
           </button>
+
+          <button
+            onClick={() => navigate("/bridge")}
+            className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-purple/40 hover:bg-slate-800"
+          >
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light transition-colors group-hover:bg-stable-purple/25">
+              <Plug className="h-5 w-5" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">Connect a bridge</span>
+              <span className="block truncate text-xs text-slate-500">
+                Wire Claude or any agent into Stable (MCP)
+              </span>
+            </span>
+          </button>
+        </div>
+
+        {/* Standing conference rooms */}
+        <div className="mb-6">
+          <div className="mb-2 flex items-center gap-2">
+            <Video className="h-4 w-4 text-stable-cyan-light" />
+            <h2 className="text-sm font-semibold text-slate-200">
+              Conference rooms
+            </h2>
+            <span className="text-[11px] text-slate-500">
+              always-on · drop in for voice + video
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {CONFERENCE_ROOMS.map((c) => (
+              <button
+                key={c.slug}
+                onClick={() => enterConference(c.slug)}
+                disabled={enteringConf !== null}
+                className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-gradient-to-br from-stable-cyan/[0.06] to-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-cyan/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan-light transition-colors group-hover:bg-stable-cyan/25">
+                  <Video className="h-5 w-5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold">{c.name}</span>
+                  <span className="block truncate text-xs text-slate-500">
+                    {c.blurb}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs font-medium text-stable-cyan-light">
+                  {enteringConf === c.slug ? "Opening…" : "Join"}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Stat ribbon — each stat gets its own accent */}

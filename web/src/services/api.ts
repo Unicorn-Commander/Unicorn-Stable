@@ -394,6 +394,46 @@ class StableApiClient {
     return this.request<Room[]>("POST", "/api/v1/rooms/bootstrap-defaults");
   }
 
+  /** The fixed set of standing conference rooms (always available to enter). */
+  async getConferenceCatalog(): Promise<
+    { slug: string; display_name: string; description: string }[]
+  > {
+    return this.request("GET", "/api/v1/rooms/conference/catalog");
+  }
+
+  /** Enter (create-or-get + join) a standing conference room by slug. */
+  async enterConferenceRoom(slug: string): Promise<Room> {
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+    };
+    const r = await this.request<Raw>(
+      "POST",
+      `/api/v1/rooms/conference/${encodeURIComponent(slug)}/enter`,
+      {},
+    );
+    return {
+      id: r.id,
+      name: r.display_name || r.name,
+      display_name: r.display_name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    };
+  }
+
   async browseChannels(q = ""): Promise<Room[]> {
     type Raw = {
       id: string;
