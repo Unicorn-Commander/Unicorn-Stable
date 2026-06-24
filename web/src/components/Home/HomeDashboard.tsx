@@ -414,11 +414,11 @@ export function HomeDashboard() {
           </section>
 
           <AgentsRail
-            agents={onlineAgents}
+            agents={onlineAgents.slice(0, 8)}
             total={agents.length}
             disabled={startingChat}
             onChat={handleAgentChat}
-            onBrowse={() => setCreateRoomModalOpen(true)}
+            onBrowse={() => navigate("/agents")}
           />
         </div>
       </div>
@@ -475,6 +475,8 @@ function AgentsRail({
                           alt=""
                           className="h-full w-full object-cover"
                         />
+                      ) : a.emoji ? (
+                        <span aria-hidden="true">{a.emoji}</span>
                       ) : (
                         <Bot className="h-4 w-4" />
                       )}
@@ -504,8 +506,8 @@ function AgentsRail({
         onClick={onBrowse}
         className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700/50 bg-slate-800/30 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:border-stable-purple/40 hover:text-slate-200"
       >
-        <Plus className="h-3.5 w-3.5" />
-        New channel with agents
+        <Bot className="h-3.5 w-3.5" />
+        Browse all agents
       </button>
     </aside>
   );

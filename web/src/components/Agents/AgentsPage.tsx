@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bot, Search, MessageSquarePlus, Cpu } from "lucide-react";
+import { Bot, Search, MessageSquarePlus, Cpu, Star } from "lucide-react";
 import clsx from "clsx";
 import { api, type Agent } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
@@ -26,47 +26,66 @@ function statusDot(status: Agent["status"]): string {
   }
 }
 
-// Sourcing classification — a colored side-border tells you at a glance whether
-// an agent runs on a model we own (local) vs a frontier/3rd-party model, or can
-// flex between the two per task. v1 is DERIVED from the agent's model routing;
-// the canonical plan is to persist this on the agent record (brigade_db.agents)
-// so Brigade's org chart shows the same badges — see the cross-repo follow-up.
-type SourceClass = "employee" | "frontier" | "flexible";
+// ── Axis 1: AFFILIATION (who operates the agent) — the colored side-border ──
+// Stored on the shared agent record (defaults to "employee" today; you reclassify
+// contractors / 3rd-parties). Border color encodes it at a glance.
+type Affiliation = "employee" | "contractor" | "third_party";
 
-const SOURCE_META: Record<
-  SourceClass,
-  { label: string; bar: string; text: string; hint: string }
+const AFFIL_META: Record<
+  Affiliation,
+  { label: string; border: string; bar: string; text: string }
 > = {
   employee: {
     label: "Employee",
+    border: "border-l-emerald-400",
     bar: "bg-emerald-400",
     text: "text-emerald-300",
-    hint: "Local model — owned by us",
+  },
+  contractor: {
+    label: "Contractor",
+    border: "border-l-amber-400",
+    bar: "bg-amber-400",
+    text: "text-amber-300",
+  },
+  third_party: {
+    label: "3rd-party",
+    border: "border-l-rose-400",
+    bar: "bg-rose-400",
+    text: "text-rose-300",
+  },
+};
+
+function affiliationOf(agent: Agent): Affiliation {
+  const a = (agent.affiliation || "").toLowerCase();
+  if (a === "contractor") return "contractor";
+  if (a === "third_party" || a === "third-party" || a === "3rd_party") return "third_party";
+  return "employee";
+}
+
+// ── Axis 2: MODEL TIER (what powers it) — derived from the model, shown as a chip ──
+type Tier = "local" | "frontier" | "flexible";
+
+const TIER_META: Record<Tier, { label: string; chip: string; dot: string }> = {
+  local: {
+    label: "Local",
+    chip: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/30",
+    dot: "bg-emerald-400",
   },
   frontier: {
     label: "Frontier",
-    bar: "bg-violet-400",
-    text: "text-violet-300",
-    hint: "3rd-party / frontier model",
+    chip: "bg-violet-500/10 text-violet-300 ring-violet-500/30",
+    dot: "bg-violet-400",
   },
   flexible: {
     label: "Flexible",
-    bar: "bg-cyan-400",
-    text: "text-cyan-300",
-    hint: "Local or frontier, per task",
+    chip: "bg-cyan-500/10 text-cyan-300 ring-cyan-500/30",
+    dot: "bg-cyan-400",
   },
 };
 
-const SOURCE_BORDER: Record<SourceClass, string> = {
-  employee: "border-l-emerald-400",
-  frontier: "border-l-violet-400",
-  flexible: "border-l-cyan-400",
-};
-
-function classifySource(agent: Agent): SourceClass {
+function tierOf(agent: Agent): Tier {
   const m = (agent.model || "").toLowerCase();
   const name = (agent.display_name || agent.name || "").toLowerCase();
-  // Orchestrators / model-switchers can pick either tier per task.
   if (
     name === "majik" ||
     agent.id === "majik" ||
@@ -76,23 +95,21 @@ function classifySource(agent: Agent): SourceClass {
   ) {
     return "flexible";
   }
-  // Models we host locally (owned).
   if (
     m.startsWith("local/") ||
     m.startsWith("ollama") ||
     /\b(qwen|llama|gemma|mistral|phi|deepseek)\b/.test(m)
   ) {
-    return "employee";
+    return "local";
   }
-  // Everything else (anthropic / openai / google / uc gateway / claude / gpt).
   return "frontier";
 }
 
 /**
- * The agent roster ("org chart") — every agent as a card, click one to open a
- * 1:1 chat. Reads the already-loaded `agents` store (AppShell fetches it), so
- * there's no extra request. Online agents sort first; search matches name,
- * description, and capabilities.
+ * The agent roster ("org chart") — every agent as a card; click one to open a
+ * 1:1 chat. Two classification axes: AFFILIATION (side-border, who operates it)
+ * and MODEL TIER (chip, what powers it). Rank + tools come from the shared
+ * Brigade roster. Tool cost/permission badges land in the next increment.
  */
 export function AgentsPage() {
   const navigate = useNavigate();
@@ -107,8 +124,11 @@ export function AgentsPage() {
       ? agents.filter(
           (a) =>
             (a.display_name || a.name).toLowerCase().includes(q) ||
+            (a.title || "").toLowerCase().includes(q) ||
+            (a.domain || "").toLowerCase().includes(q) ||
             (a.description || "").toLowerCase().includes(q) ||
-            (a.capabilities || []).some((c) => c.toLowerCase().includes(q)),
+            (a.capabilities || []).some((c) => c.toLowerCase().includes(q)) ||
+            (a.tools || []).some((t) => t.toLowerCase().includes(q)),
         )
       : agents;
     const rank = (a: Agent) => (a.status === "offline" ? 1 : 0);
@@ -180,11 +200,11 @@ export function AgentsPage() {
         </header>
 
         {/* Search */}
-        <div className="relative mb-6 max-w-md">
+        <div className="relative mb-4 max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
           <input
             type="text"
-            placeholder="Search agents by name, role, or capability…"
+            placeholder="Search by name, role, domain, or tool…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="w-full rounded-lg bg-slate-800/80 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50"
@@ -192,22 +212,37 @@ export function AgentsPage() {
           />
         </div>
 
-        {/* Source legend — matches the colored side-border on each card. */}
-        <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px]">
-          <span className="font-semibold uppercase tracking-wide text-slate-600">
-            Source
-          </span>
-          {(["employee", "frontier", "flexible"] as SourceClass[]).map((c) => (
-            <span key={c} className="inline-flex items-center gap-1.5">
-              <span
-                className={clsx("h-3 w-1 rounded-full", SOURCE_META[c].bar)}
-              />
-              <span className={clsx("font-medium", SOURCE_META[c].text)}>
-                {SOURCE_META[c].label}
-              </span>
-              <span className="text-slate-600">— {SOURCE_META[c].hint}</span>
+        {/* Legend — two axes */}
+        <div className="mb-5 flex flex-col gap-2 text-[11px] sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-6">
+          <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="font-semibold uppercase tracking-wide text-slate-600">
+              Affiliation
             </span>
-          ))}
+            {(["employee", "contractor", "third_party"] as Affiliation[]).map((a) => (
+              <span key={a} className="inline-flex items-center gap-1.5">
+                <span className={clsx("h-3 w-1 rounded-full", AFFIL_META[a].bar)} />
+                <span className={clsx("font-medium", AFFIL_META[a].text)}>
+                  {AFFIL_META[a].label}
+                </span>
+              </span>
+            ))}
+          </span>
+          <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="font-semibold uppercase tracking-wide text-slate-600">
+              Model
+            </span>
+            {(["local", "frontier", "flexible"] as Tier[]).map((t) => (
+              <span
+                key={t}
+                className={clsx(
+                  "inline-flex items-center rounded-full px-1.5 py-0.5 font-medium ring-1",
+                  TIER_META[t].chip,
+                )}
+              >
+                {TIER_META[t].label}
+              </span>
+            ))}
+          </span>
         </div>
 
         {/* Grid */}
@@ -225,27 +260,33 @@ export function AgentsPage() {
             {filtered.map((agent) => {
               const name = agent.display_name || agent.name;
               const busy = startingId === agent.id;
-              const source = classifySource(agent);
-              const meta = SOURCE_META[source];
+              const affil = affiliationOf(agent);
+              const affilMeta = AFFIL_META[affil];
+              const tier = tierOf(agent);
+              const tierMeta = TIER_META[tier];
+              const subtitle = agent.title || agent.domain || "";
+              const tools = agent.tools || [];
               return (
                 <li key={agent.id}>
                   <button
                     onClick={() => startChat(agent)}
                     disabled={!!startingId}
-                    title={meta.hint}
+                    title={`${affilMeta.label} · ${tierMeta.label} model`}
                     className={clsx(
                       "group flex h-full w-full flex-col rounded-xl border border-l-4 border-slate-700/50 bg-slate-800/30 p-4 text-left transition-colors hover:border-stable-purple/40 hover:bg-slate-800/60 disabled:cursor-not-allowed disabled:opacity-60",
-                      SOURCE_BORDER[source],
+                      affilMeta.border,
                     )}
                   >
                     <div className="flex items-start gap-3">
-                      <span className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-stable-purple-light">
+                      <span className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-lg text-stable-purple-light">
                         {agent.avatar_url ? (
                           <img
                             src={agent.avatar_url}
                             alt=""
                             className="h-full w-full object-cover"
                           />
+                        ) : agent.emoji ? (
+                          <span aria-hidden="true">{agent.emoji}</span>
                         ) : (
                           <Bot className="h-5 w-5" />
                         )}
@@ -257,10 +298,25 @@ export function AgentsPage() {
                         />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-slate-100">
-                          {name}
-                        </p>
-                        <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="truncate text-sm font-semibold text-slate-100">
+                            {name}
+                          </p>
+                          <span
+                            className={clsx(
+                              "inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
+                              tierMeta.chip,
+                            )}
+                          >
+                            {tierMeta.label}
+                          </span>
+                        </div>
+                        {subtitle && (
+                          <p className="truncate text-[11px] text-slate-400">
+                            {subtitle}
+                          </p>
+                        )}
+                        <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
                           <span
                             className={clsx(
                               "h-1.5 w-1.5 rounded-full",
@@ -268,36 +324,43 @@ export function AgentsPage() {
                             )}
                           />
                           {STATUS_LABEL[agent.status]}
-                          <span
-                            className={clsx(
-                              "ml-auto font-semibold uppercase tracking-wide",
-                              meta.text,
-                            )}
-                          >
-                            {meta.label}
-                          </span>
+                          {agent.rank && (
+                            <span className="ml-auto inline-flex items-center gap-0.5 text-slate-400">
+                              <Star className="h-3 w-3" />
+                              {agent.rank}
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>
-                    {agent.description && (
-                      <p className="mt-3 line-clamp-2 text-xs text-slate-400">
-                        {agent.description}
-                      </p>
+
+                    {tools.length > 0 && (
+                      <div className="mt-3 flex flex-1 flex-wrap content-start gap-1.5">
+                        {tools.slice(0, 4).map((t) => (
+                          <span
+                            key={t}
+                            className="rounded-md bg-slate-700/40 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                        {tools.length > 4 && (
+                          <span className="rounded-md bg-slate-700/30 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                            +{tools.length - 4}
+                          </span>
+                        )}
+                      </div>
                     )}
-                    <div className="mt-3 flex flex-1 flex-wrap items-end gap-1.5">
-                      {(agent.capabilities || []).slice(0, 3).map((c) => (
-                        <span
-                          key={c}
-                          className="rounded-md bg-slate-700/40 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
-                        >
-                          {c}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="mt-3 flex items-center justify-between border-t border-slate-700/40 pt-3">
+
+                    <div
+                      className={clsx(
+                        "flex items-center justify-between border-t border-slate-700/40 pt-3",
+                        tools.length > 0 ? "mt-3" : "mt-3 flex-1 items-end",
+                      )}
+                    >
                       <span className="flex min-w-0 items-center gap-1 text-[11px] text-slate-500">
                         <Cpu className="h-3 w-3 shrink-0" />
-                        <span className="max-w-[10rem] truncate">
+                        <span className="max-w-[9rem] truncate">
                           {agent.model || "—"}
                         </span>
                       </span>

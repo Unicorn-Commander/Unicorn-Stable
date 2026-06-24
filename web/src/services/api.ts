@@ -106,6 +106,14 @@ export interface Agent {
   status: "active" | "idle" | "working" | "offline";
   capabilities: string[];
   model: string;
+  // Org-chart fields (from Brigade's rich roster). Optional so older callers and
+  // the empty-state stay valid.
+  emoji?: string | null;
+  rank?: string | null;
+  title?: string | null;
+  domain?: string | null;
+  affiliation?: string | null;
+  tools?: string[];
 }
 
 export interface BrigadeAgent {
@@ -530,7 +538,10 @@ class StableApiClient {
   }
 
   async getAgents(): Promise<Agent[]> {
-    return this.request<Agent[]>("GET", "/api/v1/agents");
+    // The rich roster from Brigade (the source of truth) — rank/title/model/
+    // tools/emoji. Stable's own /api/v1/agents table is empty in practice, so
+    // this is what populates the agents store, the home rail, and the org chart.
+    return this.request<Agent[]>("GET", "/api/v1/brigade/roster");
   }
 
   async getBrigadeAgents(): Promise<BrigadeAgent[]> {
