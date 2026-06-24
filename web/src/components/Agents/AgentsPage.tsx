@@ -131,7 +131,9 @@ export function AgentsPage() {
             <span className="font-semibold uppercase tracking-wide text-slate-600">
               Affiliation
             </span>
-            {(["employee", "contractor", "third_party"] as Affiliation[]).map((a) => (
+            {(
+              ["employee", "contractor", "third_party", "frontier"] as Affiliation[]
+            ).map((a) => (
               <span key={a} className="inline-flex items-center gap-1.5">
                 <span className={clsx("h-3 w-1 rounded-full", AFFIL_META[a].bar)} />
                 <span className={clsx("font-medium", AFFIL_META[a].text)}>
@@ -155,6 +157,12 @@ export function AgentsPage() {
                 {TIER_META[t].label}
               </span>
             ))}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-semibold text-amber-200 ring-1 ring-amber-500/30">
+              $
+            </span>
+            <span className="font-medium text-amber-200/80">tool costs money</span>
           </span>
         </div>
 

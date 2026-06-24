@@ -13,6 +13,7 @@ import {
   prettyDomain,
   isOrchestrator,
 } from "./agentClass";
+import { PaidToolsBadge } from "./AgentBadges";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -150,13 +151,16 @@ function OrchestratorNode({
           {agent.title || prettyDomain(agent.domain)}
         </p>
       </div>
-      <span
-        className={clsx(
-          "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
-          tierMeta.chip,
-        )}
-      >
-        {tierMeta.label}
+      <span className="flex items-center gap-1">
+        <span
+          className={clsx(
+            "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
+            tierMeta.chip,
+          )}
+        >
+          {tierMeta.label}
+        </span>
+        <PaidToolsBadge agent={agent} size="xs" />
       </span>
     </button>
   );
@@ -214,6 +218,7 @@ function MemberNode({
             {agent.title || agent.rank || prettyDomain(agent.domain)}
           </span>
         </span>
+        <PaidToolsBadge agent={agent} size="xs" />
         <span
           className={clsx("h-2 w-2 shrink-0 rounded-full", tierMeta.dot)}
           title={`${tierMeta.label} model`}

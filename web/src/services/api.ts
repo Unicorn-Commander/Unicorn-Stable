@@ -114,6 +114,21 @@ export interface Agent {
   domain?: string | null;
   affiliation?: string | null;
   tools?: string[];
+  // Per-tool cost/permission detail + rollup (from Brigade's tool_catalog).
+  tool_details?: {
+    name: string;
+    displayName?: string | null;
+    costTier?: "free" | "paid" | "subscription";
+    permissionLevel?: number;
+    provider?: string | null;
+    external?: boolean;
+  }[];
+  tool_cost_summary?: {
+    total: number;
+    paid: number;
+    external: number;
+    maxPermissionLevel: number;
+  };
 }
 
 export interface BrigadeAgent {

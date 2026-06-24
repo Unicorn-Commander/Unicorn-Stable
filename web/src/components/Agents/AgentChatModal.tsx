@@ -12,7 +12,9 @@ import {
   tierOf,
   statusDot,
   prettyDomain,
+  toolCostInfo,
 } from "./agentClass";
+import { PaidToolsBadge } from "./AgentBadges";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -42,6 +44,10 @@ export function AgentChatModal({
 
   const tierMeta = TIER_META[tierOf(focusAgent)];
   const affilMeta = AFFIL_META[affiliationOf(focusAgent)];
+  const paidNames = useMemo(
+    () => new Set(toolCostInfo(focusAgent).paidTools.map((t) => t.name)),
+    [focusAgent],
+  );
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -176,6 +182,7 @@ export function AgentChatModal({
                 >
                   {tierMeta.label}
                 </span>
+                <PaidToolsBadge agent={focusAgent} />
               </div>
               <p className="truncate text-sm text-stable-purple-light">
                 {focusAgent.title || prettyDomain(focusAgent.domain)}
@@ -206,9 +213,15 @@ export function AgentChatModal({
               {focusAgent.tools.slice(0, 8).map((t) => (
                 <span
                   key={t}
-                  className="rounded-md bg-slate-700/40 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
+                  title={paidNames.has(t) ? `${t} · costs money` : t}
+                  className={clsx(
+                    "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                    paidNames.has(t)
+                      ? "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25"
+                      : "bg-slate-700/40 text-slate-400",
+                  )}
                 >
-                  {t}
+                  {paidNames.has(t) ? `$ ${t}` : t}
                 </span>
               ))}
               {focusAgent.tools.length > 8 && (

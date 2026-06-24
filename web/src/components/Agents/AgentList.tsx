@@ -8,7 +8,9 @@ import {
   tierOf,
   statusDot,
   STATUS_LABEL,
+  toolCostInfo,
 } from "./agentClass";
+import { PaidToolsBadge } from "./AgentBadges";
 
 /** The flat card grid (kept under "List"). Click a card to open the chat popup. */
 export function AgentList({
@@ -35,6 +37,7 @@ export function AgentList({
         const tierMeta = TIER_META[tierOf(agent)];
         const subtitle = agent.title || agent.domain || "";
         const tools = agent.tools || [];
+        const paidNames = new Set(toolCostInfo(agent).paidTools.map((t) => t.name));
         return (
           <li key={agent.id}>
             <button
@@ -64,13 +67,16 @@ export function AgentList({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
                     <p className="truncate text-sm font-semibold text-slate-100">{name}</p>
-                    <span
-                      className={clsx(
-                        "inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
-                        tierMeta.chip,
-                      )}
-                    >
-                      {tierMeta.label}
+                    <span className="flex shrink-0 items-center gap-1">
+                      <PaidToolsBadge agent={agent} />
+                      <span
+                        className={clsx(
+                          "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
+                          tierMeta.chip,
+                        )}
+                      >
+                        {tierMeta.label}
+                      </span>
                     </span>
                   </div>
                   {subtitle && (
@@ -96,9 +102,15 @@ export function AgentList({
                   {tools.slice(0, 4).map((t) => (
                     <span
                       key={t}
-                      className="rounded-md bg-slate-700/40 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
+                      title={paidNames.has(t) ? `${t} · costs money` : t}
+                      className={clsx(
+                        "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                        paidNames.has(t)
+                          ? "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25"
+                          : "bg-slate-700/40 text-slate-400",
+                      )}
                     >
-                      {t}
+                      {paidNames.has(t) ? `$ ${t}` : t}
                     </span>
                   ))}
                   {tools.length > 4 && (

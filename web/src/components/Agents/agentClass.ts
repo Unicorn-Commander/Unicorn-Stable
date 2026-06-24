@@ -23,7 +23,8 @@ export function statusDot(status: Agent["status"]): string {
 }
 
 // ── Axis 1: AFFILIATION (who operates the agent) — the colored side-border ──
-export type Affiliation = "employee" | "contractor" | "third_party";
+// Canonical colors, shared with Brigade's org chart so the two products match.
+export type Affiliation = "employee" | "contractor" | "third_party" | "frontier";
 
 export const AFFIL_META: Record<
   Affiliation,
@@ -47,6 +48,12 @@ export const AFFIL_META: Record<
     bar: "bg-rose-400",
     text: "text-rose-300",
   },
+  frontier: {
+    label: "Frontier",
+    border: "border-l-violet-400",
+    bar: "bg-violet-400",
+    text: "text-violet-300",
+  },
 };
 
 export function affiliationOf(agent: Agent): Affiliation {
@@ -55,8 +62,80 @@ export function affiliationOf(agent: Agent): Affiliation {
   if (a === "third_party" || a === "third-party" || a === "3rd_party") {
     return "third_party";
   }
-  return "employee";
+  if (a === "frontier") return "frontier";
+  if (a === "employee") return "employee";
+  // No explicit affiliation: fall back to model tier so the border is still
+  // meaningful — a frontier-model agent reads as frontier, everything else as
+  // employee (we run it).
+  return tierOf(agent) === "frontier" ? "frontier" : "employee";
 }
+
+// ── Tool cost / permission (from Brigade's tool_catalog, surfaced per agent) ──
+export type CostTier = "free" | "paid" | "subscription";
+
+export interface ToolDetail {
+  name: string;
+  displayName?: string | null;
+  costTier?: CostTier;
+  permissionLevel?: number;
+  provider?: string | null;
+  external?: boolean;
+}
+
+export const COST_META: Record<
+  Exclude<CostTier, "free">,
+  { label: string; chip: string }
+> = {
+  paid: { label: "Paid", chip: "bg-amber-500/15 text-amber-200 ring-amber-500/30" },
+  subscription: {
+    label: "Subscription",
+    chip: "bg-amber-500/15 text-amber-200 ring-amber-500/30",
+  },
+};
+
+export interface ToolCostInfo {
+  total: number;
+  paidCount: number;
+  externalCount: number;
+  maxPermissionLevel: number;
+  paidTools: ToolDetail[];
+}
+
+/** Summarize an agent's tool costs from toolDetails (falling back to the
+ *  toolCostSummary rollup, then to the bare `tools` string array). */
+export function toolCostInfo(agent: Agent): ToolCostInfo {
+  const details = agent.tool_details || [];
+  if (details.length) {
+    const paidTools = details.filter((t) => t.costTier && t.costTier !== "free");
+    return {
+      total: details.length,
+      paidCount: paidTools.length,
+      externalCount: details.filter((t) => t.external).length,
+      maxPermissionLevel: details.reduce(
+        (m, t) => Math.max(m, t.permissionLevel || 0),
+        0,
+      ),
+      paidTools,
+    };
+  }
+  const s = agent.tool_cost_summary;
+  return {
+    total: s?.total ?? (agent.tools?.length || 0),
+    paidCount: s?.paid ?? 0,
+    externalCount: s?.external ?? 0,
+    maxPermissionLevel: s?.maxPermissionLevel ?? 0,
+    paidTools: [],
+  };
+}
+
+// Permission level (1..5) → a short human label for tooltips.
+export const PERMISSION_LABEL: Record<number, string> = {
+  1: "Basic",
+  2: "Standard",
+  3: "Elevated",
+  4: "Sensitive",
+  5: "Privileged",
+};
 
 // ── Axis 2: MODEL TIER (what powers it) — derived from the model, shown as a chip ──
 export type Tier = "local" | "frontier" | "flexible";
