@@ -25,6 +25,10 @@ export interface WsMessageEvent {
     updated_at: string;
     metadata: Record<string, unknown>;
   };
+  /** True when this is the live placeholder of an agent reply that is about to
+   * stream — lets the client mark the message generating (and show Stop) from
+   * the flag alone, rather than inferring it from the "…" content. */
+  streaming?: boolean;
 }
 
 export interface WsTypingEvent {

@@ -531,6 +531,7 @@ export function MessageBubble({
   const [hovered, setHovered] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const promoted = projectOpsMeta(message);
   const artifact = artifactMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
@@ -649,11 +650,11 @@ export function MessageBubble({
   }
 
   const isAgent = message.sender_type === "agent";
-  // An agent reply that is still being produced: either the bare "…" placeholder
-  // or a live stream (the ws `message_edit` streaming flag → message.streaming).
-  // Drives the Stop control; Regenerate is offered once it's done.
-  const isGenerating =
-    isAgent && (message.streaming === true || message.content === "…");
+  // An agent reply that is still being produced. Driven purely by the ws
+  // streaming flag (set on the placeholder, cleared on finalize) — NOT the "…"
+  // content, so a persisted/crashed placeholder can never strand a Stop pill on
+  // a message with no live responder behind it.
+  const isGenerating = isAgent && message.streaming === true;
 
   if (message.content_type === "action") {
     const decision = (
@@ -1269,19 +1270,28 @@ export function MessageBubble({
           </button>
           {isAgent && !isGenerating && (
             <button
+              disabled={regenerating}
               onClick={(e) => {
                 e.stopPropagation();
+                if (regenerating) return;
+                setRegenerating(true);
                 void api
                   .regenerateReply(message.id)
-                  .catch((err) =>
-                    alert("Regenerate failed: " + (err as Error).message),
-                  );
+                  .catch((err) => {
+                    // 409 = someone already regenerated this reply (double-tap /
+                    // two members). Benign and expected — don't alarm the user.
+                    if ((err as ApiError)?.status === 409) return;
+                    alert("Regenerate failed: " + (err as Error).message);
+                  })
+                  .finally(() => setRegenerating(false));
               }}
-              className="rounded p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/20 hover:text-stable-purple-light"
+              className="rounded p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/20 hover:text-stable-purple-light disabled:cursor-not-allowed disabled:opacity-50"
               aria-label="Regenerate reply"
               title="Regenerate this reply"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw
+                className={clsx("h-3.5 w-3.5", regenerating && "animate-spin")}
+              />
             </button>
           )}
           {isOwn && (

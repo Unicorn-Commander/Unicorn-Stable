@@ -113,6 +113,11 @@ export function useChat(roomId: string | null): UseChatReturn {
         incoming.sender_type,
         incoming.sender_name,
       );
+      // The agent-reply placeholder arrives flagged streaming:true so the
+      // bubble shows Stop / "generating" off the flag alone (a later finalize
+      // clears it). Persisted history never carries the flag, so a crashed
+      // finalize can't strand a Stop pill on a dead message.
+      if (event.streaming === true) incoming.streaming = true;
       addMessage(roomId, incoming);
     });
 
