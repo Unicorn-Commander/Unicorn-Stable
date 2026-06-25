@@ -46,6 +46,10 @@ export interface WsMessageEditEvent {
   message_id: string;
   content: string;
   updated_at: string;
+  /** Present (true) on incremental streaming patches of an agent reply; absent
+   * on the final finalize edit. Lets the client show a live "generating" state
+   * and a Stop control until the reply lands. */
+  streaming?: boolean;
 }
 
 export interface WsMessageDeleteEvent {

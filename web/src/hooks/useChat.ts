@@ -119,10 +119,15 @@ export function useChat(roomId: string | null): UseChatReturn {
     const unsubEdit = ws.on("message_edit", (data: WsEventPayload) => {
       const event = data as WsMessageEditEvent;
       if (event.room_id === roomId) {
+        // Streaming patches (agent reply mid-flight) carry `streaming: true` and
+        // shouldn't flag the message as user-"edited"; the final finalize edit
+        // omits the flag, clears `streaming`, and marks it edited as before.
+        const streaming = event.streaming === true;
         updateMessage(roomId, event.message_id, {
           content: event.content,
           updated_at: event.updated_at,
-          edited: true,
+          streaming,
+          ...(streaming ? {} : { edited: true }),
         });
       }
     });

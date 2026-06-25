@@ -95,6 +95,10 @@ export interface Message {
   created_at: string;
   updated_at: string;
   metadata: Record<string, unknown>;
+  /** Client-only: an agent reply currently streaming in (set from the ws
+   * `message_edit` streaming flag; never sent on the REST shape). Drives the
+   * Stop control and the live "generating" affordance. */
+  streaming?: boolean;
 }
 
 export interface Agent {
@@ -724,6 +728,28 @@ class StableApiClient {
     return this.request<void>(
       "DELETE",
       `/api/v1/messages/${messageId}`,
+    );
+  }
+
+  /** Ask an in-flight agent reply to stop streaming. `messageId` is the agent
+   * reply (placeholder) message that is currently generating. The backend
+   * signals the responder (cross-worker via Redis) and finalizes whatever has
+   * been produced so far. */
+  async stopGenerating(messageId: string): Promise<void> {
+    return this.request<void>(
+      "POST",
+      `/api/v1/messages/${messageId}/stop`,
+    );
+  }
+
+  /** Regenerate an agent reply: the backend soft-deletes this reply and re-runs
+   * the responder on the user turn that prompted it (a fresh reply streams in
+   * over the ws plane). Optionally override the model for the new attempt. */
+  async regenerateReply(messageId: string, model?: string): Promise<Message> {
+    return this.request<Message>(
+      "POST",
+      `/api/v1/messages/${messageId}/regenerate`,
+      model ? { model } : {},
     );
   }
 

@@ -16,6 +16,8 @@ import {
   Quote,
   Bookmark,
   LayoutPanelLeft,
+  RefreshCw,
+  Square,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict, format } from "date-fns";
@@ -647,6 +649,11 @@ export function MessageBubble({
   }
 
   const isAgent = message.sender_type === "agent";
+  // An agent reply that is still being produced: either the bare "…" placeholder
+  // or a live stream (the ws `message_edit` streaming flag → message.streaming).
+  // Drives the Stop control; Regenerate is offered once it's done.
+  const isGenerating =
+    isAgent && (message.streaming === true || message.content === "…");
 
   if (message.content_type === "action") {
     const decision = (
@@ -1260,6 +1267,23 @@ export function MessageBubble({
           >
             <Pin className="h-3.5 w-3.5" />
           </button>
+          {isAgent && !isGenerating && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                void api
+                  .regenerateReply(message.id)
+                  .catch((err) =>
+                    alert("Regenerate failed: " + (err as Error).message),
+                  );
+              }}
+              className="rounded p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/20 hover:text-stable-purple-light"
+              aria-label="Regenerate reply"
+              title="Regenerate this reply"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          )}
           {isOwn && (
             <>
               <button
@@ -1287,6 +1311,23 @@ export function MessageBubble({
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {isGenerating && (
+        <div className="absolute -bottom-3 right-3 z-10">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              void api.stopGenerating(message.id).catch(() => {});
+            }}
+            className="flex items-center gap-1 rounded-full border border-slate-600/70 bg-slate-800/95 px-2 py-0.5 text-[11px] font-medium text-slate-300 shadow-lg backdrop-blur-sm transition-colors hover:border-red-500/50 hover:text-red-300"
+            aria-label="Stop generating"
+            title="Stop generating"
+          >
+            <Square className="h-2.5 w-2.5 fill-current" />
+            Stop
+          </button>
         </div>
       )}
 
