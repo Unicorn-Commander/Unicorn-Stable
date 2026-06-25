@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -18,11 +18,7 @@ import {
 import clsx from "clsx";
 import { api, type Room, type Agent } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
-
-// Keep in sync with RoomList — Majik is the user's resident orchestrator
-// persona. Rooms whose brigade_agent_id is "majik" are 1:1 Majik chats and get
-// the sparkle treatment in the feed.
-const MAJIK_AGENT_ID = "majik";
+import { resolveDefaultAgent } from "@/components/Sidebar/newChat";
 
 // Standing always-on video rooms (mirrors the backend CONFERENCE_ROOMS list).
 // Entering one create-or-gets it and joins, then drops you into the room where
@@ -84,6 +80,24 @@ export function HomeDashboard() {
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const currentUser = useAppStore((s) => s.currentUser);
   const agents = useAppStore((s) => s.agents);
+  const defaultAgentId = useAppStore((s) => s.defaultAgentId);
+  const setDefaultAgentId = useAppStore((s) => s.setDefaultAgentId);
+  const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
+
+  // The default-agent preference is loaded by the sidebar, but hydrate it here
+  // too so the Home dashboard is correct even if rendered first. Best-effort.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyPreferences()
+      .then((p) => {
+        if (!cancelled) setDefaultAgentId(p.default_agent_id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [setDefaultAgentId]);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
 
@@ -119,9 +133,7 @@ export function HomeDashboard() {
     () => agents.filter((a) => a.status !== "offline"),
     [agents],
   );
-  const majikOnline = onlineAgents.some(
-    (a) => a.name?.toLowerCase() === "majik" || a.id === MAJIK_AGENT_ID,
-  );
+  const defaultAgentOnline = onlineAgents.some((a) => a.id === defaultAgent.id);
 
   const shown = useMemo(() => {
     switch (filter) {
@@ -143,7 +155,7 @@ export function HomeDashboard() {
   };
 
   // Start (or resume) a 1:1 chat with any agent and jump into it. Used by the
-  // "New chat with Majik" button and by every row in the Agents rail.
+  // "New chat" button and by every row in the Agents rail.
   async function handleAgentChat(agentId: string, label: string) {
     if (startingChat) return;
     setStartingChat(true);
@@ -158,8 +170,8 @@ export function HomeDashboard() {
     }
   }
 
-  function handleNewMajikChat() {
-    void handleAgentChat(MAJIK_AGENT_ID, "Chat with Majik");
+  function startDefaultChat() {
+    void handleAgentChat(defaultAgent.id, `Chat with ${defaultAgent.name}`);
   }
 
   async function enterConference(slug: string) {
@@ -201,7 +213,7 @@ export function HomeDashboard() {
   } else {
     statusBits.push("You're all caught up");
   }
-  if (majikOnline) statusBits.push("Majik is online");
+  if (defaultAgentOnline) statusBits.push(`${defaultAgent.name} is online`);
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -237,7 +249,7 @@ export function HomeDashboard() {
                       ·
                     </span>
                   )}
-                  {bit === "Majik is online" ? (
+                  {bit.endsWith(" is online") ? (
                     <span className="inline-flex items-center gap-1.5">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                       {bit}
@@ -254,7 +266,7 @@ export function HomeDashboard() {
         {/* Quick actions */}
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
-            onClick={handleNewMajikChat}
+            onClick={startDefaultChat}
             disabled={startingChat}
             className="gradient-bg group flex items-center gap-3 rounded-xl px-4 py-3.5 text-left text-white shadow-lg shadow-stable-purple/20 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -263,7 +275,7 @@ export function HomeDashboard() {
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-semibold">
-                {startingChat ? "Starting…" : "New chat with Majik"}
+                {startingChat ? "Starting…" : "New chat"}
               </span>
               <span className="block truncate text-xs text-white/70">
                 Ask your orchestrator anything
@@ -411,14 +423,14 @@ export function HomeDashboard() {
                 hasRooms={rooms.length > 0}
                 seeding={seeding}
                 onSeed={handleSeedDefaults}
-                onNewChat={handleNewMajikChat}
+                onNewChat={startDefaultChat}
               />
             ) : (
               <ul className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/20">
                 {shown.map((room, i) => {
                 const unread = unreadFor(room);
                 const m = room.last_message;
-                const isMajik = room.brigade_agent_id === MAJIK_AGENT_ID;
+                const isPrimary = room.brigade_agent_id === defaultAgent.id;
                 const isChannel = room.type === "channel";
                 return (
                   <li key={room.id}>
@@ -433,12 +445,12 @@ export function HomeDashboard() {
                       <span
                         className={clsx(
                           "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                          isMajik
+                          isPrimary
                             ? "bg-stable-purple/20 text-stable-purple-light"
                             : "bg-slate-700/50 text-slate-400",
                         )}
                       >
-                        {isMajik ? (
+                        {isPrimary ? (
                           <Sparkles className="h-4 w-4" />
                         ) : isChannel ? (
                           <Hash className="h-4 w-4" />
@@ -645,7 +657,7 @@ function EmptyFeed({
             className="gradient-bg flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
           >
             <SquarePen className="h-3.5 w-3.5" />
-            New chat with Majik
+            New chat
           </button>
           <button
             onClick={onSeed}

@@ -51,6 +51,10 @@ interface AppState {
   messages: Record<string, RoomMessages>;
   participants: Record<string, RoomMember[]>;
   agents: Agent[];
+  // The user's chosen default agent for the "New chat" button (server-side
+  // preference, so it follows them across devices). null = not yet set →
+  // callers fall back to the built-in default agent.
+  defaultAgentId: string | null;
   typing: Record<string, TypingUser[]>;
   onlineUsers: string[];
   unreadCounts: Record<string, number>;
@@ -76,6 +80,7 @@ interface AppState {
   setParticipants: (roomId: string, members: RoomMember[]) => void;
   updateParticipantOnline: (userId: string, isOnline: boolean) => void;
   setAgents: (agents: Agent[]) => void;
+  setDefaultAgentId: (id: string | null) => void;
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
   setOnlineUsers: (userIds: string[]) => void;
@@ -114,6 +119,7 @@ export const useAppStore = create<AppState>((set) => ({
   messages: {},
   participants: {},
   agents: [],
+  defaultAgentId: null,
   typing: {},
   onlineUsers: [],
   unreadCounts: {},
@@ -300,6 +306,7 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   setAgents: (agents) => set({ agents }),
+  setDefaultAgentId: (id) => set({ defaultAgentId: id }),
 
   addTypingUser: (roomId, user) =>
     set((state) => {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   Bot,
@@ -12,7 +12,6 @@ import {
   Plus,
   Search,
   Sparkles,
-  SquarePen,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -25,13 +24,8 @@ import {
 } from "@/stores/categoryStore";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
-
-// The user's personal orchestrator persona. ChatGPT-style "New chat" starts a
-// fresh DM bound to this Brigade agent; its past DMs are grouped together in
-// the sidebar as a resumable conversation history. Matches the persisted
-// room metadata (`metadata.brigade_agent_id`) — see chat-with-majik.
-const MAJIK_AGENT_ID = "majik";
-const MAJIK_AGENT_NAME = "Majik";
+import { NewChatButton } from "./NewChatButton";
+import { resolveDefaultAgent } from "./newChat";
 
 export function RoomList() {
   const navigate = useNavigate();
@@ -43,6 +37,12 @@ export function RoomList() {
   const onlineUsers = useAppStore((s) => s.onlineUsers);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
+  const agents = useAppStore((s) => s.agents);
+  const defaultAgentId = useAppStore((s) => s.defaultAgentId);
+  const setDefaultAgentId = useAppStore((s) => s.setDefaultAgentId);
+  // The agent the "New chat" button + the primary conversation section key off
+  // (the user's chosen default, else Majik, else the first agent).
+  const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
   const openRoom = (id: string) => {
@@ -65,21 +65,36 @@ export function RoomList() {
   const [startingChat, setStartingChat] = useState(false);
   const queryClient = useQueryClient();
 
-  // ChatGPT-style "New chat": start a fresh conversation bound to Majik and
-  // jump into it. Reuses the create-DM + invite-agent flow (api.createAgentDm);
-  // the new room shows up in the Majik section once the rooms query refetches.
-  async function handleNewMajikChat() {
+  // Hydrate the server-side default-agent preference once (it follows the user
+  // across devices). Best-effort — a failure just keeps the built-in fallback.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyPreferences()
+      .then((p) => {
+        if (!cancelled) setDefaultAgentId(p.default_agent_id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [setDefaultAgentId]);
+
+  // ChatGPT-style "New chat": start a fresh conversation bound to the user's
+  // default agent and jump into it (the section "+" and empty-state CTA). The
+  // split New-chat button has its own per-agent path.
+  async function startDefaultChat() {
     if (startingChat) return;
     setStartingChat(true);
     try {
       const room = await api.createAgentDm(
-        MAJIK_AGENT_ID,
-        `Chat with ${MAJIK_AGENT_NAME}`,
+        defaultAgent.id,
+        `Chat with ${defaultAgent.name}`,
       );
       await queryClient.invalidateQueries({ queryKey: ["rooms"] });
       openRoom(room.id);
     } catch (err) {
-      console.error("new Majik chat failed", err);
+      console.error("new chat failed", err);
       alert("Couldn't start a new chat — " + (err as Error).message);
     } finally {
       setStartingChat(false);
@@ -274,29 +289,29 @@ export function RoomList() {
     );
   }
 
-  // Majik's 1:1 conversations get their own resumable-history section. The
-  // rooms query is already ordered most-recent-first by the backend
+  // Conversations with the user's default agent get their own resumable-history
+  // section. The rooms query is already ordered most-recent-first by the backend
   // (updated_at DESC), so this slice stays newest → oldest.
-  const majikConversations = useMemo(
+  const primaryConversations = useMemo(
     () =>
       filteredRooms.filter(
         (r) =>
           (r.type === "dm" || r.type === "group_dm") &&
-          r.brigade_agent_id === MAJIK_AGENT_ID,
+          r.brigade_agent_id === defaultAgent.id,
       ),
-    [filteredRooms],
+    [filteredRooms, defaultAgent.id],
   );
 
-  // Everything else that's a DM (other people / other agents). Majik's
-  // conversations are pulled out above so they aren't listed twice.
+  // Everything else that's a DM (other people / other agents). The default
+  // agent's conversations are pulled out above so they aren't listed twice.
   const directMessages = useMemo(
     () =>
       filteredRooms.filter(
         (r) =>
           (r.type === "dm" || r.type === "group_dm") &&
-          r.brigade_agent_id !== MAJIK_AGENT_ID,
+          r.brigade_agent_id !== defaultAgent.id,
       ),
-    [filteredRooms],
+    [filteredRooms, defaultAgent.id],
   );
 
   function formatLastMessage(content: string): string {
@@ -315,15 +330,7 @@ export function RoomList() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0 space-y-2 px-3 py-3">
-        <button
-          onClick={handleNewMajikChat}
-          disabled={startingChat}
-          className="gradient-bg flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label={`Start a new chat with ${MAJIK_AGENT_NAME}`}
-        >
-          <SquarePen className="h-4 w-4" />
-          {startingChat ? "Starting…" : "New chat"}
-        </button>
+        <NewChatButton onStarted={openRoom} />
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
           <input
@@ -404,22 +411,22 @@ export function RoomList() {
         <section>
           <div className="flex items-center justify-between px-2 pb-1">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Chats with {MAJIK_AGENT_NAME}
+              Chats with {defaultAgent.name}
             </h3>
             <button
-              onClick={handleNewMajikChat}
+              onClick={startDefaultChat}
               disabled={startingChat}
               className="rounded p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 disabled:opacity-50 md:p-0.5"
-              aria-label={`Start a new chat with ${MAJIK_AGENT_NAME}`}
-              title={`Start a new chat with ${MAJIK_AGENT_NAME}`}
+              aria-label={`Start a new chat with ${defaultAgent.name}`}
+              title={`Start a new chat with ${defaultAgent.name}`}
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          {majikConversations.length === 0 ? (
+          {primaryConversations.length === 0 ? (
             <button
-              onClick={handleNewMajikChat}
+              onClick={startDefaultChat}
               disabled={startingChat}
               className="mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start rounded-md border border-dashed border-slate-700/50 px-2.5 py-2 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-slate-800/40 hover:text-slate-300 disabled:opacity-50"
             >
@@ -427,12 +434,12 @@ export function RoomList() {
               <span>
                 {startingChat
                   ? "Starting…"
-                  : `Start a chat with ${MAJIK_AGENT_NAME} — past conversations show up here.`}
+                  : `Start a chat with ${defaultAgent.name} — past conversations show up here.`}
               </span>
             </button>
           ) : (
             <ul role="list">
-              {majikConversations.map((room) => {
+              {primaryConversations.map((room) => {
                 const others = (participantsByRoom[room.id] ?? []).filter(
                   (p) => (p.participant_id || p.user_id) !== currentUserId,
                 );

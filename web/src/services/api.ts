@@ -394,6 +394,26 @@ class StableApiClient {
     return { ...room, brigade_agent_id: brigadeAgentId };
   }
 
+  /** The caller's server-side preferences (follow the account across devices).
+   * Currently just the default agent the "New chat" button uses. */
+  async getMyPreferences(): Promise<{ default_agent_id: string | null }> {
+    return this.request<{ default_agent_id: string | null }>(
+      "GET",
+      "/api/v1/users/me/preferences",
+    );
+  }
+
+  /** Set (or clear, with null) the user's default "New chat" agent. */
+  async setDefaultAgent(
+    agentId: string | null,
+  ): Promise<{ default_agent_id: string | null }> {
+    return this.request<{ default_agent_id: string | null }>(
+      "PUT",
+      "/api/v1/users/me/preferences",
+      { default_agent_id: agentId },
+    );
+  }
+
   async bootstrapDefaultRooms(): Promise<Room[]> {
     return this.request<Room[]>("POST", "/api/v1/rooms/bootstrap-defaults");
   }
