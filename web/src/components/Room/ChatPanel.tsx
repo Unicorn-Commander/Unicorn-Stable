@@ -50,6 +50,9 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
   const participants = useAppStore(
     (s) => s.participants[roomId] ?? EMPTY_MEMBERS,
   );
+  // If a moderator muted me in this room, replace the composer with a notice
+  // (the server also blocks the post; this just avoids a dead-end 403).
+  const iAmMuted = participants.find((p) => p.is_self)?.is_muted === true;
 
   // Send mark_read for the latest message whenever (a) the room becomes
   // active, (b) a new message arrives while we're at bottom + visible.
@@ -271,7 +274,15 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
         </div>
       )}
 
-      <MessageInput roomId={roomId} onSend={handleSend} onTyping={sendTypingIndicator} onEditLast={triggerEditLast} />
+      <MessageInput
+        roomId={roomId}
+        onSend={handleSend}
+        onTyping={sendTypingIndicator}
+        onEditLast={triggerEditLast}
+        disabledReason={
+          iAmMuted ? "You've been muted in this channel by a moderator." : undefined
+        }
+      />
     </div>
   );
 }

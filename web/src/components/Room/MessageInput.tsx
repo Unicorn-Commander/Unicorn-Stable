@@ -12,6 +12,7 @@ import {
   Paperclip,
   Phone,
   AtSign,
+  MicOff,
 } from "lucide-react";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
@@ -112,6 +113,9 @@ interface MessageInputProps {
   ) => void;
   onTyping: () => void;
   onEditLast?: () => void;
+  /** When set, the composer is replaced by this notice (e.g. the user is
+   * muted in this room). Posting is also blocked server-side. */
+  disabledReason?: string;
 }
 
 interface MentionSuggestion {
@@ -120,7 +124,7 @@ interface MentionSuggestion {
   type: "human" | "agent";
 }
 
-export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageInputProps) {
+export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledReason }: MessageInputProps) {
   const [content, setContent] = useState(() => getDraft(roomId));
   const [dragOver, setDragOver] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
@@ -450,6 +454,17 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast }: MessageIn
   function handleStartCall() {
     if (isConnected || isConnecting) return;
     void lkConnect();
+  }
+
+  if (disabledReason) {
+    return (
+      <div className="shrink-0 border-t border-slate-700/50 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-800/60 px-4 py-3 text-sm text-slate-400 ring-1 ring-slate-700/50">
+          <MicOff className="h-4 w-4 shrink-0 text-amber-400" />
+          <span>{disabledReason}</span>
+        </div>
+      </div>
+    );
   }
 
   return (

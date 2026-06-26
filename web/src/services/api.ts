@@ -58,6 +58,10 @@ export interface RoomMember {
   participant_type?: "human" | "agent";
   is_online?: boolean;
   is_muted?: boolean;
+  // Server-set: true for the row that belongs to the requesting user. The
+  // Keycloak id never equals the participant UUID, so this is the only
+  // reliable "this is me" marker for the moderation UI.
+  is_self?: boolean;
   joined_at: string;
   last_read_at?: string | null;
   status?: string;
@@ -523,6 +527,40 @@ class StableApiClient {
     return this.request<RoomMember[]>(
       "GET",
       `/api/v1/rooms/${roomId}/members`,
+    );
+  }
+
+  /** Moderation (owner/admin): remove a member from a room (kick). */
+  async removeMember(roomId: string, participantId: string): Promise<void> {
+    return this.request<void>(
+      "DELETE",
+      `/api/v1/rooms/${roomId}/members/${participantId}`,
+    );
+  }
+
+  /** Moderation (owner): change a member's role. */
+  async setMemberRole(
+    roomId: string,
+    participantId: string,
+    role: "owner" | "admin" | "member" | "guest",
+  ): Promise<RoomMember> {
+    return this.request<RoomMember>(
+      "PATCH",
+      `/api/v1/rooms/${roomId}/members/${participantId}/role`,
+      { role },
+    );
+  }
+
+  /** Moderation (owner/admin): mute or unmute a member (blocks posting). */
+  async setMemberMute(
+    roomId: string,
+    participantId: string,
+    isMuted: boolean,
+  ): Promise<RoomMember> {
+    return this.request<RoomMember>(
+      "PATCH",
+      `/api/v1/rooms/${roomId}/members/${participantId}/mute`,
+      { is_muted: isMuted },
     );
   }
 

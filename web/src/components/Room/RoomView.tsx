@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
 import { Bell, BellOff, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
-import { api } from "@/services/api";
+import { api, type ApiError } from "@/services/api";
+import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -103,6 +104,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const overflowRef = useRef<HTMLDivElement>(null);
   const overflowBtnRef = useRef<HTMLButtonElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
@@ -137,10 +139,11 @@ export function RoomView({ roomId }: RoomViewProps) {
 
   // getRoom doesn't include members in our wire-format. Fetch separately so
   // the participant strip + read receipts have someone to render.
-  const { data: members } = useQuery({
+  const { data: members, error: membersError } = useQuery({
     queryKey: ["room-members", roomId],
     queryFn: () => api.getRoomMembers(roomId),
     refetchInterval: 30_000,
+    retry: false,
   });
 
   useEffect(() => {
@@ -148,6 +151,27 @@ export function RoomView({ roomId }: RoomViewProps) {
       setParticipants(roomId, members);
     }
   }, [members, roomId, setParticipants]);
+
+  // Live member changes (someone joined/left, was removed, role/mute changed)
+  // fan out over the room socket so every open client refreshes immediately
+  // instead of waiting for the 30s poll.
+  useEffect(() => {
+    if (!roomId) return;
+    return ws.on("members_changed", (data) => {
+      const evt = data as { room_id?: string };
+      if (evt.room_id && evt.room_id !== roomId) return;
+      qc.invalidateQueries({ queryKey: ["room-members", roomId] });
+    });
+  }, [roomId, qc]);
+
+  // If the members fetch comes back 403, my membership is gone (I was removed
+  // or the room was archived) — eject to home rather than sit on a dead room.
+  useEffect(() => {
+    if ((membersError as ApiError | null)?.status === 403) {
+      removeRoom(roomId);
+      navigate("/");
+    }
+  }, [membersError, roomId, removeRoom, navigate]);
 
   const displayName = roomDetail?.display_name || roomDetail?.name || "Room";
   const [editingTopic, setEditingTopic] = useState(false);
@@ -160,7 +184,6 @@ export function RoomView({ roomId }: RoomViewProps) {
   useEffect(() => {
     setNameDraft(roomDetail?.display_name || roomDetail?.name || "");
   }, [roomDetail?.display_name, roomDetail?.name]);
-  const qc = useQueryClient();
 
   async function saveTopic() {
     setEditingTopic(false);

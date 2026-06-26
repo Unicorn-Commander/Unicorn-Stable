@@ -1,14 +1,25 @@
-import { Crown, Shield, Mic, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Crown,
+  Shield,
+  Mic,
+  MicOff,
+  MoreVertical,
+  UserMinus,
+  X,
+} from "lucide-react";
 import clsx from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
-import { api, type RoomMember } from "@/services/api";
+import { api, type RoomMember, type ApiError } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
 
 interface ParticipantStripProps {
   roomId: string;
 }
+
+type ModRole = "owner" | "admin" | "member" | "guest";
 
 function OnlineIndicator({ online }: { online: boolean }) {
   return (
@@ -40,10 +51,208 @@ function RoleBadge({ role }: { role: RoomMember["role"] }) {
   return null;
 }
 
+/**
+ * Owner/admin moderation menu for a single human member. Visibility + the
+ * available actions are decided by the caller's own role (myRole) vs. the
+ * target's role, mirroring the backend rules so the UI never offers an action
+ * that would 403:
+ *   - owner: full control incl. granting/revoking roles
+ *   - admin: may mute/remove members & guests, but not owners or other admins
+ */
+function MemberMenu({
+  roomId,
+  member,
+  myRole,
+}: {
+  roomId: string;
+  member: RoomMember;
+  myRole: ModRole;
+}) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Hooks must run unconditionally — keep this above the visibility short-circuit.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const targetRole = (member.role as ModRole) ?? "member";
+  const isOwner = myRole === "owner";
+  // An admin can't act on an owner or another admin; an owner can act on anyone.
+  const canAct =
+    isOwner || (myRole === "admin" && targetRole !== "owner" && targetRole !== "admin");
+  const pid = member.participant_id || member.user_id || "";
+  if (!canAct || !pid) return null;
+
+  async function run(fn: () => Promise<unknown>) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fn();
+      await qc.invalidateQueries({ queryKey: ["room-members", roomId] });
+      setOpen(false);
+    } catch (e) {
+      const err = e as ApiError;
+      alert(err?.detail || err?.message || "Action failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleMute() {
+    void run(() => api.setMemberMute(roomId, pid, !member.is_muted));
+  }
+  function remove() {
+    if (!confirm(`Remove ${member.display_name} from this channel?`)) return;
+    void run(() => api.removeMember(roomId, pid));
+  }
+  function changeRole(role: ModRole) {
+    void run(() => api.setMemberRole(roomId, pid, role));
+  }
+
+  const roleChoices: ModRole[] = (["owner", "admin", "member"] as ModRole[]).filter(
+    (r) => r !== targetRole,
+  );
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-700/60 hover:text-slate-200 focus:opacity-100 group-hover:opacity-100"
+        aria-label={`Manage ${member.display_name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Manage member"
+      >
+        <MoreVertical className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 z-40 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900/95 p-1 text-xs shadow-xl backdrop-blur"
+        >
+          <button
+            role="menuitem"
+            onClick={toggleMute}
+            disabled={busy}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {member.is_muted ? (
+              <>
+                <Mic className="h-3.5 w-3.5 text-green-400" /> Unmute
+              </>
+            ) : (
+              <>
+                <MicOff className="h-3.5 w-3.5 text-amber-400" /> Mute
+              </>
+            )}
+          </button>
+
+          {isOwner && roleChoices.length > 0 && (
+            <>
+              <div className="my-1 border-t border-slate-700/50" />
+              <p className="px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+                Set role
+              </p>
+              {roleChoices.map((r) => (
+                <button
+                  key={r}
+                  role="menuitem"
+                  onClick={() => changeRole(r)}
+                  disabled={busy}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left capitalize text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {r === "owner" ? (
+                    <Crown className="h-3.5 w-3.5 text-yellow-500" />
+                  ) : r === "admin" ? (
+                    <Shield className="h-3.5 w-3.5 text-stable-purple-light" />
+                  ) : (
+                    <span className="h-3.5 w-3.5" />
+                  )}
+                  Make {r}
+                </button>
+              ))}
+            </>
+          )}
+
+          <div className="my-1 border-t border-slate-700/50" />
+          <button
+            role="menuitem"
+            onClick={remove}
+            disabled={busy}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-red-400 hover:bg-red-500/15 disabled:opacity-50"
+          >
+            <UserMinus className="h-3.5 w-3.5" /> Remove from channel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HumanMemberRow({
+  member,
+  online,
+  roomId,
+  myRole,
+}: {
+  member: RoomMember;
+  online: boolean;
+  roomId: string;
+  myRole: ModRole | null;
+}) {
+  return (
+    <li
+      className={clsx(
+        "group flex items-center gap-2.5 rounded-lg px-2 py-1.5",
+        online ? "text-slate-200" : "text-slate-500",
+      )}
+    >
+      <div className={clsx("relative shrink-0", !online && "opacity-60")}>
+        <Avatar name={member.display_name} src={member.avatar_url} size="sm" />
+        <OnlineIndicator online={online} />
+      </div>
+      <span className="min-w-0 flex-1 truncate text-xs font-medium">
+        {member.display_name}
+        {member.is_self && (
+          <span className="ml-1 text-[10px] text-slate-500">(you)</span>
+        )}
+      </span>
+      {member.is_muted && (
+        <span title="Muted — can't post">
+          <MicOff className="h-3 w-3 shrink-0 text-amber-400" />
+        </span>
+      )}
+      <RoleBadge role={member.role} />
+      {myRole && !member.is_self && (
+        <MemberMenu roomId={roomId} member={member} myRole={myRole} />
+      )}
+    </li>
+  );
+}
+
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const onlineUsers = useAppStore((s) => s.onlineUsers);
   const qc = useQueryClient();
+
+  // The caller's own membership row (server-flagged is_self) decides whether to
+  // show moderation controls at all. Only owners/admins moderate.
+  const me = participants.find((p) => p.is_self);
+  const myRole: ModRole | null =
+    me?.role === "owner" || me?.role === "admin" ? me.role : null;
 
   // Split members by participant_type. Agents come from the same /members
   // endpoint as humans now (they're auto-joined on /invite-brigade-agent).
@@ -133,19 +342,13 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
         ) : (
           <ul role="list" className="flex flex-col gap-1">
             {onlineHumans.map((member) => (
-              <li
-                key={member.user_id}
-                className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-200"
-              >
-                <div className="relative shrink-0">
-                  <Avatar name={member.display_name} src={member.avatar_url} size="sm" />
-                  <OnlineIndicator online={true} />
-                </div>
-                <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                  {member.display_name}
-                </span>
-                <RoleBadge role={member.role} />
-              </li>
+              <HumanMemberRow
+                key={member.participant_id || member.user_id || member.id}
+                member={member}
+                online={true}
+                roomId={roomId}
+                myRole={myRole}
+              />
             ))}
           </ul>
         )}
@@ -158,19 +361,13 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
           </h3>
           <ul role="list" className="flex flex-col gap-1">
             {offlineHumans.map((member) => (
-              <li
-                key={member.user_id}
-                className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-500"
-              >
-                <div className="relative shrink-0 opacity-60">
-                  <Avatar name={member.display_name} src={member.avatar_url} size="sm" />
-                  <OnlineIndicator online={false} />
-                </div>
-                <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                  {member.display_name}
-                </span>
-                <RoleBadge role={member.role} />
-              </li>
+              <HumanMemberRow
+                key={member.participant_id || member.user_id || member.id}
+                member={member}
+                online={false}
+                roomId={roomId}
+                myRole={myRole}
+              />
             ))}
           </ul>
         </section>
