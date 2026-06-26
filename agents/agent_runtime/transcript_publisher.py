@@ -40,14 +40,51 @@ import json
 import time
 from typing import Any
 
+import httpx
 import structlog
 from livekit import rtc
+
+from agent_runtime.config import get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
 # The shared LiveKit data-channel topic the frontend listens on.
 # Mirror of web/src/lib/roomDataProtocol.ts ROOM_DATA_TOPIC.
 TRANSCRIPT_TOPIC = "stable"
+
+
+def resolve_human(room: rtc.Room, speaker_id: str | None) -> tuple[str, str]:
+    """Resolve a (livekit_identity, displayName) for the human speaker.
+
+    Prefers an exact ``speaker_id`` match against the room's remote
+    participants; falls back to the single non-agent remote (the common
+    1-human + 1-agent call); last resort uses ``speaker_id`` or a generic
+    label. Shared by the caption publisher and the history persister so both
+    attribute a turn to the same participant.
+    """
+    try:
+        remotes = list(room.remote_participants.values())
+    except Exception:
+        remotes = []
+
+    if speaker_id:
+        for p in remotes:
+            if getattr(p, "identity", None) == speaker_id:
+                return speaker_id, (getattr(p, "name", "") or speaker_id)
+
+    humans = [
+        p
+        for p in remotes
+        if not (getattr(p, "identity", "") or "").startswith("agent-")
+    ]
+    if len(humans) == 1:
+        p = humans[0]
+        ident = getattr(p, "identity", "") or (speaker_id or "human")
+        return ident, (getattr(p, "name", "") or ident)
+
+    if speaker_id:
+        return speaker_id, speaker_id
+    return "human", "Speaker"
 
 
 def _now_ms() -> int:
@@ -172,39 +209,9 @@ class TranscriptPublisher:
     # ------------------------------------------------------------------ #
 
     def _resolve_human(self, speaker_id: str | None) -> tuple[str, str]:
-        """Resolve a (participantId, displayName) pair for the human speaker.
-
-        Prefers an exact match on ``speaker_id`` against the room's remote
-        participants. Falls back to the single non-agent remote participant
-        (the common 1-human + 1-agent call). Last resort: use ``speaker_id``
-        (or a generic label) so the line still renders.
-        """
-        try:
-            remotes = list(self._room.remote_participants.values())
-        except Exception:
-            remotes = []
-
-        # 1. Exact speaker_id match.
-        if speaker_id:
-            for p in remotes:
-                if getattr(p, "identity", None) == speaker_id:
-                    return speaker_id, (getattr(p, "name", "") or speaker_id)
-
-        # 2. Single non-agent remote participant (1-human call).
-        humans = [
-            p
-            for p in remotes
-            if not (getattr(p, "identity", "") or "").startswith("agent-")
-        ]
-        if len(humans) == 1:
-            p = humans[0]
-            ident = getattr(p, "identity", "") or (speaker_id or "human")
-            return ident, (getattr(p, "name", "") or ident)
-
-        # 3. Fall back to the raw speaker_id, else a generic label.
-        if speaker_id:
-            return speaker_id, speaker_id
-        return "human", "Speaker"
+        """Delegate to the shared module-level resolver (one source of truth
+        for both captions and history persistence)."""
+        return resolve_human(self._room, speaker_id)
 
     def _publish(
         self,
@@ -251,3 +258,109 @@ class TranscriptPublisher:
             )
         except Exception:
             logger.debug("transcript_publish_data_failed", exc_info=True)
+
+
+class VoiceHistoryPersister:
+    """Persist FINAL voice turns to the room's chat history.
+
+    The caption data-channel (TranscriptPublisher) is ephemeral — once a call
+    ends those lines are gone. This sibling writes the same turns to the
+    backend so a spoken conversation is reviewable later alongside typed chat:
+
+      * human final STT  -> POST /api/v1/internal/voice-user-message
+                            (attributed to the human, tagged via=voice; the
+                            backend suppresses any text agent reply)
+      * agent reply      -> POST /api/v1/internal/agent-messages (via=voice)
+
+    Same safety contract as TranscriptPublisher: ADDITIVE, fire-and-forget,
+    NEVER raises into the voice loop. Authenticated with the LiveKit shared
+    secret, like the other internal agent routes.
+    """
+
+    def __init__(
+        self,
+        *,
+        room: rtc.Room,
+        livekit_room_name: str,
+        brigade_agent_id: str | None,
+    ) -> None:
+        self._room = room
+        self._lk_room_name = livekit_room_name
+        self._brigade_agent_id = brigade_agent_id or "majik"
+        cfg = get_agent_settings()
+        self._base = (getattr(cfg, "stable_backend_url", "") or "").rstrip("/")
+        self._secret = getattr(cfg, "livekit_api_secret", "") or ""
+
+    # -- AgentSession event handlers (sync callbacks; must NOT raise) -- #
+
+    def on_user_transcript(self, ev: Any) -> None:
+        """Persist a human's FINAL STT turn (interims are ignored)."""
+        try:
+            if not bool(getattr(ev, "is_final", False)):
+                return
+            text = (getattr(ev, "transcript", "") or "").strip()
+            if not text:
+                return
+            identity, _name = resolve_human(self._room, getattr(ev, "speaker_id", None))
+            self._fire(
+                "/api/v1/internal/voice-user-message",
+                {
+                    "livekit_room_name": self._lk_room_name,
+                    "speaker_identity": identity,
+                    "content": text,
+                },
+            )
+        except Exception:
+            logger.debug("voice_history_user_failed", exc_info=True)
+
+    def on_conversation_item(self, ev: Any) -> None:
+        """Persist the agent's spoken reply (assistant items only)."""
+        try:
+            item = getattr(ev, "item", None)
+            if item is None or getattr(item, "role", None) != "assistant":
+                return
+            text = (getattr(item, "text_content", None) or "").strip()
+            if not text:
+                return
+            self._fire(
+                "/api/v1/internal/agent-messages",
+                {
+                    "livekit_room_name": self._lk_room_name,
+                    "brigade_agent_id": self._brigade_agent_id,
+                    "content": text,
+                    "via": "voice",
+                },
+            )
+        except Exception:
+            logger.debug("voice_history_agent_failed", exc_info=True)
+
+    # -- internals -- #
+
+    def _fire(self, path: str, body: dict[str, Any]) -> None:
+        if not self._base or not self._secret:
+            return
+        try:
+            asyncio.create_task(self._post(path, body))
+        except RuntimeError:
+            logger.debug("voice_history_no_event_loop")
+
+    async def _post(self, path: str, body: dict[str, Any]) -> None:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base,
+                timeout=httpx.Timeout(10.0, connect=5.0),
+            ) as client:
+                resp = await client.post(
+                    path,
+                    json=body,
+                    headers={"Authorization": f"Bearer {self._secret}"},
+                )
+                if resp.status_code >= 400:
+                    logger.debug(
+                        "voice_history_http_error",
+                        path=path,
+                        status=resp.status_code,
+                        detail=resp.text[:200],
+                    )
+        except Exception:
+            logger.debug("voice_history_post_failed", path=path, exc_info=True)

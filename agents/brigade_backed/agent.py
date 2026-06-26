@@ -32,6 +32,7 @@ from livekit.agents import Agent, AgentSession, JobContext
 from agent_runtime.base import StableAgent
 from agent_runtime.transcript_publisher import (
     TranscriptPublisher,
+    VoiceHistoryPersister,
     _agent_display_name,
 )
 from agent_runtime.brigade_llm import build_brigade_llm
@@ -53,6 +54,7 @@ class BrigadeBackedAgent(StableAgent):
         self._session: AgentSession | None = None
         self._lk_agent: Agent | None = None
         self._transcript: TranscriptPublisher | None = None
+        self._voice_history: VoiceHistoryPersister | None = None
 
     async def on_message(self, message: dict[str, Any]) -> None:
         """Reply to a chat by streaming from Brigade and posting incrementally.
@@ -355,6 +357,31 @@ class BrigadeBackedAgent(StableAgent):
             # Captioning is best-effort; a wiring failure must not break
             # the voice session.
             logger.warning("transcript_publisher_wire_failed", exc_info=True)
+
+        # --- Voice history persistence (additive, fire-and-forget) ---
+        # Captions above are ephemeral; this writes the SAME final turns to the
+        # room's chat history so a spoken conversation is reviewable later.
+        # Separate from captioning so a persistence hiccup never touches the
+        # live caption path, and vice-versa. Same never-raise contract.
+        try:
+            self._voice_history = VoiceHistoryPersister(
+                room=ctx.room,
+                livekit_room_name=ctx.room.name,
+                brigade_agent_id=brigade_agent_id,
+            )
+            session.on(
+                "user_input_transcribed", self._voice_history.on_user_transcript
+            )
+            session.on(
+                "conversation_item_added", self._voice_history.on_conversation_item
+            )
+            logger.info(
+                "voice_history_persister_wired",
+                livekit_room_name=ctx.room.name,
+                brigade_agent_id=brigade_agent_id,
+            )
+        except Exception:
+            logger.warning("voice_history_persister_wire_failed", exc_info=True)
 
         # Shim: provide start(room) the way the old VoicePipelineAgent did, so
         # base.py's existing `self._pipeline.start(ctx.room)` call works.
