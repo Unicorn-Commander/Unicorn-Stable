@@ -90,12 +90,46 @@ class StableWebSocket {
   private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
   private _connected = false;
+  private lifecycleBound = false;
 
   get connected(): boolean {
     return this._connected;
   }
 
+  /** Reconnect instantly + re-sync when the page returns to the foreground or
+   * the network comes back. Mobile browsers freeze (and often silently kill)
+   * WebSockets when a tab is backgrounded or the screen locks, frequently
+   * WITHOUT firing `onclose` — so the socket looks "open" but is dead and the
+   * app misses live messages until a manual refresh. On resume we force an
+   * immediate reconnect (resetting backoff) if it's not truly open, and always
+   * emit `resumed` so listeners (useChat) can refetch anything missed. */
+  private bindLifecycle(): void {
+    if (this.lifecycleBound || typeof document === "undefined") return;
+    this.lifecycleBound = true;
+
+    const resume = (): void => {
+      if (this.intentionalClose) return;
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        // Socket appears live — verify with a ping and let listeners resync.
+        this.send("ping", {});
+        this.emit("resumed", {} as WsEventPayload);
+        return;
+      }
+      // Dead/closing socket: reconnect now rather than waiting out the backoff.
+      this.reconnectAttempts = 0;
+      this.cancelReconnect();
+      this.connect();
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") resume();
+    });
+    window.addEventListener("focus", resume);
+    window.addEventListener("online", resume);
+  }
+
   connect(): void {
+    this.bindLifecycle();
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }

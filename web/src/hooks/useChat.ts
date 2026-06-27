@@ -151,6 +151,51 @@ export function useChat(roomId: string | null): UseChatReturn {
     };
   }, [roomId, currentUser, addMessage, updateMessage, removeMessage]);
 
+  // Re-sync missed messages when the realtime socket (re)connects or the page
+  // returns to the foreground. Mobile browsers freeze the WebSocket while a tab
+  // is backgrounded, so messages (incl. an agent's reply) that arrived in the
+  // meantime never reached the client and the thread looked stale until a
+  // manual refresh. On resume we refetch the latest page and merge in anything
+  // we don't already have, and finalize any agent reply that completed while
+  // we were away.
+  const resync = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      const response = await api.getMessages(roomId);
+      const serverItems = [...response.items].reverse();
+      const existing = useAppStore.getState().messages[roomId]?.items ?? [];
+      const byId = new Map(existing.map((m) => [m.id, m] as const));
+      for (const m of serverItems) {
+        const cur = byId.get(m.id);
+        if (!cur) {
+          addMessage(roomId, m);
+        } else if (cur.content !== m.content || cur.streaming) {
+          updateMessage(roomId, m.id, {
+            content: m.content,
+            updated_at: m.updated_at,
+            streaming: false,
+          });
+        }
+      }
+    } catch {
+      /* best-effort; the next live event or a manual refresh reconciles */
+    }
+  }, [roomId, addMessage, updateMessage]);
+
+  useEffect(() => {
+    if (!roomId) return;
+    const unsubConnected = ws.on("connected", () => {
+      void resync();
+    });
+    const unsubResumed = ws.on("resumed", () => {
+      void resync();
+    });
+    return () => {
+      unsubConnected();
+      unsubResumed();
+    };
+  }, [roomId, resync]);
+
   const loadMore = useCallback(async () => {
     if (!roomId || loading || !hasMore) return;
 

@@ -54,6 +54,33 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
   // (the server also blocks the post; this just avoids a dead-end 403).
   const iAmMuted = participants.find((p) => p.is_self)?.is_muted === true;
 
+  // Optimistic "agent is working" feedback. The moment you send into a room
+  // with an agent, show a "thinking…" line immediately rather than waiting on
+  // the backend's agent_typing event (which can lag or be missed). It hands off
+  // to the real typing/streaming display and clears once the agent's reply
+  // lands (a new agent message) or after a safety timeout.
+  const agentMembers = participants.filter((p) => p.participant_type === "agent");
+  const [awaitingAgentSince, setAwaitingAgentSince] = useState<number | null>(null);
+  const agentLabel =
+    agentMembers.length === 1
+      ? agentMembers[0]?.display_name ?? "The agent"
+      : "An agent";
+
+  useEffect(() => {
+    if (awaitingAgentSince === null) return;
+    const last = messages[messages.length - 1];
+    if (
+      last &&
+      last.sender_type === "agent" &&
+      new Date(last.created_at).getTime() >= awaitingAgentSince - 1000
+    ) {
+      setAwaitingAgentSince(null);
+      return;
+    }
+    const t = window.setTimeout(() => setAwaitingAgentSince(null), 150_000);
+    return () => window.clearTimeout(t);
+  }, [awaitingAgentSince, messages]);
+
   // Send mark_read for the latest message whenever (a) the room becomes
   // active, (b) a new message arrives while we're at bottom + visible.
   useEffect(() => {
@@ -128,6 +155,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
     extraMetadata?: Record<string, unknown>,
   ) {
     sendMessage(content, threadId, attachments, extraMetadata);
+    if (agentMembers.length > 0) setAwaitingAgentSince(Date.now());
     requestAnimationFrame(() => scrollToBottom(true));
   }
 
@@ -262,14 +290,16 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
         <div ref={bottomRef} />
       </div>
 
-      {typingUsers.length > 0 && (
+      {(typingUsers.length > 0 || awaitingAgentSince !== null) && (
         <div className="shrink-0 px-4 py-1">
           <p className="text-xs text-slate-500 animate-pulse-soft">
-            {typingUsers.length === 1
-              ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
-              : typingUsers.length === 2
-                ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
-                : `${typingUsers.length} people are typing...`}
+            {typingUsers.length > 0
+              ? typingUsers.length === 1
+                ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
+                : typingUsers.length === 2
+                  ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
+                  : `${typingUsers.length} people are typing...`
+              : `${agentLabel} is thinking…`}
           </p>
         </div>
       )}
