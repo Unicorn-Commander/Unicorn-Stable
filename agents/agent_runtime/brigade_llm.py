@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import httpx
 import structlog
 from livekit.plugins import openai as lk_openai
 
@@ -67,6 +68,11 @@ def build_brigade_llm(
         "api_key": api_key,
         "model": brigade_agent_id,
         "base_url": base_url,
+        # Voice replies route through Brigade to local models (e.g. the strix
+        # companion) that can take tens of seconds; without this the openai
+        # plugin uses httpx's 5s default and the inference task dies with
+        # ReadTimeout -> no spoken reply. Match the text path (120s).
+        "timeout": httpx.Timeout(120.0, connect=10.0),
     }
     if user_id:
         kwargs["user"] = user_id
