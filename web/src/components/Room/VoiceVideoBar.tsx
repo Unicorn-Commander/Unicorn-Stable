@@ -19,6 +19,7 @@ import { useCallUiStore } from "@/stores/callUiStore";
 import { api, type BrigadeAgent } from "@/services/api";
 import { CallViewSwitcher } from "./CallViewSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
+import { VoiceAgentStatus } from "./VoiceAgentStatus";
 
 interface VoiceVideoBarProps {
   roomId: string;
@@ -546,6 +547,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           Tap to hear the call
         </button>
       )}
+
+      {/* Agent working-state orb: shows listening / thinking / speaking so the
+          user can see the agent is alive and processing, not just silent. */}
+      <VoiceAgentStatus />
 
       {/* Non-forcing prompt: someone turned a camera on while in audio compact. */}
       {videoPrompted && compactLayout && hasAnyVideo && (
