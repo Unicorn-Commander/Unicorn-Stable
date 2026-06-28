@@ -37,7 +37,7 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ roomId }: ChatPanelProps) {
-  const { messages, hasMore, loading, sendMessage, loadMore, editMessage, deleteMessage, retryMessage } =
+  const { messages, hasMore, loading, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
     useChat(roomId);
   const { typingUsers, sendTypingIndicator } = usePresence(roomId);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -80,6 +80,19 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
     const t = window.setTimeout(() => setAwaitingAgentSince(null), 150_000);
     return () => window.clearTimeout(t);
   }, [awaitingAgentSince, messages]);
+
+  // Safety net: while we're waiting on an agent reply, poll a merge-refetch
+  // every few seconds so the answer shows up even if its live WS event was
+  // missed (e.g. the socket wasn't yet subscribed to a brand-new room). The
+  // effect above clears `awaitingAgentSince` — and this poll — as soon as the
+  // reply lands.
+  useEffect(() => {
+    if (awaitingAgentSince === null) return;
+    const id = window.setInterval(() => {
+      void resync();
+    }, 5_000);
+    return () => window.clearInterval(id);
+  }, [awaitingAgentSince, resync]);
 
   // Send mark_read for the latest message whenever (a) the room becomes
   // active, (b) a new message arrives while we're at bottom + visible.

@@ -19,6 +19,9 @@ interface UseChatReturn {
   editMessage: (messageId: string, content: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
   retryMessage: (messageId: string) => Promise<void>;
+  /** Force a merge-refetch of the room's latest messages (used as a safety net
+   * while waiting on an agent reply, in case a live event was missed). */
+  resync: () => Promise<void>;
 }
 
 export function useChat(roomId: string | null): UseChatReturn {
@@ -423,5 +426,6 @@ export function useChat(roomId: string | null): UseChatReturn {
     editMessage,
     deleteMessage,
     retryMessage,
+    resync,
   };
 }
