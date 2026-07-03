@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any
 
 import structlog
@@ -109,6 +110,26 @@ def _resolve_kokoro_voice(personality: str, explicit: str | None) -> str:
     return _ORATOR_VOICE_FALLBACKS.get(voice, voice)
 
 
+# Strip model "thinking" out of text before it is spoken. Some local models
+# (Qwen3.x, etc.) can emit <think>...</think> reasoning inline in the content;
+# without this the TTS reads the tags/reasoning aloud (e.g. "less than slash
+# think..."). The 3090 router is configured no-think, but this is defense-in-depth
+# for any model routed through the per-room switcher. 2026-06-23.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"</?think\s*>", re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    if not text:
+        return text
+    cleaned = _THINK_BLOCK_RE.sub("", text)   # drop paired <think>..</think> blocks
+    cleaned = _THINK_TAG_RE.sub("", cleaned)  # drop any stray/unpaired tags
+    cleaned = cleaned.strip()
+    # If that removed everything (response was only a think block), at least return
+    # the original with literal tags stripped so we never speak "<think>".
+    return cleaned if cleaned else _THINK_TAG_RE.sub("", text).strip()
+
+
 class OratorTTS(tts.TTS):
     """Native Kokoro-FastAPI TTS plugin (livekit-agents 1.5).
 
@@ -159,7 +180,7 @@ class OratorTTS(tts.TTS):
     ) -> "OratorChunkedStream":
         return OratorChunkedStream(
             tts=self,
-            input_text=text,
+            input_text=_strip_think(text),
             conn_options=conn_options,
         )
 
