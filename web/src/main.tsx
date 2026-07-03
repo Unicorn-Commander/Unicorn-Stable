@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
 import { installDevTranscriptGlobals } from "./lib/devTranscript";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/space-grotesk";
 import "./styles/globals.css";
 import "highlight.js/styles/github-dark.css";
 

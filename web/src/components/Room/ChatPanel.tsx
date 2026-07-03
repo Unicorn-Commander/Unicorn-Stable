@@ -5,6 +5,8 @@ import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
 import { ws } from "@/services/websocket";
 import { Avatar } from "@/components/Avatar";
+import { StableMark } from "@/components/StableMark";
+import { identityFor } from "@/lib/identity";
 import { EMPTY_MEMBERS, EMPTY_READ_RECEIPTS } from "@/stores/selectors";
 import { MessageBubble } from "./MessageBubble";
 
@@ -65,6 +67,13 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
     agentMembers.length === 1
       ? agentMembers[0]?.display_name ?? "The agent"
       : "An agent";
+  // Identity hue for the "thinking…" dot — single-agent rooms wear their
+  // resident's color; multi-agent rooms fall back to the first resident's.
+  const firstAgent = agentMembers[0];
+  const thinkingIdent = identityFor(
+    firstAgent?.participant_id || firstAgent?.user_id || firstAgent?.display_name,
+    firstAgent?.display_name,
+  );
 
   useEffect(() => {
     if (awaitingAgentSince === null) return;
@@ -192,7 +201,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex flex-1 flex-col overflow-y-auto px-4 py-2"
+        className="flex flex-1 flex-col overflow-y-auto px-4 py-3 md:px-8"
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
@@ -214,6 +223,8 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
           />
         )}
 
+        {/* Message column — capped for readable line lengths on wide screens. */}
+        <div className="mx-auto w-full max-w-[52rem]">
         {hasMore && messages.length > 0 && (
           <div className="flex justify-center py-2">
             {loading ? (
@@ -221,7 +232,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
             ) : (
               <button
                 onClick={() => loadMore()}
-                className="text-xs text-slate-500 transition-colors hover:text-slate-300"
+                className="rounded-full border border-line bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:border-line-strong hover:text-slate-200 focus-ring"
               >
                 Load older messages
               </button>
@@ -246,12 +257,12 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
             return (
               <div key={message.id} id={`m-${message.id}`}>
                 {showDaySeparator && (
-                  <div className="my-3 flex items-center gap-3 px-2">
-                    <div className="h-px flex-1 bg-slate-700/50" />
-                    <span className="rounded-full border border-slate-700/50 bg-slate-900 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                  <div className="my-4 flex items-center gap-3 px-2">
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-700/60" />
+                    <span className="glass rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
                       {formatDayLabel(new Date(message.created_at))}
                     </span>
-                    <div className="h-px flex-1 bg-slate-700/50" />
+                    <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-700/60" />
                   </div>
                 )}
                 <MessageBubble
@@ -287,6 +298,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
                               name={p.display_name}
                               src={p.avatar_url}
                               size="xs"
+                              id={p.participant_id || p.user_id}
                               className="ring-1 ring-slate-900"
                             />
                           ))}
@@ -299,21 +311,35 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
             );
           })}
         </div>
+        </div>
 
         <div ref={bottomRef} />
       </div>
 
       {(typingUsers.length > 0 || awaitingAgentSince !== null) && (
-        <div className="shrink-0 px-4 py-1">
-          <p className="text-xs text-slate-500 animate-pulse-soft">
-            {typingUsers.length > 0
-              ? typingUsers.length === 1
-                ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
-                : typingUsers.length === 2
-                  ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
-                  : `${typingUsers.length} people are typing...`
-              : `${agentLabel} is thinking…`}
-          </p>
+        <div className="shrink-0 px-4 py-1.5 md:px-8">
+          <div className="mx-auto flex w-full max-w-[52rem] items-center gap-2">
+            {typingUsers.length > 0 ? (
+              <p className="animate-pulse-soft text-xs text-slate-500">
+                {typingUsers.length === 1
+                  ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
+                  : typingUsers.length === 2
+                    ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
+                    : `${typingUsers.length} people are typing...`}
+              </p>
+            ) : (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="h-1.5 w-1.5 shrink-0 animate-pulse-soft rounded-full"
+                  style={{ background: thinkingIdent.color }}
+                />
+                <p className="animate-shimmer text-xs font-medium">
+                  {agentLabel} is thinking…
+                </p>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -364,21 +390,40 @@ function EmptyChannel({ participants, currentUserId, onPrompt }: EmptyChannelPro
     : null;
 
   if (onlyAgent) {
+    const ident = identityFor(
+      onlyAgent.participant_id || onlyAgent.user_id || onlyAgent.display_name,
+      onlyAgent.display_name,
+    );
     return (
       <div className="flex flex-1 items-center justify-center px-4">
-        <div className="max-w-md text-center">
-          <p className="text-sm font-semibold text-slate-200">
-            Chatting privately with {onlyAgent.display_name}
+        <div className="w-full max-w-md text-center animate-fade-in">
+          <div className="relative mx-auto mb-4 h-12 w-12">
+            <div
+              aria-hidden="true"
+              className="absolute -inset-1 rounded-full blur-xl"
+              style={{ background: ident.ring }}
+            />
+            <Avatar
+              name={onlyAgent.display_name}
+              id={onlyAgent.participant_id || onlyAgent.user_id}
+              isAgent
+              size="lg"
+              className="relative"
+            />
+          </div>
+          <p className="font-display text-base font-semibold text-slate-100">
+            Chatting privately with{" "}
+            <span style={{ color: ident.text }}>{onlyAgent.display_name}</span>
           </p>
           <p className="mt-1 text-xs text-slate-500">
             Mentions are off in DMs — every message goes to them.
           </p>
-          <div className="mt-4 flex flex-col gap-2">
+          <div className="mt-5 flex flex-col gap-2">
             {AGENT_PROMPTS.map((p) => (
               <button
                 key={p}
                 onClick={() => onPrompt(p)}
-                className="rounded-lg border border-slate-700/50 bg-slate-800/60 px-3 py-2 text-left text-sm text-slate-300 hover:border-stable-purple/50 hover:bg-slate-800"
+                className="rounded-xl border border-line bg-white/[0.03] px-3.5 py-2.5 text-left text-sm text-slate-300 transition-colors hover:border-stable-purple/40 hover:bg-white/[0.05] hover:text-slate-100 focus-ring"
               >
                 {p}
               </button>
@@ -391,18 +436,25 @@ function EmptyChannel({ participants, currentUserId, onPrompt }: EmptyChannelPro
 
   return (
     <div className="flex flex-1 items-center justify-center px-4">
-      <div className="max-w-md text-center">
-        <p className="text-sm font-semibold text-slate-200">
+      <div className="max-w-md text-center animate-fade-in">
+        <div className="relative mx-auto mb-4 h-12 w-12">
+          <div
+            aria-hidden="true"
+            className="absolute -inset-1 rounded-2xl bg-stable-purple/25 blur-xl"
+          />
+          <StableMark className="relative h-12 w-12" />
+        </div>
+        <p className="font-display text-base font-semibold text-slate-100">
           The start of the conversation
         </p>
         <p className="mt-1 text-xs text-slate-500">
           Be the first to say something — others see it the moment you hit enter.
         </p>
-        <div className="mt-4 flex flex-wrap justify-center gap-2">
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
           {CHANNEL_PROMPTS.map((p) => (
             <span
               key={p}
-              className="rounded-full border border-slate-700/50 bg-slate-800/40 px-2.5 py-1 text-xs text-slate-400"
+              className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-slate-400"
             >
               {p}
             </span>

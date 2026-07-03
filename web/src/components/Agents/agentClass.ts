@@ -1,6 +1,17 @@
 // Shared agent-classification helpers used by the org-chart, the card list, and
 // the chat popup. Keeping them in one place keeps the two views consistent.
 import type { Agent } from "@/services/api";
+import { identityFor, type Identity } from "@/lib/identity";
+
+/**
+ * Identity hue for an agent — one wrapper so every Agents view resolves the
+ * same resident to the same hue. Identity color goes on avatar tiles, dots and
+ * name accents ONLY — never on the affiliation left-borders below, which are a
+ * legend with meaning.
+ */
+export function agentIdentity(agent: Agent): Identity {
+  return identityFor(agent.id, agent.display_name || agent.name);
+}
 
 export const STATUS_LABEL: Record<Agent["status"], string> = {
   active: "Online",
@@ -28,31 +39,35 @@ export type Affiliation = "employee" | "contractor" | "third_party" | "frontier"
 
 export const AFFIL_META: Record<
   Affiliation,
-  { label: string; border: string; bar: string; text: string }
+  { label: string; border: string; bar: string; text: string; chip: string }
 > = {
   employee: {
     label: "Employee",
     border: "border-l-emerald-400",
     bar: "bg-emerald-400",
     text: "text-emerald-300",
+    chip: "border-emerald-400/30 bg-emerald-400/10",
   },
   contractor: {
     label: "Contractor",
     border: "border-l-amber-400",
     bar: "bg-amber-400",
     text: "text-amber-300",
+    chip: "border-amber-400/30 bg-amber-400/10",
   },
   third_party: {
     label: "3rd-party",
     border: "border-l-rose-400",
     bar: "bg-rose-400",
     text: "text-rose-300",
+    chip: "border-rose-400/30 bg-rose-400/10",
   },
   frontier: {
     label: "Frontier",
     border: "border-l-violet-400",
     bar: "bg-violet-400",
     text: "text-violet-300",
+    chip: "border-violet-400/30 bg-violet-400/10",
   },
 };
 

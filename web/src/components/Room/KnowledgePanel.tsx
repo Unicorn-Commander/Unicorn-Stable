@@ -49,8 +49,8 @@ function NewCollectionForm({
   }
 
   return (
-    <div className="border-b border-slate-700/50 bg-slate-900/80 p-3">
-      <div className="mb-2 text-xs font-semibold text-slate-300">
+    <div className="border-b border-line bg-white/[0.02] p-3">
+      <div className="mb-2 font-display text-xs font-semibold text-slate-200">
         New knowledge base
       </div>
       <div className="flex flex-col gap-2">
@@ -67,7 +67,7 @@ function NewCollectionForm({
             }
           }}
           placeholder="Name (e.g. Product Docs)"
-          className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-stable-purple"
+          className="rounded-lg border border-line bg-slate-950/60 px-2.5 py-1.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
         />
         <input
           value={description}
@@ -81,20 +81,20 @@ function NewCollectionForm({
             }
           }}
           placeholder="Description (optional)"
-          className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-stable-purple"
+          className="rounded-lg border border-line bg-slate-950/60 px-2.5 py-1.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
         />
-        {error && <p className="text-xs text-red-300">{error}</p>}
+        {error && <p className="text-xs text-rose-300">{error}</p>}
         <div className="flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="rounded-md px-2.5 py-1 text-sm text-slate-300 hover:bg-slate-800"
+            className="focus-ring rounded-lg px-2.5 py-1 text-sm text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
           >
             Cancel
           </button>
           <button
             onClick={submit}
             disabled={!name.trim() || busy}
-            className="rounded-md bg-stable-purple px-2.5 py-1 text-sm font-medium text-white hover:bg-stable-purple-light disabled:cursor-not-allowed disabled:opacity-50"
+            className="focus-ring gradient-bg rounded-lg px-2.5 py-1 text-sm font-semibold text-white transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? "Creating…" : "Create"}
           </button>
@@ -108,7 +108,7 @@ function NewCollectionForm({
 function StatusChip({ status }: { status: KbDocumentStatus }) {
   if (status === "ready") {
     return (
-      <span className="flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300">
+      <span className="flex shrink-0 items-center gap-1 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
         <CheckCircle2 className="h-3 w-3" />
         Ready
       </span>
@@ -116,14 +116,14 @@ function StatusChip({ status }: { status: KbDocumentStatus }) {
   }
   if (status === "failed") {
     return (
-      <span className="flex shrink-0 items-center gap-1 rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-300">
+      <span className="flex shrink-0 items-center gap-1 rounded-md border border-rose-400/20 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-rose-300">
         <AlertTriangle className="h-3 w-3" />
         Failed
       </span>
     );
   }
   return (
-    <span className="flex shrink-0 items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">
+    <span className="flex shrink-0 items-center gap-1 rounded-md border border-amber-300/20 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
       <Loader2 className="h-3 w-3 animate-spin" />
       Indexing
     </span>
@@ -151,33 +151,43 @@ function CollectionList({
 }) {
   if (loading && collections.length === 0) {
     return (
-      <p className="px-3 py-6 text-center text-xs text-slate-500">Loading…</p>
+      <p className="animate-pulse-soft px-3 py-6 text-center text-xs text-slate-500">
+        Loading…
+      </p>
     );
   }
   if (collections.length === 0) {
     return (
-      <p className="px-3 py-6 text-center text-xs text-slate-500">
-        No knowledge bases yet. Create one, upload documents, then attach it to
-        this room so the agent can search it.
-      </p>
+      <div className="flex animate-fade-in flex-col items-center gap-2 px-4 py-10 text-center">
+        <div className="grid h-11 w-11 place-items-center rounded-2xl bg-stable-mint/10 text-stable-mint shadow-[0_0_24px_rgba(52,211,153,0.15)]">
+          <Database className="h-5 w-5" />
+        </div>
+        <p className="font-display text-sm font-semibold text-slate-200">
+          No knowledge bases yet
+        </p>
+        <p className="max-w-[28ch] text-xs text-slate-500">
+          Create one, upload documents, then attach it to this room so the
+          agent can search it.
+        </p>
+      </div>
     );
   }
   return (
-    <ul className="flex flex-col gap-1 p-2">
+    <ul className="flex flex-col gap-1.5 p-2">
       {collections.map((c) => {
         const attached = attachedIds.has(c.id);
         const busy = busyId === c.id;
         return (
           <li
             key={c.id}
-            className="flex items-center gap-2 rounded-md border border-slate-700/50 bg-slate-900 px-2 py-1.5 hover:border-stable-purple/40"
+            className="flex items-center gap-2 rounded-xl border border-line bg-surface-1/80 px-2.5 py-2 transition-colors hover:border-line-strong hover:bg-white/[0.02]"
           >
             <button
               onClick={() => onOpen(c.id)}
-              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-md text-left"
               title="Open — upload & view documents"
             >
-              <Database className="h-4 w-4 shrink-0 text-slate-500" />
+              <Database className="h-4 w-4 shrink-0 text-stable-mint/70" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm text-slate-200">
                   {c.name}
@@ -194,10 +204,10 @@ function CollectionList({
               disabled={busy}
               aria-pressed={attached}
               className={clsx(
-                "flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] disabled:opacity-50",
+                "focus-ring flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium transition-colors disabled:opacity-50",
                 attached
                   ? "bg-stable-cyan/15 text-stable-cyan hover:bg-stable-cyan/25"
-                  : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                  : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
               )}
               title={
                 attached
@@ -240,7 +250,7 @@ function CollectionDetail({
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="border-b border-slate-700/50 p-3">
+      <div className="border-b border-line p-3">
         <input
           ref={fileRef}
           type="file"
@@ -257,7 +267,7 @@ function CollectionDetail({
         <button
           onClick={() => fileRef.current?.click()}
           disabled={uploading}
-          className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-slate-700 bg-slate-950/60 px-3 py-3 text-sm text-slate-300 hover:border-stable-purple/50 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+          className="focus-ring flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-line-strong bg-slate-950/40 px-3 py-3 text-sm text-slate-300 transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/5 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {uploading ? (
             <>
@@ -277,14 +287,14 @@ function CollectionDetail({
       </div>
 
       <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
           Documents{documents.length > 0 ? ` (${documents.length})` : ""}
         </span>
         {/* Indexing is async — offer a manual refresh to poll status. */}
         {(indexingCount > 0 || documents.length > 0) && (
           <button
             onClick={onRefresh}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="focus-ring flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
             title="Refresh indexing status"
           >
             <RefreshCw className="h-3 w-3" />
@@ -294,24 +304,34 @@ function CollectionDetail({
       </div>
 
       {loading && documents.length === 0 ? (
-        <p className="px-3 py-6 text-center text-xs text-slate-500">Loading…</p>
-      ) : documents.length === 0 ? (
-        <p className="px-3 py-6 text-center text-xs text-slate-500">
-          No documents yet. Upload a file to get started.
+        <p className="animate-pulse-soft px-3 py-6 text-center text-xs text-slate-500">
+          Loading…
         </p>
+      ) : documents.length === 0 ? (
+        <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-8 text-center">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-stable-mint/10 text-stable-mint">
+            <FileText className="h-5 w-5" />
+          </div>
+          <p className="font-display text-sm font-semibold text-slate-200">
+            No documents yet
+          </p>
+          <p className="text-xs text-slate-500">
+            Upload a file to get started.
+          </p>
+        </div>
       ) : (
-        <ul className="flex flex-col gap-1 px-2 pb-3">
+        <ul className="flex flex-col gap-1.5 px-2 pb-3">
           {documents.map((d) => (
             <li
               key={d.id}
-              className="flex items-center gap-2 rounded-md border border-slate-700/50 bg-slate-900 px-2.5 py-2"
+              className="flex items-center gap-2 rounded-xl border border-line bg-surface-1/80 px-2.5 py-2 transition-colors hover:border-line-strong"
             >
               <FileText className="h-4 w-4 shrink-0 text-slate-500" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm text-slate-200">
                   {d.filename}
                 </span>
-                <span className="block truncate text-[11px] text-slate-500">
+                <span className="block truncate text-[11px] tabular-nums text-slate-500">
                   {d.status === "ready" && d.chunk_count > 0
                     ? `${d.chunk_count} chunk${d.chunk_count === 1 ? "" : "s"}`
                     : d.content_type || "document"}
@@ -403,30 +423,30 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
       transition={{ duration: 0.18 }}
       // Mobile: full-screen takeover. Desktop: a docked right column beside chat
       // (matches the canvas panel's footprint, a touch narrower).
-      className="fixed inset-0 z-40 flex h-full w-full flex-col border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-[clamp(320px,32vw,460px)] md:shadow-none"
+      className="glass-heavy fixed inset-0 z-40 flex h-full w-full flex-col shadow-2xl md:static md:z-auto md:w-[clamp(320px,32vw,460px)] md:shadow-none"
       aria-label="Knowledge bases"
     >
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-slate-700/50 px-3">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-line px-3">
         <div className="flex min-w-0 items-center gap-2">
           {openCollection ? (
             <>
               <button
                 onClick={closeCollection}
-                className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                className="focus-ring rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
                 aria-label="Back to knowledge bases"
                 title="All knowledge bases"
               >
                 <PanelLeft className="h-4 w-4" />
               </button>
-              <span className="min-w-0 truncate text-sm font-semibold text-slate-100">
+              <span className="min-w-0 truncate font-display text-sm font-semibold text-slate-100">
                 {openCollection.name}
               </span>
             </>
           ) : (
             <>
-              <Database className="h-4 w-4 shrink-0 text-stable-cyan" />
-              <span className="text-sm font-semibold text-slate-200">
+              <Database className="h-4 w-4 shrink-0 text-stable-mint" />
+              <span className="font-display text-sm font-semibold text-slate-200">
                 Knowledge
               </span>
             </>
@@ -436,7 +456,7 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
           {!openCollection && (
             <button
               onClick={() => setShowNew((v) => !v)}
-              className="flex items-center gap-1 rounded-md bg-stable-purple/20 px-2 py-1 text-xs text-stable-purple-light hover:bg-stable-purple/30"
+              className="focus-ring flex items-center gap-1 rounded-md bg-stable-purple/20 px-2 py-1 text-xs font-medium text-stable-purple-light transition-colors hover:bg-stable-purple/30"
             >
               <Plus className="h-3.5 w-3.5" />
               New
@@ -444,7 +464,7 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
           )}
           <button
             onClick={onClose}
-            className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="focus-ring rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
             aria-label="Close knowledge"
           >
             <X className="h-4 w-4" />
@@ -462,7 +482,7 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
 
       {/* Error banner */}
       {error && (
-        <p className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+        <p className="border-b border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300">
           {error}
         </p>
       )}
@@ -478,7 +498,7 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
       ) : (
         <>
           {/* Context line: what attaching does. */}
-          <p className="shrink-0 border-b border-slate-700/50 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-500">
+          <p className="shrink-0 border-b border-line bg-white/[0.02] px-3 py-2 text-[11px] text-slate-500">
             Attached knowledge bases are searched by this room's agent. Open one
             to upload documents.
           </p>

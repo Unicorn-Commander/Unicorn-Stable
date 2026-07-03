@@ -1,13 +1,13 @@
 {
-  "name": "Unicorn Command Center",
-  "short_name": "Command Center",
-  "description": "Where humans and AI meet — chat, voice, and agents in one room.",
+  "name": "Unicorn Stable",
+  "short_name": "Stable",
+  "description": "Where your team and your AI agents live, talk, and work together — chat, voice, and video in one room.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#7c3aed",
+  "background_color": "#0b0b15",
+  "theme_color": "#8b5cf6",
   "orientation": "any",
   "icons": [
     {

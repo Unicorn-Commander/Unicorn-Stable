@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Bell, LogOut, Mail, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { Avatar } from "@/components/Avatar";
+import { identityFor } from "@/lib/identity";
 import { logout } from "@/services/auth";
 
 interface SettingsModalProps {
@@ -44,6 +45,8 @@ const ACCOUNT_URL = `${KEYCLOAK_BASE.replace(/\/+$/, "")}/realms/${KEYCLOAK_REAL
 
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const currentUser = useAppStore((s) => s.currentUser);
+  // Identity hue for the signed-in resident — rings the profile avatar.
+  const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const prefs = loadPrefs();
 
   useEffect(() => {
@@ -66,35 +69,43 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}
-        className="w-full max-w-lg rounded-xl border border-slate-700/50 bg-slate-900 p-5 shadow-2xl"
+        className="glass-heavy w-full max-w-lg overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-start justify-between">
-          <h2 className="text-base font-semibold text-slate-100">Settings</h2>
+        <div className="flex items-start justify-between border-b border-line px-5 py-4">
+          <h2 className="font-display text-base font-semibold text-slate-100">
+            Settings
+          </h2>
           <button
             onClick={onClose}
-            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+            className="focus-ring -m-1 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
             aria-label="Close settings"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
+        <div className="p-5">
         {/* Profile */}
         {currentUser && (
-          <div className="mb-5 flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-            <Avatar
-              name={currentUser.displayName}
-              src={currentUser.avatarUrl}
-              size="lg"
-            />
+          <div className="mb-5 flex items-center gap-3.5 rounded-xl border border-line bg-surface-2/60 p-3.5">
+            <span
+              className="inline-flex shrink-0 rounded-full"
+              style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
+            >
+              <Avatar
+                name={currentUser.displayName}
+                src={currentUser.avatarUrl}
+                size="lg"
+              />
+            </span>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold text-slate-100">
                 {currentUser.displayName}
@@ -108,7 +119,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   href={ACCOUNT_URL}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-stable-purple hover:underline"
+                  className="focus-ring rounded text-stable-purple-light hover:underline"
                 >
                   UC-1 Hub Account
                 </a>
@@ -120,10 +131,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
         {/* Notifications */}
         <section className="mb-5">
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             <Bell className="h-3 w-3" /> Notifications
           </h3>
-          <div className="divide-y divide-slate-800 rounded-lg border border-slate-800">
+          <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface-1/60">
             <Toggle
               label="In-app toast notifications"
               hint="Show a corner pop-up when someone messages or invites you."
@@ -154,10 +165,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             onClose();
             logout();
           }}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800/50 py-2 text-sm text-slate-300 hover:bg-slate-800"
+          className="focus-ring flex w-full items-center justify-center gap-2 rounded-xl border border-rose-500/25 bg-rose-500/10 py-2.5 text-sm font-medium text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/15 active:scale-[0.98]"
         >
           <LogOut className="h-4 w-4" /> Sign out
         </button>
+        </div>
       </motion.div>
     </motion.div>
   );
@@ -175,8 +187,10 @@ interface ToggleProps {
 function Toggle({ label, hint, checked, onChange, icon, disabled }: ToggleProps) {
   return (
     <label
-      className={`flex items-start gap-3 px-3 py-2.5 ${
-        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+      className={`flex items-start gap-3 px-3.5 py-3 transition-colors ${
+        disabled
+          ? "cursor-not-allowed opacity-60"
+          : "cursor-pointer hover:bg-white/[0.03]"
       }`}
     >
       <input
@@ -184,7 +198,7 @@ function Toggle({ label, hint, checked, onChange, icon, disabled }: ToggleProps)
         checked={checked}
         onChange={(e) => !disabled && onChange(e.target.checked)}
         disabled={disabled}
-        className="mt-1 h-4 w-4 cursor-pointer accent-stable-purple"
+        className="focus-ring mt-1 h-4 w-4 cursor-pointer rounded accent-stable-purple"
       />
       <div className="flex-1">
         <div className="flex items-center gap-1.5">

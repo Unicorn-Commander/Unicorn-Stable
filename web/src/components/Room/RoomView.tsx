@@ -3,8 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
+import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
@@ -98,6 +99,11 @@ export function RoomView({ roomId }: RoomViewProps) {
   const setParticipants = useAppStore((s) => s.setParticipants);
   const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // Header agent-switcher (agent rooms only): shows the room's current agent
+  // and opens the Brigade picker — inviting another agent re-routes replies to
+  // it (last-invited wins; @mention any member agent to address it directly).
+  const [agentSwitchOpen, setAgentSwitchOpen] = useState(false);
+  const rosterAgents = useAppStore((s) => s.agents);
   const [searchOpen, setSearchOpen] = useState(false);
   const [pinsOpen, setPinsOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -239,19 +245,28 @@ export function RoomView({ roomId }: RoomViewProps) {
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Room header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
+      {/* Glass paint lives on an inner layer: backdrop-filter on the header
+          itself would make it the containing block for fixed descendants,
+          clipping the agent-switcher's full-viewport click-away backdrop to
+          the 48px strip (and trapping the z-50 menus in a header stacking
+          context under root-level z-10 hover toolbars). */}
+      <div className="relative flex h-12 shrink-0 items-center justify-between border-b border-line px-4">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-stable-glass backdrop-blur-xl"
+        />
         <div className="flex items-center gap-2 min-w-0">
           {/* Phones: this sub-header is the single top bar, so it owns the
               drawer toggle. Hidden >= md (the AppShell Header's hamburger
               takes over there). */}
           <button
             onClick={toggleSidebar}
-            className="-ml-1 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:hidden"
+            className="-ml-1 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
             aria-label="Open sidebar"
           >
             <PanelLeftOpen className="h-5 w-5" />
           </button>
-          <Hash className="h-4 w-4 shrink-0 text-slate-500" />
+          <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />
           {editingName ? (
             <input
               autoFocus
@@ -267,12 +282,12 @@ export function RoomView({ roomId }: RoomViewProps) {
                   setEditingName(false);
                 }
               }}
-              className="rounded border border-stable-purple/40 bg-slate-950 px-2 py-0.5 text-sm font-semibold text-slate-100 focus:outline-none focus:ring-1 focus:ring-stable-purple"
+              className="rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 font-display text-sm font-semibold text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           ) : (
             <button
               onClick={() => setEditingName(true)}
-              className="truncate text-sm font-semibold text-slate-100 hover:text-stable-purple-light"
+              className="truncate font-display text-sm font-semibold text-slate-50 transition-colors hover:text-stable-purple-light focus-ring"
               title="Click to rename"
             >
               {displayName}
@@ -299,12 +314,15 @@ export function RoomView({ roomId }: RoomViewProps) {
                 }
               }}
               placeholder="Add a topic…"
-              className="flex-1 rounded border border-stable-purple/40 bg-slate-950 px-2 py-0.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-stable-purple"
+              className="flex-1 rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 text-xs text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           ) : (
             <button
               onClick={() => setEditingTopic(true)}
-              className="truncate text-xs text-slate-500 hover:text-slate-300"
+              className={clsx(
+                "truncate text-xs transition-colors hover:text-slate-300 focus-ring",
+                roomDetail?.description ? "text-slate-400" : "italic text-slate-500",
+              )}
               title="Click to edit topic"
             >
               {roomDetail?.description || "Add a topic…"}
@@ -319,12 +337,64 @@ export function RoomView({ roomId }: RoomViewProps) {
           <span className="hidden md:contents">
             <ModelSwitcher roomId={roomId} />
           </span>
+          {roomDetail?.brigade_agent_id &&
+            (() => {
+              const agentId = roomDetail.brigade_agent_id!;
+              const roomAgent = rosterAgents.find((a) => a.id === agentId);
+              const agentName = roomAgent?.display_name || roomAgent?.name || agentId;
+              const ident = identityFor(agentId, agentName);
+              return (
+                <div className="relative hidden md:block">
+                  <button
+                    onClick={() => setAgentSwitchOpen((v) => !v)}
+                    aria-haspopup="dialog"
+                    aria-expanded={agentSwitchOpen}
+                    title="Switch or add the agent this room talks to"
+                    className="focus-ring flex items-center gap-1.5 rounded-lg border border-line bg-white/[0.03] px-2.5 py-1 text-xs font-medium transition-colors hover:border-line-strong hover:bg-white/[0.06]"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 rounded-full"
+                      style={{ background: ident.color }}
+                    />
+                    <span
+                      className="max-w-[14ch] truncate"
+                      style={{ color: ident.text }}
+                    >
+                      {agentName}
+                    </span>
+                    <ChevronDown
+                      className={clsx(
+                        "h-3 w-3 text-slate-500 transition-transform",
+                        agentSwitchOpen && "rotate-180",
+                      )}
+                    />
+                  </button>
+                  {agentSwitchOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        aria-hidden="true"
+                        onClick={() => setAgentSwitchOpen(false)}
+                      />
+                      <div className="absolute right-0 top-full z-50 mt-2 w-80">
+                        <BrigadeAgentPicker
+                          roomName={roomDetail?.name ?? roomId}
+                          defaultOpen
+                          onInvited={() => setAgentSwitchOpen(false)}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
           {/* Phones: search / pins / mute move into the ⋮ menu below so the
               room name has room to breathe. Desktop keeps them inline. */}
           <span className="hidden md:contents">
             <button
               onClick={() => setSearchOpen(true)}
-              className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
               aria-label="Search messages"
               title="Search this channel"
             >
@@ -332,7 +402,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
             <button
               onClick={() => setPinsOpen((v) => !v)}
-              className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
               aria-label="Show pinned messages"
               title="Pinned messages"
             >
@@ -340,7 +410,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
             <button
               onClick={toggleCanvas}
-              className={`rounded-md p-2.5 md:p-1.5 ${canvasOpen ? "bg-stable-purple/20 text-stable-purple-light" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+              className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${canvasOpen ? "bg-stable-purple/20 text-stable-purple-light" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
               aria-label="Toggle canvas"
               aria-pressed={canvasOpen}
               title="Canvas — co-working docs, code & diagrams"
@@ -349,7 +419,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
             <button
               onClick={toggleKnowledge}
-              className={`rounded-md p-2.5 md:p-1.5 ${knowledgeOpen ? "bg-stable-cyan/20 text-stable-cyan" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+              className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${knowledgeOpen ? "bg-stable-cyan/20 text-stable-cyan" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
               aria-label="Toggle knowledge bases"
               aria-pressed={knowledgeOpen}
               title="Knowledge — attach docs for the agent to search"
@@ -358,7 +428,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
             <button
               onClick={() => setMuted(toggleMute(roomId))}
-              className={`rounded-md p-2.5 md:p-1.5 ${muted ? "text-amber-400" : "text-slate-400"} hover:bg-slate-800 hover:text-slate-200`}
+              className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${muted ? "text-amber-300" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
               aria-label={muted ? "Unmute channel" : "Mute channel"}
               title={muted ? "Channel muted — click to unmute" : "Mute notifications for this channel"}
             >
@@ -367,7 +437,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </span>
           <button
             onClick={() => setInviteOpen(true)}
-            className="flex items-center gap-1 rounded-md bg-stable-purple/20 p-2.5 text-xs text-stable-purple hover:bg-stable-purple/30 md:px-2.5 md:py-1"
+            className="flex items-center gap-1 rounded-lg border border-stable-purple/30 bg-stable-purple/15 p-2.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 focus-ring md:px-2.5 md:py-1"
             aria-label="Invite members"
           >
             <UserPlus className="h-3.5 w-3.5" />
@@ -375,7 +445,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </button>
           <button
             onClick={toggleParticipantPanel}
-            className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Toggle participants panel"
             title="Show/hide members & agents"
           >
@@ -385,7 +455,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             <button
               ref={overflowBtnRef}
               onClick={() => setOverflowOpen((v) => !v)}
-              className="rounded-md p-2.5 md:p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
               aria-label="More room actions"
               aria-haspopup="menu"
               aria-expanded={overflowOpen}
@@ -397,18 +467,18 @@ export function RoomView({ roomId }: RoomViewProps) {
               <div
                 ref={overflowMenuRef}
                 role="menu"
-                className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 py-1 shadow-xl"
+                className="glass-heavy absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-xl py-1 shadow-pop animate-fade-in"
               >
                 {/* Phones: model switcher lives here (its inline trigger is
                     hidden < md). Rendered as a labeled row; its own popover
                     opens below and stays inside this menu's bounds. */}
                 <div className="px-3 py-1.5 md:hidden">
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                     Model
                   </div>
                   <ModelSwitcher roomId={roomId} className="max-w-full" />
                 </div>
-                <div className="my-1 h-px bg-slate-700/60 md:hidden" />
+                <div className="my-1 h-px bg-white/[0.06] md:hidden" />
                 {/* Phones: search / pins / mute live here (their inline buttons
                     are hidden < md). Desktop only sees Leave. */}
                 <button
@@ -417,7 +487,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                     setOverflowOpen(false);
                     setSearchOpen(true);
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
                   <Search className="h-4 w-4" />
                   Search
@@ -428,7 +498,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                     setOverflowOpen(false);
                     setPinsOpen(true);
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
                   <Pin className="h-4 w-4" />
                   Pinned messages
@@ -441,7 +511,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                     setOverflowOpen(false);
                     toggleCanvas();
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
                   <LayoutTemplate className="h-4 w-4" />
                   {canvasOpen ? "Hide canvas" : "Open canvas"}
@@ -454,7 +524,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                     setOverflowOpen(false);
                     toggleKnowledge();
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
                   <Database className="h-4 w-4" />
                   {knowledgeOpen ? "Hide knowledge" : "Knowledge bases"}
@@ -465,17 +535,17 @@ export function RoomView({ roomId }: RoomViewProps) {
                     setOverflowOpen(false);
                     setMuted(toggleMute(roomId));
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
                   {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                   {muted ? "Unmute channel" : "Mute channel"}
                 </button>
-                <div className="my-1 h-px bg-slate-700/60 md:hidden" />
+                <div className="my-1 h-px bg-white/[0.06] md:hidden" />
                 <button
                   role="menuitem"
                   onClick={openLeave}
                   disabled={leaving}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-400 transition-colors hover:bg-rose-500/10 focus-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <LogOut className="h-4 w-4" />
                   {leaving ? "Leaving…" : "Leave room"}
@@ -555,7 +625,7 @@ export function RoomView({ roomId }: RoomViewProps) {
       <div className="flex min-h-0 flex-1">
         {(participantPanelOpen || pinsOpen || threadMessageId) && (
           <div
-            className="fixed inset-0 z-30 bg-slate-950/60 md:hidden"
+            className="fixed inset-0 z-30 bg-slate-950/70 backdrop-blur-sm md:hidden"
             aria-hidden="true"
             onClick={() => {
               if (participantPanelOpen) toggleParticipantPanel();
@@ -572,7 +642,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                 animate={{ height: 300, opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={{ duration: 0.2 }}
-                className="shrink-0 overflow-hidden border-b border-slate-700/50"
+                className="shrink-0 overflow-hidden border-b border-line"
               >
                 <StageView agentId={stageAgentId} roomId={roomId} />
               </motion.div>
@@ -625,32 +695,36 @@ export function RoomView({ roomId }: RoomViewProps) {
         </AnimatePresence>
 
         {/* Sidebar view mode: the call docks into a narrow right column so the
-            main area stays free for chat/canvas (the co-working layout). */}
-        <AnimatePresence>
+            main area stays free for chat/canvas (the co-working layout).
+            initial={false}: these two columns can be open on FIRST mount, and
+            the enter fade can freeze at partial opacity when mounted with the
+            room (the long-standing "ghost panel" bleed) — render at full
+            opacity immediately; later user toggles still animate. */}
+        <AnimatePresence initial={false}>
           {callInSidebar && (
             <motion.div
               initial={{ opacity: 0, width: 0 }}
               animate={{ opacity: 1, width: "auto" }}
               exit={{ opacity: 0, width: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,300px)] shrink-0 flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-72 md:shadow-none"
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,300px)] shrink-0 flex-col overflow-hidden border-l border-line bg-slate-900/95 shadow-2xl backdrop-blur-xl md:static md:z-auto md:w-72 md:shadow-none"
             >
               <VoiceVideoBar roomId={roomId} />
             </motion.div>
           )}
         </AnimatePresence>
 
-        <AnimatePresence>
+        <AnimatePresence initial={false}>
           {participantPanelOpen && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-60 md:bg-transparent md:shadow-none"
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-line bg-slate-900/95 shadow-2xl backdrop-blur-xl md:static md:z-auto md:w-60 md:bg-transparent md:shadow-none md:backdrop-blur-none"
             >
               <ParticipantStrip roomId={roomId} />
-              <div className="border-t border-slate-700/50 shrink-0">
+              <div className="border-t border-line shrink-0">
                 <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />
               </div>
             </motion.div>

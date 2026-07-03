@@ -34,7 +34,7 @@ export function LeaveRoomModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget && !leaving) onClose();
       }}
@@ -47,14 +47,16 @@ export function LeaveRoomModal({
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
         transition={{ duration: 0.15 }}
-        className="glass-heavy w-full max-w-sm rounded-2xl shadow-2xl"
+        className="glass-heavy w-full max-w-sm rounded-2xl shadow-pop"
       >
-        <div className="flex items-center justify-between border-b border-slate-700/50 px-6 py-4">
-          <h2 className="text-lg font-semibold text-slate-100">Leave room?</h2>
+        <div className="flex items-center justify-between border-b border-line px-6 py-4">
+          <h2 className="font-display text-lg font-semibold text-slate-100">
+            Leave room?
+          </h2>
           <button
             onClick={onClose}
             disabled={leaving}
-            className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+            className="focus-ring rounded-lg p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 disabled:opacity-50"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -69,12 +71,12 @@ export function LeaveRoomModal({
           </p>
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-700/50 px-6 py-4">
+        <div className="flex justify-end gap-2 border-t border-line px-6 py-4">
           <button
             type="button"
             onClick={onClose}
             disabled={leaving}
-            className="rounded-lg px-4 py-2 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+            className="focus-ring rounded-xl px-4 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-slate-100 disabled:opacity-50"
           >
             Cancel
           </button>
@@ -82,7 +84,7 @@ export function LeaveRoomModal({
             type="button"
             onClick={onConfirm}
             disabled={leaving}
-            className="flex items-center gap-1.5 rounded-lg bg-red-500/90 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="focus-ring flex items-center gap-1.5 rounded-xl bg-rose-500/90 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <LogOut className="h-4 w-4" />
             {leaving ? "Leaving…" : "Leave"}

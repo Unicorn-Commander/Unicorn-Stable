@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import type { CreateRoomRequest, Room } from "@/services/api";
+import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 
 type RoomType = "channel" | "group_dm" | "dm";
@@ -72,24 +73,35 @@ export function CreateRoomModal() {
     });
   }
 
-  const typeOptions: Array<{ value: RoomType; label: string; icon: typeof Hash; desc: string }> = [
+  // `hue` is purely presentational — each room type gets its own accent so the
+  // three tiles read at a glance.
+  const typeOptions: Array<{
+    value: RoomType;
+    label: string;
+    icon: typeof Hash;
+    desc: string;
+    hue: string;
+  }> = [
     {
       value: "channel",
       label: "Channel",
       icon: Hash,
       desc: "Open to all members",
+      hue: "text-stable-cyan",
     },
     {
       value: "group_dm",
       label: "Group",
       icon: Users,
       desc: "Private group conversation",
+      hue: "text-stable-mint",
     },
     {
       value: "dm",
       label: "Direct",
       icon: MessageSquare,
       desc: "One-to-one conversation",
+      hue: "text-stable-purple-light",
     },
   ];
 
@@ -98,7 +110,7 @@ export function CreateRoomModal() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           setCreateRoomModalOpen(false);
@@ -113,15 +125,15 @@ export function CreateRoomModal() {
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
         transition={{ duration: 0.15 }}
-        className="glass-heavy w-full max-w-lg rounded-2xl shadow-2xl"
+        className="glass-heavy w-full max-w-lg overflow-hidden rounded-2xl shadow-pop"
       >
-        <div className="flex items-center justify-between border-b border-slate-700/50 px-6 py-4">
-          <h2 className="text-lg font-semibold text-slate-100">
-            Create a Room
+        <div className="flex items-center justify-between border-b border-line px-6 py-4">
+          <h2 className="font-display text-lg font-semibold text-slate-50">
+            Create a room
           </h2>
           <button
             onClick={() => setCreateRoomModalOpen(false)}
-            className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+            className="focus-ring rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -134,7 +146,7 @@ export function CreateRoomModal() {
               htmlFor="room-name"
               className="text-xs font-medium text-slate-400"
             >
-              Room Name
+              Room name
             </label>
             <input
               ref={nameInputRef}
@@ -145,7 +157,7 @@ export function CreateRoomModal() {
               placeholder="e.g. general, project-alpha"
               maxLength={80}
               required
-              className="rounded-lg bg-slate-800/80 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50"
+              className="rounded-xl border border-line bg-slate-950/60 px-3.5 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           </div>
 
@@ -164,7 +176,7 @@ export function CreateRoomModal() {
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What's this room about?"
               maxLength={200}
-              className="rounded-lg bg-slate-800/80 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50"
+              className="rounded-xl border border-line bg-slate-950/60 px-3.5 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           </div>
 
@@ -179,13 +191,19 @@ export function CreateRoomModal() {
                     type="button"
                     onClick={() => setRoomType(opt.value)}
                     className={clsx(
-                      "flex flex-col items-center gap-1.5 rounded-xl border px-3 py-3 transition-colors",
+                      "card card-hover focus-ring flex flex-col items-center gap-1.5 px-3 py-3",
                       roomType === opt.value
-                        ? "border-stable-purple/50 bg-stable-purple/10 text-stable-purple-light"
-                        : "border-slate-700/50 bg-slate-800/40 text-slate-400 hover:border-slate-600 hover:text-slate-300",
+                        ? "border-stable-purple/60 bg-stable-purple/10 text-slate-100 hover:border-stable-purple/60"
+                        : "text-slate-400 hover:text-slate-300",
                     )}
                   >
-                    <Icon className="h-5 w-5" />
+                    <Icon
+                      className={clsx(
+                        "h-5 w-5",
+                        opt.hue,
+                        roomType === opt.value ? "opacity-100" : "opacity-75",
+                      )}
+                    />
                     <span className="text-xs font-medium">{opt.label}</span>
                     <span className="text-[10px] opacity-60">{opt.desc}</span>
                   </button>
@@ -196,62 +214,87 @@ export function CreateRoomModal() {
 
           {agents.length > 0 && (
             <div className="flex flex-col gap-2">
-              <span className="text-xs font-medium text-slate-400">
-                Add AI Agents
+              <span className="flex items-center gap-1.5 text-xs font-medium text-slate-400">
+                <Bot className="h-3.5 w-3.5 text-stable-purple-light" />
+                Add AI agents
               </span>
-              <div className="flex max-h-36 flex-col gap-1 overflow-y-auto rounded-lg bg-slate-800/40 p-2 ring-1 ring-slate-700/50">
-                {agents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => toggleAgent(agent.id)}
-                    className={clsx(
-                      "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
-                      selectedAgentIds.has(agent.id)
-                        ? "bg-stable-purple/10 text-stable-purple-light"
-                        : "text-slate-300 hover:bg-slate-700/50",
-                    )}
-                  >
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-stable-cyan/20 text-stable-cyan">
-                      <Bot className="h-3.5 w-3.5" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">
-                        {agent.display_name}
-                      </p>
-                      <p className="truncate text-[11px] text-slate-500">
-                        {agent.description}
-                      </p>
-                    </div>
-                    {selectedAgentIds.has(agent.id) && (
-                      <Check className="h-4 w-4 shrink-0 text-stable-purple" />
-                    )}
-                  </button>
-                ))}
+              <div className="flex max-h-36 flex-col gap-1 overflow-y-auto rounded-xl border border-line bg-slate-950/40 p-1.5">
+                {agents.map((agent) => {
+                  const ident = identityFor(
+                    agent.id,
+                    agent.display_name || agent.name,
+                  );
+                  const selected = selectedAgentIds.has(agent.id);
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      onClick={() => toggleAgent(agent.id)}
+                      className={clsx(
+                        "focus-ring flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+                        selected
+                          ? "text-slate-100"
+                          : "text-slate-300 hover:bg-white/[0.04]",
+                      )}
+                      style={selected ? { background: ident.faint } : undefined}
+                    >
+                      <div
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border"
+                        style={{
+                          background: ident.soft,
+                          borderColor: ident.border,
+                        }}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ background: ident.color }}
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className="truncate text-sm font-medium"
+                          style={{ color: ident.text }}
+                        >
+                          {agent.display_name}
+                        </p>
+                        <p className="truncate text-[11px] text-slate-500">
+                          {agent.description}
+                        </p>
+                      </div>
+                      {selected && (
+                        <Check
+                          className="h-4 w-4 shrink-0"
+                          style={{ color: ident.text }}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
 
           {createMutation.isError && (
-            <p className="text-xs text-red-400">
+            <p className="text-xs text-rose-400">
               Failed to create room. Please try again.
             </p>
           )}
 
-          <div className="flex justify-end gap-2 border-t border-slate-700/50 pt-4">
+          <div className="flex justify-end gap-2 border-t border-line pt-4">
             <button
               type="button"
               onClick={() => setCreateRoomModalOpen(false)}
-              className="rounded-lg px-4 py-2 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+              className="focus-ring rounded-xl px-4 py-2 text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!name.trim() || createMutation.isPending}
-              className="gradient-bg rounded-lg px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="focus-ring gradient-bg shadow-glow-iris rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {createMutation.isPending ? "Creating..." : "Create Room"}
+              {createMutation.isPending ? "Creating…" : "Create room"}
             </button>
           </div>
         </form>

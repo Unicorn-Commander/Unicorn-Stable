@@ -3,8 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNowStrict } from "date-fns";
 import {
+  ChevronDown,
   Hash,
-  MessageSquare,
   Sparkles,
   SquarePen,
   Plus,
@@ -17,8 +17,11 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type Room, type Agent } from "@/services/api";
+import { identityFor } from "@/lib/identity";
+import { Avatar } from "@/components/Avatar";
 import { useAppStore } from "@/stores/appStore";
 import { resolveDefaultAgent } from "@/components/Sidebar/newChat";
+import { AgentChatModal } from "@/components/Agents/AgentChatModal";
 
 // Standing always-on video rooms (mirrors the backend CONFERENCE_ROOMS list).
 // Entering one create-or-gets it and joins, then drops you into the room where
@@ -66,7 +69,7 @@ function timestamp(dateStr: string): string {
 }
 
 /**
- * The landing view shown on `/` when no room is selected — the Command Center
+ * The landing view shown on `/` when no room is selected — the Stable
  * "home". Aggregates every conversation (channels, DMs, Majik chats) into one
  * recency-sorted feed so logging in lands you on your messages instead of an
  * empty placeholder. Reads entirely from the already-loaded `rooms` store
@@ -105,6 +108,13 @@ export function HomeDashboard() {
   const [startingChat, setStartingChat] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [enteringConf, setEnteringConf] = useState<string | null>(null);
+  // "New chat with someone else" — opens the agent picker modal instead of the
+  // default-agent DM. Needs the full roster Agent object for the modal's focus.
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const pickerFocusAgent = useMemo(
+    () => agents.find((a) => a.id === defaultAgent.id) ?? agents[0],
+    [agents, defaultAgent.id],
+  );
 
   const unreadFor = (r: Room) => unreadCounts[r.id] ?? r.unread_count ?? 0;
 
@@ -218,30 +228,34 @@ export function HomeDashboard() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="animate-fade-in mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
-        {/* Hero banner — gradient glow for color + presence */}
-        <header className="relative mb-6 overflow-hidden rounded-2xl border border-stable-glass-border bg-slate-800/30 px-6 py-7 sm:px-8 sm:py-8">
+        {/* Hero banner — aurora wash for color + presence */}
+        <header className="card relative mb-6 overflow-hidden px-6 py-7 sm:px-8 sm:py-8">
           <div
-            className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-stable-purple/25 blur-3xl"
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(110%_150%_at_100%_0%,rgba(139,92,246,0.14),transparent_55%)]"
             aria-hidden="true"
           />
           <div
-            className="pointer-events-none absolute -bottom-24 right-40 h-44 w-44 rounded-full bg-stable-cyan/20 blur-3xl"
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_120%_at_82%_100%,rgba(34,211,238,0.10),transparent_60%)]"
+            aria-hidden="true"
+          />
+          <div
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(38%_70%_at_62%_0%,rgba(52,211,153,0.07),transparent_70%)]"
             aria-hidden="true"
           />
           <div className="relative">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="gradient-bg flex h-6 w-6 items-center justify-center rounded-md">
-                <Sparkles className="h-3.5 w-3.5 text-white" />
+            <div className="mb-3 flex items-center gap-2.5">
+              <span className="gradient-bg glow-iris flex h-7 w-7 items-center justify-center rounded-lg">
+                <Sparkles className="h-4 w-4 text-white" />
               </span>
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">
-                Unicorn Command Center
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Unicorn Stable
               </span>
             </div>
-            <h1 className="text-2xl font-bold sm:text-3xl">
+            <h1 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
               <span className="text-slate-50">{greetingFor(hour)}, </span>
-              <span className="gradient-text">{firstName}</span>
+              <span className="gradient-text-aurora">{firstName}</span>
             </h1>
-            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
+            <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
               {statusBits.map((bit, i) => (
                 <span key={bit} className="flex items-center gap-2">
                   {i > 0 && (
@@ -251,7 +265,7 @@ export function HomeDashboard() {
                   )}
                   {bit.endsWith(" is online") ? (
                     <span className="inline-flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      <span className="animate-live h-1.5 w-1.5 rounded-full bg-stable-mint" />
                       {bit}
                     </span>
                   ) : (
@@ -263,36 +277,61 @@ export function HomeDashboard() {
           </div>
         </header>
 
-        {/* Quick actions */}
-        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <button
-            onClick={startDefaultChat}
-            disabled={startingChat}
-            className="gradient-bg group flex items-center gap-3 rounded-xl px-4 py-3.5 text-left text-white shadow-lg shadow-stable-purple/20 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15">
-              <SquarePen className="h-5 w-5" />
-            </span>
-            <span className="min-w-0">
-              <span className="block text-sm font-semibold">
-                {startingChat ? "Starting…" : "New chat"}
+        {/* Quick actions — one hue family per card: iris / aqua / mint */}
+        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {/* Split card: the wide side starts a chat with your default agent;
+              the caret opens the roster picker to chat with anyone (or several). */}
+          <div className="gradient-bg glow-iris flex items-stretch overflow-hidden rounded-2xl text-white">
+            <button
+              onClick={startDefaultChat}
+              disabled={startingChat}
+              className="focus-ring group flex min-w-0 flex-1 items-center gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.08] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15">
+                <SquarePen className="h-5 w-5" />
               </span>
-              <span className="block truncate text-xs text-white/70">
-                Ask your orchestrator anything
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">
+                  {startingChat ? "Starting…" : "New chat"}
+                </span>
+                <span className="block truncate text-xs text-white/70">
+                  Ask {defaultAgent.name} anything
+                </span>
               </span>
-            </span>
-          </button>
+            </button>
+            {pickerFocusAgent && (
+              <button
+                onClick={() => setAgentPickerOpen(true)}
+                aria-label="Choose a different agent or orchestrator"
+                title="Chat with a different agent — or several at once"
+                className="focus-ring flex w-11 shrink-0 items-center justify-center border-l border-white/20 transition hover:bg-white/[0.12]"
+              >
+                <ChevronDown className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          {agentPickerOpen && pickerFocusAgent && (
+            <AgentChatModal
+              focusAgent={pickerFocusAgent}
+              agents={agents}
+              onClose={() => setAgentPickerOpen(false)}
+            />
+          )}
 
           <button
             onClick={() => setCreateRoomModalOpen(true)}
-            className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-cyan/40 hover:bg-slate-800"
+            className="card card-hover focus-ring group relative flex items-center gap-3 overflow-hidden border-stable-cyan/30 px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98]"
           >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan-light transition-colors group-hover:bg-stable-cyan/25">
+            <span
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(34,211,238,0.06),transparent_70%)]"
+              aria-hidden="true"
+            />
+            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan transition-colors group-hover:bg-stable-cyan/25">
               <Plus className="h-5 w-5" />
             </span>
-            <span className="min-w-0">
+            <span className="relative min-w-0">
               <span className="block text-sm font-semibold">New channel</span>
-              <span className="block truncate text-xs text-slate-500">
+              <span className="block truncate text-xs text-slate-400">
                 Spin up a room for humans + agents
               </span>
             </span>
@@ -300,14 +339,18 @@ export function HomeDashboard() {
 
           <button
             onClick={() => navigate("/bridge")}
-            className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-purple/40 hover:bg-slate-800"
+            className="card card-hover focus-ring group relative flex items-center gap-3 overflow-hidden border-stable-mint/30 px-4 py-3.5 text-left text-slate-200 hover:glow-mint active:scale-[0.98]"
           >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light transition-colors group-hover:bg-stable-purple/25">
+            <span
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(52,211,153,0.06),transparent_70%)]"
+              aria-hidden="true"
+            />
+            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-mint/15 text-stable-mint transition-colors group-hover:bg-stable-mint/25">
               <Plug className="h-5 w-5" />
             </span>
-            <span className="min-w-0">
+            <span className="relative min-w-0">
               <span className="block text-sm font-semibold">Connect a bridge</span>
-              <span className="block truncate text-xs text-slate-500">
+              <span className="block truncate text-xs text-slate-400">
                 Wire Claude or any agent into Stable (MCP)
               </span>
             </span>
@@ -317,8 +360,8 @@ export function HomeDashboard() {
         {/* Standing conference rooms */}
         <div className="mb-6">
           <div className="mb-2 flex items-center gap-2">
-            <Video className="h-4 w-4 text-stable-cyan-light" />
-            <h2 className="text-sm font-semibold text-slate-200">
+            <Video className="h-4 w-4 text-stable-cyan" />
+            <h2 className="font-display text-sm font-semibold text-slate-200">
               Conference rooms
             </h2>
             <span className="text-[11px] text-slate-500">
@@ -331,18 +374,30 @@ export function HomeDashboard() {
                 key={c.slug}
                 onClick={() => enterConference(c.slug)}
                 disabled={enteringConf !== null}
-                className="group flex items-center gap-3 rounded-xl border border-slate-700/60 bg-gradient-to-br from-stable-cyan/[0.06] to-slate-800/40 px-4 py-3.5 text-left text-slate-200 transition-colors hover:border-stable-cyan/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="card card-hover focus-ring group relative flex items-center gap-3 overflow-hidden px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan-light transition-colors group-hover:bg-stable-cyan/25">
+                <span
+                  className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(34,211,238,0.08),transparent_70%)]"
+                  aria-hidden="true"
+                />
+                <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan transition-colors group-hover:bg-stable-cyan/25">
                   <Video className="h-5 w-5" />
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold">{c.name}</span>
-                  <span className="block truncate text-xs text-slate-500">
+                <span className="relative min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">
+                      {c.name}
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-stable-mint/25 bg-stable-mint/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-mint">
+                      <span className="animate-live h-1 w-1 rounded-full bg-stable-mint" />
+                      always-on
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-slate-400">
                     {c.blurb}
                   </span>
                 </span>
-                <span className="shrink-0 text-xs font-medium text-stable-cyan-light">
+                <span className="relative shrink-0 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors group-hover:border-line-strong group-hover:bg-surface-3">
                   {enteringConf === c.slug ? "Opening…" : "Join"}
                 </span>
               </button>
@@ -350,40 +405,53 @@ export function HomeDashboard() {
           </div>
         </div>
 
-        {/* Stat ribbon — each stat gets its own accent */}
+        {/* Stat ribbon — each stat gets its own hue family */}
         <div className="mb-6 grid grid-cols-3 gap-3">
           <button
             onClick={() => setFilter("unread")}
             className={clsx(
-              "flex flex-col rounded-xl border px-4 py-3 text-left transition-colors",
-              totalUnread > 0
-                ? "border-stable-purple/40 bg-stable-purple/10 hover:bg-stable-purple/15"
-                : "border-slate-700/50 bg-slate-800/30 hover:bg-slate-800/50",
+              "card card-hover focus-ring relative flex flex-col overflow-hidden p-4 text-left",
+              totalUnread > 0 && "border-stable-purple/40",
             )}
           >
-            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-stable-purple-light">
+            <span
+              className={clsx(
+                "pointer-events-none absolute inset-0 bg-[radial-gradient(80%_80%_at_100%_0%,rgba(139,92,246,0.12),transparent)]",
+                totalUnread === 0 && "opacity-50",
+              )}
+              aria-hidden="true"
+            />
+            <span className="relative flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-stable-purple-light">
               <Inbox className="h-3.5 w-3.5" />
               Unread
             </span>
-            <span className="mt-1 text-2xl font-bold text-slate-50">
+            <span className="relative mt-1 font-display text-3xl font-bold tabular-nums text-slate-50">
               {totalUnread}
             </span>
           </button>
-          <div className="flex flex-col rounded-xl border border-stable-cyan/30 bg-stable-cyan/[0.07] px-4 py-3">
-            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-stable-cyan-light">
+          <div className="card card-hover relative flex flex-col overflow-hidden p-4">
+            <span
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_80%_at_100%_0%,rgba(34,211,238,0.12),transparent)]"
+              aria-hidden="true"
+            />
+            <span className="relative flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-stable-cyan-light">
               <MessagesSquare className="h-3.5 w-3.5" />
               Conversations
             </span>
-            <span className="mt-1 text-2xl font-bold text-slate-50">
+            <span className="relative mt-1 font-display text-3xl font-bold tabular-nums text-slate-50">
               {rooms.length}
             </span>
           </div>
-          <div className="flex flex-col rounded-xl border border-emerald-500/30 bg-emerald-500/[0.07] px-4 py-3">
-            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-emerald-400">
+          <div className="card card-hover relative flex flex-col overflow-hidden p-4">
+            <span
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_80%_at_100%_0%,rgba(52,211,153,0.12),transparent)]"
+              aria-hidden="true"
+            />
+            <span className="relative flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-400">
               <Bot className="h-3.5 w-3.5" />
               Agents online
             </span>
-            <span className="mt-1 text-2xl font-bold text-slate-50">
+            <span className="relative mt-1 font-display text-3xl font-bold tabular-nums text-slate-50">
               {onlineAgents.length}
             </span>
           </div>
@@ -393,22 +461,24 @@ export function HomeDashboard() {
         <div className="grid gap-6 lg:grid-cols-3">
           <section className="lg:col-span-2">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-slate-200">Messages</h2>
-              <div className="flex items-center gap-1 rounded-lg bg-slate-800/50 p-0.5">
+              <h2 className="font-display text-sm font-semibold text-slate-200">
+                Messages
+              </h2>
+              <div className="flex items-center gap-1 rounded-lg bg-white/[0.04] p-0.5">
                 {FILTERS.map((f) => (
                   <button
                     key={f.key}
                     onClick={() => setFilter(f.key)}
                     className={clsx(
-                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                      "focus-ring rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
                       filter === f.key
                         ? "bg-stable-purple text-white shadow-sm"
-                        : "text-slate-400 hover:text-slate-200",
+                        : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200",
                     )}
                   >
                     {f.label}
                     {f.key === "unread" && totalUnread > 0 && (
-                      <span className="ml-1 text-[10px] opacity-80">
+                      <span className="ml-1 text-[10px] tabular-nums opacity-80">
                         {totalUnread > 99 ? "99+" : totalUnread}
                       </span>
                     )}
@@ -426,7 +496,7 @@ export function HomeDashboard() {
                 onNewChat={startDefaultChat}
               />
             ) : (
-              <ul className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/20">
+              <ul className="card overflow-hidden">
                 {shown.map((room, i) => {
                 const unread = unreadFor(room);
                 const m = room.last_message;
@@ -437,27 +507,27 @@ export function HomeDashboard() {
                     <button
                       onClick={() => open(room.id)}
                       className={clsx(
-                        "flex w-full items-start gap-3 px-3.5 py-3 text-left transition-colors hover:bg-slate-800/60",
-                        i > 0 && "border-t border-slate-700/40",
+                        "focus-ring flex w-full items-start gap-3 px-3.5 py-3 text-left transition-colors hover:bg-white/[0.04]",
+                        i > 0 && "border-t border-line",
                         unread > 0 && "bg-stable-purple/[0.06]",
                       )}
                     >
-                      <span
-                        className={clsx(
-                          "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                          isPrimary
-                            ? "bg-stable-purple/20 text-stable-purple-light"
-                            : "bg-slate-700/50 text-slate-400",
-                        )}
-                      >
-                        {isPrimary ? (
+                      {isPrimary ? (
+                        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
                           <Sparkles className="h-4 w-4" />
-                        ) : isChannel ? (
+                        </span>
+                      ) : isChannel ? (
+                        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-stable-cyan/70">
                           <Hash className="h-4 w-4" />
-                        ) : (
-                          <MessageSquare className="h-4 w-4" />
-                        )}
-                      </span>
+                        </span>
+                      ) : (
+                        <Avatar
+                          id={room.brigade_agent_id ?? undefined}
+                          name={room.display_name || room.name}
+                          size="md"
+                          className="mt-0.5"
+                        />
+                      )}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline justify-between gap-2">
                           <span
@@ -472,12 +542,12 @@ export function HomeDashboard() {
                           </span>
                           <span className="flex shrink-0 items-center gap-2">
                             {m && (
-                              <span className="text-[11px] text-slate-500">
+                              <span className="text-[11px] tabular-nums text-slate-500">
                                 {timestamp(m.created_at)}
                               </span>
                             )}
                             {unread > 0 && (
-                              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-stable-purple px-1 text-[10px] font-bold text-white">
+                              <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
                                 {unread > 99 ? "99+" : unread}
                               </span>
                             )}
@@ -487,10 +557,16 @@ export function HomeDashboard() {
                           <p
                             className={clsx(
                               "mt-0.5 truncate text-xs",
-                              unread > 0 ? "text-slate-300" : "text-slate-500",
+                              unread > 0 ? "text-slate-300" : "text-slate-400",
                             )}
                           >
-                            <span className="text-slate-500">
+                            <span
+                              className="font-medium"
+                              style={{
+                                color: identityFor(m.sender_id, m.sender_name)
+                                  .text,
+                              }}
+                            >
                               {m.sender_name}:
                             </span>{" "}
                             {preview(m.content)}
@@ -540,31 +616,42 @@ function AgentsRail({
   return (
     <aside className="lg:col-span-1">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-slate-200">Agents</h2>
-        <span className="text-[11px] text-slate-500">
+        <h2 className="font-display text-sm font-semibold text-slate-200">
+          Agents
+        </h2>
+        <span className="text-[11px] tabular-nums text-slate-500">
           {agents.length} online · {total} total
         </span>
       </div>
-      <div className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/20">
+      <div className="card overflow-hidden">
         {agents.length === 0 ? (
-          <p className="px-4 py-8 text-center text-xs text-slate-500">
-            No agents online right now.
-          </p>
+          <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.04]">
+              <Bot className="h-5 w-5 text-slate-500" />
+            </span>
+            <p className="text-xs text-slate-500">
+              The stable is quiet — no residents online right now.
+            </p>
+          </div>
         ) : (
           <ul>
             {agents.map((a, i) => {
               const label = a.display_name || a.name;
+              const ident = identityFor(a.id, label);
               return (
                 <li key={a.id}>
                   <button
                     onClick={() => onChat(a.id, `Chat with ${label}`)}
                     disabled={disabled}
                     className={clsx(
-                      "flex w-full items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-slate-800/60 disabled:cursor-not-allowed disabled:opacity-60",
-                      i > 0 && "border-t border-slate-700/40",
+                      "focus-ring flex w-full items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-60",
+                      i > 0 && "border-t border-line",
                     )}
                   >
-                    <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-stable-purple-light">
+                    <span
+                      className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg text-white"
+                      style={{ background: ident.gradient }}
+                    >
                       {a.avatar_url ? (
                         <img
                           src={a.avatar_url}
@@ -584,8 +671,15 @@ function AgentsRail({
                       />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-slate-200">
-                        {label}
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="h-1.5 w-1.5 shrink-0 rounded-full"
+                          style={{ background: ident.color }}
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 truncate text-sm font-medium text-slate-200">
+                          {label}
+                        </span>
                       </span>
                       <span className="block truncate text-xs text-slate-500">
                         {a.description || a.model}
@@ -600,7 +694,7 @@ function AgentsRail({
       </div>
       <button
         onClick={onBrowse}
-        className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700/50 bg-slate-800/30 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:border-stable-purple/40 hover:text-slate-200"
+        className="focus-ring mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-line bg-surface-1 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:border-line-strong hover:bg-surface-2 hover:text-slate-200"
       >
         <Bot className="h-3.5 w-3.5" />
         Browse all agents
@@ -614,7 +708,7 @@ function statusDot(status: Agent["status"]): string {
     case "working":
       return "bg-amber-400";
     case "active":
-      return "bg-emerald-400";
+      return "animate-live bg-stable-mint";
     case "idle":
       return "bg-slate-400";
     default:
@@ -638,23 +732,27 @@ function EmptyFeed({
   // Brand-new account: no rooms at all → onboarding.
   if (!hasRooms) {
     return (
-      <div className="flex flex-col items-center gap-4 rounded-xl border border-dashed border-slate-700/50 bg-slate-800/20 px-6 py-12 text-center">
-        <span className="gradient-bg flex h-12 w-12 items-center justify-center rounded-2xl">
+      <div className="card relative flex flex-col items-center gap-4 overflow-hidden px-6 py-12 text-center">
+        <span
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_80%_at_50%_0%,rgba(139,92,246,0.10),transparent_70%)]"
+          aria-hidden="true"
+        />
+        <span className="gradient-bg glow-iris relative flex h-12 w-12 items-center justify-center rounded-2xl">
           <Sparkles className="h-6 w-6 text-white" />
         </span>
-        <div>
-          <p className="text-sm font-semibold text-slate-200">
-            Welcome to your Command Center
+        <div className="relative">
+          <p className="font-display text-base font-semibold text-slate-100">
+            Welcome to your Stable
           </p>
-          <p className="mx-auto mt-1 max-w-sm text-xs text-slate-500">
+          <p className="mx-auto mt-1 max-w-sm text-xs text-slate-400">
             Start a conversation with Majik or seed your business channels to
             get going.
           </p>
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-2">
+        <div className="relative flex flex-wrap items-center justify-center gap-2">
           <button
             onClick={onNewChat}
-            className="gradient-bg flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+            className="gradient-bg glow-iris focus-ring flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold text-white transition hover:opacity-95 active:scale-[0.98]"
           >
             <SquarePen className="h-3.5 w-3.5" />
             New chat
@@ -662,7 +760,7 @@ function EmptyFeed({
           <button
             onClick={onSeed}
             disabled={seeding}
-            className="flex items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-3.5 py-2 text-xs font-medium text-stable-purple-light transition-colors hover:bg-stable-purple/20 disabled:opacity-50"
+            className="focus-ring flex items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-3.5 py-2 text-xs font-medium text-stable-purple-light transition-colors hover:bg-stable-purple/20 disabled:opacity-50"
           >
             <Sparkles className="h-3.5 w-3.5" />
             {seeding ? "Creating…" : "Seed business channels"}
@@ -683,8 +781,10 @@ function EmptyFeed({
           : "No conversations yet.";
 
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-700/50 bg-slate-800/20 px-6 py-10 text-center">
-      <Search className="h-5 w-5 text-slate-600" />
+    <div className="flex flex-col items-center gap-2.5 rounded-2xl border border-dashed border-line-strong bg-surface-1/50 px-6 py-10 text-center">
+      <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.04]">
+        <Search className="h-5 w-5 text-slate-500" />
+      </span>
       <p className="text-xs text-slate-500">{label}</p>
     </div>
   );

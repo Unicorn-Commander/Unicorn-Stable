@@ -61,43 +61,54 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[12vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[12vh] backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}
-        className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-700/50 bg-slate-900 shadow-2xl"
+        className="glass-heavy w-full max-w-xl overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 border-b border-slate-700/50 px-3 py-2.5">
-          <Search className="h-4 w-4 text-slate-500" />
+        <div className="flex items-center gap-2.5 border-b border-line px-4 py-3">
+          <Search className="h-4 w-4 shrink-0 text-slate-500" />
           <input
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Browse channels you can join…"
-            className="flex-1 bg-transparent text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
           <button
             onClick={onClose}
-            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+            className="focus-ring rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        <ul className="max-h-96 overflow-y-auto divide-y divide-slate-800">
+        <ul className="max-h-96 divide-y divide-line overflow-y-auto">
           {channels.length === 0 ? (
-            <li className="px-3 py-6 text-center text-xs text-slate-500">
-              You're already in every channel.
+            <li className="flex flex-col items-center gap-2 px-3 py-10 text-center">
+              <span className="glow-iris flex h-10 w-10 items-center justify-center rounded-xl bg-stable-purple/15">
+                <Hash className="h-5 w-5 text-stable-purple-light" />
+              </span>
+              <p className="font-display text-sm font-semibold text-slate-200">
+                All caught up
+              </p>
+              <p className="text-xs text-slate-500">
+                You're already in every channel.
+              </p>
             </li>
           ) : (
             channels.map((c) => (
-              <li key={c.id} className="flex items-center gap-3 p-3">
-                <Hash className="h-4 w-4 shrink-0 text-slate-500" />
+              <li
+                key={c.id}
+                className="flex items-center gap-3 p-3 transition-colors hover:bg-white/[0.03]"
+              >
+                <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">
                     {c.name}
@@ -111,7 +122,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
                 <button
                   onClick={() => join(c)}
                   disabled={joiningId === c.id}
-                  className="shrink-0 rounded-md bg-stable-purple/20 px-2.5 py-1 text-xs text-stable-purple hover:bg-stable-purple/30 disabled:opacity-50"
+                  className="focus-ring shrink-0 rounded-lg border border-stable-purple/30 bg-stable-purple/15 px-3 py-1 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 disabled:opacity-50"
                 >
                   {joiningId === c.id ? "Joining…" : "Join"}
                 </button>

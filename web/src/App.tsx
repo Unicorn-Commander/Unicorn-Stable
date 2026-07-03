@@ -4,6 +4,7 @@ import { initAuth, isAuthenticated, login, getUserProfile } from "@/services/aut
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { AppShell } from "@/components/Layout/AppShell";
+import { StableMark } from "@/components/StableMark";
 import { VoiceProvider } from "@/contexts/VoiceProvider";
 
 function AuthGate({ children }: { children: ReactNode }) {
@@ -53,7 +54,7 @@ function AuthGate({ children }: { children: ReactNode }) {
         <div className="flex flex-col items-center gap-4">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-stable-purple border-t-transparent" />
           <p className="text-sm text-slate-400">
-            Connecting to Command Center…
+            Connecting to the Stable…
           </p>
         </div>
       </div>
@@ -199,7 +200,7 @@ function AuthGate({ children }: { children: ReactNode }) {
         <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
           <div className="glass flex max-w-md flex-col items-center gap-4 rounded-2xl p-8 text-center">
             <h1 className="text-xl font-semibold text-slate-50">
-              Authentication Unavailable
+              Authentication unavailable
             </h1>
             <p className="text-sm text-slate-400">
               Could not connect to the authentication service. Check your
@@ -219,19 +220,20 @@ function AuthGate({ children }: { children: ReactNode }) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
         <div className="glass flex max-w-md flex-col items-center gap-6 rounded-2xl p-8 text-center">
-          <div className="flex flex-col items-center gap-2">
-            <h1 className="gradient-text text-3xl font-bold">
-              Unicorn Command Center
+          <div className="flex flex-col items-center gap-3">
+            <StableMark className="h-14 w-14 drop-shadow-[0_0_24px_rgba(139,92,246,0.45)]" />
+            <h1 className="gradient-text font-display text-4xl font-bold tracking-tight">
+              Stable
             </h1>
             <p className="text-sm text-slate-400">
-              Where humans and AI meet
+              Where your team and your AI agents live
             </p>
           </div>
           <button
             onClick={() => login()}
             className="gradient-bg w-full rounded-lg px-6 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
           >
-            Sign In
+            Sign in
           </button>
         </div>
       </div>

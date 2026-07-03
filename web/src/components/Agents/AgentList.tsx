@@ -4,6 +4,7 @@ import type { Agent } from "@/services/api";
 import {
   AFFIL_META,
   affiliationOf,
+  agentIdentity,
   TIER_META,
   tierOf,
   statusDot,
@@ -22,9 +23,18 @@ export function AgentList({
 }) {
   if (agents.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-700/50 bg-slate-800/20 px-6 py-16 text-center">
-        <Bot className="h-6 w-6 text-slate-600" />
-        <p className="text-sm text-slate-500">No agents match your search.</p>
+      <div className="card animate-fade-in flex flex-col items-center gap-3 px-6 py-16 text-center">
+        <span className="glass glow-iris flex h-12 w-12 items-center justify-center rounded-2xl text-stable-purple-light">
+          <Bot className="h-6 w-6" />
+        </span>
+        <div>
+          <p className="font-display text-sm font-semibold text-slate-200">
+            No residents match
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Try a different name, role, domain, or tool.
+          </p>
+        </div>
       </div>
     );
   }
@@ -35,6 +45,7 @@ export function AgentList({
         const affil = affiliationOf(agent);
         const affilMeta = AFFIL_META[affil];
         const tierMeta = TIER_META[tierOf(agent)];
+        const ident = agentIdentity(agent);
         const subtitle = agent.title || agent.domain || "";
         const tools = agent.tools || [];
         const paidNames = new Set(toolCostInfo(agent).paidTools.map((t) => t.name));
@@ -43,13 +54,18 @@ export function AgentList({
             <button
               onClick={() => onOpen(agent)}
               title={`${affilMeta.label} · ${tierMeta.label} model`}
-              className={clsx(
-                "group flex h-full w-full flex-col rounded-xl border border-l-4 border-slate-700/50 bg-slate-800/30 p-4 text-left transition-colors hover:border-stable-purple/40 hover:bg-slate-800/60",
-                affilMeta.border,
-              )}
+              className="card card-hover focus-ring group relative flex h-full w-full flex-col overflow-hidden p-4 pl-5 text-left"
             >
+              {/* Affiliation legend — the colored left edge (a legend with meaning). */}
+              <span
+                aria-hidden="true"
+                className={clsx("absolute inset-y-0 left-0 w-1", affilMeta.bar)}
+              />
               <div className="flex items-start gap-3">
-                <span className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-lg text-stable-purple-light">
+                <span
+                  className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl text-lg text-white/90 shadow-soft"
+                  style={{ background: ident.gradient }}
+                >
                   {agent.avatar_url ? (
                     <img src={agent.avatar_url} alt="" className="h-full w-full object-cover" />
                   ) : agent.emoji ? (
@@ -59,7 +75,7 @@ export function AgentList({
                   )}
                   <span
                     className={clsx(
-                      "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-slate-800",
+                      "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-surface-1",
                       statusDot(agent.status),
                     )}
                   />
@@ -71,7 +87,7 @@ export function AgentList({
                       <PaidToolsBadge agent={agent} />
                       <span
                         className={clsx(
-                          "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
+                          "inline-flex items-center rounded-md px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
                           tierMeta.chip,
                         )}
                       >
@@ -104,17 +120,17 @@ export function AgentList({
                       key={t}
                       title={paidNames.has(t) ? `${t} · costs money` : t}
                       className={clsx(
-                        "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                        "rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1",
                         paidNames.has(t)
-                          ? "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25"
-                          : "bg-slate-700/40 text-slate-400",
+                          ? "bg-amber-500/15 text-amber-200 ring-amber-500/25"
+                          : "bg-white/[0.04] text-slate-400 ring-white/[0.06]",
                       )}
                     >
                       {paidNames.has(t) ? `$ ${t}` : t}
                     </span>
                   ))}
                   {tools.length > 4 && (
-                    <span className="rounded-md bg-slate-700/30 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                    <span className="rounded-md bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-500">
                       +{tools.length - 4}
                     </span>
                   )}
@@ -123,7 +139,7 @@ export function AgentList({
 
               <div
                 className={clsx(
-                  "flex items-center justify-between border-t border-slate-700/40 pt-3",
+                  "flex items-center justify-between border-t border-line pt-3",
                   tools.length > 0 ? "mt-3" : "mt-3 flex-1 items-end",
                 )}
               >
@@ -131,7 +147,10 @@ export function AgentList({
                   <Cpu className="h-3 w-3 shrink-0" />
                   <span className="max-w-[9rem] truncate">{agent.model || "—"}</span>
                 </span>
-                <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-stable-purple-light opacity-0 transition-opacity group-hover:opacity-100">
+                <span
+                  className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-0 transition-opacity group-hover:opacity-100"
+                  style={{ color: ident.text }}
+                >
                   <MessageSquarePlus className="h-3.5 w-3.5" />
                   Chat
                 </span>

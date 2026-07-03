@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, Hash, MessageSquare, Search, User } from "lucide-react";
+import { Hash, MessageSquare, Search, User } from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
+import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 
 interface QuickSwitcherProps {
@@ -82,7 +83,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       kind: "user" as const,
       id: u.id || u.keycloak_sub,
       label: u.display_name || u.username,
-      sub: `@${u.username}${u.signed_in ? "" : " · not yet on Command Center"}`,
+      sub: `@${u.username}${u.signed_in ? "" : " · not yet on Stable"}`,
     }));
     const all = [...channelItems, ...dmItems, ...agentItems, ...userItems];
     if (!q.trim()) return all.slice(0, 12);
@@ -132,74 +133,97 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[12vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[12vh] backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}
-        className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-700/50 bg-slate-900 shadow-2xl"
+        className="glass-heavy w-full max-w-xl overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
         role="dialog"
         aria-label="Quick switcher"
       >
-        <div className="flex items-center gap-2 border-b border-slate-700/50 px-3 py-2.5">
-          <Search className="h-4 w-4 text-slate-500" />
+        <div className="flex items-center gap-2.5 border-b border-line px-4 py-3">
+          <Search className="h-4 w-4 shrink-0 text-slate-500" />
           <input
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Jump to channel, agent, or person…"
-            className="flex-1 bg-transparent text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-base text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
-          <kbd className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-500">
+          <kbd className="shrink-0 rounded border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
             esc
           </kbd>
         </div>
 
-        <ul className="max-h-96 overflow-y-auto py-1">
+        <ul className="max-h-96 overflow-y-auto p-1.5">
           {items.length === 0 ? (
-            <li className="px-3 py-6 text-center text-xs text-slate-500">
-              No matches.
+            <li className="flex flex-col items-center gap-1.5 px-3 py-10 text-center">
+              <Search className="mb-1 h-6 w-6 text-slate-600" />
+              <p className="font-display text-sm font-semibold text-slate-300">
+                No matches
+              </p>
+              <p className="text-xs text-slate-500">
+                Try a channel, agent, or teammate name.
+              </p>
             </li>
           ) : (
-            items.map((it, i) => (
-              <li key={`${it.kind}:${it.id}`}>
-                <button
-                  onMouseEnter={() => setSel(i)}
-                  onClick={() => activate(it)}
-                  className={clsx(
-                    "flex w-full items-center gap-3 px-3 py-2 text-left",
-                    i === sel
-                      ? "bg-stable-purple/15 text-slate-100"
-                      : "text-slate-300 hover:bg-slate-800/40",
-                  )}
-                >
-                  <Icon kind={it.kind} />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{it.label}</p>
-                    <p className="truncate text-xs text-slate-500">{it.sub}</p>
-                  </div>
-                  <KindLabel kind={it.kind} />
-                </button>
-              </li>
-            ))
+            items.map((it, i) => {
+              const ident =
+                it.kind === "agent" ? identityFor(it.id, it.label) : null;
+              return (
+                <li key={`${it.kind}:${it.id}`}>
+                  <button
+                    onMouseEnter={() => setSel(i)}
+                    onClick={() => activate(it)}
+                    className={clsx(
+                      "focus-ring relative flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
+                      i === sel
+                        ? "bg-white/[0.06] text-slate-50"
+                        : "text-slate-300 hover:bg-white/[0.04]",
+                    )}
+                  >
+                    {i === sel && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute left-0.5 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+                        style={ident ? { background: ident.color } : undefined}
+                      />
+                    )}
+                    <Icon item={it} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{it.label}</p>
+                      <p className="truncate text-xs text-slate-500">{it.sub}</p>
+                    </div>
+                    <KindLabel kind={it.kind} />
+                  </button>
+                </li>
+              );
+            })
           )}
         </ul>
 
-        <div className="flex items-center gap-3 border-t border-slate-800 px-3 py-1.5 text-[10px] text-slate-500">
+        <div className="flex items-center gap-3 border-t border-line px-3.5 py-2 text-[10px] text-slate-500">
           <span>
-            <kbd className="mr-1 rounded border border-slate-700 px-1">↑↓</kbd>
+            <kbd className="mr-1 rounded border border-line bg-white/[0.04] px-1 py-0.5 text-[10px] font-medium text-slate-400">
+              ↑↓
+            </kbd>
             move
           </span>
           <span>
-            <kbd className="mr-1 rounded border border-slate-700 px-1">↵</kbd>
+            <kbd className="mr-1 rounded border border-line bg-white/[0.04] px-1 py-0.5 text-[10px] font-medium text-slate-400">
+              ↵
+            </kbd>
             jump
           </span>
           <span className="ml-auto">
-            <kbd className="mr-1 rounded border border-slate-700 px-1">⌘K</kbd>
+            <kbd className="mr-1 rounded border border-line bg-white/[0.04] px-1 py-0.5 text-[10px] font-medium text-slate-400">
+              ⌘K
+            </kbd>
             anywhere
           </span>
         </div>
@@ -208,12 +232,24 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
   );
 }
 
-function Icon({ kind }: { kind: Item["kind"] }) {
-  const cls = "h-4 w-4 shrink-0 text-slate-500";
-  if (kind === "channel") return <Hash className={cls} />;
-  if (kind === "dm") return <MessageSquare className={cls} />;
-  if (kind === "agent") return <Bot className={cls} />;
-  return <User className={cls} />;
+function Icon({ item }: { item: Item }) {
+  if (item.kind === "channel")
+    return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
+  if (item.kind === "dm")
+    return <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />;
+  if (item.kind === "agent") {
+    // Agents carry their identity hue — a 6px dot, same as sidebar agent DMs.
+    const ident = identityFor(item.id, item.label);
+    return (
+      <span className="grid h-4 w-4 shrink-0 place-items-center">
+        <span
+          className="h-1.5 w-1.5 rounded-full"
+          style={{ background: ident.color, boxShadow: `0 0 0 3px ${ident.faint}` }}
+        />
+      </span>
+    );
+  }
+  return <User className="h-4 w-4 shrink-0 text-slate-500" />;
 }
 
 function KindLabel({ kind }: { kind: Item["kind"] }) {
@@ -226,7 +262,7 @@ function KindLabel({ kind }: { kind: Item["kind"] }) {
           ? "Agent"
           : "User";
   return (
-    <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+    <span className="shrink-0 rounded-md border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
       {label}
     </span>
   );

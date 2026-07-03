@@ -24,7 +24,7 @@ export function PaidToolsBadge({
     <span
       title={`Costs money: ${names}`}
       className={clsx(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full font-semibold ring-1 ring-amber-500/30 bg-amber-500/15 text-amber-200",
+        "inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-500/15 font-semibold tabular-nums text-amber-200 ring-1 ring-amber-500/30",
         size === "xs" ? "px-1 py-0.5 text-[9px]" : "px-1.5 py-0.5 text-[10px]",
       )}
     >

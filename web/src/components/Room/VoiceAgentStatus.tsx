@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import { RoomEvent } from "livekit-client";
 import type { Participant, RemoteParticipant } from "livekit-client";
 import { useVoice } from "@/contexts/VoiceProvider";
+import { identityFor } from "@/lib/identity";
 
 /**
  * VoiceAgentStatus — a compact "orb that moves with the voice" + a clear
@@ -16,14 +18,24 @@ import { useVoice } from "@/contexts/VoiceProvider";
  * provider wiring) and degrades gracefully: no agent + not connecting → nothing.
  */
 
-const STATE_META: Record<
-  string,
-  { label: string; dot: string; pulse: boolean }
-> = {
-  initializing: { label: "Connecting…", dot: "bg-slate-400", pulse: true },
-  listening: { label: "Listening", dot: "bg-emerald-400", pulse: false },
-  thinking: { label: "Thinking…", dot: "bg-amber-400", pulse: true },
-  speaking: { label: "Speaking", dot: "bg-stable-cyan", pulse: false },
+const STATE_META: Record<string, { label: string; chip: string }> = {
+  initializing: {
+    label: "Connecting…",
+    chip: "border-slate-500/30 bg-slate-500/10 text-slate-300 animate-pulse-soft",
+  },
+  listening: {
+    label: "Listening",
+    chip: "border-stable-mint/30 bg-stable-mint/10 text-stable-mint",
+  },
+  thinking: {
+    label: "Thinking…",
+    chip: "border-amber-300/30 bg-amber-300/10 text-amber-300 animate-pulse-soft",
+  },
+  // Speaking is tinted with the agent's identity hue inline at render time.
+  speaking: {
+    label: "Speaking",
+    chip: "border-stable-cyan/30 bg-stable-cyan/10 text-stable-cyan",
+  },
 };
 
 function findAgent(parts: RemoteParticipant[]): RemoteParticipant | null {
@@ -80,32 +92,78 @@ export function VoiceAgentStatus() {
 
   const meta = STATE_META[state] ?? {
     label: isConnected ? "Connected" : "Connecting…",
-    dot: "bg-slate-400",
-    pulse: !isConnected,
+    chip: clsx(
+      "border-slate-500/30 bg-slate-500/10 text-slate-300",
+      !isConnected && "animate-pulse-soft",
+    ),
   };
+  const speaking = state === "speaking";
+
+  // The orb wears the agent's identity hue; neutral slate until one arrives.
+  const ident = agent
+    ? identityFor(agent.identity.replace(/^agent-/, ""), agent.name)
+    : null;
+  const orbGradient =
+    ident?.gradient ?? "linear-gradient(135deg, #626280, #434360)";
+  const orbRing = ident?.ring ?? "rgba(98, 98, 128, 0.45)";
+  const agentLabel = agent
+    ? agent.name || agent.identity.replace(/^agent-/, "")
+    : null;
 
   // Idle 1.0 → up to ~1.7 with voice; clamp so a loud burst doesn't overflow.
   const scale = 1 + Math.min(level * 3, 0.7);
 
   return (
-    <div className="flex shrink-0 items-center justify-center gap-2.5 border-b border-slate-700/40 bg-slate-900/40 px-4 py-2">
-      <div className="relative grid h-9 w-9 place-items-center">
+    <div className="flex shrink-0 items-center justify-center gap-2.5 border-b border-line bg-surface-1/60 px-4 py-2 backdrop-blur-md">
+      <div className="relative grid h-10 w-10 place-items-center">
         {/* Halo that swells with the voice */}
         <div
-          className={`absolute h-9 w-9 rounded-full ${meta.dot} opacity-25`}
+          className="absolute h-9 w-9 rounded-full opacity-35"
           style={{
+            background: `radial-gradient(circle, ${orbRing} 0%, transparent 70%)`,
             transform: `scale(${scale})`,
             transition: "transform 80ms linear",
           }}
         />
-        {/* Core orb */}
+        {/* Identity ring */}
         <div
-          className={`h-4 w-4 rounded-full ${meta.dot} ${
-            meta.pulse ? "animate-pulse" : ""
-          }`}
+          className="absolute h-7 w-7 rounded-full border-2"
+          style={{ borderColor: orbRing }}
+        />
+        {/* Core sphere */}
+        <div
+          className={clsx("h-4 w-4 rounded-full", speaking && "animate-breathe")}
+          style={{
+            background: orbGradient,
+            boxShadow: `0 0 10px ${orbRing}`,
+          }}
         />
       </div>
-      <span className="text-xs font-medium text-slate-300">{meta.label}</span>
+      {agentLabel && (
+        <span
+          className="max-w-[14ch] truncate text-xs font-semibold"
+          style={ident ? { color: ident.text } : undefined}
+        >
+          {agentLabel}
+        </span>
+      )}
+      <span
+        className={clsx(
+          "rounded-full border px-2 py-0.5 text-[11px] font-medium",
+          speaking && ident ? "animate-breathe" : meta.chip,
+        )}
+        style={
+          speaking && ident
+            ? {
+                background: ident.soft,
+                color: ident.text,
+                borderColor: ident.border,
+              }
+            : undefined
+        }
+      >
+        {meta.label}
+      </span>
     </div>
   );
 }

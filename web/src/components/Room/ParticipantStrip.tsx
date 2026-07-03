@@ -14,6 +14,7 @@ import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { api, type RoomMember, type ApiError } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
+import { identityFor } from "@/lib/identity";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -26,7 +27,7 @@ function OnlineIndicator({ online }: { online: boolean }) {
     <span
       className={clsx(
         "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900",
-        online ? "bg-green-500" : "bg-slate-600",
+        online ? "bg-stable-mint animate-live" : "bg-slate-600",
       )}
       aria-label={online ? "Online" : "Offline"}
     />
@@ -37,7 +38,7 @@ function RoleBadge({ role }: { role: RoomMember["role"] }) {
   if (role === "owner") {
     return (
       <span title="Owner">
-        <Crown className="h-3 w-3 text-yellow-500" />
+        <Crown className="h-3 w-3 text-stable-gold" />
       </span>
     );
   }
@@ -130,7 +131,7 @@ function MemberMenu({
     <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-700/60 hover:text-slate-200 focus:opacity-100 group-hover:opacity-100"
+        className="rounded-md p-1 text-slate-500 opacity-0 transition-opacity hover:bg-white/[0.08] hover:text-slate-100 focus-ring focus:opacity-100 group-hover:opacity-100"
         aria-label={`Manage ${member.display_name}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -141,29 +142,29 @@ function MemberMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 z-40 mt-1 w-44 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900/95 p-1 text-xs shadow-xl backdrop-blur"
+          className="glass-heavy absolute right-0 z-40 mt-1 w-44 overflow-hidden rounded-xl p-1 text-xs shadow-pop animate-fade-in"
         >
           <button
             role="menuitem"
             onClick={toggleMute}
             disabled={busy}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring disabled:opacity-50"
           >
             {member.is_muted ? (
               <>
-                <Mic className="h-3.5 w-3.5 text-green-400" /> Unmute
+                <Mic className="h-3.5 w-3.5 text-emerald-400" /> Unmute
               </>
             ) : (
               <>
-                <MicOff className="h-3.5 w-3.5 text-amber-400" /> Mute
+                <MicOff className="h-3.5 w-3.5 text-amber-300" /> Mute
               </>
             )}
           </button>
 
           {isOwner && roleChoices.length > 0 && (
             <>
-              <div className="my-1 border-t border-slate-700/50" />
-              <p className="px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+              <div className="my-1 border-t border-line" />
+              <p className="px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                 Set role
               </p>
               {roleChoices.map((r) => (
@@ -172,10 +173,10 @@ function MemberMenu({
                   role="menuitem"
                   onClick={() => changeRole(r)}
                   disabled={busy}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left capitalize text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left capitalize text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring disabled:opacity-50"
                 >
                   {r === "owner" ? (
-                    <Crown className="h-3.5 w-3.5 text-yellow-500" />
+                    <Crown className="h-3.5 w-3.5 text-stable-gold" />
                   ) : r === "admin" ? (
                     <Shield className="h-3.5 w-3.5 text-stable-purple-light" />
                   ) : (
@@ -187,12 +188,12 @@ function MemberMenu({
             </>
           )}
 
-          <div className="my-1 border-t border-slate-700/50" />
+          <div className="my-1 border-t border-line" />
           <button
             role="menuitem"
             onClick={remove}
             disabled={busy}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-red-400 hover:bg-red-500/15 disabled:opacity-50"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-rose-400 transition-colors hover:bg-rose-500/15 focus-ring disabled:opacity-50"
           >
             <UserMinus className="h-3.5 w-3.5" /> Remove from channel
           </button>
@@ -216,7 +217,7 @@ function HumanMemberRow({
   return (
     <li
       className={clsx(
-        "group flex items-center gap-2.5 rounded-lg px-2 py-1.5",
+        "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.04]",
         online ? "text-slate-200" : "text-slate-500",
       )}
     >
@@ -232,7 +233,7 @@ function HumanMemberRow({
       </span>
       {member.is_muted && (
         <span title="Muted — can't post">
-          <MicOff className="h-3 w-3 shrink-0 text-amber-400" />
+          <MicOff className="h-3 w-3 shrink-0 text-rose-400/70" />
         </span>
       )}
       <RoleBadge role={member.role} />
@@ -284,61 +285,99 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
     }
   }
 
+  // Purely presentational: the residents currently "in the room" (agents are
+  // always live once invited), clustered as overlapping avatars up top.
+  const presentMembers = [...agentMembers, ...onlineHumans];
+
   return (
     <aside
       className="flex h-full w-full md:w-60 flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
       aria-label="Room participants"
     >
+      {presentMembers.length > 0 && (
+        <div className="mb-4 flex items-center gap-2.5 px-1">
+          <div className="flex -space-x-1.5">
+            {presentMembers.slice(0, 5).map((m) => (
+              <Avatar
+                key={m.participant_id || m.user_id || m.id || m.username}
+                name={m.display_name}
+                src={m.avatar_url}
+                size="xs"
+                isAgent={m.participant_type === "agent"}
+                className="ring-2 ring-slate-900"
+              />
+            ))}
+            {presentMembers.length > 5 && (
+              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-surface-3 text-[9px] font-semibold text-slate-300 ring-2 ring-slate-900 tabular-nums">
+                +{presentMembers.length - 5}
+              </span>
+            )}
+          </div>
+          <span className="min-w-0 truncate text-[10px] font-medium text-slate-500 tabular-nums">
+            {presentMembers.length} here now
+          </span>
+        </div>
+      )}
+
       {agentMembers.length > 0 && (
         <section className="mb-4">
-          <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             Agents ({agentMembers.length})
           </h3>
           <ul role="list" className="flex flex-col gap-1">
-            {agentMembers.map((m) => (
-              <li
-                key={m.id || m.participant_id || m.username}
-                className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 hover:bg-slate-800/60"
-              >
-                <div className="relative shrink-0">
-                  <Avatar
-                    name={m.display_name}
-                    src={m.avatar_url}
-                    size="sm"
-                    isAgent
-                  />
-                  <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-green-500" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium">
-                    {m.display_name}
-                  </p>
-                  <p className="truncate text-[10px] text-slate-500">
-                    @{(m.username ?? "").replace(/^agent-/, "")}
-                  </p>
-                </div>
-                <button
-                  onClick={() => removeAgent(m)}
-                  className="hidden shrink-0 rounded p-1 text-slate-500 hover:bg-red-500/20 hover:text-red-400 group-hover:block"
-                  aria-label={`Remove ${m.display_name}`}
-                  title="Remove from channel"
+            {agentMembers.map((m) => {
+              const ident = identityFor(
+                m.participant_id || m.user_id || m.username,
+                m.display_name,
+              );
+              return (
+                <li
+                  key={m.id || m.participant_id || m.username}
+                  className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 transition-colors hover:bg-white/[0.04]"
                 >
-                  <X className="h-3 w-3" />
-                </button>
-                {/* Mic icon retained as visual marker for future stage feature */}
-                <Mic className="hidden h-3 w-3 shrink-0 text-stable-cyan" />
-              </li>
-            ))}
+                  <div className="relative shrink-0">
+                    <Avatar
+                      name={m.display_name}
+                      src={m.avatar_url}
+                      size="sm"
+                      isAgent
+                    />
+                    <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className="truncate text-xs font-semibold"
+                      style={{ color: ident.text }}
+                    >
+                      {m.display_name}
+                    </p>
+                    <p className="truncate text-[10px] text-slate-500">
+                      @{(m.username ?? "").replace(/^agent-/, "")}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => removeAgent(m)}
+                    className="hidden shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 focus-ring group-hover:block"
+                    aria-label={`Remove ${m.display_name}`}
+                    title="Remove from channel"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                  {/* Mic icon retained as visual marker for future stage feature */}
+                  <Mic className="hidden h-3 w-3 shrink-0 text-stable-cyan" />
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
 
       <section className="mb-4">
-        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
           Online ({onlineHumans.length})
         </h3>
         {onlineHumans.length === 0 ? (
-          <p className="px-2 text-xs text-slate-600">No one online</p>
+          <p className="px-2 text-xs italic text-slate-600">No one online</p>
         ) : (
           <ul role="list" className="flex flex-col gap-1">
             {onlineHumans.map((member) => (
@@ -356,7 +395,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
 
       {offlineHumans.length > 0 && (
         <section>
-          <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             Offline ({offlineHumans.length})
           </h3>
           <ul role="list" className="flex flex-col gap-1">

@@ -48,7 +48,7 @@ export function CallViewSwitcher({
       role="group"
       aria-label="Call view controls"
     >
-      <div className="flex items-center gap-0.5 rounded-lg bg-slate-800/60 p-0.5">
+      <div className="flex items-center gap-0.5 rounded-lg border border-line bg-surface-2/80 p-0.5">
         {MODES.map(({ mode, label, icon: Icon }) => {
           const active = viewMode === mode;
           return (
@@ -56,10 +56,10 @@ export function CallViewSwitcher({
               key={mode}
               onClick={() => setViewMode(roomId, mode)}
               className={clsx(
-                "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+                "focus-ring flex h-7 w-7 items-center justify-center rounded-md transition-colors",
                 active
-                  ? "bg-stable-purple/30 text-stable-purple-light"
-                  : "text-slate-400 hover:bg-slate-700/60 hover:text-slate-200",
+                  ? "bg-stable-purple/25 text-stable-purple-light shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                  : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
               )}
               aria-label={label}
               aria-pressed={active}
@@ -76,10 +76,10 @@ export function CallViewSwitcher({
           <button
             onClick={() => toggleVideo()}
             className={clsx(
-              "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              "focus-ring flex h-7 w-7 items-center justify-center rounded-md transition-colors",
               showVideo
-                ? "text-slate-200 hover:bg-slate-700/60"
-                : "text-slate-500 hover:bg-slate-700/60 hover:text-slate-300",
+                ? "text-slate-200 hover:bg-white/[0.06]"
+                : "text-slate-500 hover:bg-white/[0.06] hover:text-slate-300",
             )}
             aria-label={showVideo ? "Hide video" : "Show video"}
             aria-pressed={showVideo}
@@ -94,10 +94,10 @@ export function CallViewSwitcher({
           <button
             onClick={() => toggleTranscript()}
             className={clsx(
-              "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              "focus-ring flex h-7 w-7 items-center justify-center rounded-md transition-colors",
               showTranscript
-                ? "bg-stable-cyan/20 text-stable-cyan"
-                : "text-slate-400 hover:bg-slate-700/60 hover:text-slate-200",
+                ? "bg-stable-cyan/15 text-stable-cyan"
+                : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
             )}
             aria-label={showTranscript ? "Hide transcript" : "Show transcript"}
             aria-pressed={showTranscript}

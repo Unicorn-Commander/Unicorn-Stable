@@ -25,6 +25,7 @@ import { api, type ApiError, type Message, type ProjectOpsProject } from "@/serv
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { Avatar } from "@/components/Avatar";
+import { identityFor } from "@/lib/identity";
 
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -58,13 +59,13 @@ function artifactMeta(message: Message): { artifactId: string; artifactTitle: st
 
 function defaultTaskTitle(content: string) {
   const compact = content.replace(/\s+/g, " ").trim();
-  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact || "Command Center message follow-up";
+  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact || "Stable message follow-up";
 }
 
 function buildDescriptionPreview(message: Message, note: string) {
   const content =
     message.content.length > 2048
-      ? `${message.content.slice(0, 2048).trimEnd()}\n\n[Command Center message truncated at 2048 characters]`
+      ? `${message.content.slice(0, 2048).trimEnd()}\n\n[Stable message truncated at 2048 characters]`
       : message.content;
   const permalink = `${window.location.origin}/c/${message.room_id}?message=${message.id}`;
   const parts = [];
@@ -72,7 +73,7 @@ function buildDescriptionPreview(message: Message, note: string) {
     parts.push(note.trim(), "");
   }
   parts.push(
-    "Command Center source message",
+    "Stable source message",
     `Permalink: ${permalink}`,
     `Sender: ${message.sender_name}`,
     `Timestamp: ${message.created_at}`,
@@ -137,27 +138,32 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
     }
   }
   return (
-    <div className="group/code relative my-1">
-      {/* Hover "Copy" — standard in OpenWebUI/Discord/Slack. The lang chip
-          doubles as a label when present. */}
-      <button
-        onClick={copy}
-        className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-slate-800/90 px-1.5 py-1 text-[10px] font-medium text-slate-300 opacity-0 ring-1 ring-slate-700/60 transition-opacity hover:bg-slate-700 hover:text-slate-100 focus:opacity-100 group-hover/code:opacity-100"
-        aria-label="Copy code"
-      >
-        {copied ? (
-          <>
-            <Check className="h-3 w-3 text-green-400" />
-            Copied
-          </>
-        ) : (
-          <>
-            <CopyIcon className="h-3 w-3" />
-            {lang || "Copy"}
-          </>
-        )}
-      </button>
-      <pre className="overflow-x-auto rounded-lg bg-slate-950/80 p-3 text-xs">
+    <div className="group/code relative my-2 overflow-hidden rounded-xl border border-line bg-slate-950/80">
+      {/* Header bar: language label + hover "Copy" — standard in
+          OpenWebUI/Discord/Slack. */}
+      <div className="flex items-center justify-between gap-2 border-b border-line bg-white/[0.03] px-3 py-1.5">
+        <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-slate-500">
+          {lang || "code"}
+        </span>
+        <button
+          onClick={copy}
+          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-slate-400 opacity-0 transition hover:bg-white/[0.06] hover:text-slate-100 focus:opacity-100 focus-ring group-hover/code:opacity-100"
+          aria-label="Copy code"
+        >
+          {copied ? (
+            <>
+              <Check className="h-3 w-3 text-emerald-400" />
+              Copied
+            </>
+          ) : (
+            <>
+              <CopyIcon className="h-3 w-3" />
+              Copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
         {html ? (
           <code
             className={`hljs ${lang ? `language-${lang}` : ""} text-slate-200`}
@@ -177,14 +183,14 @@ function QuickReact({ messageId }: { messageId: string }) {
     <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+        className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
         aria-label="Add reaction"
       >
         <Smile className="h-3.5 w-3.5" />
       </button>
       {open && (
         <div
-          className="absolute bottom-full right-0 mb-1 flex gap-0.5 rounded-lg border border-slate-700/60 bg-slate-900 p-1 shadow-xl"
+          className="glass-heavy absolute bottom-full right-0 mb-1 flex gap-0.5 rounded-xl p-1 shadow-pop"
           onMouseLeave={() => setOpen(false)}
         >
           {QUICK_EMOJI.map((e) => (
@@ -198,7 +204,7 @@ function QuickReact({ messageId }: { messageId: string }) {
                   console.error("react failed", err);
                 }
               }}
-              className="rounded px-1 py-0.5 text-base hover:bg-slate-800"
+              className="rounded-md px-1 py-0.5 text-base transition-colors hover:bg-white/[0.08] focus-ring"
             >
               {e}
             </button>
@@ -228,8 +234,8 @@ function ToolFooter({ rawHtml }: { rawHtml: string }) {
     .filter(Boolean);
   if (items.length === 0) return null;
   return (
-    <details className="mt-2 rounded-md border border-slate-700/60 bg-slate-950/40 p-2 text-xs">
-      <summary className="cursor-pointer text-slate-400 hover:text-slate-200">
+    <details className="mt-2 rounded-lg border border-line bg-slate-950/40 p-2 text-xs">
+      <summary className="focus-ring cursor-pointer select-none rounded text-slate-400 transition-colors hover:text-slate-200">
         🔧 Tools used ({items.length})
       </summary>
       <ul className="mt-2 flex flex-col gap-1 pl-2 text-slate-300">
@@ -261,7 +267,7 @@ function PollCard({
     0,
   );
   return (
-    <div className="my-2 max-w-md rounded-lg border border-stable-purple/30 bg-stable-purple/5 p-3">
+    <div className="my-2 max-w-md rounded-xl border border-stable-purple/25 bg-stable-purple/[0.06] p-3">
       <p className="mb-2 text-sm font-medium text-slate-100">{poll.question}</p>
       <ul className="flex flex-col gap-1.5">
         {poll.options.map((opt, i) => {
@@ -274,10 +280,10 @@ function PollCard({
               <button
                 onClick={() => api.toggleReaction(messageId, emoji).catch(() => {})}
                 className={clsx(
-                  "relative flex w-full items-center gap-2 overflow-hidden rounded-md border px-2 py-1.5 text-left text-xs transition-colors",
+                  "relative flex w-full items-center gap-2 overflow-hidden rounded-lg border px-2 py-1.5 text-left text-xs transition-colors focus-ring",
                   mine
-                    ? "border-stable-purple bg-stable-purple/20 text-slate-100"
-                    : "border-slate-700 text-slate-300 hover:bg-slate-800/60",
+                    ? "border-stable-purple/60 bg-stable-purple/15 text-slate-100"
+                    : "border-line text-slate-300 hover:border-line-strong hover:bg-white/[0.04]",
                 )}
               >
                 <span
@@ -319,10 +325,10 @@ function ReactionRow({
             key={emoji}
             onClick={() => api.toggleReaction(messageId, emoji).catch(() => {})}
             className={clsx(
-              "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors",
+              "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors focus-ring",
               mine
-                ? "border-stable-purple/60 bg-stable-purple/20 text-stable-purple-light"
-                : "border-slate-700 bg-slate-800/50 text-slate-300 hover:bg-slate-800",
+                ? "border-stable-purple/40 bg-stable-purple/15 text-stable-purple-light"
+                : "border-line bg-white/[0.05] text-slate-300 hover:border-line-strong hover:bg-white/[0.08]",
             )}
             aria-label={`${emoji} ${users.length}`}
           >
@@ -402,17 +408,19 @@ function PromoteToProjectOpsModal({
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-xl rounded-lg border border-slate-700/70 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <BriefcaseBusiness className="h-4 w-4 text-stable-purple-light" />
-            <h2 className="text-sm font-semibold text-slate-100">
+      <div className="glass-heavy w-full max-w-xl overflow-hidden rounded-2xl shadow-pop animate-slide-up">
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <span className="gradient-bg grid h-7 w-7 shrink-0 place-items-center rounded-lg">
+              <BriefcaseBusiness className="h-3.5 w-3.5 text-white" />
+            </span>
+            <h2 className="font-display text-sm font-semibold text-slate-100">
               Promote to Project Ops task
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-md p-1 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 focus-ring"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -426,7 +434,7 @@ function PromoteToProjectOpsModal({
               value={projectNumber}
               onChange={(e) => setProjectNumber(e.target.value)}
               disabled={loadingProjects}
-              className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 outline-none focus:border-stable-purple"
+              className="rounded-xl border border-line bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             >
               {loadingProjects && <option>Loading projects...</option>}
               {!loadingProjects && projects.length === 0 && <option>No projects found</option>}
@@ -443,7 +451,7 @@ function PromoteToProjectOpsModal({
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 outline-none focus:border-stable-purple"
+              className="rounded-xl border border-line bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           </label>
 
@@ -452,7 +460,7 @@ function PromoteToProjectOpsModal({
             <select
               value={priority}
               onChange={(e) => setPriority(e.target.value as ProjectOpsPriority)}
-              className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 outline-none focus:border-stable-purple"
+              className="rounded-xl border border-line bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             >
               {PO_PRIORITIES.map((p) => (
                 <option key={p} value={p}>
@@ -468,35 +476,35 @@ function PromoteToProjectOpsModal({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
-              className="resize-none rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 outline-none focus:border-stable-purple"
+              className="resize-none rounded-xl border border-line bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           </label>
 
           <label className="grid gap-1 text-xs font-medium text-slate-400">
             Description preview
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-950 p-2.5 text-xs font-normal text-slate-300">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-slate-950/60 p-3 text-xs font-normal leading-relaxed text-slate-300">
               {preview}
             </pre>
           </label>
 
           {error && (
-            <p className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
               {error}
             </p>
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-800 px-4 py-3">
+        <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
           <button
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            className="rounded-xl border border-line bg-surface-2 px-3.5 py-1.5 text-sm text-slate-300 transition hover:border-line-strong hover:bg-surface-3 focus-ring"
           >
             Cancel
           </button>
           <button
             onClick={submit}
             disabled={!projectNumber || submitting}
-            className="rounded-md bg-stable-purple px-3 py-1.5 text-sm font-medium text-white hover:bg-stable-purple-light disabled:cursor-not-allowed disabled:opacity-50"
+            className="gradient-bg rounded-xl px-4 py-1.5 text-sm font-semibold text-white shadow-glow-iris transition hover:opacity-95 active:scale-[0.98] focus-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? "Creating..." : "Create task"}
           </button>
@@ -629,7 +637,7 @@ export function MessageBubble({
         <time
           dateTime={message.created_at}
           title={full}
-          className="text-[10px] text-slate-600"
+          className="text-[11px] text-slate-500 tabular-nums"
         >
           {relative}
         </time>
@@ -642,7 +650,7 @@ export function MessageBubble({
   if (message.sender_type === "system") {
     return (
       <div className="flex justify-center py-2">
-        <p className="rounded-full bg-slate-800/60 px-4 py-1 text-xs text-slate-500">
+        <p className="rounded-full border border-line bg-white/[0.04] px-4 py-1 text-xs text-slate-400">
           {message.content}
         </p>
       </div>
@@ -650,11 +658,17 @@ export function MessageBubble({
   }
 
   const isAgent = message.sender_type === "agent";
+  // Identity hue for this resident — drives the sender name, AI chip, and the
+  // tinted agent-reply card.
+  const ident = identityFor(message.sender_id, message.sender_name);
   // An agent reply that is still being produced. Driven purely by the ws
   // streaming flag (set on the placeholder, cleared on finalize) — NOT the "…"
   // content, so a persisted/crashed placeholder can never strand a Stop pill on
   // a message with no live responder behind it.
   const isGenerating = isAgent && message.streaming === true;
+  // Placeholder-only content (dots/ellipsis while the agent spins up) — the
+  // shimmer goes on this, never on real streamed tokens.
+  const isPlaceholder = isGenerating && /^[\s.…]*$/.test(message.content);
 
   if (message.content_type === "action") {
     const decision = (
@@ -665,13 +679,14 @@ export function MessageBubble({
     )?.decided_by_name;
     return (
       <div className="my-2 flex justify-center px-4">
-        <div className="glass max-w-md rounded-xl p-4">
+        <div className="glass-heavy max-w-md rounded-2xl p-4 shadow-pop">
           <div className="mb-3 flex items-start gap-2">
             <Avatar
               name={message.sender_name}
               src={message.sender_avatar}
               size="sm"
               isAgent={isAgent}
+              id={message.sender_id}
             />
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold text-slate-200">
@@ -687,8 +702,8 @@ export function MessageBubble({
               className={clsx(
                 "rounded-md px-3 py-1.5 text-xs font-medium",
                 decision === "approved"
-                  ? "bg-green-500/15 text-green-300"
-                  : "bg-red-500/15 text-red-300",
+                  ? "bg-emerald-500/15 text-emerald-300"
+                  : "bg-rose-500/15 text-rose-300",
               )}
             >
               {decision === "approved" ? "✓ Approved" : "✗ Rejected"}
@@ -702,7 +717,7 @@ export function MessageBubble({
                     .decideAction(message.id, "approved")
                     .catch((e) => alert("Approve failed: " + (e as Error).message))
                 }
-                className="flex-1 rounded-lg bg-green-500/20 py-1.5 text-xs font-medium text-green-400 transition-colors hover:bg-green-500/30"
+                className="flex-1 rounded-lg bg-emerald-500/15 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 focus-ring"
               >
                 Approve
               </button>
@@ -712,7 +727,7 @@ export function MessageBubble({
                     .decideAction(message.id, "rejected")
                     .catch((e) => alert("Reject failed: " + (e as Error).message))
                 }
-                className="flex-1 rounded-lg bg-red-500/20 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/30"
+                className="flex-1 rounded-lg bg-rose-500/15 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 focus-ring"
               >
                 Reject
               </button>
@@ -816,7 +831,7 @@ export function MessageBubble({
         out.push(
           <blockquote
             key={key++}
-            className="my-1 border-l-2 border-stable-purple/50 pl-2 text-slate-400"
+            className="my-1 border-l-2 border-stable-purple/40 pl-3 text-slate-400"
           >
             {buf.map((b, bi) => (
               <span key={bi}>
@@ -940,7 +955,7 @@ export function MessageBubble({
             href={el.content}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-stable-cyan underline decoration-stable-cyan/30 hover:text-stable-cyan-light"
+            className="text-stable-cyan underline decoration-stable-cyan/40 transition-colors hover:text-stable-cyan-light hover:decoration-stable-cyan"
           >
             {el.content}
           </a>,
@@ -949,7 +964,7 @@ export function MessageBubble({
         result.push(
           <code
             key={`c-${i}`}
-            className="rounded bg-slate-800 px-1 py-0.5 text-xs text-pink-400"
+            className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[13px] text-stable-cyan-light"
           >
             {el.content}
           </code>,
@@ -996,10 +1011,12 @@ export function MessageBubble({
   return (
     <div
       className={clsx(
-        "group relative flex gap-3 rounded-lg px-2 py-1 transition-colors",
-        hovered && "bg-slate-800/30",
+        "group relative flex gap-3 rounded-xl px-2 py-1 transition-colors",
+        // Group rhythm: heads of a sender-group breathe, continuations tighten.
+        showAvatar && "mt-2",
+        hovered && "bg-white/[0.03]",
         !showAvatar && "pl-12",
-        failed && "border-l-2 border-red-500/70 bg-red-500/5",
+        failed && "border-l-2 border-rose-500/70 bg-rose-500/5",
       )}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -1017,23 +1034,42 @@ export function MessageBubble({
             src={message.sender_avatar}
             size="md"
             isAgent={isAgent}
+            id={message.sender_id}
           />
         </div>
       )}
 
       <div className="min-w-0 flex-1">
+        {/* Agent turns read as tinted identity cards (recipe 4.2); human turns
+            stay unboxed — the asymmetry is deliberate. */}
+        <div
+          className={clsx(isAgent && "relative rounded-xl border px-3.5 py-2.5")}
+          style={
+            isAgent
+              ? { background: ident.faint, borderColor: ident.border }
+              : undefined
+          }
+        >
+        {isAgent && (
+          <span
+            aria-hidden="true"
+            className="absolute bottom-2 left-0 top-2 w-[3px] rounded-full"
+            style={{ background: ident.color }}
+          />
+        )}
         {showAvatar && (
-          <div className="mb-0.5 flex items-center gap-2">
+          <div className="mb-1 flex items-center gap-2">
             <span
-              className={clsx(
-                "text-sm font-semibold",
-                isAgent ? "text-stable-cyan" : "text-slate-100",
-              )}
+              className="text-sm font-semibold"
+              style={{ color: ident.text }}
             >
               {message.sender_name}
             </span>
             {isAgent && (
-              <span className="rounded bg-stable-cyan/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-cyan">
+              <span
+                className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                style={{ background: ident.soft, color: ident.text }}
+              >
                 AI
               </span>
             )}
@@ -1043,7 +1079,7 @@ export function MessageBubble({
                 href={promoted.task_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20"
+                className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 focus-ring"
                 title="Open Project Ops task"
               >
                 <BriefcaseBusiness className="h-3 w-3" />
@@ -1056,7 +1092,7 @@ export function MessageBubble({
                 onClick={() =>
                   void useCanvasStore.getState().openArtifactById(artifact.artifactId)
                 }
-                className="inline-flex items-center gap-1 rounded bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light hover:bg-stable-purple/20"
+                className="inline-flex items-center gap-1 rounded-md bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light transition-colors hover:bg-stable-purple/20 focus-ring"
                 title={artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
               >
                 <LayoutPanelLeft className="h-3 w-3" />
@@ -1073,12 +1109,12 @@ export function MessageBubble({
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
               onKeyDown={handleEditKeyDown}
-              className="min-h-[2.5rem] resize-none rounded-lg bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none ring-1 ring-stable-purple/50"
+              className="min-h-[2.5rem] resize-none rounded-xl border border-line bg-slate-950/60 px-3.5 py-2.5 text-sm text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
               rows={2}
             />
-            <div className="flex items-center gap-1 text-xs text-slate-500">
+            <div className="flex items-center gap-1 text-[11px] text-slate-500">
               <span>Escape to cancel</span>
-              <span className="mx-1">|</span>
+              <span className="mx-1 text-slate-600">·</span>
               <span>Enter to save</span>
               <div className="ml-auto flex gap-1">
                 <button
@@ -1086,14 +1122,14 @@ export function MessageBubble({
                     setEditing(false);
                     setEditContent(message.content);
                   }}
-                  className="rounded p-1 text-slate-400 hover:text-slate-200"
+                  className="rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 focus-ring"
                   aria-label="Cancel edit"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
                 <button
                   onClick={handleEditSubmit}
-                  className="rounded p-1 text-green-400 hover:text-green-300"
+                  className="rounded-md p-1 text-emerald-400 transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 focus-ring"
                   aria-label="Save edit"
                 >
                   <Check className="h-3.5 w-3.5" />
@@ -1104,10 +1140,11 @@ export function MessageBubble({
         ) : (
           <div
             className={clsx(
-              "whitespace-pre-wrap break-words text-sm",
+              "whitespace-pre-wrap break-words text-sm leading-relaxed",
               isAgent
                 ? "text-slate-200"
                 : "text-slate-300",
+              isPlaceholder && "animate-shimmer",
             )}
           >
             {(() => {
@@ -1122,14 +1159,14 @@ export function MessageBubble({
               );
             })()}
             {message.edited && (
-              <span className="ml-1 text-[10px] text-slate-600">(edited)</span>
+              <span className="ml-1.5 text-[10px] text-slate-500">(edited)</span>
             )}
             {promoted && !showAvatar && (
               <a
                 href={promoted.task_url}
                 target="_blank"
                 rel="noreferrer"
-                className="ml-2 inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20"
+                className="ml-2 inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 focus-ring"
                 title="Open Project Ops task"
               >
                 <BriefcaseBusiness className="h-3 w-3" />
@@ -1142,7 +1179,7 @@ export function MessageBubble({
                 onClick={() =>
                   void useCanvasStore.getState().openArtifactById(artifact.artifactId)
                 }
-                className="ml-2 inline-flex items-center gap-1 rounded bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light hover:bg-stable-purple/20"
+                className="ml-2 inline-flex items-center gap-1 rounded-md bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light transition-colors hover:bg-stable-purple/20 focus-ring"
                 title={artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
               >
                 <LayoutPanelLeft className="h-3 w-3" />
@@ -1168,7 +1205,7 @@ export function MessageBubble({
                       href={a.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="block max-w-xs overflow-hidden rounded-lg border border-slate-700/60"
+                      className="focus-ring block max-w-xs overflow-hidden rounded-xl border border-line transition-colors hover:border-line-strong"
                     >
                       <img
                         src={a.url}
@@ -1182,7 +1219,7 @@ export function MessageBubble({
                       href={a.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="flex items-center gap-2 rounded-md border border-slate-700/60 bg-slate-800/50 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+                      className="focus-ring flex items-center gap-2 rounded-lg border border-line bg-white/[0.04] px-2.5 py-1.5 text-xs text-slate-200 transition-colors hover:border-line-strong hover:bg-white/[0.06]"
                     >
                       📎 <span className="truncate max-w-[20ch]">{a.filename}</span>
                       <span className="text-slate-500">
@@ -1213,20 +1250,21 @@ export function MessageBubble({
         {message.reply_count > 0 && !editing && (
           <button
             onClick={() => onReply(message.id)}
-            className="mt-1 flex items-center gap-1 text-xs text-stable-purple-light transition-colors hover:text-stable-purple"
+            className="mt-1.5 flex items-center gap-1 rounded-md text-xs font-medium text-stable-purple-light transition-colors hover:text-stable-purple focus-ring"
           >
             <CornerDownRight className="h-3 w-3" />
             {message.reply_count} {message.reply_count === 1 ? "reply" : "replies"}
           </button>
         )}
+        </div>
       </div>
 
       {hovered && !editing && (
-        <div className="absolute -top-3 right-2 z-10 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-lg border border-slate-700/50 bg-slate-800 p-0.5 shadow-lg animate-fade-in md:max-w-none md:flex-nowrap">
+        <div className="glass-heavy absolute -top-3 right-2 z-10 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-lg p-1 shadow-pop animate-fade-in md:max-w-none md:flex-nowrap">
           <QuickReact messageId={message.id} />
           <button
             onClick={() => onReply(message.id)}
-            className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Reply in thread"
           >
             <MessageSquare className="h-3.5 w-3.5" />
@@ -1236,7 +1274,7 @@ export function MessageBubble({
               const quote = `> **${message.sender_name}:** ${message.content}\n\n`;
               useAppStore.getState().requestInsert(message.room_id, quote);
             }}
-            className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Quote reply"
             title="Quote and reply"
           >
@@ -1244,7 +1282,7 @@ export function MessageBubble({
           </button>
           <button
             onClick={() => api.toggleSave(message.id).catch(() => {})}
-            className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Save message"
             title="Save to your bookmarks"
           >
@@ -1252,7 +1290,7 @@ export function MessageBubble({
           </button>
           <button
             onClick={() => setPromoteOpen(true)}
-            className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Promote to Project Ops task"
             title="Promote to Project Ops task"
           >
@@ -1262,7 +1300,7 @@ export function MessageBubble({
             onClick={() =>
               api.togglePin(message.room_id, message.id).catch(() => {})
             }
-            className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Pin / unpin message"
             title="Pin or unpin"
           >
@@ -1285,7 +1323,7 @@ export function MessageBubble({
                   })
                   .finally(() => setRegenerating(false));
               }}
-              className="rounded p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/20 hover:text-stable-purple-light disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/15 hover:text-stable-purple-light focus-ring disabled:cursor-not-allowed disabled:opacity-50"
               aria-label="Regenerate reply"
               title="Regenerate this reply"
             >
@@ -1301,7 +1339,7 @@ export function MessageBubble({
                   setEditing(true);
                   setEditContent(message.content);
                 }}
-                className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
                 aria-label="Edit message"
               >
                 <Pencil className="h-3.5 w-3.5" />
@@ -1314,7 +1352,7 @@ export function MessageBubble({
                     void onDelete(message.id);
                   }
                 }}
-                className="rounded p-1.5 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
+                className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-500/15 hover:text-rose-300 focus-ring"
                 aria-label="Delete message"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -1331,7 +1369,7 @@ export function MessageBubble({
               e.stopPropagation();
               void api.stopGenerating(message.id).catch(() => {});
             }}
-            className="flex items-center gap-1 rounded-full border border-slate-600/70 bg-slate-800/95 px-2 py-0.5 text-[11px] font-medium text-slate-300 shadow-lg backdrop-blur-sm transition-colors hover:border-red-500/50 hover:text-red-300"
+            className="glass flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium text-rose-300 shadow-pop transition-colors hover:border-rose-400/50 hover:text-rose-200 focus-ring"
             aria-label="Stop generating"
             title="Stop generating"
           >
@@ -1343,7 +1381,7 @@ export function MessageBubble({
 
       {failed && onRetry && (
         <div
-          className="absolute -right-2 top-1 flex items-center gap-1 rounded-md border border-red-500/50 bg-red-500/15 px-1.5 py-0.5 text-xs text-red-300"
+          className="absolute -right-2 top-1 flex items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/15 px-1.5 py-0.5 text-xs text-rose-300"
           title={failedError || "Send failed"}
         >
           <AlertTriangle className="h-3 w-3" />
@@ -1352,7 +1390,7 @@ export function MessageBubble({
               e.stopPropagation();
               void onRetry(message.id);
             }}
-            className="flex items-center gap-1 hover:text-red-200"
+            className="flex items-center gap-1 transition-colors hover:text-rose-200 focus-ring rounded"
           >
             <RotateCw className="h-3 w-3" /> Retry
           </button>
@@ -1360,7 +1398,7 @@ export function MessageBubble({
       )}
       {ctxMenu && (
         <ul
-          className="fixed z-50 min-w-[180px] rounded-md border border-slate-700/60 bg-slate-900/95 p-1 text-sm shadow-xl backdrop-blur"
+          className="glass-heavy fixed z-50 min-w-[180px] rounded-xl p-1 text-sm shadow-pop"
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -1370,7 +1408,7 @@ export function MessageBubble({
                 void navigator.clipboard.writeText(message.content);
                 setCtxMenu(null);
               }}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-slate-200 hover:bg-slate-800"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
             >
               <CopyIcon className="h-3.5 w-3.5" /> Copy text
             </button>
@@ -1382,7 +1420,7 @@ export function MessageBubble({
                 void navigator.clipboard.writeText(url);
                 setCtxMenu(null);
               }}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-slate-200 hover:bg-slate-800"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
             >
               <Link2 className="h-3.5 w-3.5" /> Copy link
             </button>
@@ -1393,7 +1431,7 @@ export function MessageBubble({
                 onReply(message.id);
                 setCtxMenu(null);
               }}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-slate-200 hover:bg-slate-800"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
             >
               ↪ Reply / quote
             </button>
@@ -1404,7 +1442,7 @@ export function MessageBubble({
                 setPromoteOpen(true);
                 setCtxMenu(null);
               }}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-slate-200 hover:bg-slate-800"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
             >
               <BriefcaseBusiness className="h-3.5 w-3.5" /> Promote to Project Ops task
             </button>
@@ -1417,7 +1455,7 @@ export function MessageBubble({
                     setEditing(true);
                     setCtxMenu(null);
                   }}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-slate-200 hover:bg-slate-800"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
                 >
                   ✏️ Edit
                 </button>
@@ -1430,7 +1468,7 @@ export function MessageBubble({
                     }
                     setCtxMenu(null);
                   }}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-red-300 hover:bg-red-500/15"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-rose-300 transition-colors hover:bg-rose-500/15 focus-ring"
                 >
                   🗑 Delete
                 </button>

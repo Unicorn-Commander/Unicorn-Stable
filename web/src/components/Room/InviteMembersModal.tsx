@@ -76,19 +76,19 @@ export function InviteMembersModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}
-        className="w-full max-w-md rounded-xl border border-slate-700/50 bg-slate-900 p-5 shadow-2xl"
+        className="glass-heavy w-full max-w-md rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-start justify-between">
+        <div className="flex items-start justify-between border-b border-line px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-100">
+            <h2 className="font-display text-base font-semibold text-slate-100">
               Invite to {roomName}
             </h2>
             <p className="text-xs text-slate-400">
@@ -97,22 +97,24 @@ export function InviteMembersModal({
           </div>
           <button
             onClick={onClose}
-            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+            className="focus-ring rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
+            aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
+        <div className="px-5 pb-5 pt-4">
         {/* Search */}
         <div className="relative mb-3">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
           <input
             autoFocus
             type="text"
             placeholder="Search by name or username…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-full rounded-md border border-slate-700 bg-slate-950 py-2 pl-8 pr-3 text-sm text-slate-100 placeholder-slate-500 focus:border-stable-purple focus:outline-none"
+            className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
           />
         </div>
 
@@ -123,7 +125,7 @@ export function InviteMembersModal({
               {query ? "No matching users." : "Start typing to search."}
             </p>
           ) : (
-            <ul className="divide-y divide-slate-800">
+            <ul className="divide-y divide-line">
               {users.map((u) => {
                 const key = u.id || u.keycloak_sub;
                 const alreadyIn = u.id ? existingIds.has(u.id) : false;
@@ -131,7 +133,7 @@ export function InviteMembersModal({
                 return (
                   <li
                     key={key}
-                    className="flex items-center justify-between gap-3 py-2"
+                    className="flex items-center justify-between gap-3 py-2 transition-colors hover:bg-white/[0.02]"
                   >
                     <div className="flex min-w-0 items-center gap-2.5">
                       <Avatar
@@ -146,7 +148,7 @@ export function InviteMembersModal({
                         <p className="truncate text-xs text-slate-500">
                           @{u.username}
                           {!u.signed_in && (
-                            <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                            <span className="ml-2 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-slate-400">
                               hasn't signed in yet
                             </span>
                           )}
@@ -157,12 +159,12 @@ export function InviteMembersModal({
                       onClick={() => invite(u)}
                       disabled={alreadyIn || justInvited}
                       className={clsx(
-                        "flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs",
+                        "focus-ring flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
                         alreadyIn
-                          ? "cursor-not-allowed bg-slate-800 text-slate-500"
+                          ? "cursor-not-allowed bg-white/[0.04] text-slate-500"
                           : justInvited
-                            ? "bg-emerald-500/20 text-emerald-300"
-                            : "bg-stable-purple/20 text-stable-purple hover:bg-stable-purple/30",
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-stable-purple/20 text-stable-purple-light hover:bg-stable-purple/30",
                       )}
                     >
                       {alreadyIn ? (
@@ -185,18 +187,18 @@ export function InviteMembersModal({
         </div>
 
         {/* Share link for new users */}
-        <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
+        <div className="rounded-xl border border-line bg-slate-950/50 p-3">
           <p className="mb-2 text-xs text-slate-400">
-            New to Command Center? Share this link — they can register from the
+            New to Stable? Share this link — they can register from the
             sign-in page, then you can add them here.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 truncate rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">
+            <code className="flex-1 truncate rounded-md bg-white/[0.06] px-2 py-1 text-xs text-slate-300">
               {signupLink}
             </code>
             <button
               onClick={copyLink}
-              className="flex items-center gap-1 rounded bg-stable-purple/20 px-2 py-1 text-xs text-stable-purple hover:bg-stable-purple/30"
+              className="focus-ring flex items-center gap-1 rounded-md bg-stable-purple/20 px-2 py-1 text-xs font-medium text-stable-purple-light transition-colors hover:bg-stable-purple/30"
             >
               {copiedLink ? (
                 <>
@@ -209,6 +211,7 @@ export function InviteMembersModal({
               )}
             </button>
           </div>
+        </div>
         </div>
       </motion.div>
     </motion.div>

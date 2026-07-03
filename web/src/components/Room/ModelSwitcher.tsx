@@ -79,7 +79,7 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
         ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         className={clsx(
-          "flex max-w-[10rem] items-center gap-1 rounded-md px-2 py-2.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-slate-100 md:max-w-[12rem] md:py-1.5",
+          "flex max-w-[10rem] items-center gap-1.5 rounded-lg border border-line bg-white/[0.03] px-2 py-2.5 text-xs text-slate-300 transition-colors hover:border-line-strong hover:bg-white/[0.05] hover:text-slate-100 focus-ring md:max-w-[12rem] md:py-1.5",
           override && "text-stable-cyan",
           className,
         )}
@@ -101,14 +101,14 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
         <div
           ref={menuRef}
           role="menu"
-          className="absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-auto rounded-lg border border-slate-700/60 bg-slate-900 py-1 shadow-xl"
+          className="glass-heavy absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-auto rounded-xl py-1 shadow-pop animate-fade-in"
         >
           {/* Default row — clears the override. */}
           <button
             role="menuitemradio"
             aria-checked={!override}
             onClick={() => choose(null)}
-            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
           >
             <span className="flex flex-col min-w-0">
               <span className="truncate">Default (agent's model)</span>
@@ -128,8 +128,8 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
           ) : (
             groups.map(([family, list]) => (
               <div key={family}>
-                <div className="my-1 h-px bg-slate-700/60" />
-                <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                <div className="my-1 h-px bg-white/[0.06]" />
+                <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                   {family}
                 </div>
                 {list.map((m) => {
@@ -141,7 +141,7 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
                       aria-checked={active}
                       onClick={() => choose(m.id)}
                       className={clsx(
-                        "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-slate-800",
+                        "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-white/[0.06] focus-ring",
                         active ? "text-stable-cyan" : "text-slate-200",
                       )}
                       title={m.id}

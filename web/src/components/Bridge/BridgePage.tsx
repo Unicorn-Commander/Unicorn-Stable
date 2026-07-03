@@ -9,7 +9,6 @@ import {
   Terminal,
   ArrowRight,
 } from "lucide-react";
-import clsx from "clsx";
 
 /**
  * The "Bridge / Connect" page — how to wire an MCP client (Claude Code, Claude
@@ -89,6 +88,19 @@ const STEPS = [
   },
 ];
 
+// Numbered step chips cycle the brand triad: iris → aqua → mint.
+const STEP_HUES = [
+  "bg-stable-purple/15 text-stable-purple-light",
+  "bg-stable-cyan/15 text-stable-cyan-light",
+  "bg-stable-mint/15 text-emerald-300",
+] as const;
+
+// Tool-group icon tiles alternate iris / aqua.
+const GROUP_HUES = [
+  "bg-stable-purple/15 text-stable-purple-light",
+  "bg-stable-cyan/10 text-stable-cyan-light",
+] as const;
+
 export function BridgePage() {
   const [copied, setCopied] = useState(false);
 
@@ -106,29 +118,29 @@ export function BridgePage() {
     <div className="flex-1 overflow-y-auto">
       <div className="animate-fade-in mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
         {/* Hero */}
-        <header className="relative mb-6 overflow-hidden rounded-2xl border border-stable-glass-border bg-slate-800/30 px-6 py-7 sm:px-8 sm:py-8">
+        <header className="card relative mb-8 overflow-hidden px-6 py-7 sm:px-8 sm:py-8">
           <div
-            className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-stable-cyan/25 blur-3xl"
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_90%_at_88%_0%,rgba(34,211,238,0.12),transparent_65%)]"
             aria-hidden="true"
           />
           <div
-            className="pointer-events-none absolute -bottom-24 right-40 h-44 w-44 rounded-full bg-stable-purple/20 blur-3xl"
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(55%_80%_at_70%_100%,rgba(139,92,246,0.13),transparent_70%)]"
             aria-hidden="true"
           />
           <div className="relative">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="gradient-bg flex h-6 w-6 items-center justify-center rounded-md">
-                <Plug className="h-3.5 w-3.5 text-white" />
+            <div className="mb-3 flex items-center gap-2.5">
+              <span className="gradient-bg flex h-7 w-7 items-center justify-center rounded-lg shadow-glow-iris">
+                <Plug className="h-4 w-4 text-white" />
               </span>
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                 Stable Bridge · MCP
               </span>
             </div>
-            <h1 className="text-2xl font-bold sm:text-3xl">
+            <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
               <span className="text-slate-50">Connect </span>
               <span className="gradient-text">Claude to Stable</span>
             </h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-400">
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
               The Stable Bridge is a small{" "}
               <span className="text-slate-200">MCP server</span> that lets Claude
               Code — or any MCP-capable agent — read and post into your Stable
@@ -139,23 +151,22 @@ export function BridgePage() {
         </header>
 
         {/* Setup steps */}
-        <section className="mb-6">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <section className="mb-8">
+          <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             Set it up
           </h2>
           <ol className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {STEPS.map((s, i) => (
-              <li
-                key={s.title}
-                className="rounded-xl border border-slate-700/50 bg-slate-800/30 p-4"
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
-                    <s.icon className="h-4 w-4" />
+              <li key={s.title} className="card card-hover p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <span
+                    className={`flex h-7 w-7 items-center justify-center rounded-lg font-display text-sm font-bold tabular-nums ${
+                      STEP_HUES[i % STEP_HUES.length] ?? STEP_HUES[0]
+                    }`}
+                  >
+                    {i + 1}
                   </span>
-                  <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                    Step {i + 1}
-                  </span>
+                  <s.icon className="h-4 w-4 text-slate-500" aria-hidden="true" />
                 </div>
                 <p className="text-sm font-semibold text-slate-100">{s.title}</p>
                 <p className="mt-1 text-[13px] leading-relaxed text-slate-400">
@@ -167,55 +178,64 @@ export function BridgePage() {
         </section>
 
         {/* Config snippet */}
-        <section className="mb-6">
-          <div className="flex items-center justify-between">
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-              MCP client config
-            </h2>
-            <button
-              onClick={copyConfig}
-              className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700"
-            >
-              {copied ? (
-                <>
-                  <Check className="h-3.5 w-3.5 text-emerald-400" />
-                  Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="h-3.5 w-3.5" />
-                  Copy
-                </>
-              )}
-            </button>
+        <section className="mb-8">
+          <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            MCP client config
+          </h2>
+          <div className="overflow-hidden rounded-xl border border-line bg-slate-950/80">
+            <div className="flex items-center justify-between border-b border-line bg-white/[0.02] px-3.5 py-1.5">
+              <span className="font-mono text-[11px] text-slate-500">
+                mcpServers · json
+              </span>
+              <button
+                onClick={copyConfig}
+                className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-stable-mint" />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    Copy
+                  </>
+                )}
+              </button>
+            </div>
+            <pre className="overflow-x-auto p-4 text-[12.5px] leading-relaxed text-slate-300">
+              <code>{CONFIG_SNIPPET}</code>
+            </pre>
           </div>
-          <pre className="overflow-x-auto rounded-xl border border-slate-700/50 bg-slate-950/70 p-4 text-[12.5px] leading-relaxed text-slate-300">
-            <code>{CONFIG_SNIPPET}</code>
-          </pre>
-          <p className="mt-2 text-[12px] text-slate-500">
-            Ask your workspace operator for the <code>server.py</code> and the
-            exact launch command for your environment — the bridge authenticates
-            against this workspace, so its setup is provisioned per-operator
-            rather than published here.
+          <p className="mt-2.5 text-[12px] text-slate-500">
+            Ask your workspace operator for the{" "}
+            <code className="rounded bg-white/[0.06] px-1 py-0.5 text-[11px] text-slate-300">
+              server.py
+            </code>{" "}
+            and the exact launch command for your environment — the bridge
+            authenticates against this workspace, so its setup is provisioned
+            per-operator rather than published here.
           </p>
         </section>
 
         {/* Tool catalog */}
         <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+          <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             What the bridge can do
           </h2>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {TOOL_GROUPS.map((g) => (
-              <div
-                key={g.title}
-                className="rounded-2xl border border-slate-700/50 bg-slate-800/20 p-4"
-              >
-                <div className="mb-3 flex items-center gap-2">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-stable-purple-light">
+            {TOOL_GROUPS.map((g, gi) => (
+              <div key={g.title} className="card card-hover p-4">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                      GROUP_HUES[gi % GROUP_HUES.length] ?? GROUP_HUES[0]
+                    }`}
+                  >
                     <g.icon className="h-4 w-4" />
                   </span>
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-100">{g.title}</p>
                     <p className="text-[11px] text-slate-500">{g.blurb}</p>
                   </div>
@@ -223,11 +243,11 @@ export function BridgePage() {
                 <ul className="space-y-1.5">
                   {g.tools.map((t) => (
                     <li key={t.name} className="flex items-start gap-2 text-[13px]">
-                      <code
-                        className={clsx(
-                          "mt-0.5 shrink-0 rounded bg-slate-700/50 px-1.5 py-0.5 text-[11px] font-medium text-stable-cyan",
-                        )}
-                      >
+                      <Check
+                        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stable-mint"
+                        aria-hidden="true"
+                      />
+                      <code className="shrink-0 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-stable-cyan-light">
                         {t.name}
                       </code>
                       <span className="text-slate-400">{t.desc}</span>

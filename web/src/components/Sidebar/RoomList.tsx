@@ -17,6 +17,7 @@ import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, type Room } from "@/services/api";
+import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import {
   useChannelCategories,
@@ -43,6 +44,8 @@ export function RoomList() {
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
+  // Identity hue for the default agent — drives its rows' dots + active accent.
+  const defaultAgentIdent = identityFor(defaultAgent.id, defaultAgent.name);
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
   const openRoom = (id: string) => {
@@ -185,30 +188,43 @@ export function RoomList() {
         <div
           className={clsx(
             "group relative flex items-center rounded-lg transition-colors",
-            isActive
-              ? "bg-stable-purple/20 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
-              : "hover:bg-slate-800/60",
+            isActive ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
           )}
         >
+          {isActive && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+            />
+          )}
           <button
             onClick={() => openRoom(room.id)}
             className={clsx(
-              "flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left md:py-1.5",
-              isActive ? "text-slate-50" : "text-slate-400 group-hover:text-slate-200",
+              "focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left md:py-1.5",
+              isActive
+                ? "text-slate-50"
+                : "text-slate-300 group-hover:text-slate-100",
             )}
             aria-current={isActive ? "page" : undefined}
           >
             <Hash
               className={clsx(
                 "h-4 w-4 shrink-0",
-                isActive ? "text-stable-purple-light" : "opacity-60",
+                isActive ? "text-stable-cyan" : "text-stable-cyan/70",
               )}
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between">
-                <span className="truncate text-sm font-medium">{room.name}</span>
+                <span
+                  className={clsx(
+                    "truncate text-sm",
+                    isActive ? "font-semibold" : "font-medium",
+                  )}
+                >
+                  {room.name}
+                </span>
                 {unread > 0 && (
-                  <span className="ml-1 flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-stable-purple px-1 text-[10px] font-bold text-white">
+                  <span className="gradient-bg ml-1 grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
                     {unread > 99 ? "99+" : unread}
                   </span>
                 )}
@@ -226,7 +242,7 @@ export function RoomList() {
               setMenuRoomId(menuOpen ? null : room.id);
             }}
             className={clsx(
-              "mr-1 shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-slate-700/60 hover:text-slate-200 focus:opacity-100",
+              "focus-ring mr-1 shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus:opacity-100",
               menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100",
             )}
             aria-label="Channel options"
@@ -246,9 +262,9 @@ export function RoomList() {
             />
             <div
               role="menu"
-              className="absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-lg border border-slate-700/70 bg-slate-900 py-1 shadow-xl"
+              className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
             >
-              <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              <p className="px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                 Move to category
               </p>
               {knownCategories.map((c) => (
@@ -257,7 +273,7 @@ export function RoomList() {
                   role="menuitem"
                   onClick={() => assignCategory(room.id, c)}
                   className={clsx(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-800",
+                    "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
                     c === cat ? "text-stable-purple-light" : "text-slate-300",
                   )}
                 >
@@ -268,16 +284,16 @@ export function RoomList() {
               <button
                 role="menuitem"
                 onClick={() => promptNewCategory(room.id)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-800"
+                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
               >
-                <FolderPlus className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
                 New category…
               </button>
               {cat && (
                 <button
                   role="menuitem"
                   onClick={() => assignCategory(room.id, null)}
-                  className="mt-0.5 flex w-full items-center gap-2 border-t border-slate-800 px-3 py-1.5 text-left text-sm text-slate-400 hover:bg-slate-800"
+                  className="focus-ring mt-0.5 flex w-full items-center gap-2 border-t border-line px-3 py-1.5 text-left text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
                 >
                   Remove from “{cat}”
                 </button>
@@ -332,13 +348,13 @@ export function RoomList() {
       <div className="shrink-0 space-y-2 px-3 py-3">
         <NewChatButton onStarted={openRoom} />
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
           <input
             type="text"
-            placeholder="Search rooms..."
+            placeholder="Search rooms…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-lg bg-slate-800/80 py-1.5 pl-8 pr-3 text-xs text-slate-200 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50"
+            className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             aria-label="Search rooms"
           />
         </div>
@@ -360,19 +376,25 @@ export function RoomList() {
             }
           }}
           className={clsx(
-            "flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
+            "focus-ring group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
             location.pathname === "/agents"
-              ? "bg-stable-purple/20 text-slate-50 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
-              : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
+              ? "bg-white/[0.06] font-semibold text-slate-50"
+              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
           )}
           aria-current={location.pathname === "/agents" ? "page" : undefined}
         >
+          {location.pathname === "/agents" && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+            />
+          )}
           <Bot
             className={clsx(
-              "h-4 w-4 shrink-0",
+              "h-4 w-4 shrink-0 text-stable-purple-light transition-opacity",
               location.pathname === "/agents"
-                ? "text-stable-purple-light"
-                : "opacity-60",
+                ? "opacity-100"
+                : "opacity-75 group-hover:opacity-100",
             )}
           />
           <span className="truncate text-sm font-medium">Browse all agents</span>
@@ -390,33 +412,39 @@ export function RoomList() {
             }
           }}
           className={clsx(
-            "-mt-2 flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
+            "focus-ring group relative -mt-2 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
             location.pathname === "/bridge"
-              ? "bg-stable-purple/20 text-slate-50 font-semibold shadow-[inset_3px_0_0_0] shadow-stable-purple"
-              : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
+              ? "bg-white/[0.06] font-semibold text-slate-50"
+              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
           )}
           aria-current={location.pathname === "/bridge" ? "page" : undefined}
         >
+          {location.pathname === "/bridge" && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+            />
+          )}
           <Plug
             className={clsx(
-              "h-4 w-4 shrink-0",
+              "h-4 w-4 shrink-0 text-stable-mint transition-opacity",
               location.pathname === "/bridge"
-                ? "text-stable-purple-light"
-                : "opacity-60",
+                ? "opacity-100"
+                : "opacity-75 group-hover:opacity-100",
             )}
           />
           <span className="truncate text-sm font-medium">Bridge &amp; connect</span>
         </button>
 
         <section>
-          <div className="flex items-center justify-between px-2 pb-1">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="flex items-center justify-between px-2.5 pb-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               Chats with {defaultAgent.name}
             </h3>
             <button
               onClick={startDefaultChat}
               disabled={startingChat}
-              className="rounded p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 disabled:opacity-50 md:p-0.5"
+              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-50 md:p-0.5"
               aria-label={`Start a new chat with ${defaultAgent.name}`}
               title={`Start a new chat with ${defaultAgent.name}`}
             >
@@ -428,7 +456,7 @@ export function RoomList() {
             <button
               onClick={startDefaultChat}
               disabled={startingChat}
-              className="mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start rounded-md border border-dashed border-slate-700/50 px-2.5 py-2 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-slate-800/40 hover:text-slate-300 disabled:opacity-50"
+              className="focus-ring mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
             >
               <span className="font-medium">No conversations yet</span>
               <span>
@@ -452,18 +480,29 @@ export function RoomList() {
                     <button
                       onClick={() => openRoom(room.id)}
                       className={clsx(
-                        "flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
+                        "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
                         activeRoomId === room.id
-                          ? "bg-stable-purple/15 text-slate-100"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
+                          ? "bg-white/[0.06] text-slate-50"
+                          : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
                       )}
                       aria-current={activeRoomId === room.id ? "page" : undefined}
                     >
-                      <span className="relative shrink-0">
-                        <MessageSquare className="h-4 w-4 opacity-60" />
+                      {activeRoomId === room.id && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full"
+                          style={{ background: defaultAgentIdent.color }}
+                        />
+                      )}
+                      <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+                        <span
+                          aria-hidden="true"
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ background: defaultAgentIdent.color }}
+                        />
                         {otherOnline && (
                           <span
-                            className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-green-500"
+                            className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
                             aria-label="Online"
                           />
                         )}
@@ -475,12 +514,12 @@ export function RoomList() {
                           </span>
                           <div className="flex shrink-0 items-center gap-1.5">
                             {room.last_message && (
-                              <span className="text-[10px] text-slate-600">
+                              <span className="text-[10px] tabular-nums text-slate-500">
                                 {formatTimestamp(room.last_message.created_at)}
                               </span>
                             )}
                             {room.unread_count > 0 && (
-                              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-stable-purple px-1 text-[10px] font-bold text-white">
+                              <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
                                 {room.unread_count > 99 ? "99+" : room.unread_count}
                               </span>
                             )}
@@ -504,14 +543,14 @@ export function RoomList() {
         </section>
 
         <section>
-          <div className="flex items-center justify-between px-2 pb-1">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="flex items-center justify-between px-2.5 pb-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               Channels
             </h3>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setBrowseOpen(true)}
-                className="rounded px-1 py-0.5 text-[10px] uppercase tracking-wide text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+                className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
                 aria-label="Browse channels"
                 title="Browse channels you can join"
               >
@@ -519,7 +558,7 @@ export function RoomList() {
               </button>
               <button
                 onClick={() => setCreateRoomModalOpen(true)}
-                className="rounded p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 md:p-0.5"
+                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
                 aria-label="Create channel"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -528,12 +567,12 @@ export function RoomList() {
           </div>
 
           {channels.length === 0 && (
-            <div className="px-2 py-2">
-              <p className="mb-2 text-xs text-slate-600">No channels yet</p>
+            <div className="px-2.5 py-2">
+              <p className="mb-2 text-xs text-slate-500">No channels yet</p>
               <button
                 onClick={handleSeedDefaults}
                 disabled={seeding}
-                className="flex w-full items-center gap-1.5 rounded-md border border-stable-purple/30 bg-stable-purple/10 px-2 py-1.5 text-xs text-stable-purple hover:bg-stable-purple/20 disabled:opacity-50"
+                className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
               >
                 <Sparkles className="h-3 w-3" />
                 {seeding ? "Creating…" : "Seed business channels"}
@@ -548,19 +587,22 @@ export function RoomList() {
               <div key={cat} className="mb-0.5">
                 <button
                   onClick={() => toggleCollapsed(cat)}
-                  className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:text-slate-300"
+                  className="focus-ring flex w-full items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
                   aria-expanded={!isCollapsed}
                 >
-                  {isCollapsed ? (
-                    <ChevronRight className="h-3 w-3 shrink-0" />
-                  ) : (
-                    <ChevronDown className="h-3 w-3 shrink-0" />
-                  )}
+                  <ChevronDown
+                    className={clsx(
+                      "h-3 w-3 shrink-0 transition-transform duration-150",
+                      isCollapsed && "-rotate-90",
+                    )}
+                  />
                   <span className="truncate">{cat}</span>
-                  <span className="ml-auto text-slate-600">{roomsInCat.length}</span>
+                  <span className="ml-auto tabular-nums text-slate-500">
+                    {roomsInCat.length}
+                  </span>
                 </button>
                 {!isCollapsed && (
-                  <ul role="list" className="ml-1.5 border-l border-slate-800/70 pl-1">
+                  <ul role="list" className="ml-1.5 border-l border-line pl-1">
                     {roomsInCat.map((room) => renderChannelRow(room))}
                   </ul>
                 )}
@@ -572,13 +614,13 @@ export function RoomList() {
         </section>
 
         <section>
-          <div className="flex items-center justify-between px-2 pb-1">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Direct Messages
+          <div className="flex items-center justify-between px-2.5 pb-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Direct messages
             </h3>
             <button
               onClick={() => setCreateDmOpen(true)}
-              className="rounded p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 md:p-0.5"
+              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
               aria-label="Create direct message"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -588,7 +630,7 @@ export function RoomList() {
           {directMessages.length === 0 && (
             <button
               onClick={() => setCreateDmOpen(true)}
-              className="mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start rounded-md border border-dashed border-slate-700/50 px-2.5 py-2 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-slate-800/40 hover:text-slate-300"
+              className="focus-ring mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300"
             >
               <span className="font-medium">No DMs yet</span>
               <span>Click here to start one — pick one person or several for a group.</span>
@@ -604,23 +646,46 @@ export function RoomList() {
                 const id = p.participant_id || p.user_id || "";
                 return p.is_online || onlineUsers.includes(id);
               });
+              // Agent DMs carry their resident's identity hue (6px dot + active
+              // accent); human DMs keep the neutral message glyph.
+              const agentIdent = room.brigade_agent_id
+                ? identityFor(room.brigade_agent_id, room.name)
+                : null;
               return (
               <li key={room.id}>
                 <button
                   onClick={() => openRoom(room.id)}
                   className={clsx(
-                    "flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors md:py-1.5",
+                    "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
                     activeRoomId === room.id
-                      ? "bg-stable-purple/15 text-slate-100"
-                      : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200",
+                      ? "bg-white/[0.06] text-slate-50"
+                      : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
                   )}
                   aria-current={activeRoomId === room.id ? "page" : undefined}
                 >
-                  <span className="relative shrink-0">
-                    <MessageSquare className="h-4 w-4 opacity-60" />
+                  {activeRoomId === room.id && (
+                    <span
+                      aria-hidden="true"
+                      className={clsx(
+                        "absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full",
+                        !agentIdent && "bg-stable-purple",
+                      )}
+                      style={agentIdent ? { background: agentIdent.color } : undefined}
+                    />
+                  )}
+                  <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+                    {agentIdent ? (
+                      <span
+                        aria-hidden="true"
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ background: agentIdent.color }}
+                      />
+                    ) : (
+                      <MessageSquare className="h-4 w-4 opacity-60" />
+                    )}
                     {otherOnline && (
                       <span
-                        className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-green-500"
+                        className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
                         aria-label="Online"
                       />
                     )}
@@ -632,12 +697,12 @@ export function RoomList() {
                       </span>
                       <div className="flex shrink-0 items-center gap-1.5">
                         {room.last_message && (
-                          <span className="text-[10px] text-slate-600">
+                          <span className="text-[10px] tabular-nums text-slate-500">
                             {formatTimestamp(room.last_message.created_at)}
                           </span>
                         )}
                         {room.unread_count > 0 && (
-                          <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-stable-purple px-1 text-[10px] font-bold text-white">
+                          <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
                             {room.unread_count > 99
                               ? "99+"
                               : room.unread_count}

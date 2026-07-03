@@ -1,13 +1,68 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   STABLE DESIGN SYSTEM — "Aurora"
+   Dark-first workspace where every resident (human or agent) carries an
+   identity hue. Three pillars:
+     1. Violet-cast neutral ramp (slate-* is RETINTED below — every existing
+        bg-slate-N / text-slate-N class in the app picks up the brand cast).
+     2. A curated accent set (see src/lib/identity.ts for the identity wheel).
+     3. Layered depth: aurora field → glass surfaces → hairline borders → glow.
+   ========================================================================== */
+
 @theme {
+  /* -- Brand anchors (legacy names kept — components reference these) ------ */
   --color-stable-purple: #8b5cf6;
-  --color-stable-cyan: #06b6d4;
+  --color-stable-cyan: #22d3ee;
   --color-stable-purple-light: #a78bfa;
-  --color-stable-cyan-light: #22d3ee;
-  --color-stable-glass: rgba(30, 41, 59, 0.6);
-  --color-stable-glass-border: rgba(148, 163, 184, 0.12);
-  --color-stable-glass-hover: rgba(30, 41, 59, 0.8);
+  --color-stable-cyan-light: #67e8f9;
+  --color-stable-mint: #34d399;
+  --color-stable-gold: #fbbf24;
+  --color-stable-coral: #fb7185;
+
+  /* -- Violet-cast neutral ramp (overrides Tailwind slate) ----------------- */
+  --color-slate-950: #08080f;
+  --color-slate-900: #0e0e19;
+  --color-slate-850: #131322;
+  --color-slate-800: #191929;
+  --color-slate-700: #2b2b44;
+  --color-slate-600: #434360;
+  --color-slate-500: #626280;
+  --color-slate-400: #9193af;
+  --color-slate-300: #c5c7db;
+  --color-slate-200: #e0e1ee;
+  --color-slate-100: #eff0f8;
+  --color-slate-50: #f8f8fd;
+
+  /* -- Surfaces & lines ----------------------------------------------------- */
+  --color-surface-0: #0b0b15;
+  --color-surface-1: #121220;
+  --color-surface-2: #181829;
+  --color-surface-3: #1f1f33;
+  --color-line: rgba(148, 152, 196, 0.1);
+  --color-line-strong: rgba(148, 152, 196, 0.2);
+
+  /* -- Glass ---------------------------------------------------------------- */
+  --color-stable-glass: rgba(22, 22, 38, 0.55);
+  --color-stable-glass-border: rgba(148, 152, 196, 0.12);
+  --color-stable-glass-hover: rgba(30, 30, 52, 0.75);
+
+  /* -- Typography ------------------------------------------------------------ */
+  --font-sans:
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-display:
+    "Space Grotesk Variable", "Inter Variable", ui-sans-serif, system-ui,
+    sans-serif;
+
+  /* -- Shadows / glows -------------------------------------------------------- */
+  --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.25), 0 8px 32px rgba(0, 0, 0, 0.35);
+  --shadow-pop:
+    0 4px 12px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-glow-iris: 0 0 24px rgba(139, 92, 246, 0.35);
+  --shadow-glow-aqua: 0 0 24px rgba(34, 211, 238, 0.3);
+  --shadow-glow-mint: 0 0 24px rgba(52, 211, 153, 0.3);
 }
 
 @layer base {
@@ -23,13 +78,60 @@
     overscroll-behavior: none;
     /* Kill the grey tap flash on touch; our buttons have their own states. */
     -webkit-tap-highlight-color: transparent;
+    background-color: var(--color-surface-0);
+    font-feature-settings: "cv02", "cv03", "cv11";
+  }
+
+  /* Aurora field — a barely-there living gradient behind everything. Glass
+     surfaces pick it up through backdrop-blur, which is what keeps the dark
+     theme from reading flat. GPU-cheap: one fixed pseudo-element, transform-
+     only animation, disabled under prefers-reduced-motion. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -20%;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        42% 36% at 18% 12%,
+        rgba(124, 58, 237, 0.14),
+        transparent 70%
+      ),
+      radial-gradient(
+        36% 32% at 85% 8%,
+        rgba(34, 211, 238, 0.09),
+        transparent 70%
+      ),
+      radial-gradient(
+        44% 40% at 78% 88%,
+        rgba(139, 92, 246, 0.1),
+        transparent 70%
+      ),
+      radial-gradient(
+        30% 28% at 8% 85%,
+        rgba(52, 211, 153, 0.06),
+        transparent 70%
+      );
+    animation: auroraDrift 90s ease-in-out infinite alternate;
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body::before {
+      animation: none;
+    }
   }
 
   *,
   *::before,
   *::after {
     scrollbar-width: thin;
-    scrollbar-color: rgba(100, 116, 139, 0.4) transparent;
+    scrollbar-color: rgba(98, 98, 128, 0.4) transparent;
   }
 
   *::-webkit-scrollbar {
@@ -42,17 +144,17 @@
   }
 
   *::-webkit-scrollbar-thumb {
-    background-color: rgba(100, 116, 139, 0.4);
+    background-color: rgba(98, 98, 128, 0.4);
     border-radius: 3px;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(100, 116, 139, 0.6);
+    background-color: rgba(98, 98, 128, 0.6);
   }
 
   ::selection {
-    background-color: rgba(139, 92, 246, 0.3);
-    color: #f8fafc;
+    background-color: rgba(139, 92, 246, 0.35);
+    color: #f8f8fd;
   }
 }
 
@@ -68,6 +170,10 @@
   }
 }
 
+/* ============================================================================
+   SURFACE UTILITIES
+   ========================================================================== */
+
 @utility glass {
   background: var(--color-stable-glass);
   backdrop-filter: blur(16px);
@@ -76,26 +182,102 @@
 }
 
 @utility glass-heavy {
-  background: rgba(15, 23, 42, 0.8);
+  background: rgba(14, 14, 26, 0.82);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--color-stable-glass-border);
 }
 
+/* Standard raised card: use on tiles, panels, list containers. */
+@utility card {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+    var(--color-surface-1);
+  border: 1px solid var(--color-line);
+  border-radius: 1rem;
+  box-shadow: var(--shadow-soft);
+}
+
+@utility card-hover {
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+  &:hover {
+    border-color: var(--color-line-strong);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-pop);
+  }
+}
+
+/* Keyboard-focus ring for any interactive element. */
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid rgba(139, 92, 246, 0.7);
+    outline-offset: 2px;
+    border-radius: inherit;
+  }
+}
+
+/* ============================================================================
+   GRADIENT / TEXT UTILITIES
+   ========================================================================== */
+
 @utility gradient-text {
-  background: linear-gradient(135deg, var(--color-stable-purple), var(--color-stable-cyan));
+  background: linear-gradient(
+    135deg,
+    var(--color-stable-purple-light),
+    var(--color-stable-cyan)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@utility gradient-text-aurora {
+  background: linear-gradient(
+    120deg,
+    #a78bfa 0%,
+    #67e8f9 45%,
+    #6ee7b7 100%
+  );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
 @utility gradient-border {
-  border-image: linear-gradient(135deg, var(--color-stable-purple), var(--color-stable-cyan)) 1;
+  border-image: linear-gradient(
+      135deg,
+      var(--color-stable-purple),
+      var(--color-stable-cyan)
+    )
+    1;
 }
 
 @utility gradient-bg {
-  background: linear-gradient(135deg, var(--color-stable-purple), var(--color-stable-cyan));
+  background: linear-gradient(
+    135deg,
+    var(--color-stable-purple),
+    var(--color-stable-cyan)
+  );
 }
+
+@utility glow-iris {
+  box-shadow: var(--shadow-glow-iris);
+}
+
+@utility glow-aqua {
+  box-shadow: var(--shadow-glow-aqua);
+}
+
+@utility glow-mint {
+  box-shadow: var(--shadow-glow-mint);
+}
+
+/* ============================================================================
+   MOTION
+   ========================================================================== */
 
 @utility animate-fade-in {
   animation: fadeIn 0.2s ease-out;
@@ -111,6 +293,31 @@
 
 @utility animate-pulse-soft {
   animation: pulseSoft 2s ease-in-out infinite;
+}
+
+/* Streaming/typing shimmer — put on a text container while an agent streams. */
+@utility animate-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(145, 147, 175, 0.6) 40%,
+    rgba(224, 225, 238, 1) 50%,
+    rgba(145, 147, 175, 0.6) 60%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+
+/* Voice-orb style breathing scale. */
+@utility animate-breathe {
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+/* Live/online pulse dot halo. */
+@utility animate-live {
+  animation: livePulse 2.4s ease-out infinite;
 }
 
 @keyframes fadeIn {
@@ -151,5 +358,47 @@
   }
   50% {
     opacity: 0.7;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% center;
+  }
+  to {
+    background-position: -200% center;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+@keyframes livePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(52, 211, 153, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+  }
+}
+
+@keyframes auroraDrift {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2%, 2%, 0) scale(1.08);
   }
 }

@@ -19,6 +19,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
 import { Avatar } from "@/components/Avatar";
+import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 
 // `hideOnMobile` lets AppShell collapse this top bar on phones when a room is
@@ -37,6 +38,8 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
   const activeRoom = rooms.find((r) => r.id === activeRoomId);
+  // Identity hue for the signed-in resident — rings the avatar + menu header.
+  const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
 
   // Shared call (VoiceProvider): connect/disconnect drive the one Room. Mic
   // publish + agent dispatch + audio playback all happen in the provider now.
@@ -102,7 +105,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   return (
     <header
       className={clsx(
-        "flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4",
+        "flex h-14 shrink-0 items-center justify-between border-b border-line bg-stable-glass px-4 backdrop-blur-lg",
         // On phones, collapse this bar when a room is active (the RoomView
         // sub-header is the single bar there). Always shown >= md.
         hideOnMobile && "max-md:hidden",
@@ -111,7 +114,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
       <div className="flex items-center gap-3">
         <button
           onClick={toggleSidebar}
-          className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-1.5"
+          className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
           aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
         >
           {sidebarOpen ? (
@@ -149,10 +152,10 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
                 <button
                   onClick={handleToggleMic}
                   className={clsx(
-                    "rounded-lg p-2.5 transition-colors md:p-2",
+                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
                     micEnabled
-                      ? "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
-                      : "bg-red-500/20 text-red-400 hover:bg-red-500/30",
+                      ? "text-slate-300 hover:bg-white/[0.06] hover:text-slate-100"
+                      : "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
                   )}
                   aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
                 >
@@ -166,10 +169,10 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
                 <button
                   onClick={handleToggleCam}
                   className={clsx(
-                    "rounded-lg p-2.5 transition-colors md:p-2",
+                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
                     camEnabled
-                      ? "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
-                      : "text-slate-500 hover:bg-slate-800 hover:text-slate-300",
+                      ? "text-slate-300 hover:bg-white/[0.06] hover:text-slate-100"
+                      : "text-slate-500 hover:bg-white/[0.06] hover:text-slate-300",
                   )}
                   aria-label={camEnabled ? "Turn off camera" : "Turn on camera"}
                 >
@@ -182,7 +185,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
                 <button
                   onClick={handleScreenShare}
-                  className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
+                  className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
                   aria-label="Share screen"
                 >
                   <MonitorUp className="h-4 w-4" />
@@ -193,10 +196,10 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
             <button
               onClick={handleCallToggle}
               className={clsx(
-                "rounded-lg p-2.5 transition-colors md:p-2",
+                "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
                 lkConnected
-                  ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                  : "text-green-400 hover:bg-green-500/20",
+                  ? "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25"
+                  : "text-emerald-400 hover:bg-emerald-500/15",
                 lkConnecting && "animate-pulse-soft",
               )}
               aria-label={lkConnected ? "End call" : "Start call"}
@@ -211,15 +214,15 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
             {/* Participants toggle is duplicated in the RoomView sub-header;
                 hide this one (and its divider) on phones. */}
             <span className="hidden md:contents">
-              <div className="mx-1 h-5 w-px bg-slate-700" />
+              <div className="mx-1 h-5 w-px bg-line-strong" />
 
               <button
                 onClick={toggleParticipantPanel}
                 className={clsx(
-                  "rounded-lg p-2.5 transition-colors md:p-2",
+                  "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
                   participantPanelOpen
-                    ? "bg-slate-800 text-slate-200"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                    ? "bg-white/[0.08] text-slate-100"
+                    : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
                 )}
                 aria-label="Toggle participant panel"
               >
@@ -233,7 +236,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
         <span className="hidden md:contents">
           <button
             onClick={() => setSavedOpen(true)}
-            className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
+            className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
             aria-label="Saved messages"
             title="Saved messages"
           >
@@ -242,7 +245,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
           <button
             onClick={toggleSettings}
-            className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:p-2"
+            className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
             aria-label="Settings"
           >
             <Settings className="h-4 w-4" />
@@ -255,7 +258,8 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
           <button
             ref={avatarBtnRef}
             onClick={() => setUserMenuOpen(!userMenuOpen)}
-            className="ml-1 transition-opacity hover:opacity-80"
+            className="focus-ring ml-1.5 flex rounded-full transition-opacity hover:opacity-85"
+            style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
             aria-label="User menu"
             aria-haspopup="menu"
             aria-expanded={userMenuOpen}
@@ -271,15 +275,27 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
             <div
               ref={userMenuRef}
               role="menu"
-              className="glass absolute right-0 top-full z-50 mt-2 w-56 rounded-xl p-2 shadow-xl animate-fade-in"
+              className="glass-heavy absolute right-0 top-full z-50 mt-2.5 w-60 rounded-2xl p-1.5 shadow-pop animate-fade-in"
             >
-              <div className="border-b border-slate-700/50 px-3 py-2">
-                <p className="text-sm font-medium text-slate-100">
-                  {currentUser?.displayName}
-                </p>
-                <p className="text-xs text-slate-400">
-                  {currentUser?.email}
-                </p>
+              <div className="mb-1 flex items-center gap-2.5 border-b border-line px-3 py-2.5">
+                <span
+                  className="inline-flex shrink-0 rounded-full"
+                  style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
+                >
+                  <Avatar
+                    name={currentUser?.displayName ?? "U"}
+                    src={currentUser?.avatarUrl}
+                    size="sm"
+                  />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-slate-100">
+                    {currentUser?.displayName}
+                  </p>
+                  <p className="truncate text-xs text-slate-400">
+                    {currentUser?.email}
+                  </p>
+                </div>
               </div>
               <button
                 role="menuitem"
@@ -287,10 +303,10 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
                   setUserMenuOpen(false);
                   logout();
                 }}
-                className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
+                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
               >
                 <LogOut className="h-4 w-4" />
-                Sign Out
+                Sign out
               </button>
             </div>
           )}

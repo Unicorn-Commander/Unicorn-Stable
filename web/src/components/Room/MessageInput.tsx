@@ -458,19 +458,23 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
 
   if (disabledReason) {
     return (
-      <div className="shrink-0 border-t border-slate-700/50 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-800/60 px-4 py-3 text-sm text-slate-400 ring-1 ring-slate-700/50">
-          <MicOff className="h-4 w-4 shrink-0 text-amber-400" />
+      <div className="shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] px-4 py-3 text-sm text-amber-300/80">
+          <MicOff className="h-4 w-4 shrink-0 text-amber-300/80" />
           <span>{disabledReason}</span>
         </div>
       </div>
     );
   }
 
+  // Purely presentational: the send affordance lights up whenever a send
+  // would actually do something (text or pending attachments).
+  const canSend = content.trim().length > 0 || pending.length > 0;
+
   return (
     <div
       className={clsx(
-        "relative shrink-0 border-t border-slate-700/50 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
+        "relative shrink-0 px-3 pt-1.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6",
         dragOver && "bg-stable-purple/5 ring-2 ring-inset ring-stable-purple/30",
       )}
       onDragOver={handleDragOver}
@@ -479,7 +483,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     >
       {showEmojiPicker && emojiMatches.length > 0 && (
         <div
-          className="glass absolute bottom-full left-4 z-30 mb-1 max-h-48 w-72 overflow-y-auto rounded-xl p-1 shadow-xl animate-slide-up"
+          className="glass-heavy absolute bottom-full left-3 z-30 mb-2 max-h-48 w-72 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6"
           role="listbox"
           aria-label="Emoji suggestions"
         >
@@ -491,10 +495,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               onClick={() => insertEmoji(s)}
               onMouseEnter={() => setEmojiIndex(idx)}
               className={clsx(
-                "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left",
+                "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors focus-ring",
                 idx === emojiIndex
                   ? "bg-stable-purple/15 text-slate-100"
-                  : "text-slate-300 hover:bg-slate-800/60",
+                  : "text-slate-300 hover:bg-white/[0.05]",
               )}
             >
               <span className="text-base">{s.emoji}</span>
@@ -506,7 +510,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
 
       {showMentions && mentionSuggestions.length > 0 && (
         <div
-          className="glass absolute bottom-full left-4 right-4 z-30 mb-1 max-h-48 overflow-y-auto rounded-xl p-1 shadow-xl animate-slide-up"
+          className="glass-heavy absolute bottom-full left-3 right-3 z-30 mb-2 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6"
           role="listbox"
           aria-label="Mention suggestions"
         >
@@ -518,10 +522,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               onClick={() => insertMention(suggestion)}
               onMouseEnter={() => setMentionIndex(idx)}
               className={clsx(
-                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors",
+                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors focus-ring",
                 idx === mentionIndex
                   ? "bg-stable-purple/15 text-slate-100"
-                  : "text-slate-300 hover:bg-slate-800/60",
+                  : "text-slate-300 hover:bg-white/[0.05]",
               )}
             >
               <div
@@ -540,7 +544,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               </div>
               <span className="text-sm">{suggestion.name}</span>
               {suggestion.type === "agent" && (
-                <span className="ml-auto text-[10px] text-stable-cyan">AI</span>
+                <span className="ml-auto rounded-md bg-stable-cyan/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-cyan">
+                  AI
+                </span>
               )}
             </button>
           ))}
@@ -552,13 +558,13 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
           {pending.map((a, i) => (
             <div
               key={i}
-              className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/60 px-2 py-1 text-xs text-slate-200"
+              className="flex items-center gap-2 rounded-lg border border-line bg-surface-2 px-2 py-1 text-xs text-slate-200"
             >
               {a.content_type.startsWith("image/") ? (
                 <img
                   src={a.url}
                   alt={a.filename}
-                  className="h-8 w-8 rounded object-cover"
+                  className="h-8 w-8 rounded-md object-cover"
                 />
               ) : (
                 <Paperclip className="h-3.5 w-3.5 text-slate-400" />
@@ -566,7 +572,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               <span className="max-w-[16ch] truncate">{a.filename}</span>
               <button
                 onClick={() => removePending(i)}
-                className="ml-1 text-slate-500 hover:text-slate-300"
+                className="ml-1 rounded text-slate-500 transition-colors hover:text-rose-400 focus-ring"
                 aria-label={`Remove ${a.filename}`}
               >
                 ×
@@ -574,18 +580,18 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             </div>
           ))}
           {uploading && (
-            <div className="flex items-center gap-1.5 rounded-md bg-slate-800/60 px-2 py-1 text-xs text-slate-400">
+            <div className="flex items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-2 py-1 text-xs text-slate-400 animate-pulse-soft">
               Uploading…
             </div>
           )}
         </div>
       )}
 
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-1 rounded-2xl border border-line bg-stable-glass px-1.5 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15">
         <div className="flex shrink-0 items-center gap-0.5 pb-1">
           <button
             onClick={handleFileSelect}
-            className="rounded-lg p-2.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300 md:p-1.5"
+            className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5"
             aria-label="Attach file"
           >
             <Paperclip className="h-4 w-4" />
@@ -609,25 +615,29 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             onPaste={handlePaste}
             placeholder="Type a message, paste images, or drop files…"
             rows={1}
-            className="w-full resize-none rounded-xl bg-slate-800/80 px-4 py-2.5 pr-12 text-sm text-slate-100 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 transition-colors focus:ring-stable-purple/50 md:pr-10"
+            className="w-full resize-none bg-transparent px-2.5 py-2.5 pr-12 text-sm text-slate-100 placeholder:text-slate-500 outline-none md:pr-10"
             aria-label="Message input"
           />
 
-          {content.trim() ? (
-            <button
-              onClick={handleSend}
-              className="absolute bottom-1.5 right-1.5 rounded-lg bg-stable-purple p-2.5 text-white transition-colors hover:bg-stable-purple-light md:bottom-2 md:right-2 md:p-1.5"
-              aria-label="Send message"
-            >
-              <Send className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
+          <button
+            onClick={handleSend}
+            aria-disabled={!canSend}
+            className={clsx(
+              "absolute bottom-1.5 right-1.5 rounded-xl p-2.5 transition md:bottom-2 md:right-2 md:p-1.5",
+              canSend
+                ? "gradient-bg glow-iris text-white hover:opacity-95 active:scale-[0.98]"
+                : "border border-line bg-surface-2 text-slate-500",
+            )}
+            aria-label="Send message"
+          >
+            <Send className="h-3.5 w-3.5" />
+          </button>
         </div>
 
         {!isConnected && !voiceActive && (
           <button
             onClick={handleStartCall}
-            className="shrink-0 rounded-lg p-2.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-green-400 md:p-1.5 md:pb-2.5"
+            className="shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring md:p-1.5 md:pb-2.5"
             aria-label="Start call"
           >
             <Phone className="h-4 w-4" />
@@ -636,7 +646,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       </div>
 
       {dragOver && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-stable-purple/10 backdrop-blur-sm">
+        <div className="absolute inset-0 flex items-center justify-center rounded-xl border border-dashed border-stable-purple/40 bg-stable-purple/10 backdrop-blur-sm">
           <div className="flex items-center gap-2 text-stable-purple-light">
             <Paperclip className="h-5 w-5" />
             <span className="text-sm font-medium">Drop files to attach</span>

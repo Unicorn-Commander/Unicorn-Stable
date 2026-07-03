@@ -7,6 +7,8 @@ import { api } from "@/services/api";
 import { logout } from "@/services/auth";
 import { useAppStore } from "@/stores/appStore";
 import { Avatar } from "@/components/Avatar";
+import { identityFor } from "@/lib/identity";
+import { StableMark } from "@/components/StableMark";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import { Header } from "./Header";
@@ -44,6 +46,8 @@ export function AppShell() {
   const savedOpen = useAppStore((s) => s.ui.savedOpen);
   const setSavedOpen = useAppStore((s) => s.setSavedOpen);
   const currentUser = useAppStore((s) => s.currentUser);
+  // Identity hue for the signed-in resident (rings the drawer-footer avatar).
+  const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // Tab title shows total unread so background tabs can notify.
@@ -54,11 +58,9 @@ export function AppShell() {
       0,
     );
     document.title =
-      total > 0
-        ? `(${total > 99 ? "99+" : total}) Unicorn Command Center`
-        : "Unicorn Command Center";
+      total > 0 ? `(${total > 99 ? "99+" : total}) Stable` : "Stable";
     return () => {
-      document.title = "Unicorn Command Center";
+      document.title = "Stable";
     };
   }, [unreadCounts]);
 
@@ -174,8 +176,10 @@ export function AppShell() {
   }, [activeRoomId]);
 
   return (
+    // Transparent root: the page tone comes from body (surface-0) + the aurora
+    // field behind it, so glass/translucent surfaces actually pick it up.
     <div
-      className="relative flex w-screen overflow-hidden bg-slate-900"
+      className="relative flex w-screen overflow-hidden"
       style={{
         // Fill the visible viewport exactly (see useAppHeight). Reserve the
         // notch/status-bar inset up top so content clears it in standalone PWA
@@ -194,22 +198,25 @@ export function AppShell() {
             animate={{ width: 280, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.2, ease: "easeInOut" }}
-            className="absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-slate-700/50 bg-slate-900 md:static md:z-auto"
+            className="absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line bg-surface-0/80 backdrop-blur-xl md:static md:z-auto"
             aria-label="Room list sidebar"
           >
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-700/50 px-4">
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
               <h1
-                className="gradient-text text-lg font-bold tracking-tight"
-                title="Unicorn Command Center"
+                className="flex items-center gap-2.5"
+                title="Unicorn Stable"
               >
-                Command Center
+                <StableMark className="h-7 w-7 shrink-0" />
+                <span className="gradient-text font-display text-lg font-bold tracking-tight">
+                  Stable
+                </span>
               </h1>
               {/* The hamburger is hidden behind the open drawer on phones, so
                   give the drawer its own close affordance. Desktop closes via
                   the header toggle. */}
               <button
                 onClick={toggleSidebar}
-                className="-mr-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 md:hidden"
+                className="focus-ring -mr-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:hidden"
                 aria-label="Close sidebar"
               >
                 <X className="h-5 w-5" />
@@ -219,15 +226,20 @@ export function AppShell() {
             {/* Mobile-only account footer. On phones the top Header (with the
                 avatar menu) is hidden while a room is open, so account actions
                 live at the foot of the drawer. Desktop keeps the Header menu. */}
-            <div className="shrink-0 border-t border-slate-700/50 p-2 md:hidden">
-              <div className="flex items-center gap-2 px-2 py-1.5">
-                <Avatar
-                  name={currentUser?.displayName ?? "U"}
-                  src={currentUser?.avatarUrl}
-                  size="sm"
-                />
+            <div className="shrink-0 border-t border-line p-2 md:hidden">
+              <div className="mb-1 flex items-center gap-2.5 px-2.5 py-2">
+                <span
+                  className="inline-flex shrink-0 rounded-full"
+                  style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
+                >
+                  <Avatar
+                    name={currentUser?.displayName ?? "U"}
+                    src={currentUser?.avatarUrl}
+                    size="sm"
+                  />
+                </span>
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-100">
+                  <p className="truncate text-sm font-semibold text-slate-100">
                     {currentUser?.displayName}
                   </p>
                   <p className="truncate text-xs text-slate-400">
@@ -240,9 +252,9 @@ export function AppShell() {
                   setSavedOpen(true);
                   toggleSidebar();
                 }}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
               >
-                <Bookmark className="h-4 w-4" />
+                <Bookmark className="h-4 w-4 text-slate-400" />
                 Saved messages
               </button>
               <button
@@ -250,17 +262,17 @@ export function AppShell() {
                   toggleSettings();
                   toggleSidebar();
                 }}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
               >
-                <Settings className="h-4 w-4" />
+                <Settings className="h-4 w-4 text-slate-400" />
                 Settings
               </button>
               <button
                 onClick={() => logout()}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
+                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
               >
                 <LogOut className="h-4 w-4" />
-                Sign Out
+                Sign out
               </button>
             </div>
           </motion.aside>
@@ -269,7 +281,7 @@ export function AppShell() {
 
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-30 bg-slate-950/60 md:hidden"
+          className="fixed inset-0 z-30 bg-slate-950/70 backdrop-blur-sm md:hidden"
           aria-hidden="true"
           onClick={toggleSidebar}
         />

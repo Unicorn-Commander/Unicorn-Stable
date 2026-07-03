@@ -1,12 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
-    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#a78bfa"/>
-      <stop offset="100%" stop-color="#7c3aed"/>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="64" y2="64">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="55%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
     </linearGradient>
   </defs>
-  <circle cx="32" cy="32" r="30" fill="url(#g)"/>
-  <path d="M32 12 L36 20 L44 14 L40 24 L50 24 L42 30 L48 38 L38 36 L36 46 L32 38 L28 46 L26 36 L16 38 L22 30 L14 24 L24 24 L20 14 L28 20 Z"
-        fill="#ffffff" opacity="0.95"/>
-  <circle cx="32" cy="32" r="4" fill="#7c3aed"/>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#g)"/>
+  <path d="M45 11 Q33 28 19 49 Q24 54 30 55 Q40 34 45 11 Z" fill="#ffffff" opacity="0.96"/>
+  <path d="M25.8 34.8 L37.6 40.6" stroke="url(#g)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M31.9 24.9 L41.7 29.9" stroke="url(#g)" stroke-width="2.3" stroke-linecap="round"/>
+  <path d="M17 9 L19.3 15 L25 17.2 L19.3 19.4 L17 25.4 L14.7 19.4 L9 17.2 L14.7 15 Z" fill="#ffffff" opacity="0.92"/>
 </svg>

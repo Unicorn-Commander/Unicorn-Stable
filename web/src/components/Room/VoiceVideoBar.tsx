@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect, useRef } from "react";
+import { useMemo, useCallback, useEffect, useRef, type CSSProperties } from "react";
 import {
   Mic,
   MicOff,
@@ -14,6 +14,7 @@ import {
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import type { LocalTrack, RemoteTrack } from "livekit-client";
+import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { api, type BrigadeAgent } from "@/services/api";
@@ -60,15 +61,21 @@ function ParticipantTile({
 }: ParticipantTileProps) {
   const initial = p.name.charAt(0).toUpperCase();
   const showVideo = !!videoRef && !hidden;
+  const ident = identityFor(p.id.replace(/^agent-/, ""), p.name);
 
   return (
     <div
       onClick={onClick}
       className={clsx(
-        "group relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg bg-slate-800/60 transition-all",
-        p.isSpeaking ? "ring-2 ring-green-500/60" : "ring-1 ring-slate-700/50",
+        "group relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-surface-1/80 transition-all",
+        p.isSpeaking && "ring-2",
         onClick && "cursor-pointer",
       )}
+      style={
+        p.isSpeaking
+          ? ({ "--tw-ring-color": ident.ring } as CSSProperties)
+          : undefined
+      }
     >
       {showVideo ? (
         <video
@@ -76,18 +83,19 @@ function ParticipantTile({
           autoPlay
           playsInline
           muted
-          className="h-full w-full rounded-lg object-cover"
+          className="h-full w-full object-cover"
         />
       ) : (
         <div
           className={clsx(
-            "flex items-center justify-center rounded-full font-semibold",
+            "flex items-center justify-center rounded-full font-semibold text-white/95",
             size === "large" ? "h-24 w-24 text-3xl" : "h-14 w-14 text-lg sm:h-16 sm:w-16",
-            p.isAgent
-              ? "bg-stable-cyan/20 text-stable-cyan"
-              : "bg-stable-purple/20 text-stable-purple-light",
             p.isSpeaking && !p.isMuted && "animate-pulse-soft",
           )}
+          style={{
+            background: ident.gradient,
+            boxShadow: p.isSpeaking ? `0 0 0 2px ${ident.ring}` : undefined,
+          }}
         >
           {p.isAgent ? (
             <Bot className={size === "large" ? "h-12 w-12" : "h-7 w-7"} />
@@ -97,7 +105,7 @@ function ParticipantTile({
         </div>
       )}
 
-      <span className="absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-slate-950/70 px-1.5 py-0.5 text-xs font-medium text-slate-100">
+      <span className="glass absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md px-2 py-0.5 text-xs font-medium text-slate-100">
         {p.name}
       </span>
 
@@ -108,7 +116,7 @@ function ParticipantTile({
             e.stopPropagation();
             onToggleHide();
           }}
-          className="absolute left-1 top-1 rounded-full bg-slate-950/70 p-1 text-slate-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
+          className="glass focus-ring absolute left-1.5 top-1.5 rounded-full p-1 text-slate-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 focus-visible:opacity-100"
           aria-label={hidden ? `Show ${p.name} video` : `Hide ${p.name} video`}
           title={hidden ? "Show video" : "Hide this tile's video"}
         >
@@ -117,13 +125,13 @@ function ParticipantTile({
       )}
 
       {p.isMuted && (
-        <div className="absolute right-1 top-1 rounded-full bg-red-500/80 p-1">
+        <div className="absolute right-1.5 top-1.5 rounded-full bg-rose-500/80 p-1">
           <MicOff className="h-3 w-3 text-white" />
         </div>
       )}
       {p.isSpeaking && !p.isMuted && (
-        <div className="absolute right-1 top-1 rounded-full bg-green-500/80 p-1">
-          <Volume2 className="h-3 w-3 text-white" />
+        <div className="absolute right-1.5 top-1.5 rounded-full bg-stable-mint/90 p-1">
+          <Volume2 className="h-3 w-3 text-slate-950" />
         </div>
       )}
     </div>
@@ -137,15 +145,15 @@ interface ScreenShareTileProps {
 
 function ScreenShareTile({ label, videoRef }: ScreenShareTileProps) {
   return (
-    <div className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg bg-slate-950/80 ring-1 ring-stable-cyan/40">
+    <div className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-2xl border border-stable-cyan/30 bg-slate-950/80 ring-1 ring-stable-cyan/20">
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className="h-full w-full rounded-lg bg-black object-contain"
+        className="h-full w-full bg-black object-contain"
       />
-      <div className="absolute bottom-1 left-1 flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-xs font-medium text-stable-cyan">
+      <div className="glass absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-stable-cyan">
         <MonitorUp className="h-3 w-3 shrink-0" />
         <span className="truncate">{label}</span>
       </div>
@@ -154,6 +162,8 @@ function ScreenShareTile({ label, videoRef }: ScreenShareTileProps) {
 }
 
 interface AudioChipProps {
+  /** LiveKit identity — drives the resident's identity hue. */
+  id: string;
   name: string;
   isAgent: boolean;
   isSpeaking: boolean;
@@ -161,30 +171,34 @@ interface AudioChipProps {
 }
 
 /** Compact avatar chip with a speaking-indicator ring (no video). */
-function AudioChip({ name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
+function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
   const initial = name.charAt(0).toUpperCase();
+  const ident = identityFor(id.replace(/^agent-/, ""), name);
   return (
     <div
       className={clsx(
-        "relative flex shrink-0 items-center gap-2 rounded-full py-1 pl-1 pr-3 transition-all",
-        isSpeaking ? "bg-green-500/10 ring-1 ring-green-500/50" : "bg-slate-800/50",
+        "relative flex shrink-0 items-center gap-2 rounded-full border py-1 pl-1 pr-3 transition-all",
+        !isSpeaking && "border-transparent bg-surface-2/70",
       )}
+      style={
+        isSpeaking
+          ? { background: ident.faint, borderColor: ident.ring }
+          : undefined
+      }
     >
       <div
         className={clsx(
-          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold",
-          isAgent
-            ? "bg-stable-cyan/20 text-stable-cyan"
-            : "bg-stable-purple/20 text-stable-purple-light",
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white/95",
           isSpeaking && !isMuted && "animate-pulse-soft",
         )}
+        style={{ background: ident.gradient }}
       >
         {isAgent ? <Bot className="h-4 w-4" /> : initial}
       </div>
       <span className="max-w-[10ch] truncate text-xs font-medium text-slate-200">
         {name}
       </span>
-      {isMuted && <MicOff className="h-3.5 w-3.5 shrink-0 text-red-400" />}
+      {isMuted && <MicOff className="h-3.5 w-3.5 shrink-0 text-rose-400" />}
     </div>
   );
 }
@@ -364,13 +378,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   if (!room) {
     return (
-      <div className="flex items-center justify-between border-b border-slate-700/50 bg-slate-900/80 px-4 py-2">
-        <span className="animate-pulse-soft text-sm text-slate-400">
+      <div className="flex items-center justify-between border-b border-line bg-surface-1/70 px-4 py-2 backdrop-blur-md">
+        <span className="animate-shimmer text-sm font-medium">
           Connecting to the call…
         </span>
         <button
           onClick={disconnect}
-          className="rounded-lg bg-red-500/20 p-2.5 text-red-400 transition-colors hover:bg-red-500/30"
+          className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
           aria-label="Cancel call"
         >
           <PhoneOff className="h-5 w-5" />
@@ -419,14 +433,14 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   }
 
   const controls = (
-    <div className="flex shrink-0 items-center justify-center gap-2">
+    <div className="glass flex shrink-0 items-center justify-center gap-1.5 rounded-2xl p-1.5">
       <button
         onClick={toggleMic}
         className={clsx(
-          "flex h-10 w-10 items-center justify-center rounded-full transition-colors",
+          "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
           isMicOn
-            ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
-            : "bg-red-500/20 text-red-400 hover:bg-red-500/30",
+            ? "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+            : "border-rose-500/30 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
         )}
         aria-label={isMicOn ? "Mute" : "Unmute"}
       >
@@ -435,10 +449,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       <button
         onClick={toggleCam}
         className={clsx(
-          "flex h-10 w-10 items-center justify-center rounded-full transition-colors",
+          "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
           isCamOn
-            ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
-            : "bg-slate-800/60 text-slate-400 hover:bg-slate-700 hover:text-slate-200",
+            ? "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+            : "border-rose-500/30 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
         )}
         aria-label={isCamOn ? "Turn off camera" : "Turn on camera"}
       >
@@ -446,7 +460,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       </button>
       <button
         onClick={disconnect}
-        className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/20 text-red-400 transition-colors hover:bg-red-500/30"
+        className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
         aria-label="End call"
       >
         <PhoneOff className="h-5 w-5" />
@@ -474,6 +488,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             {participants.map((p) => (
               <AudioChip
                 key={p.sid}
+                id={p.id}
                 name={p.name}
                 isAgent={p.isAgent}
                 isSpeaking={p.isSpeaking}
@@ -523,7 +538,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
       {/* Live transcript docks under the stage (toggleable). */}
       {showTranscript && (
-        <div className="mt-2 h-40 shrink-0 overflow-hidden rounded-lg border border-slate-700/50">
+        <div className="mt-2 h-40 shrink-0 overflow-hidden rounded-xl border border-line">
           <TranscriptPanel />
         </div>
       )}
@@ -541,7 +556,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       {audioBlocked && (
         <button
           onClick={() => void startAudio()}
-          className="flex w-full shrink-0 items-center justify-center gap-2 bg-amber-500/25 px-4 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/35"
+          className="focus-ring flex w-full shrink-0 items-center justify-center gap-2 border-b border-amber-400/20 bg-amber-400/15 px-4 py-2 text-sm font-semibold text-amber-200 transition-colors hover:bg-amber-400/25"
         >
           <Volume2 className="h-4 w-4" />
           Tap to hear the call
@@ -554,7 +569,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
       {/* Non-forcing prompt: someone turned a camera on while in audio compact. */}
       {videoPrompted && compactLayout && hasAnyVideo && (
-        <div className="flex w-full shrink-0 items-center justify-between gap-2 bg-stable-cyan/15 px-4 py-1.5 text-xs text-stable-cyan">
+        <div className="flex w-full shrink-0 items-center justify-between gap-2 border-b border-stable-cyan/20 bg-stable-cyan/15 px-4 py-1.5 text-xs text-stable-cyan">
           <span className="flex items-center gap-1.5">
             <Video className="h-3.5 w-3.5" />
             Someone turned their camera on.
@@ -562,13 +577,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           <span className="flex items-center gap-1">
             <button
               onClick={() => setViewMode(roomId, "grid")}
-              className="rounded bg-stable-cyan/20 px-2 py-0.5 font-semibold hover:bg-stable-cyan/30"
+              className="focus-ring rounded-md bg-stable-cyan/20 px-2 py-0.5 font-semibold transition-colors hover:bg-stable-cyan/30"
             >
               Show video
             </button>
             <button
               onClick={() => setVideoPrompted(false)}
-              className="rounded px-1.5 py-0.5 text-slate-400 hover:text-slate-200"
+              className="focus-ring rounded-md px-1.5 py-0.5 text-slate-400 transition-colors hover:text-slate-200"
               aria-label="Dismiss"
             >
               Dismiss
@@ -579,7 +594,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
       <div
         className={clsx(
-          "flex min-h-0 flex-1 border-b border-slate-700/50 bg-slate-900/80",
+          "flex min-h-0 flex-1 border-b border-line bg-surface-1/70 backdrop-blur-md",
           compactLayout ? "flex-row items-center gap-3 px-4 py-2" : "flex-col gap-2 p-3",
         )}
         role="region"

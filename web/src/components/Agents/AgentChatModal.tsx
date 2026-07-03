@@ -8,6 +8,7 @@ import { api, type Agent } from "@/services/api";
 import {
   AFFIL_META,
   affiliationOf,
+  agentIdentity,
   TIER_META,
   tierOf,
   statusDot,
@@ -48,6 +49,7 @@ export function AgentChatModal({
 
   const tierMeta = TIER_META[tierOf(focusAgent)];
   const affilMeta = AFFIL_META[affiliationOf(focusAgent)];
+  const ident = agentIdentity(focusAgent);
   const paidNames = useMemo(
     () => new Set(toolCostInfo(focusAgent).paidTools.map((t) => t.name)),
     [focusAgent],
@@ -141,20 +143,26 @@ export function AgentChatModal({
         animate={{ scale: 1, y: 0, opacity: 1 }}
         exit={{ scale: 0.96, y: 8, opacity: 0 }}
         transition={{ duration: 0.15 }}
-        className={clsx(
-          "flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-l-4 border-slate-700/60 bg-slate-900 shadow-2xl",
-          affilMeta.border,
-        )}
+        className="glass-heavy relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Affiliation legend — the colored left edge (matches roster + chart). */}
+        <span
+          aria-hidden="true"
+          className={clsx("absolute inset-y-0 left-0 z-10 w-1", affilMeta.bar)}
+        />
         {/* Focused agent header */}
-        <div className="relative shrink-0 overflow-hidden border-b border-slate-700/50 p-5">
+        <div className="relative shrink-0 overflow-hidden border-b border-line p-5">
           <div
-            className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-stable-purple/20 blur-3xl"
+            className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full blur-3xl"
+            style={{ background: ident.color, opacity: 0.16 }}
             aria-hidden="true"
           />
           <div className="relative flex items-start gap-3">
-            <span className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-2xl text-stable-purple-light">
+            <span
+              className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-2xl text-white/90 shadow-soft"
+              style={{ background: ident.gradient }}
+            >
               {focusAgent.avatar_url ? (
                 <img
                   src={focusAgent.avatar_url}
@@ -175,12 +183,15 @@ export function AgentChatModal({
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h2 className="truncate text-lg font-bold text-slate-50">
+                <h2
+                  className="font-display truncate text-lg font-bold"
+                  style={{ color: ident.text }}
+                >
                   {label(focusAgent)}
                 </h2>
                 <span
                   className={clsx(
-                    "inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
+                    "inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1",
                     tierMeta.chip,
                   )}
                 >
@@ -188,7 +199,7 @@ export function AgentChatModal({
                 </span>
                 <PaidToolsBadge agent={focusAgent} />
               </div>
-              <p className="truncate text-sm text-stable-purple-light">
+              <p className="truncate text-sm text-slate-300">
                 {focusAgent.title || prettyDomain(focusAgent.domain)}
               </p>
               <p className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
@@ -205,7 +216,7 @@ export function AgentChatModal({
             </div>
             <button
               onClick={onClose}
-              className="-mr-1 -mt-1 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+              className="focus-ring -mr-1 -mt-1 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
               aria-label="Close"
             >
               <X className="h-5 w-5" />
@@ -219,17 +230,17 @@ export function AgentChatModal({
                   key={t}
                   title={paidNames.has(t) ? `${t} · costs money` : t}
                   className={clsx(
-                    "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                    "rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1",
                     paidNames.has(t)
-                      ? "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25"
-                      : "bg-slate-700/40 text-slate-400",
+                      ? "bg-amber-500/15 text-amber-200 ring-amber-500/25"
+                      : "bg-white/[0.04] text-slate-400 ring-white/[0.06]",
                   )}
                 >
                   {paidNames.has(t) ? `$ ${t}` : t}
                 </span>
               ))}
               {focusAgent.tools.length > 8 && (
-                <span className="rounded-md bg-slate-700/30 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                <span className="rounded-md bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-500">
                   +{focusAgent.tools.length - 8}
                 </span>
               )}
@@ -240,36 +251,48 @@ export function AgentChatModal({
         {/* Add-more selector */}
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center justify-between gap-2 px-4 pt-3">
-            <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
-              <Users className="h-3.5 w-3.5" />
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+              <Users className="h-3.5 w-3.5 text-slate-400" />
               Add agents to this chat
             </span>
-            <span className="text-[11px] text-slate-500">{count} selected</span>
+            <span className="text-[11px] tabular-nums text-slate-500">
+              {count} selected
+            </span>
           </div>
           <div className="relative mx-4 mt-2">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
               placeholder="Search agents…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="w-full rounded-lg bg-slate-800/80 py-1.5 pl-8 pr-3 text-xs text-slate-200 placeholder-slate-500 outline-none ring-1 ring-slate-700/50 focus:ring-stable-purple/50"
+              className="w-full rounded-lg border border-line bg-slate-950/60 py-1.5 pl-8 pr-3 text-xs text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
               aria-label="Search agents to add"
             />
           </div>
           <ul className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {list.map((a) => {
               const on = selected.has(a.id);
+              const rowIdent = agentIdentity(a);
               return (
                 <li key={a.id}>
                   <button
                     onClick={() => toggle(a.id)}
                     className={clsx(
-                      "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
-                      on ? "bg-stable-purple/15" : "hover:bg-slate-800/60",
+                      "focus-ring flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
+                      !on && "hover:bg-white/[0.04]",
                     )}
+                    style={on ? { background: rowIdent.soft } : undefined}
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-stable-purple/30 to-stable-cyan/20 text-stable-purple-light">
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: rowIdent.color }}
+                    />
+                    <span
+                      className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg text-sm text-white/90"
+                      style={{ background: rowIdent.gradient }}
+                    >
                       {a.emoji ? (
                         <span aria-hidden="true">{a.emoji}</span>
                       ) : (
@@ -286,7 +309,7 @@ export function AgentChatModal({
                     </span>
                     <span
                       className={clsx(
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
                         on
                           ? "border-stable-purple bg-stable-purple text-white"
                           : "border-slate-600",
@@ -302,7 +325,7 @@ export function AgentChatModal({
         </div>
 
         {/* Footer */}
-        <div className="shrink-0 border-t border-slate-700/50 p-3">
+        <div className="shrink-0 border-t border-line p-3">
           {count > 1 && (
             <p className="mb-2 px-1 text-[11px] text-slate-500">
               Group chat — @mention an agent (or @all) to address them.
@@ -311,14 +334,14 @@ export function AgentChatModal({
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={onClose}
-              className="rounded-lg bg-slate-800 px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700"
+              className="focus-ring rounded-xl border border-line bg-surface-2 px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-line-strong hover:bg-surface-3"
             >
               Cancel
             </button>
             <button
               onClick={start}
               disabled={busy || count === 0}
-              className="gradient-bg flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="gradient-bg focus-ring flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-glow-iris transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <MessageSquarePlus className="h-4 w-4" />
               {busy
