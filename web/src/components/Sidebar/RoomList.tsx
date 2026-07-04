@@ -44,8 +44,6 @@ export function RoomList() {
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
-  // Identity hue for the default agent — drives its rows' dots + active accent.
-  const defaultAgentIdent = identityFor(defaultAgent.id, defaultAgent.name);
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
   const openRoom = (id: string) => {
@@ -83,17 +81,14 @@ export function RoomList() {
     };
   }, [setDefaultAgentId]);
 
-  // ChatGPT-style "New chat": start a fresh conversation bound to the user's
-  // default agent and jump into it (the section "+" and empty-state CTA). The
-  // split New-chat button has its own per-agent path.
-  async function startDefaultChat() {
+  // ChatGPT-style "New chat": start a fresh conversation bound to an agent and
+  // jump into it (the per-agent "+" in Direct messages and the empty-state
+  // CTA). The split New-chat button has its own per-agent path.
+  async function startAgentChat(agentId: string, agentName: string) {
     if (startingChat) return;
     setStartingChat(true);
     try {
-      const room = await api.createAgentDm(
-        defaultAgent.id,
-        `Chat with ${defaultAgent.name}`,
-      );
+      const room = await api.createAgentDm(agentId, `Chat with ${agentName}`);
       await queryClient.invalidateQueries({ queryKey: ["rooms"] });
       openRoom(room.id);
     } catch (err) {
@@ -103,6 +98,8 @@ export function RoomList() {
       setStartingChat(false);
     }
   }
+  const startDefaultChat = () =>
+    startAgentChat(defaultAgent.id, defaultAgent.name);
 
   async function handleSeedDefaults() {
     if (seeding) return;
@@ -305,30 +302,59 @@ export function RoomList() {
     );
   }
 
-  // Conversations with the user's default agent get their own resumable-history
-  // section. The rooms query is already ordered most-recent-first by the backend
-  // (updated_at DESC), so this slice stays newest → oldest.
-  const primaryConversations = useMemo(
-    () =>
-      filteredRooms.filter(
-        (r) =>
-          (r.type === "dm" || r.type === "group_dm") &&
-          r.brigade_agent_id === defaultAgent.id,
-      ),
-    [filteredRooms, defaultAgent.id],
-  );
+  // ONE "Direct messages" list: agent conversations group under their resident
+  // (a collapsible thread-history per agent, ChatGPT-style), human DMs stay
+  // flat, and entries interleave by latest activity. The rooms query is already
+  // ordered most-recent-first by the backend (updated_at DESC), so each group's
+  // threads and the mixed ordering stay newest → oldest for free (a group sits
+  // at its newest thread's position).
+  type DmEntry =
+    | { kind: "agent"; agentId: string; threads: Room[] }
+    | { kind: "human"; room: Room };
 
-  // Everything else that's a DM (other people / other agents). The default
-  // agent's conversations are pulled out above so they aren't listed twice.
-  const directMessages = useMemo(
-    () =>
-      filteredRooms.filter(
-        (r) =>
-          (r.type === "dm" || r.type === "group_dm") &&
-          r.brigade_agent_id !== defaultAgent.id,
-      ),
-    [filteredRooms, defaultAgent.id],
+  const dmEntries = useMemo<DmEntry[]>(() => {
+    const byAgent = new Map<string, Room[]>();
+    const entries: DmEntry[] = [];
+    for (const room of filteredRooms) {
+      if (room.type !== "dm" && room.type !== "group_dm") continue;
+      const agentId = room.brigade_agent_id;
+      if (agentId) {
+        const threads = byAgent.get(agentId);
+        if (threads) {
+          threads.push(room);
+        } else {
+          const fresh = [room];
+          byAgent.set(agentId, fresh);
+          entries.push({ kind: "agent", agentId, threads: fresh });
+        }
+      } else {
+        entries.push({ kind: "human", room });
+      }
+    }
+    return entries;
+  }, [filteredRooms]);
+
+  // Collapsed by default — one row per resident; the chevron reveals history.
+  // Session-local UI state on purpose (like scroll position).
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(
+    () => new Set(),
   );
+  const toggleAgentExpanded = (agentId: string) =>
+    setExpandedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    });
+
+  function agentDisplayName(agentId: string, threads: Room[]): string {
+    const rosterAgent = agents.find((a) => a.id === agentId);
+    if (rosterAgent) return rosterAgent.display_name || rosterAgent.name;
+    // Roster not loaded (or agent retired): fall back to the room label
+    // without its "Chat with " prefix.
+    const label = threads[0]?.display_name || threads[0]?.name || agentId;
+    return label.replace(/^chat with /i, "");
+  }
 
   function formatLastMessage(content: string): string {
     if (content.length <= 40) return content;
@@ -341,6 +367,254 @@ export function RoomList() {
     } catch {
       return "";
     }
+  }
+
+
+  // ---- Unified Direct-messages renderers -----------------------------------
+  // One row per resident. Agents with multiple conversations collapse into a
+  // thread-history group (ChatGPT-style): the row opens the newest thread, the
+  // chevron reveals the history, the hover "+" starts a fresh thread.
+
+  function renderThreadRow(room: Room, identColor: string) {
+    const isActive = activeRoomId === room.id;
+    return (
+      <li key={room.id}>
+        <button
+          onClick={() => openRoom(room.id)}
+          className={clsx(
+            "focus-ring relative flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors md:py-1.5",
+            isActive
+              ? "bg-white/[0.06] text-slate-100"
+              : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200",
+          )}
+          aria-current={isActive ? "page" : undefined}
+        >
+          {isActive && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full"
+              style={{ background: identColor }}
+            />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-[13px]">
+                {room.last_message ? (
+                  <>
+                    <span className="font-medium">
+                      {room.last_message.sender_name}:
+                    </span>{" "}
+                    {formatLastMessage(room.last_message.content)}
+                  </>
+                ) : (
+                  <span className="italic text-slate-500">
+                    New conversation
+                  </span>
+                )}
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {room.last_message && (
+                  <span className="text-[10px] tabular-nums text-slate-500">
+                    {formatTimestamp(room.last_message.created_at)}
+                  </span>
+                )}
+                {room.unread_count > 0 && (
+                  <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
+                    {room.unread_count > 99 ? "99+" : room.unread_count}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </button>
+      </li>
+    );
+  }
+
+  function renderAgentGroup(agentId: string, threads: Room[]) {
+    const name = agentDisplayName(agentId, threads);
+    const ident = identityFor(agentId, name);
+    const latest = threads[0];
+    const expanded = expandedAgents.has(agentId);
+    const hasActive = threads.some((r) => r.id === activeRoomId);
+    const unreadTotal = threads.reduce((n, r) => n + (r.unread_count ?? 0), 0);
+    const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
+      (p) => (p.participant_id || p.user_id) !== currentUserId,
+    );
+    const agentOnline = others.some((p) => {
+      const id = p.participant_id || p.user_id || "";
+      return p.is_online || onlineUsers.includes(id);
+    });
+    return (
+      <li key={`agent-${agentId}`}>
+        <div
+          className={clsx(
+            "group/agent relative flex w-full items-center rounded-lg pr-1 transition-colors",
+            hasActive && !expanded
+              ? "bg-white/[0.06]"
+              : "hover:bg-white/[0.04]",
+          )}
+        >
+          {hasActive && !expanded && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full"
+              style={{ background: ident.color }}
+            />
+          )}
+          <button
+            onClick={() => latest && openRoom(latest.id)}
+            className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-slate-300 transition-colors hover:text-slate-100 md:py-1.5"
+            title={`Open your latest conversation with ${name}`}
+          >
+            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+              <span
+                aria-hidden="true"
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ background: ident.color }}
+              />
+              {agentOnline && (
+                <span
+                  className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
+                  aria-label="Online"
+                />
+              )}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className="truncate text-sm font-medium"
+                  style={{ color: ident.text }}
+                >
+                  {name}
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {latest?.last_message && (
+                    <span className="text-[10px] tabular-nums text-slate-500">
+                      {formatTimestamp(latest.last_message.created_at)}
+                    </span>
+                  )}
+                  {!expanded && unreadTotal > 0 && (
+                    <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
+                      {unreadTotal > 99 ? "99+" : unreadTotal}
+                    </span>
+                  )}
+                </div>
+              </div>
+              {latest?.last_message ? (
+                <p className="truncate text-[11px] text-slate-500">
+                  <span className="font-medium text-slate-500">
+                    {latest.last_message.sender_name}:
+                  </span>{" "}
+                  {formatLastMessage(latest.last_message.content)}
+                </p>
+              ) : (
+                <p className="truncate text-[11px] italic text-slate-600">
+                  No messages yet
+                </p>
+              )}
+            </div>
+          </button>
+          <button
+            onClick={() => startAgentChat(agentId, name)}
+            disabled={startingChat}
+            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover/agent:opacity-100 md:focus-visible:opacity-100"
+            aria-label={`Start a new chat with ${name}`}
+            title={`New chat with ${name}`}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          {threads.length > 1 && (
+            <button
+              onClick={() => toggleAgentExpanded(agentId)}
+              className="focus-ring flex items-center gap-0.5 rounded-md p-1 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+              aria-expanded={expanded}
+              aria-label={`${expanded ? "Hide" : "Show"} conversation history with ${name} (${threads.length})`}
+              title={`${threads.length} conversations`}
+            >
+              <span className="text-[10px] tabular-nums">{threads.length}</span>
+              <ChevronDown
+                className={clsx(
+                  "h-3 w-3 shrink-0 transition-transform duration-150",
+                  !expanded && "-rotate-90",
+                )}
+              />
+            </button>
+          )}
+        </div>
+        {expanded && threads.length > 1 && (
+          <ul role="list" className="ml-3 border-l border-line pl-1">
+            {threads.map((room) => renderThreadRow(room, ident.color))}
+          </ul>
+        )}
+      </li>
+    );
+  }
+
+  function renderHumanDm(room: Room) {
+    const others = (participantsByRoom[room.id] ?? []).filter(
+      (p) => (p.participant_id || p.user_id) !== currentUserId,
+    );
+    const otherOnline = others.some((p) => {
+      const id = p.participant_id || p.user_id || "";
+      return p.is_online || onlineUsers.includes(id);
+    });
+    const isActive = activeRoomId === room.id;
+    return (
+      <li key={room.id}>
+        <button
+          onClick={() => openRoom(room.id)}
+          className={clsx(
+            "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+            isActive
+              ? "bg-white/[0.06] text-slate-50"
+              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+          )}
+          aria-current={isActive ? "page" : undefined}
+        >
+          {isActive && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+            />
+          )}
+          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+            <MessageSquare className="h-4 w-4 opacity-60" />
+            {otherOnline && (
+              <span
+                className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
+                aria-label="Online"
+              />
+            )}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-sm font-medium">{room.name}</span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {room.last_message && (
+                  <span className="text-[10px] tabular-nums text-slate-500">
+                    {formatTimestamp(room.last_message.created_at)}
+                  </span>
+                )}
+                {room.unread_count > 0 && (
+                  <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
+                    {room.unread_count > 99 ? "99+" : room.unread_count}
+                  </span>
+                )}
+              </div>
+            </div>
+            {room.last_message && (
+              <p className="truncate text-[11px] text-slate-500">
+                <span className="font-medium text-slate-500">
+                  {room.last_message.sender_name}:
+                </span>{" "}
+                {formatLastMessage(room.last_message.content)}
+              </p>
+            )}
+          </div>
+        </button>
+      </li>
+    );
   }
 
   return (
@@ -439,112 +713,6 @@ export function RoomList() {
         <section>
           <div className="flex items-center justify-between px-2.5 pb-1">
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Chats with {defaultAgent.name}
-            </h3>
-            <button
-              onClick={startDefaultChat}
-              disabled={startingChat}
-              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-50 md:p-0.5"
-              aria-label={`Start a new chat with ${defaultAgent.name}`}
-              title={`Start a new chat with ${defaultAgent.name}`}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          {primaryConversations.length === 0 ? (
-            <button
-              onClick={startDefaultChat}
-              disabled={startingChat}
-              className="focus-ring mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
-            >
-              <span className="font-medium">No conversations yet</span>
-              <span>
-                {startingChat
-                  ? "Starting…"
-                  : `Start a chat with ${defaultAgent.name} — past conversations show up here.`}
-              </span>
-            </button>
-          ) : (
-            <ul role="list">
-              {primaryConversations.map((room) => {
-                const others = (participantsByRoom[room.id] ?? []).filter(
-                  (p) => (p.participant_id || p.user_id) !== currentUserId,
-                );
-                const otherOnline = others.some((p) => {
-                  const id = p.participant_id || p.user_id || "";
-                  return p.is_online || onlineUsers.includes(id);
-                });
-                return (
-                  <li key={room.id}>
-                    <button
-                      onClick={() => openRoom(room.id)}
-                      className={clsx(
-                        "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
-                        activeRoomId === room.id
-                          ? "bg-white/[0.06] text-slate-50"
-                          : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
-                      )}
-                      aria-current={activeRoomId === room.id ? "page" : undefined}
-                    >
-                      {activeRoomId === room.id && (
-                        <span
-                          aria-hidden="true"
-                          className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full"
-                          style={{ background: defaultAgentIdent.color }}
-                        />
-                      )}
-                      <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-                        <span
-                          aria-hidden="true"
-                          className="h-1.5 w-1.5 rounded-full"
-                          style={{ background: defaultAgentIdent.color }}
-                        />
-                        {otherOnline && (
-                          <span
-                            className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
-                            aria-label="Online"
-                          />
-                        )}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-sm font-medium">
-                            {room.name}
-                          </span>
-                          <div className="flex shrink-0 items-center gap-1.5">
-                            {room.last_message && (
-                              <span className="text-[10px] tabular-nums text-slate-500">
-                                {formatTimestamp(room.last_message.created_at)}
-                              </span>
-                            )}
-                            {room.unread_count > 0 && (
-                              <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                                {room.unread_count > 99 ? "99+" : room.unread_count}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        {room.last_message && (
-                          <p className="truncate text-[11px] text-slate-500">
-                            <span className="font-medium text-slate-500">
-                              {room.last_message.sender_name}:
-                            </span>{" "}
-                            {formatLastMessage(room.last_message.content)}
-                          </p>
-                        )}
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        <section>
-          <div className="flex items-center justify-between px-2.5 pb-1">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               Channels
             </h3>
             <div className="flex items-center gap-1">
@@ -621,108 +789,41 @@ export function RoomList() {
             <button
               onClick={() => setCreateDmOpen(true)}
               className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-              aria-label="Create direct message"
+              aria-label="New direct message"
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          {directMessages.length === 0 && (
-            <button
-              onClick={() => setCreateDmOpen(true)}
-              className="focus-ring mx-2 mb-1 flex w-[calc(100%-1rem)] flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300"
-            >
-              <span className="font-medium">No DMs yet</span>
-              <span>Click here to start one — pick one person or several for a group.</span>
-            </button>
+          {dmEntries.length === 0 && (
+            <div className="mx-2 mb-1 flex flex-col gap-1">
+              <button
+                onClick={startDefaultChat}
+                disabled={startingChat}
+                className="focus-ring flex w-full flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
+              >
+                <span className="font-medium">No conversations yet</span>
+                <span>
+                  {startingChat
+                    ? "Starting…"
+                    : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
+                </span>
+              </button>
+              <button
+                onClick={() => setCreateDmOpen(true)}
+                className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+              >
+                …or message a person
+              </button>
+            </div>
           )}
 
           <ul role="list">
-            {directMessages.map((room) => {
-              const others = (participantsByRoom[room.id] ?? []).filter(
-                (p) => (p.participant_id || p.user_id) !== currentUserId,
-              );
-              const otherOnline = others.some((p) => {
-                const id = p.participant_id || p.user_id || "";
-                return p.is_online || onlineUsers.includes(id);
-              });
-              // Agent DMs carry their resident's identity hue (6px dot + active
-              // accent); human DMs keep the neutral message glyph.
-              const agentIdent = room.brigade_agent_id
-                ? identityFor(room.brigade_agent_id, room.name)
-                : null;
-              return (
-              <li key={room.id}>
-                <button
-                  onClick={() => openRoom(room.id)}
-                  className={clsx(
-                    "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
-                    activeRoomId === room.id
-                      ? "bg-white/[0.06] text-slate-50"
-                      : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
-                  )}
-                  aria-current={activeRoomId === room.id ? "page" : undefined}
-                >
-                  {activeRoomId === room.id && (
-                    <span
-                      aria-hidden="true"
-                      className={clsx(
-                        "absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full",
-                        !agentIdent && "bg-stable-purple",
-                      )}
-                      style={agentIdent ? { background: agentIdent.color } : undefined}
-                    />
-                  )}
-                  <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-                    {agentIdent ? (
-                      <span
-                        aria-hidden="true"
-                        className="h-1.5 w-1.5 rounded-full"
-                        style={{ background: agentIdent.color }}
-                      />
-                    ) : (
-                      <MessageSquare className="h-4 w-4 opacity-60" />
-                    )}
-                    {otherOnline && (
-                      <span
-                        className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
-                        aria-label="Online"
-                      />
-                    )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {room.name}
-                      </span>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        {room.last_message && (
-                          <span className="text-[10px] tabular-nums text-slate-500">
-                            {formatTimestamp(room.last_message.created_at)}
-                          </span>
-                        )}
-                        {room.unread_count > 0 && (
-                          <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                            {room.unread_count > 99
-                              ? "99+"
-                              : room.unread_count}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {room.last_message && (
-                      <p className="truncate text-[11px] text-slate-500">
-                        <span className="font-medium text-slate-500">
-                          {room.last_message.sender_name}:
-                        </span>{" "}
-                        {formatLastMessage(room.last_message.content)}
-                      </p>
-                    )}
-                  </div>
-                </button>
-              </li>
-              );
-            })}
+            {dmEntries.map((entry) =>
+              entry.kind === "agent"
+                ? renderAgentGroup(entry.agentId, entry.threads)
+                : renderHumanDm(entry.room),
+            )}
           </ul>
         </section>
       </nav>
