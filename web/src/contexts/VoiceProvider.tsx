@@ -125,7 +125,17 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback(async () => {
     const roomId = useAppStore.getState().activeRoomId;
-    if (!roomId || connectingRef.current || roomRef.current) return;
+    if (!roomId || connectingRef.current) return;
+    const leftover = roomRef.current;
+    if (leftover) {
+      // A live room means we're already in a call. But a room object left
+      // behind by a just-ended call must not brick the Start-call button
+      // (the "hang up, immediately call again → click silently ignored"
+      // trap) — clear it and connect fresh.
+      if (leftover.state !== ConnectionState.Disconnected) return;
+      console.warn("voice connect: clearing stale disconnected room");
+      roomRef.current = null;
+    }
     connectingRef.current = true;
     setIsConnecting(true);
     setError(null);
@@ -239,17 +249,50 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
       // Dispatch the room's resident Brigade agent (e.g. Majik) into the call.
       // A failed dispatch must never break the human's call.
-      try {
+      const inviteAgent = async () => {
         const detail = await api.getRoom(roomId);
         const agentId = detail?.brigade_agent_id;
-        if (agentId) {
-          // Honor the per-room model override (mid-conversation switcher) for
-          // the voice agent too, so the spoken agent uses the same chosen LLM.
-          const model = useAppStore.getState().modelOverrides[roomId];
-          await api.inviteBrigadeAgent(roomId, agentId, model);
-        }
+        if (!agentId) return false;
+        // Honor the per-room model override (mid-conversation switcher) for
+        // the voice agent too, so the spoken agent uses the same chosen LLM.
+        const model = useAppStore.getState().modelOverrides[roomId];
+        await api.inviteBrigadeAgent(roomId, agentId, model);
+        return true;
+      };
+      // Optimistic default: if the invite itself failed we still want the
+      // self-heal loop below (it no-ops for rooms without a resident agent).
+      let roomHasAgent = true;
+      try {
+        roomHasAgent = await inviteAgent();
       } catch (e) {
         console.error("failed to dispatch agent into voice call", e);
+      }
+
+      // Self-heal: the server skips the dispatch when a previous call's agent
+      // is still in the room — but that agent may be a zombie mid-teardown
+      // (rapid hang-up → call-again), and a dispatch can also just get lost.
+      // Poll for a live agent participant and re-invite until one shows up.
+      if (roomHasAgent) {
+        const ensureAgent = (attempt: number) => {
+          window.setTimeout(async () => {
+            const cur = roomRef.current;
+            if (!cur || cur.state !== ConnectionState.Connected) return;
+            const agentPresent = Array.from(
+              cur.remoteParticipants.values(),
+            ).some((p) => isAgentParticipant(p));
+            if (agentPresent) return;
+            console.warn(
+              `voice call has no agent after ${attempt * 4}s — re-inviting`,
+            );
+            try {
+              await inviteAgent();
+            } catch (e) {
+              console.error("agent re-invite failed", e);
+            }
+            if (attempt < 3) ensureAgent(attempt + 1);
+          }, 4000);
+        };
+        ensureAgent(1);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect to room");
