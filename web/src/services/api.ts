@@ -395,7 +395,10 @@ class StableApiClient {
       agent_ids: [],
     });
     try {
-      await this.inviteBrigadeAgent(room.id, brigadeAgentId);
+      // Text-context bind only — the voice worker is dispatched at call time.
+      await this.inviteBrigadeAgent(room.id, brigadeAgentId, undefined, {
+        dispatch: false,
+      });
     } catch (err) {
       console.warn("agent-invite failed for new chat", brigadeAgentId, err);
     }
@@ -685,12 +688,20 @@ class StableApiClient {
     roomName: string,
     brigadeAgentId: string,
     model?: string,
+    opts?: { dispatch?: boolean },
   ): Promise<InviteBrigadeAgentResponse> {
-    const body: { brigade_agent_id: string; model?: string } = {
-      brigade_agent_id: brigadeAgentId,
-    };
+    const body: { brigade_agent_id: string; model?: string; dispatch?: boolean } =
+      {
+        brigade_agent_id: brigadeAgentId,
+      };
     // Only send the override when the room has one set; absent = agent default.
     if (model) body.model = model;
+    // dispatch: false binds the agent to the room (text responder + member
+    // strip) WITHOUT spawning a LiveKit voice worker. Text contexts must use
+    // it — a worker dispatched with no call to join collides with the real
+    // call-time dispatch (both share the "agent-brigade" identity) and the
+    // room ends up agentless.
+    if (opts?.dispatch === false) body.dispatch = false;
     return this.request<InviteBrigadeAgentResponse>(
       "POST",
       `/api/v1/rooms/${encodeURIComponent(roomName)}/invite-brigade-agent`,

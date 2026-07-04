@@ -107,7 +107,10 @@ export function AgentChatModal({
         });
         for (const a of picked) {
           try {
-            await api.inviteBrigadeAgent(room.id, a.id);
+            // Text-context bind — the voice worker is dispatched at call time.
+            await api.inviteBrigadeAgent(room.id, a.id, undefined, {
+              dispatch: false,
+            });
           } catch (err) {
             console.warn("agent-invite failed for", a.id, err);
           }

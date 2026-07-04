@@ -3,6 +3,7 @@ import { Bot, ChevronDown, Search } from "lucide-react";
 import clsx from "clsx";
 import { api, type BrigadeAgent } from "../../services/api";
 import { identityFor } from "@/lib/identity";
+import { useVoice } from "../../contexts/VoiceProvider";
 
 interface Props {
   /** The LiveKit room name the user is currently in. */
@@ -42,6 +43,10 @@ export function BrigadeAgentPicker({
   const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState<string | null>(null);
   const [invitedIds, setInvitedIds] = useState<Set<string>>(new Set());
+  // Only ask the server to dispatch a LiveKit voice worker when a call is
+  // actually live; outside a call the invite just re-binds the room's
+  // resident agent for the text path.
+  const { isConnected: callActive } = useVoice();
 
   useEffect(() => {
     let cancelled = false;
@@ -69,8 +74,15 @@ export function BrigadeAgentPicker({
   const invite = async (agentId: string) => {
     setInviting(agentId);
     try {
-      const result = await api.inviteBrigadeAgent(roomName, agentId);
-      if (result.dispatched) {
+      const result = await api.inviteBrigadeAgent(roomName, agentId, undefined, {
+        dispatch: callActive,
+      });
+      // dispatched:false is still success when the server intentionally
+      // skipped the voice worker (no call to join, or one already in-room).
+      const skipped =
+        result.reason === "dispatch_not_requested" ||
+        (result.reason ?? "").startsWith("agent_already_in_room");
+      if (result.dispatched || skipped) {
         setInvitedIds((prev) => new Set(prev).add(agentId));
         onInvited?.(agentId);
       } else {
