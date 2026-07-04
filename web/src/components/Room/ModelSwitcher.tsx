@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Cpu } from "lucide-react";
+import { Check, ChevronDown, Cpu, X } from "lucide-react";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import { api, type ChatModel } from "@/services/api";
@@ -74,13 +74,15 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
   }
 
   return (
-    <div className="relative" ref={wrapRef}>
+    <div className="relative flex items-center gap-1" ref={wrapRef}>
       <button
         ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         className={clsx(
-          "flex max-w-[10rem] items-center gap-1.5 rounded-lg border border-line bg-white/[0.03] px-2 py-2.5 text-xs text-slate-300 transition-colors hover:border-line-strong hover:bg-white/[0.05] hover:text-slate-100 focus-ring md:max-w-[12rem] md:py-1.5",
-          override && "text-stable-cyan",
+          "flex max-w-[10rem] items-center gap-1.5 rounded-lg border px-2 py-2.5 text-xs transition-colors focus-ring md:max-w-[12rem] md:py-1.5",
+          override
+            ? "border-stable-cyan/40 bg-stable-cyan/10 text-stable-cyan hover:border-stable-cyan/60 hover:bg-stable-cyan/15"
+            : "border-line bg-white/[0.03] text-slate-300 hover:border-line-strong hover:bg-white/[0.05] hover:text-slate-100",
           className,
         )}
         aria-haspopup="menu"
@@ -88,14 +90,24 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
         aria-label="Switch model for this conversation"
         title={
           override
-            ? `Model: ${triggerLabel} (click to change)`
-            : "Using the agent's default model (click to override)"
+            ? `Overridden for this room: ${triggerLabel} — the agent's default is unchanged elsewhere`
+            : "Using the agent's default model (click to override for this room)"
         }
       >
         <Cpu className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{triggerLabel}</span>
         <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
       </button>
+      {override && (
+        <button
+          onClick={() => choose(null)}
+          className="focus-ring rounded-md p-1 text-stable-cyan/70 transition-colors hover:bg-stable-cyan/10 hover:text-stable-cyan"
+          aria-label="Reset to the agent's default model"
+          title="Reset to the agent's default model"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
 
       {open && (
         <div
@@ -111,9 +123,9 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
             className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
           >
             <span className="flex flex-col min-w-0">
-              <span className="truncate">Default (agent's model)</span>
+              <span className="truncate">Auto — agent's default</span>
               <span className="truncate text-xs text-slate-500">
-                Use whatever the room agent is configured with
+                Brigade decides; the agent runs on its configured model
               </span>
             </span>
             {!override && (
@@ -147,9 +159,34 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
                       title={m.id}
                     >
                       <span className="flex flex-col min-w-0">
-                        <span className="truncate">{m.label}</span>
-                        <span className="truncate text-xs text-slate-500">
-                          {m.id}
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate">{m.label}</span>
+                          {m.badge && (
+                            <span
+                              className={clsx(
+                                "shrink-0 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide",
+                                m.badge === "Local"
+                                  ? "bg-stable-mint/15 text-stable-mint"
+                                  : "bg-sky-400/15 text-sky-300",
+                              )}
+                            >
+                              {m.badge}
+                            </span>
+                          )}
+                          {m.cost === "$" && (
+                            <span
+                              className="shrink-0 text-[10px] font-semibold text-amber-300/90"
+                              title="Paid cloud lane"
+                            >
+                              $
+                            </span>
+                          )}
+                        </span>
+                        <span
+                          className="truncate text-xs text-slate-500"
+                          title={m.id}
+                        >
+                          {m.desc || m.id}
                         </span>
                       </span>
                       {active && (

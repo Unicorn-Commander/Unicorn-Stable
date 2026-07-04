@@ -1,5 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import { Loader2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
@@ -52,6 +54,28 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
   const participants = useAppStore(
     (s) => s.participants[roomId] ?? EMPTY_MEMBERS,
   );
+  // Governed model override: when this room overrides the agent's model, agent
+  // replies carry a visible "via <model>" chip (transparency per the
+  // badged-override pattern). Model list is only fetched while overridden.
+  const modelOverride = useAppStore((s) => s.modelOverrides[roomId]);
+  const { data: chatModels } = useQuery({
+    queryKey: ["chat-models"],
+    queryFn: () => api.getModels(),
+    staleTime: 5 * 60_000,
+    enabled: !!modelOverride,
+  });
+  const overrideModelLabel = modelOverride
+    ? (chatModels?.find((m) => m.id === modelOverride)?.label ?? modelOverride)
+    : null;
+  // Room-aware composer placeholder ("Message #general" / "Message Majik").
+  const roomForLabel = useAppStore((s) =>
+    s.rooms.find((r) => r.id === roomId),
+  );
+  const composerPlaceholder = roomForLabel
+    ? roomForLabel.type === "channel"
+      ? `Message #${roomForLabel.display_name || roomForLabel.name}`
+      : `Message ${(roomForLabel.display_name || roomForLabel.name).replace(/^chat with /i, "")}`
+    : undefined;
   // If a moderator muted me in this room, replace the composer with a notice
   // (the server also blocks the post; this just avoids a dead-end 403).
   const iAmMuted = participants.find((p) => p.is_self)?.is_muted === true;
@@ -207,8 +231,32 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
         aria-live="polite"
       >
         {loading && messages.length === 0 && (
-          <div className="flex flex-1 items-center justify-center">
-            <Loader2 className="h-6 w-6 animate-spin text-slate-500" />
+          <div
+            className="mx-auto w-full max-w-[52rem] space-y-6 px-2 pt-6"
+            aria-hidden="true"
+          >
+            {[68, 42, 84].map((w, i) => (
+              <div
+                key={i}
+                className="flex animate-pulse-soft gap-3"
+                style={{ animationDelay: `${i * 150}ms` }}
+              >
+                <div className="h-9 w-9 shrink-0 rounded-full bg-white/[0.05]" />
+                <div className="min-w-0 flex-1 space-y-2 pt-1">
+                  <div className="h-3 w-24 rounded bg-white/[0.06]" />
+                  <div
+                    className="h-3 rounded bg-white/[0.04]"
+                    style={{ width: `${w}%` }}
+                  />
+                  {i !== 1 && (
+                    <div
+                      className="h-3 rounded bg-white/[0.04]"
+                      style={{ width: `${Math.round(w * 0.6)}%` }}
+                    />
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -274,6 +322,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
                   onReply={handleReply}
                   onRetry={retryMessage}
                   forceEditTick={editFocusId === message.id ? editTick : 0}
+                  overrideModelLabel={overrideModelLabel}
                 />
                 {/* "Seen by" pill — only on the most recent OWN message that
                     other participants have read past. Shows up to 3 avatars. */}
@@ -351,6 +400,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
         disabledReason={
           iAmMuted ? "You've been muted in this channel by a moderator." : undefined
         }
+        placeholder={composerPlaceholder}
       />
     </div>
   );
@@ -364,6 +414,7 @@ interface EmptyChannelProps {
     user_id?: string | null;
     display_name: string;
     participant_type?: string;
+    avatar_url?: string | null;
   }>;
   currentUserId?: string;
   onPrompt: (content: string) => void;
@@ -406,6 +457,7 @@ function EmptyChannel({ participants, currentUserId, onPrompt }: EmptyChannelPro
             <Avatar
               name={onlyAgent.display_name}
               id={onlyAgent.participant_id || onlyAgent.user_id}
+              src={onlyAgent.avatar_url}
               isAgent
               size="lg"
               className="relative"

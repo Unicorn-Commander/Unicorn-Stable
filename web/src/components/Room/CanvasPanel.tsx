@@ -133,7 +133,7 @@ function NewArtifactForm({
             />
           )}
         </div>
-        {error && <p className="text-xs text-red-300">{error}</p>}
+        {error && <p className="text-xs text-rose-300">{error}</p>}
         <div className="flex justify-end gap-2">
           <button
             onClick={onCancel}
@@ -383,7 +383,7 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
 
       {/* Error banner */}
       {error && (
-        <p className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+        <p className="border-b border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300">
           {error}
         </p>
       )}

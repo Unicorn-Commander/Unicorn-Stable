@@ -154,6 +154,10 @@ export interface ChatModel {
   id: string;
   label: string;
   family: string;
+  /** Curated-menu metadata (optional — served by the governed picker). */
+  badge?: string; // "Local" | "Cloud"
+  desc?: string; // one-line human description of what the lane is for
+  cost?: string; // "included" | "$"
 }
 
 export interface InviteBrigadeAgentResponse {

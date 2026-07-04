@@ -111,7 +111,7 @@ export default function CodeRenderer({
       {!readOnly && onSave && (
         <div className="flex shrink-0 items-center gap-2 border-t border-slate-700/50 bg-slate-900/80 px-3 py-1.5">
           {error && (
-            <span className="truncate text-xs text-red-300" title={error}>
+            <span className="truncate text-xs text-rose-300" title={error}>
               {error}
             </span>
           )}

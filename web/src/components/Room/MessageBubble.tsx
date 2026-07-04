@@ -524,6 +524,9 @@ interface MessageBubbleProps {
   onRetry?: (messageId: string) => Promise<void>;
   /** When this becomes true, the bubble enters edit mode (one-shot rising edge). */
   forceEditTick?: number;
+  /** Label of the room's model override, if any — agent replies get a "via …"
+   * chip so overridden traffic is always visibly badged. */
+  overrideModelLabel?: string | null;
 }
 
 export function MessageBubble({
@@ -535,6 +538,7 @@ export function MessageBubble({
   onReply,
   onRetry,
   forceEditTick,
+  overrideModelLabel,
 }: MessageBubbleProps) {
   const [hovered, setHovered] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1071,6 +1075,14 @@ export function MessageBubble({
                 style={{ background: ident.soft, color: ident.text }}
               >
                 AI
+              </span>
+            )}
+            {isAgent && overrideModelLabel && (
+              <span
+                className="rounded-md border border-stable-cyan/25 bg-stable-cyan/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-cyan/90"
+                title="This room overrides the agent's default model — reset it from the model chip in the header"
+              >
+                via {overrideModelLabel}
               </span>
             )}
             {renderTimestamp()}

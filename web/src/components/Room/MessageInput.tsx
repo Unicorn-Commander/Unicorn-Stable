@@ -116,6 +116,8 @@ interface MessageInputProps {
   /** When set, the composer is replaced by this notice (e.g. the user is
    * muted in this room). Posting is also blocked server-side. */
   disabledReason?: string;
+  /** Room-aware placeholder, e.g. "Message #general" / "Message Majik". */
+  placeholder?: string;
 }
 
 interface MentionSuggestion {
@@ -124,7 +126,7 @@ interface MentionSuggestion {
   type: "human" | "agent";
 }
 
-export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledReason }: MessageInputProps) {
+export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledReason, placeholder }: MessageInputProps) {
   const [content, setContent] = useState(() => getDraft(roomId));
   const [dragOver, setDragOver] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
@@ -613,7 +615,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Type a message, paste images, or drop files…"
+            placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
             rows={1}
             className="w-full resize-none bg-transparent px-2.5 py-2.5 pr-12 text-sm text-slate-100 placeholder:text-slate-500 outline-none md:pr-10"
             aria-label="Message input"
