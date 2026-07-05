@@ -184,6 +184,18 @@ class StableAgent:
         self._running = False
         logger.info("agent_shutting_down", identity=self._identity, room=self._room_name)
 
+        # Hard cap: the framework SIGUSR1-kills the job process
+        # shutdown_process_timeout (10s) after requesting shutdown, so a single
+        # stuck await here would skip ALL remaining cleanup and end the process
+        # with exit -10. Better to time out one step and finish the rest.
+        try:
+            await asyncio.wait_for(self._shutdown_steps(), timeout=8.0)
+        except asyncio.TimeoutError:
+            logger.warning("agent_shutdown_timed_out", identity=self._identity)
+
+        logger.info("agent_stopped", identity=self._identity)
+
+    async def _shutdown_steps(self) -> None:
         await self._log_agent_event("agent_stopped", {"room": self._room_name})
 
         if self.chat is not None:
@@ -194,8 +206,6 @@ class StableAgent:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
-
-        logger.info("agent_stopped", identity=self._identity)
 
     # ---------- subclass hooks ----------
 

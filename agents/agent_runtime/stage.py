@@ -161,8 +161,20 @@ class StageTrack:
             self._publish_task = None
 
         if self._room is not None and self._track is not None:
+            from livekit import rtc
+
             try:
-                await self._room.local_participant.unpublish_track(self._track.sid)
+                # livekit-agents disconnects the room BEFORE running job
+                # shutdown callbacks (ipc/job_proc_lazy_main.py), so an
+                # unpublish on the dead signal client never resolves and the
+                # job process eats the framework's 10s shutdown_process_timeout
+                # and dies by SIGUSR1 (exit -10). Skip when disconnected and
+                # cap the await either way.
+                if self._room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
+                    await asyncio.wait_for(
+                        self._room.local_participant.unpublish_track(self._track.sid),
+                        timeout=3.0,
+                    )
             except Exception:
                 logger.warning("stage_track_unpublish_failed", exc_info=True)
 

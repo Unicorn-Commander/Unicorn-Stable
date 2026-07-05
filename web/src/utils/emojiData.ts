@@ -6,8 +6,9 @@
  * Keywords are short (2-4) and include the legacy :shortcode: aliases from the
  * original utils/emoji.ts dictionary so old searches keep working.
  *
- * Data only — no logic. Consumed by components/EmojiPicker.tsx and derived
- * into the :shortcode: lookup in utils/emoji.ts.
+ * Data plus the small skin-tone helpers at the bottom (SKIN_TONES,
+ * supportsSkinTone, applySkinTone). Consumed by components/EmojiPicker.tsx and
+ * derived into the :shortcode: lookup in utils/emoji.ts.
  *
  * 1699 emoji across 9 groups.
  */
@@ -1790,3 +1791,85 @@ export const EMOJI: EmojiEntry[] = [
   ...SYMBOLS_EMOJI,
   ...FLAGS_EMOJI,
 ];
+
+// ── Skin tones ────────────────────────────────────
+
+/** Fitzpatrick tone options, light → dark. Empty key = no modifier (default). */
+export const SKIN_TONES: { key: string; label: string; swatch: string }[] = [
+  { key: "", label: "Default", swatch: "✋" },
+  { key: "\u{1F3FB}", label: "Light", swatch: "✋\u{1F3FB}" },
+  { key: "\u{1F3FC}", label: "Medium-light", swatch: "✋\u{1F3FC}" },
+  { key: "\u{1F3FD}", label: "Medium", swatch: "✋\u{1F3FD}" },
+  { key: "\u{1F3FE}", label: "Medium-dark", swatch: "✋\u{1F3FE}" },
+  { key: "\u{1F3FF}", label: "Dark", swatch: "✋\u{1F3FF}" },
+];
+
+/** Unicode 15.1 Emoji_Modifier_Base codepoints, as inclusive [start, end] ranges. */
+const MODIFIER_BASE_RANGES: readonly (readonly [number, number])[] = [
+  [0x261d, 0x261d],
+  [0x26f9, 0x26f9],
+  [0x270a, 0x270d],
+  [0x1f385, 0x1f385],
+  [0x1f3c2, 0x1f3c4],
+  [0x1f3c7, 0x1f3c7],
+  [0x1f3ca, 0x1f3cc],
+  [0x1f442, 0x1f443],
+  [0x1f446, 0x1f450],
+  [0x1f466, 0x1f478],
+  [0x1f47c, 0x1f47c],
+  [0x1f481, 0x1f483],
+  [0x1f485, 0x1f487],
+  [0x1f48f, 0x1f48f],
+  [0x1f491, 0x1f491],
+  [0x1f4aa, 0x1f4aa],
+  [0x1f574, 0x1f575],
+  [0x1f57a, 0x1f57a],
+  [0x1f590, 0x1f590],
+  [0x1f595, 0x1f596],
+  [0x1f645, 0x1f647],
+  [0x1f64b, 0x1f64f],
+  [0x1f6a3, 0x1f6a3],
+  [0x1f6b4, 0x1f6b6],
+  [0x1f6c0, 0x1f6c0],
+  [0x1f6cc, 0x1f6cc],
+  [0x1f90c, 0x1f90c],
+  [0x1f90f, 0x1f90f],
+  [0x1f918, 0x1f91f],
+  [0x1f926, 0x1f926],
+  [0x1f930, 0x1f939],
+  [0x1f93c, 0x1f93e],
+  [0x1f977, 0x1f977],
+  [0x1f9b5, 0x1f9b6],
+  [0x1f9b8, 0x1f9b9],
+  [0x1f9bb, 0x1f9bb],
+  [0x1f9cd, 0x1f9dd],
+  [0x1fac3, 0x1fac5],
+  [0x1faf0, 0x1faf8],
+];
+
+/**
+ * Whether the picker should offer skin-tone variants for this emoji: the
+ * first codepoint is an Emoji_Modifier_Base. Multi-person / role ZWJ
+ * sequences are skipped entirely — tone placement inside them is ambiguous.
+ */
+export function supportsSkinTone(char: string): boolean {
+  if (char.includes("\u200D")) return false;
+  const cp = char.codePointAt(0);
+  if (cp === undefined) return false;
+  return MODIFIER_BASE_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi);
+}
+
+/**
+ * Insert a skin-tone modifier right after the base codepoint. The modifier
+ * implies emoji presentation, so a U+FE0F variation selector directly after
+ * the base is dropped. No-op for tone "" or emoji without tone support.
+ */
+export function applySkinTone(char: string, tone: string): string {
+  if (tone === "" || !supportsSkinTone(char)) return char;
+  const cp = char.codePointAt(0);
+  if (cp === undefined) return char;
+  const baseLen = cp > 0xffff ? 2 : 1;
+  let rest = char.slice(baseLen);
+  if (rest.startsWith("\uFE0F")) rest = rest.slice(1);
+  return char.slice(0, baseLen) + tone + rest;
+}

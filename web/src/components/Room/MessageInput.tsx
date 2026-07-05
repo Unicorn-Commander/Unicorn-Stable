@@ -22,7 +22,7 @@ import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
-import { emojiSuggestions, replaceEmojiShortcodes } from "@/utils/emoji";
+import { emojiSuggestions, ensureEmojiIndex, replaceEmojiShortcodes } from "@/utils/emoji";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
 
 interface PollSpec {
@@ -148,6 +148,16 @@ interface MentionSuggestion {
   type: "human" | "agent";
 }
 
+/** An attach-time upload in flight (or failed). Completed uploads leave this
+ * list and land in `pending` as a normal attachment chip. */
+interface UploadTask {
+  id: number;
+  file: File;
+  /** 0–1 fraction from the XHR upload progress events. */
+  progress: number;
+  status: "uploading" | "error";
+}
+
 export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledReason, placeholder }: MessageInputProps) {
   const [content, setContent] = useState(() => getDraft(roomId));
   const [dragOver, setDragOver] = useState(false);
@@ -155,7 +165,11 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
   const [pending, setPending] = useState<PendingAttachment[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [uploads, setUploads] = useState<UploadTask[]>([]);
+  // AbortControllers for in-flight uploads, keyed by UploadTask.id. Kept in a
+  // ref (not state) — aborting must not depend on a render cycle.
+  const uploadControllersRef = useRef(new Map<number, AbortController>());
+  const uploadIdRef = useRef(0);
   const [emojiQuery, setEmojiQuery] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiIndex, setEmojiIndex] = useState(0);
@@ -191,6 +205,21 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [showEmojiPanel]);
+
+  // Warm the emoji shortcode index (async chunk) so the : autocomplete has
+  // the full derived set by the time the user types, not just legacy codes.
+  useEffect(() => {
+    void ensureEmojiIndex();
+  }, []);
+
+  // Abort any in-flight uploads when the composer unmounts (room switch).
+  useEffect(() => {
+    const controllers = uploadControllersRef.current;
+    return () => {
+      controllers.forEach((c) => c.abort());
+      controllers.clear();
+    };
+  }, []);
 
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const voiceActive = useAppStore((s) => s.voiceActive);
@@ -500,6 +529,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   function handleSend() {
     const trimmed = content.trim();
     if (!trimmed && pending.length === 0) return;
+    // Attachments upload on attach; hold the send until they've all landed so
+    // a message never goes out silently missing an in-flight file.
+    if (uploads.some((t) => t.status === "uploading")) return;
 
     // Slash command preprocessing — see SLASH_COMMANDS for the catalog.
     const cmd = applySlashCommand(trimmed);
@@ -543,7 +575,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     setDragOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      void uploadFiles(files);
+      uploadFiles(files);
     }
   }
 
@@ -554,33 +586,75 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     if (files.length > 0) {
-      void uploadFiles(files);
+      uploadFiles(files);
     }
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   }
 
-  async function uploadFiles(files: File[]) {
-    setUploading(true);
-    try {
-      for (const f of files) {
-        const att = await api.uploadFile(f);
+  /** Kick off one attach-time upload with live progress. On success the task
+   * chip is swapped for a normal pending-attachment chip; on failure it turns
+   * red with a Retry affordance; aborting (the chip's ×) drops it silently. */
+  const startUpload = (file: File) => {
+    const id = ++uploadIdRef.current;
+    const controller = new AbortController();
+    uploadControllersRef.current.set(id, controller);
+    setUploads((u) => [...u, { id, file, progress: 0, status: "uploading" }]);
+    api
+      .uploadFile(file, {
+        signal: controller.signal,
+        onProgress: (fraction) => {
+          setUploads((u) =>
+            u.map((t) => (t.id === id ? { ...t, progress: fraction } : t)),
+          );
+        },
+      })
+      .then((att) => {
+        uploadControllersRef.current.delete(id);
+        setUploads((u) => u.filter((t) => t.id !== id));
         setPending((p) => [...p, att]);
-      }
-    } catch (err) {
-      console.error("upload failed", err);
-      alert((err as Error).message);
-    } finally {
-      setUploading(false);
+      })
+      .catch((err: unknown) => {
+        uploadControllersRef.current.delete(id);
+        if (err instanceof DOMException && err.name === "AbortError") {
+          // Cancelled from the chip (or unmount) — nothing to surface.
+          setUploads((u) => u.filter((t) => t.id !== id));
+          return;
+        }
+        console.error("upload failed", err);
+        setUploads((u) =>
+          u.map((t) => (t.id === id ? { ...t, status: "error" as const } : t)),
+        );
+      });
+  };
+
+  function uploadFiles(files: File[]) {
+    for (const f of files) {
+      startUpload(f);
     }
+  }
+
+  /** Cancel an in-flight upload (aborts the XHR) or dismiss a failed chip. */
+  function dismissUpload(id: number) {
+    const controller = uploadControllersRef.current.get(id);
+    uploadControllersRef.current.delete(id);
+    controller?.abort();
+    setUploads((u) => u.filter((t) => t.id !== id));
+  }
+
+  function retryUpload(id: number) {
+    const task = uploads.find((t) => t.id === id);
+    if (!task) return;
+    setUploads((u) => u.filter((t) => t.id !== id));
+    startUpload(task.file);
   }
 
   function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const files = Array.from(e.clipboardData.files);
     if (files.length > 0) {
       e.preventDefault();
-      void uploadFiles(files);
+      uploadFiles(files);
     }
   }
 
@@ -605,8 +679,11 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   }
 
   // Purely presentational: the send affordance lights up whenever a send
-  // would actually do something (text or pending attachments).
-  const canSend = content.trim().length > 0 || pending.length > 0;
+  // would actually do something (text or pending attachments) — and dims
+  // while attachments are still uploading (handleSend blocks then too).
+  const uploadsInFlight = uploads.some((t) => t.status === "uploading");
+  const canSend =
+    (content.trim().length > 0 || pending.length > 0) && !uploadsInFlight;
 
   return (
     <div
@@ -740,7 +817,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
         </div>
       )}
 
-      {pending.length > 0 && (
+      {(pending.length > 0 || uploads.length > 0) && (
         <div className="mb-2 flex flex-wrap gap-2">
           {pending.map((a, i) => (
             <div
@@ -766,11 +843,65 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               </button>
             </div>
           ))}
-          {uploading && (
-            <div className="flex items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-2 py-1 text-xs text-slate-400 animate-pulse-soft">
-              Uploading…
+          {uploads.map((t) => (
+            <div
+              key={`upload-${t.id}`}
+              className={clsx(
+                "relative flex items-center gap-2 overflow-hidden rounded-lg border px-2 py-1 text-xs",
+                t.status === "error"
+                  ? "border-rose-400/40 bg-rose-400/[0.06] text-rose-300"
+                  : "border-line bg-surface-2 text-slate-300",
+              )}
+            >
+              <Paperclip
+                className={clsx(
+                  "h-3.5 w-3.5",
+                  t.status === "error" ? "text-rose-400" : "text-slate-400",
+                )}
+              />
+              <span className="max-w-[16ch] truncate">{t.file.name}</span>
+              {t.status === "uploading" ? (
+                <span className="tabular-nums text-slate-500">
+                  {Math.round(t.progress * 100)}%
+                </span>
+              ) : (
+                <button
+                  onClick={() => retryUpload(t.id)}
+                  className="rounded font-medium text-rose-300 underline-offset-2 transition-colors hover:text-rose-200 hover:underline focus-ring"
+                  aria-label={`Retry uploading ${t.file.name}`}
+                >
+                  Retry
+                </button>
+              )}
+              <button
+                onClick={() => dismissUpload(t.id)}
+                className="ml-1 rounded text-slate-500 transition-colors hover:text-rose-400 focus-ring"
+                aria-label={
+                  t.status === "uploading"
+                    ? `Cancel upload of ${t.file.name}`
+                    : `Dismiss ${t.file.name}`
+                }
+              >
+                ×
+              </button>
+              {t.status === "uploading" && (
+                <div
+                  className="absolute inset-x-0 bottom-0 h-0.5 bg-white/[0.08]"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(t.progress * 100)}
+                  aria-label={`Uploading ${t.file.name}`}
+                >
+                  {/* Width transition only — safe under prefers-reduced-motion. */}
+                  <div
+                    className="h-full bg-stable-purple transition-[width] duration-200 ease-out"
+                    style={{ width: `${Math.round(t.progress * 100)}%` }}
+                  />
+                </div>
+              )}
             </div>
-          )}
+          ))}
         </div>
       )}
 

@@ -571,21 +571,64 @@ class StableApiClient {
     );
   }
 
-  async uploadFile(file: File): Promise<UploadedAttachment> {
+  /**
+   * Upload a composer attachment (multipart, field name `file`).
+   *
+   * Implemented with XMLHttpRequest (not fetch) solely because fetch exposes
+   * no upload progress; the request shape (URL, method, FormData field, auth
+   * header) and error semantics are identical to the previous fetch version.
+   * `onProgress` receives a 0–1 fraction from xhr.upload; `signal` aborts the
+   * in-flight request and rejects with a DOMException "AbortError" (matching
+   * fetch's abort semantics).
+   */
+  async uploadFile(
+    file: File,
+    opts?: { onProgress?: (fraction: number) => void; signal?: AbortSignal },
+  ): Promise<UploadedAttachment> {
     const headers = await this.getAuthHeaders();
+    // Multipart: must NOT set Content-Type (the browser adds the boundary).
     delete headers["Content-Type"];
     const fd = new FormData();
     fd.append("file", file);
-    const resp = await fetch(`${BASE_URL}/api/v1/uploads`, {
-      method: "POST",
-      headers,
-      body: fd,
+    return new Promise<UploadedAttachment>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const abortError = () =>
+        new DOMException("The operation was aborted.", "AbortError");
+      if (opts?.signal?.aborted) {
+        reject(abortError());
+        return;
+      }
+      xhr.open("POST", `${BASE_URL}/api/v1/uploads`);
+      for (const [key, value] of Object.entries(headers)) {
+        xhr.setRequestHeader(key, value);
+      }
+      opts?.signal?.addEventListener("abort", () => xhr.abort(), {
+        once: true,
+      });
+      const onProgress = opts?.onProgress;
+      if (onProgress) {
+        xhr.upload.onprogress = (e: ProgressEvent) => {
+          if (e.total > 0) {
+            onProgress(e.loaded / e.total);
+          }
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(`Upload failed (${xhr.status}): ${xhr.responseText}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(xhr.responseText) as UploadedAttachment);
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+      // Network failure — fetch would reject with TypeError("Failed to fetch").
+      xhr.onerror = () => reject(new TypeError("Failed to fetch"));
+      xhr.onabort = () => reject(abortError());
+      xhr.send(fd);
     });
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Upload failed (${resp.status}): ${body}`);
-    }
-    return resp.json();
   }
 
   async getRoom(roomId: string): Promise<Room> {

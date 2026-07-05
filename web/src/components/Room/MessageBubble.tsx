@@ -26,11 +26,6 @@ import {
 import clsx from "clsx";
 import { formatDistanceToNowStrict, format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
-// KaTeX is imported statically (unlike the lazy hljs): renderToString is
-// needed synchronously inside the inline renderer, and its stylesheet must be
-// in the bundle for math to lay out at all.
-import katex from "katex";
-import "katex/dist/katex.min.css";
 import { api, type ApiError, type Message, type ProjectOpsProject } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -104,14 +99,168 @@ function errorMessage(err: unknown) {
   return apiErr?.detail || apiErr?.message || (err instanceof Error ? err.message : "Request failed");
 }
 
+/** Spoken names for the TeX commands the verbalizer recognizes. Unknown
+ * commands are dropped wholesale (their brace contents survive). */
+const TEX_WORDS: Record<string, string> = {
+  cdot: "times",
+  times: "times",
+  div: "divided by",
+  pm: "plus or minus",
+  mp: "minus or plus",
+  leq: "less than or equal to",
+  le: "less than or equal to",
+  geq: "greater than or equal to",
+  ge: "greater than or equal to",
+  neq: "not equal to",
+  ne: "not equal to",
+  approx: "approximately",
+  rightarrow: "goes to",
+  to: "goes to",
+  int: "the integral",
+  sum: "the sum",
+  prod: "the product",
+  lim: "the limit",
+  infty: "infinity",
+  sqrt: "square root of",
+  partial: "partial",
+  alpha: "alpha",
+  beta: "beta",
+  gamma: "gamma",
+  delta: "delta",
+  epsilon: "epsilon",
+  varepsilon: "epsilon",
+  zeta: "zeta",
+  eta: "eta",
+  theta: "theta",
+  iota: "iota",
+  kappa: "kappa",
+  lambda: "lambda",
+  mu: "mu",
+  nu: "nu",
+  xi: "xi",
+  pi: "pi",
+  rho: "rho",
+  sigma: "sigma",
+  tau: "tau",
+  upsilon: "upsilon",
+  phi: "phi",
+  varphi: "phi",
+  chi: "chi",
+  psi: "psi",
+  omega: "omega",
+  Gamma: "gamma",
+  Delta: "delta",
+  Theta: "theta",
+  Lambda: "lambda",
+  Xi: "xi",
+  Pi: "pi",
+  Sigma: "sigma",
+  Upsilon: "upsilon",
+  Phi: "phi",
+  Psi: "psi",
+  Omega: "omega",
+};
+
+/** Speak an exponent: 2 and 3 get their natural English; anything else reads
+ * as "to the …". */
+function texPower(exp: string): string {
+  const e = exp.trim();
+  if (e === "2") return " squared ";
+  if (e === "3") return " cubed ";
+  return ` to the ${e} `;
+}
+
+/**
+ * Convert a TeX math body into speakable words for TTS — "\frac{a}{b}" reads
+ * as "a over b" instead of raw backslash soup. Covers the constructs agents
+ * actually emit (fractions, powers, roots, greek letters, comparison
+ * operators); unrecognized commands drop their name but keep brace contents.
+ * Output never contains a backslash or brace.
+ */
+function verbalizeTex(tex: string): string {
+  let s = tex;
+  // Structural forms, innermost-first: each pass resolves brace groups that
+  // contain no nested braces, so nesting unwinds across passes. Capped so
+  // pathological input can't spin.
+  for (let pass = 0; pass < 16; pass++) {
+    const next = s
+      .replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, " $1 over $2 ")
+      .replace(/\\sqrt\s*\{([^{}]*)\}/g, " square root of $1 ")
+      .replace(/\^\{([^{}]*)\}/g, (_m: string, exp: string) => texPower(exp))
+      .replace(/_\{([^{}]*)\}/g, " sub $1 ");
+    if (next === s) break;
+    s = next;
+  }
+  return (
+    s
+      // Named commands: known → spoken word, unknown (\left, \text, …) → gone.
+      .replace(/\\([a-zA-Z]+)/g, (_m: string, name: string) => {
+        const word = TEX_WORDS[name];
+        return word ? ` ${word} ` : " ";
+      })
+      // Bare-token powers/subscripts — x^2, a_i (brace forms already resolved
+      // above; \s* absorbs the gap a replaced command leaves, e.g. `x^\pi`).
+      .replace(/\^\s*([\w.]+)/g, (_m: string, exp: string) => texPower(exp))
+      .replace(/_\s*([\w.]+)/g, " sub $1 ")
+      // Unicode operators (looksLikeMath admits these too).
+      .replace(/±/g, " plus or minus ")
+      .replace(/[×·]/g, " times ")
+      .replace(/÷/g, " divided by ")
+      .replace(/≤/g, " less than or equal to ")
+      .replace(/≥/g, " greater than or equal to ")
+      .replace(/≠/g, " not equal to ")
+      .replace(/≈/g, " approximately ")
+      .replace(/∞/g, " infinity ")
+      .replace(/√/g, " square root of ")
+      .replace(/∑/g, " the sum ")
+      .replace(/∫/g, " the integral ")
+      // ASCII operators last, so words produced above pass through untouched.
+      .replace(/=/g, " equals ")
+      .replace(/\+/g, " plus ")
+      .replace(/-/g, " minus ")
+      .replace(/\//g, " over ")
+      .replace(/</g, " less than ")
+      .replace(/>/g, " greater than ")
+      // Leftover braces / stray backslashes are never speakable.
+      .replace(/[{}\\]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
+/**
+ * Replace TeX math segments with spoken words before markdown stripping runs
+ * (the italic/underscore rules would otherwise mangle subscripts). Uses the
+ * SAME delimiters and currency gating as the render path — shared via
+ * inlineDollarMathRegexes/looksLikeMath — so "$5 vs $10" stays literal
+ * dollars in speech exactly when it stays literal on screen.
+ */
+function speechMath(content: string): string {
+  let s = content;
+  // Display blocks on their own line(s): `$$ … $$` / `\[ … \]` — the same
+  // line-anchored shape scanMathBlock accepts on the render path.
+  s = s.replace(/^[^\S\n]*\$\$([\s\S]+?)\$\$[^\S\n]*$/gm, (_m: string, tex: string) => ` ${verbalizeTex(tex)} `);
+  s = s.replace(/^[^\S\n]*\\\[([\s\S]+?)\\\][^\S\n]*$/gm, (_m: string, tex: string) => ` ${verbalizeTex(tex)} `);
+  // Inline `\( … \)` — unambiguous, no gating needed.
+  s = s.replace(inlineParenMathRegex(), (_m: string, tex: string) => ` ${verbalizeTex(tex)} `);
+  // Inline `$…$` / mid-line `$$…$$` behind the shared currency gate.
+  for (const re of inlineDollarMathRegexes()) {
+    s = s.replace(re, (match: string, tex: string) =>
+      looksLikeMath(tex) ? ` ${verbalizeTex(tex)} ` : match,
+    );
+  }
+  return s;
+}
+
 /**
  * Flatten markdown into speakable prose for TTS — the engine would otherwise
  * read fence backticks, pipes, and heading hashes literally. Whole code blocks
- * become a spoken placeholder; links collapse to their text. Capped so a huge
- * agent reply can't blow the TTS request.
+ * become a spoken placeholder; links collapse to their text; TeX math becomes
+ * spoken words via speechMath. Capped so a huge agent reply can't blow the
+ * TTS request.
  */
 function speechText(content: string): string {
-  return content
+  return speechMath(content)
     .replace(/```[\s\S]*?```/g, " code block omitted. ")
     .replace(/`([^`\n]+)`/g, "$1")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -194,20 +343,113 @@ function looksLikeMath(content: string): boolean {
   return /[\\a-zA-Z^_{}=<>±×÷√∑∫∞≈≠≤≥]/.test(content);
 }
 
+/**
+ * Inline `$…$` / mid-line `$$…$$` matchers shared by the render path and the
+ * read-aloud path so the currency gating can never drift between the two.
+ * Fresh RegExp instances per call — /g regexes carry lastIndex state. The
+ * opening $ must not be preceded by a word char / $ / backslash nor followed
+ * by a space; the closing $ must not be preceded by a space nor followed by
+ * a digit. Bodies must additionally pass looksLikeMath.
+ */
+function inlineDollarMathRegexes(): RegExp[] {
+  return [
+    /(?<![\w$\\])\$\$([^\s$](?:[^$\n]*[^\s$])?)\$\$(?!\d)/g,
+    /(?<![\w$\\])\$([^\s$](?:[^$\n]*[^\s$])?)\$(?!\d)/g,
+  ];
+}
+
+/** Inline `\( … \)` matcher, shared like the above — unambiguous, so no
+ * currency gating applies. */
+function inlineParenMathRegex(): RegExp {
+  return /\\\(([^\n]+?)\\\)/g;
+}
+
+// Lazy-import KaTeX (and its stylesheet) the same way as hljs below: the
+// first math span in any message triggers the load, then it's cached for the
+// session. Messages without math never pay the ~270KB cost. Vite splits the
+// dynamically-imported stylesheet into its own chunk and injects it on load.
+let _katex: typeof import("katex").default | null = null;
+let _katexLoading: Promise<void> | null = null;
+function loadKatex(): Promise<void> {
+  if (_katex) return Promise.resolve();
+  if (_katexLoading) return _katexLoading;
+  _katexLoading = Promise.all([
+    import("katex"),
+    import("katex/dist/katex.min.css"),
+  ]).then(([m]) => {
+    _katex = m.default;
+  });
+  return _katexLoading;
+}
+
+/**
+ * Subscribe a component to the lazy KaTeX module: returns it when loaded,
+ * null before then (callers render the raw TeX as a placeholder), and
+ * re-renders the component once the chunk lands.
+ */
+function useKatex(): typeof import("katex").default | null {
+  const [ready, setReady] = useState(_katex !== null);
+  useEffect(() => {
+    if (ready) return;
+    let active = true;
+    void loadKatex().then(() => {
+      if (active) setReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [ready]);
+  return _katex;
+}
+
 /** KaTeX display-math block. renderToString output is sanitized by
  * construction (KaTeX escapes its input; throwOnError:false renders bad TeX
  * as literal text instead of throwing). Wide equations scroll inside their
  * own strip rather than breaking the bubble; KaTeX inherits currentColor, so
  * text-slate-100 pins the equation to content color on the dark theme. */
 function MathBlock({ tex }: { tex: string }) {
+  const katex = useKatex();
   const html = useMemo(
-    () => katex.renderToString(tex, { displayMode: true, throwOnError: false }),
-    [tex],
+    () =>
+      katex
+        ? katex.renderToString(tex, { displayMode: true, throwOnError: false })
+        : null,
+    [katex, tex],
   );
+  // Module still in flight: show the raw TeX in a quiet code-ish strip; the
+  // useKatex re-render swaps in the real equation once the chunk lands.
+  if (html === null) {
+    return (
+      <div className="my-2 overflow-x-auto py-1 font-mono text-xs text-slate-400">
+        {tex}
+      </div>
+    );
+  }
   return (
     <div
       className="my-2 overflow-x-auto py-1 text-slate-100"
       dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+/** Inline KaTeX span — same sanitized-by-construction contract as MathBlock,
+ * with the raw TeX shown code-style until the lazy module lands. */
+function InlineMath({ tex }: { tex: string }) {
+  const katex = useKatex();
+  if (!katex) {
+    return (
+      <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[13px] text-slate-300">
+        {tex}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="text-slate-100"
+      dangerouslySetInnerHTML={{
+        __html: katex.renderToString(tex, { throwOnError: false }),
+      }}
     />
   );
 }
@@ -1401,16 +1643,12 @@ export function MessageBubble({
     collect(/(?<![_\w])_([^_\n]+)_(?!\w)/g, "italic", 1);
     collect(/~~([^~\n]+)~~/g, "strike", 1);
     // Inline math. `\( … \)` is unambiguous, so it collects unconditionally.
-    collect(/\\\(([^\n]+?)\\\)/g, "math", 1);
-    // `$…$` (and mid-line `$$…$$`) is gated hard against currency: the opening
-    // $ must not be preceded by a word char / $ / backslash nor followed by a
-    // space; the closing $ must not be preceded by a space nor followed by a
-    // digit; and the body must pass looksLikeMath. "$5 and $10" survives as
-    // dollars ("5 and " has a trailing space AND is digits/punct only).
-    for (const re of [
-      /(?<![\w$\\])\$\$([^\s$](?:[^$\n]*[^\s$])?)\$\$(?!\d)/g,
-      /(?<![\w$\\])\$([^\s$](?:[^$\n]*[^\s$])?)\$(?!\d)/g,
-    ]) {
+    collect(inlineParenMathRegex(), "math", 1);
+    // `$…$` (and mid-line `$$…$$`) is gated hard against currency — see
+    // inlineDollarMathRegexes (shared with the read-aloud path) — plus the
+    // looksLikeMath body check. "$5 and $10" survives as dollars ("5 and "
+    // has a trailing space AND is digits/punct only).
+    for (const re of inlineDollarMathRegexes()) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {
         const body = m[1] ?? "";
@@ -1481,18 +1719,9 @@ export function MessageBubble({
           </s>,
         );
       } else if (el.type === "math") {
-        // KaTeX HTML is sanitized by construction (KaTeX escapes its input;
-        // throwOnError:false renders bad TeX as literal text). It inherits
-        // currentColor, so pin slate-100 for the dark theme.
-        result.push(
-          <span
-            key={`math-${i}`}
-            className="text-slate-100"
-            dangerouslySetInnerHTML={{
-              __html: katex.renderToString(el.content, { throwOnError: false }),
-            }}
-          />,
-        );
+        // Lazy KaTeX: InlineMath shows the raw TeX code-style until the
+        // module chunk lands, then re-renders itself with the real markup.
+        result.push(<InlineMath key={`math-${i}`} tex={el.content} />);
       } else if (el.type === "mention") {
         const isBroad = el.content === "@channel" || el.content === "@here";
         result.push(

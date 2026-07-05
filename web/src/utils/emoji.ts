@@ -12,9 +12,14 @@
  *   EMOJI: Record<string, string>          shortcode → emoji char
  *   emojiSuggestions(prefix, limit)        prefix matches for the : menu
  *   replaceEmojiShortcodes(text)           :code: → char on send
+ *   ensureEmojiIndex()                     warm the derived codes (async)
+ *
+ * The dataset is ~167KB, so it must NOT be imported statically here — this
+ * module sits in the main bundle via MessageInput, and a static import drags
+ * the whole dataset into first paint. Instead EMOJI starts as the legacy
+ * aliases and the derived codes are merged in place once the emojiData chunk
+ * (shared with EmojiPicker's lazy load) arrives via ensureEmojiIndex().
  */
-
-import { EMOJI as EMOJI_DATA } from "./emojiData";
 
 /**
  * Legacy hand-picked shortcodes, kept verbatim as aliases. These OVERRIDE any
@@ -203,29 +208,44 @@ function toShortcode(name: string): string {
     .replace(/_+$/, "");
 }
 
-function buildLookup(): Record<string, string> {
-  const table: Record<string, string> = {};
-  for (const entry of EMOJI_DATA) {
-    const code = toShortcode(entry.name);
-    // First-wins on the rare name collision (dataset is in CLDR order, so
-    // the more common emoji comes first).
-    if (code.length >= 2 && !(code in table)) {
-      table[code] = entry.char;
-    }
-  }
-  // Legacy aliases override derived codes of the same name.
-  for (const [code, char] of Object.entries(LEGACY_SHORTCODES)) {
-    table[code] = char;
-  }
-  return table;
-}
+/** Full shortcode → emoji lookup. Starts as the legacy aliases; the ~1,700
+ * derived codes are merged IN PLACE (same object) by ensureEmojiIndex(), so
+ * holding a reference to this const always sees the full set once loaded. */
+export const EMOJI: Record<string, string> = { ...LEGACY_SHORTCODES };
 
-/** Full shortcode → emoji lookup (~1,700 derived codes + legacy aliases). */
-export const EMOJI: Record<string, string> = buildLookup();
+let indexPromise: Promise<void> | null = null;
+
+/** Load the picker dataset (the same async chunk EmojiPicker lazy-loads) and
+ * merge the derived shortcodes into EMOJI. Deduped across calls; never
+ * rejects (a failed import logs, clears the promise, and a later call
+ * retries). Legacy aliases always win; derived collisions are first-wins
+ * (dataset is CLDR-ordered, so the more common emoji comes first). */
+export function ensureEmojiIndex(): Promise<void> {
+  if (indexPromise === null) {
+    indexPromise = import("./emojiData").then(
+      (m) => {
+        for (const entry of m.EMOJI) {
+          const code = toShortcode(entry.name);
+          if (code.length >= 2 && !(code in EMOJI)) {
+            EMOJI[code] = entry.char;
+          }
+        }
+      },
+      (err: unknown) => {
+        indexPromise = null;
+        console.error("emoji shortcode index failed to load", err);
+      },
+    );
+  }
+  return indexPromise;
+}
 
 /** Returns matching shortcodes that start with `prefix` (case-insensitive).
  * Shortest names first so common codes surface before long descriptive ones. */
 export function emojiSuggestions(prefix: string, limit = 8): { name: string; emoji: string }[] {
+  // Self-warming: composers call ensureEmojiIndex() on mount, but if a caller
+  // didn't, the first keystroke kicks the load and the next one sees it.
+  void ensureEmojiIndex();
   if (!prefix) return [];
   const p = prefix.toLowerCase();
   const out: { name: string; emoji: string }[] = [];

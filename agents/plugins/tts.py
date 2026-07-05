@@ -83,6 +83,8 @@ KOKORO_VOICE_PRESETS: dict[str, str] = {
     "maj-devops": "am_michael",
     "sgt-cipher": "am_adam",
     "sgt-scribe": "af_bella",
+    "sgt-swift": "am_echo",
+    "sgt-cocoa": "am_onyx",
     "prof-datasci": "af_bella",
     "sql-analyst": "af_bella",
     "lt-docanalyst": "af_nicole",
