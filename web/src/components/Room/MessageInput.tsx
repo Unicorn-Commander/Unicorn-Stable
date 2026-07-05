@@ -96,6 +96,26 @@ function applySlashCommand(input: string): SlashResult {
   }
 }
 
+/** Composer autocomplete catalog. Must stay in sync with applySlashCommand
+ * above (and the cheatsheet in CheatsheetModal) — list only commands that
+ * are actually implemented. */
+interface SlashCommandInfo {
+  name: string;
+  /** Argument hint shown after the name; empty when the command takes none. */
+  args: string;
+  description: string;
+}
+
+const SLASH_COMMANDS: SlashCommandInfo[] = [
+  { name: "me", args: "<action>", description: "Italic narration" },
+  { name: "shrug", args: "[message]", description: "Append ¯\\_(ツ)_/¯" },
+  { name: "tableflip", args: "[message]", description: "Append (╯°□°）╯︵ ┻━┻" },
+  { name: "unflip", args: "[message]", description: "Append ┬─┬ ノ( ゜-゜ノ)" },
+  { name: "agent", args: "<id> …", description: "Explicit agent mention" },
+  { name: "poll", args: '"Question?" option1 option2 …', description: "Inline poll with vote buttons" },
+  { name: "help", args: "", description: "Open the shortcuts cheatsheet" },
+];
+
 interface PendingAttachment {
   url: string;
   filename: string;
@@ -138,6 +158,12 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiIndex, setEmojiIndex] = useState(0);
   const emojiMatches = emojiSuggestions(emojiQuery, 8);
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
+  const slashMatches = SLASH_COMMANDS.filter((c) =>
+    c.name.startsWith(slashQuery.toLowerCase()),
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -231,22 +257,36 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     const textBeforeCursor = value.slice(0, cursorPos);
     const mentionMatch = textBeforeCursor.match(/@(\w*)$/);
     const emojiMatch = textBeforeCursor.match(/:([a-z0-9_+\-]{2,})$/i);
+    // Slash commands are only recognized at position 0 (applySlashCommand
+    // does the same). Once a space/newline is typed the menu closes and the
+    // message sends literally — matching /help still works on send.
+    const slashMatch = value.match(/^\/([a-zA-Z]*)$/);
 
-    if (mentionMatch) {
+    if (slashMatch) {
+      setShowSlashMenu(true);
+      setSlashQuery(slashMatch[1] ?? "");
+      setSlashIndex(0);
+      setShowMentions(false);
+      setShowEmojiPicker(false);
+    } else if (mentionMatch) {
       setShowMentions(true);
       setMentionQuery(mentionMatch[1] ?? "");
       setMentionIndex(0);
       setShowEmojiPicker(false);
+      setShowSlashMenu(false);
     } else if (emojiMatch) {
       setShowEmojiPicker(true);
       setEmojiQuery(emojiMatch[1] ?? "");
       setEmojiIndex(0);
       setShowMentions(false);
+      setShowSlashMenu(false);
     } else {
       setShowMentions(false);
       setMentionQuery("");
       setShowEmojiPicker(false);
       setEmojiQuery("");
+      setShowSlashMenu(false);
+      setSlashQuery("");
     }
   }
 
@@ -266,6 +306,22 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     requestAnimationFrame(() => {
       const pos = before.length + suggestion.emoji.length;
       el.setSelectionRange(pos, pos);
+      el.focus();
+    });
+  }
+
+  function insertSlashCommand(cmd: SlashCommandInfo) {
+    const el = textareaRef.current;
+    if (!el) return;
+    // The menu only shows while the entire input is "/query", so replacing
+    // the whole content is safe. Trailing space closes the menu and lets the
+    // user type arguments immediately.
+    const next = `/${cmd.name} `;
+    setContent(next);
+    setShowSlashMenu(false);
+    setSlashQuery("");
+    requestAnimationFrame(() => {
+      el.setSelectionRange(next.length, next.length);
       el.focus();
     });
   }
@@ -300,12 +356,35 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       e.key === "ArrowUp" &&
       !showEmojiPicker &&
       !showMentions &&
+      !showSlashMenu &&
       content.trim() === "" &&
       onEditLast
     ) {
       e.preventDefault();
       onEditLast();
       return;
+    }
+    if (showSlashMenu && slashMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((p) => (p < slashMatches.length - 1 ? p + 1 : 0));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((p) => (p > 0 ? p - 1 : slashMatches.length - 1));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const sel = slashMatches[slashIndex];
+        if (sel) insertSlashCommand(sel);
+        return;
+      }
+      if (e.key === "Escape") {
+        setShowSlashMenu(false);
+        return;
+      }
     }
     if (showEmojiPicker && emojiMatches.length > 0) {
       if (e.key === "ArrowDown") {
@@ -368,7 +447,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     const trimmed = content.trim();
     if (!trimmed && pending.length === 0) return;
 
-    // Slash command preprocessing — see SLASH_HELP for the catalog.
+    // Slash command preprocessing — see SLASH_COMMANDS for the catalog.
     const cmd = applySlashCommand(trimmed);
     if (cmd.text === null) {
       setContent("");
@@ -390,6 +469,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     setPending([]);
     setShowMentions(false);
     setShowEmojiPicker(false);
+    setShowSlashMenu(false);
     requestAnimationFrame(() => adjustHeight());
   }
 
@@ -483,6 +563,41 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {showSlashMenu && slashMatches.length > 0 && (
+        <div
+          className="glass-heavy absolute bottom-full left-3 right-3 z-30 mb-2 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6"
+          role="listbox"
+          aria-label="Slash command suggestions"
+        >
+          {slashMatches.map((cmd, idx) => (
+            <button
+              key={cmd.name}
+              role="option"
+              aria-selected={idx === slashIndex}
+              onClick={() => insertSlashCommand(cmd)}
+              onMouseEnter={() => setSlashIndex(idx)}
+              className={clsx(
+                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors focus-ring",
+                idx === slashIndex
+                  ? "bg-stable-purple/15 text-slate-100"
+                  : "text-slate-300 hover:bg-white/[0.05]",
+              )}
+            >
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-stable-purple/20 text-xs font-semibold text-stable-purple-light">
+                /
+              </div>
+              <span className="text-sm font-medium">/{cmd.name}</span>
+              {cmd.args && (
+                <span className="truncate text-xs text-slate-500">{cmd.args}</span>
+              )}
+              <span className="ml-auto shrink-0 truncate text-xs text-slate-400">
+                {cmd.description}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {showEmojiPicker && emojiMatches.length > 0 && (
         <div
           className="glass-heavy absolute bottom-full left-3 z-30 mb-2 max-h-48 w-72 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6"

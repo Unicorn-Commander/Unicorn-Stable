@@ -826,6 +826,31 @@ class StableApiClient {
     );
   }
 
+  /** Synthesize speech for a message (read-aloud). Returns an audio blob
+   * (wav) from the platform TTS (kokoro) via the backend proxy — the browser
+   * cannot reach the GPU TTS host directly. `voice` falls back server-side to
+   * the suite default (af_heart, Majik's voice). */
+  async ttsSpeech(text: string, voice?: string): Promise<Blob> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(await this.getAuthHeaders()),
+    };
+    const response = await fetch(`${BASE_URL}/api/v1/tts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(voice ? { text, voice } : { text }),
+    });
+    if (!response.ok) {
+      const error: ApiError = {
+        status: response.status,
+        message: response.statusText,
+        detail: null,
+      };
+      throw error;
+    }
+    return response.blob();
+  }
+
   /* ----------------------------- Artifacts ----------------------------- *
    * The co-working canvas. Artifacts are room-scoped, versioned documents
    * (markdown/code/html/svg/mermaid/react/sheet). See @/types/artifact.ts for

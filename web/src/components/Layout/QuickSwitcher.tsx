@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
-import { Hash, MessageSquare, Search, User } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Hash, Loader2, MessageSquare, Search } from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
 import { identityFor } from "@/lib/identity";
@@ -12,11 +12,12 @@ interface QuickSwitcherProps {
   onClose: () => void;
 }
 
+// No "user" kind: there is no single-call human-DM API (CreateDmModal owns the
+// multi-step create→invite flow), so user rows would be dead entries here.
 type Item =
   | { kind: "channel"; id: string; label: string; sub: string }
   | { kind: "dm"; id: string; label: string; sub: string }
-  | { kind: "agent"; id: string; label: string; sub: string }
-  | { kind: "user"; id: string; label: string; sub: string };
+  | { kind: "agent"; id: string; label: string; sub: string };
 
 function fuzzyScore(needle: string, hay: string): number {
   if (!needle) return 0;
@@ -40,20 +41,18 @@ function fuzzyScore(needle: string, hay: string): number {
 export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
   const rooms = useAppStore((s) => s.rooms);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
+  // Agent id whose DM is being created — guards double-Enter, drives the
+  // row's spinner. null = idle.
+  const [busyId, setBusyId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const { data: agents = [] } = useQuery({
     queryKey: ["brigade-agents"],
     queryFn: () => api.getBrigadeAgents(),
     staleTime: 5 * 60_000,
-  });
-
-  const { data: users = [] } = useQuery({
-    queryKey: ["users-search", q],
-    queryFn: () => api.searchUsers(q),
-    enabled: q.length >= 2,
   });
 
   const items = useMemo<Item[]>(() => {
@@ -79,13 +78,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       label: a.name,
       sub: a.description?.slice(0, 60) ?? "agent",
     }));
-    const userItems: Item[] = users.slice(0, 5).map((u) => ({
-      kind: "user" as const,
-      id: u.id || u.keycloak_sub,
-      label: u.display_name || u.username,
-      sub: `@${u.username}${u.signed_in ? "" : " · not yet on Stable"}`,
-    }));
-    const all = [...channelItems, ...dmItems, ...agentItems, ...userItems];
+    const all = [...channelItems, ...dmItems, ...agentItems];
     if (!q.trim()) return all.slice(0, 12);
     const scored = all
       .map((it) => ({ it, score: Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub)) }))
@@ -93,7 +86,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       .sort((a, b) => b.score - a.score)
       .map((s) => s.it);
     return scored.slice(0, 12);
-  }, [rooms, agents, users, q]);
+  }, [rooms, agents, q]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -103,13 +96,28 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
     setSel(0);
   }, [q]);
 
-  function activate(it: Item) {
+  async function activate(it: Item) {
     if (it.kind === "channel" || it.kind === "dm") {
       navigate(`/c/${it.id}`);
-    } else if (it.kind === "agent" || it.kind === "user") {
-      // Future: open compose-DM-with flow. For now just close.
+      onClose();
+      return;
     }
-    onClose();
+    // Agent → same "new chat" path the sidebar uses: a fresh DM bound to the
+    // persona, then jump into it.
+    if (busyId) return;
+    setBusyId(it.id);
+    try {
+      const room = await api.createAgentDm(it.id, `Chat with ${it.label}`);
+      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
+      navigate(`/c/${room.id}`);
+      onClose();
+    } catch (err) {
+      useAppStore.getState().pushToast({
+        title: "Couldn't start the chat",
+        body: (err as Error).message,
+      });
+      setBusyId(null);
+    }
   }
 
   function onKey(e: React.KeyboardEvent) {
@@ -124,7 +132,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const it = items[sel];
-      if (it) activate(it);
+      if (it) void activate(it);
     }
   }
 
@@ -152,7 +160,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Jump to channel, agent, or person…"
+            placeholder="Jump to a channel or agent…"
             className="min-w-0 flex-1 bg-transparent text-base text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
           <kbd className="shrink-0 rounded border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
@@ -168,7 +176,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
                 No matches
               </p>
               <p className="text-xs text-slate-500">
-                Try a channel, agent, or teammate name.
+                Try a channel or agent name.
               </p>
             </li>
           ) : (
@@ -179,7 +187,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
                 <li key={`${it.kind}:${it.id}`}>
                   <button
                     onMouseEnter={() => setSel(i)}
-                    onClick={() => activate(it)}
+                    onClick={() => void activate(it)}
                     className={clsx(
                       "focus-ring relative flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
                       i === sel
@@ -199,7 +207,11 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
                       <p className="truncate text-sm font-medium">{it.label}</p>
                       <p className="truncate text-xs text-slate-500">{it.sub}</p>
                     </div>
-                    <KindLabel kind={it.kind} />
+                    {it.kind === "agent" && busyId === it.id ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-slate-400" />
+                    ) : (
+                      <KindLabel kind={it.kind} />
+                    )}
                   </button>
                 </li>
               );
@@ -237,30 +249,21 @@ function Icon({ item }: { item: Item }) {
     return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
   if (item.kind === "dm")
     return <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />;
-  if (item.kind === "agent") {
-    // Agents carry their identity hue — a 6px dot, same as sidebar agent DMs.
-    const ident = identityFor(item.id, item.label);
-    return (
-      <span className="grid h-4 w-4 shrink-0 place-items-center">
-        <span
-          className="h-1.5 w-1.5 rounded-full"
-          style={{ background: ident.color, boxShadow: `0 0 0 3px ${ident.faint}` }}
-        />
-      </span>
-    );
-  }
-  return <User className="h-4 w-4 shrink-0 text-slate-500" />;
+  // Agents carry their identity hue — a 6px dot, same as sidebar agent DMs.
+  const ident = identityFor(item.id, item.label);
+  return (
+    <span className="grid h-4 w-4 shrink-0 place-items-center">
+      <span
+        className="h-1.5 w-1.5 rounded-full"
+        style={{ background: ident.color, boxShadow: `0 0 0 3px ${ident.faint}` }}
+      />
+    </span>
+  );
 }
 
 function KindLabel({ kind }: { kind: Item["kind"] }) {
   const label =
-    kind === "channel"
-      ? "Channel"
-      : kind === "dm"
-        ? "DM"
-        : kind === "agent"
-          ? "Agent"
-          : "User";
+    kind === "channel" ? "Channel" : kind === "dm" ? "DM" : "Agent";
   return (
     <span className="shrink-0 rounded-md border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
       {label}

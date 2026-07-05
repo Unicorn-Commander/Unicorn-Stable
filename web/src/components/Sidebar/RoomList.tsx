@@ -1,7 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
+  Bell,
+  BellOff,
   Bot,
+  CheckCheck,
   ChevronDown,
   ChevronRight,
   FolderPlus,
@@ -17,6 +20,8 @@ import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, type Room } from "@/services/api";
+import { ws } from "@/services/websocket";
+import { isMuted, toggleMute, onMutedChange } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -134,7 +139,19 @@ export function RoomList() {
   const collapsed = useChannelCategories((s) => s.collapsed);
   const setCategory = useChannelCategories((s) => s.setCategory);
   const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
-  const [menuRoomId, setMenuRoomId] = useState<string | null>(null);
+  const [menuRoomId, setMenuRoomIdRaw] = useState<string | null>(null);
+  // Inline "New category" input inside the ⋮ menu (null = collapsed to the
+  // button). Never survives a menu open/close, hence the wrapped setter.
+  const [newCatDraft, setNewCatDraft] = useState<string | null>(null);
+  const setMenuRoomId = (id: string | null) => {
+    setMenuRoomIdRaw(id);
+    setNewCatDraft(null);
+  };
+
+  // mute.ts persists to localStorage outside React — bump on its change event
+  // so isMuted() is re-read and muted badges/menu labels stay in sync.
+  const [, setMutedVersion] = useState(0);
+  useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
   // Group the visible channels by the user's assigned category; everything else
   // stays in a flat "ungrouped" list under the section header.
@@ -169,9 +186,22 @@ export function RoomList() {
     setMenuRoomId(null);
   }
 
-  function promptNewCategory(roomId: string) {
-    const name = window.prompt("New category name");
-    if (name && name.trim()) setCategory(roomId, name.trim());
+  function commitNewCategory(roomId: string) {
+    const name = (newCatDraft ?? "").trim();
+    if (name) setCategory(roomId, name);
+    setMenuRoomId(null);
+  }
+
+  function markRoomRead(room: Room) {
+    // Same signal ChatPanel sends when the room is open and visible — the
+    // server advances last_read_at; we zero the local badge optimistically.
+    if (room.last_message) {
+      ws.send("mark_read", {
+        room_id: room.id,
+        message_id: room.last_message.id,
+      });
+    }
+    clearUnread(room.id);
     setMenuRoomId(null);
   }
 
@@ -180,6 +210,7 @@ export function RoomList() {
     const unread = unreadCounts[room.id] ?? 0;
     const cat = categories[room.id];
     const menuOpen = menuRoomId === room.id;
+    const muted = isMuted(room.id);
     return (
       <li key={room.id} className="relative">
         <div
@@ -220,8 +251,22 @@ export function RoomList() {
                 >
                   {room.name}
                 </span>
+                {muted && (
+                  <BellOff
+                    aria-label="Muted"
+                    className="ml-1 h-3 w-3 shrink-0 text-slate-500"
+                  />
+                )}
                 {unread > 0 && (
-                  <span className="gradient-bg ml-1 grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
+                  <span
+                    className={clsx(
+                      "ml-1 grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums",
+                      // Muted rooms keep the count but lose the gradient shout.
+                      muted
+                        ? "bg-slate-700/70 text-slate-400"
+                        : "gradient-bg text-white",
+                    )}
+                  >
                     {unread > 99 ? "99+" : unread}
                   </span>
                 )}
@@ -261,7 +306,35 @@ export function RoomList() {
               role="menu"
               className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
             >
-              <p className="px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              <button
+                role="menuitem"
+                onClick={() => {
+                  toggleMute(room.id);
+                  setMenuRoomId(null);
+                }}
+                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+              >
+                {muted ? (
+                  <>
+                    <Bell className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                    Unmute
+                  </>
+                ) : (
+                  <>
+                    <BellOff className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                    Mute
+                  </>
+                )}
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => markRoomRead(room)}
+                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+              >
+                <CheckCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                Mark as read
+              </button>
+              <p className="mt-0.5 border-t border-line px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                 Move to category
               </p>
               {knownCategories.map((c) => (
@@ -278,14 +351,40 @@ export function RoomList() {
                   <span className="truncate">{c}</span>
                 </button>
               ))}
-              <button
-                role="menuitem"
-                onClick={() => promptNewCategory(room.id)}
-                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-              >
-                <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
-                New category…
-              </button>
+              {newCatDraft === null ? (
+                <button
+                  role="menuitem"
+                  onClick={() => setNewCatDraft("")}
+                  className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                >
+                  <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+                  New category…
+                </button>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1.5">
+                  <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+                  <input
+                    autoFocus
+                    value={newCatDraft}
+                    onChange={(e) => setNewCatDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Enter confirms, Esc collapses back to the button —
+                      // stop both so global handlers never see them.
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        commitNewCategory(room.id);
+                      } else if (e.key === "Escape") {
+                        e.stopPropagation();
+                        setNewCatDraft(null);
+                      }
+                    }}
+                    placeholder="Category name"
+                    aria-label="New category name"
+                    className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
+                  />
+                </div>
+              )}
               {cat && (
                 <button
                   role="menuitem"

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
+import { MotionConfig } from "framer-motion";
 import { initAuth, isAuthenticated, login, getUserProfile } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
@@ -245,6 +246,10 @@ function AuthGate({ children }: { children: ReactNode }) {
 
 export function App() {
   return (
+    // reducedMotion="user": every framer-motion transform/entrance in the tree
+    // collapses to opacity-only when the OS asks for reduced motion (the CSS
+    // animate-* utilities are neutralized in globals.css).
+    <MotionConfig reducedMotion="user">
     <AuthGate>
       <VoiceProvider>
       <Routes>
@@ -267,5 +272,6 @@ export function App() {
       </Routes>
       </VoiceProvider>
     </AuthGate>
+    </MotionConfig>
   );
 }

@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Bell, LogOut, Mail, X } from "lucide-react";
+import { Bell, Check, LogOut, Mail, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
@@ -47,21 +47,32 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const currentUser = useAppStore((s) => s.currentUser);
   // Identity hue for the signed-in resident — rings the profile avatar.
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
-  const prefs = loadPrefs();
+  // Prefs live in local state so a toggle re-renders in place (the modal stays
+  // open); persistence is synchronous to localStorage on every change, which
+  // is all consumers read (useGlobalNotifications calls loadPrefs per event).
+  const [prefs, setPrefs] = useState<NotificationPrefs>(loadPrefs);
+  const [showSaved, setShowSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    };
   }, [onClose]);
 
   function set<K extends keyof NotificationPrefs>(key: K, value: NotificationPrefs[K]) {
-    savePrefs({ ...prefs, [key]: value });
-    // Force re-render via state shake — settings only saved to localStorage
-    onClose();
-    setTimeout(() => useAppStore.getState().pushToast({ title: "Settings saved" }), 50);
+    const next = { ...prefs, [key]: value };
+    setPrefs(next);
+    savePrefs(next);
+    // Unobtrusive confirmation — persistence is instant, so no toast, no close.
+    setShowSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setShowSaved(false), 1500);
   }
 
   return (
@@ -133,6 +144,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         <section className="mb-5">
           <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             <Bell className="h-3 w-3" /> Notifications
+            {showSaved && (
+              <span className="animate-fade-in ml-auto flex items-center gap-1 normal-case tracking-normal text-stable-mint">
+                <Check className="h-3 w-3" /> Saved
+              </span>
+            )}
           </h3>
           <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface-1/60">
             <Toggle

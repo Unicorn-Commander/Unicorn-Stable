@@ -18,6 +18,8 @@ import {
   LayoutPanelLeft,
   RefreshCw,
   Square,
+  CheckSquare,
+  Volume2,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict, format } from "date-fns";
@@ -94,6 +96,53 @@ function errorMessage(err: unknown) {
   return apiErr?.detail || apiErr?.message || (err instanceof Error ? err.message : "Request failed");
 }
 
+/**
+ * Flatten markdown into speakable prose for TTS — the engine would otherwise
+ * read fence backticks, pipes, and heading hashes literally. Whole code blocks
+ * become a spoken placeholder; links collapse to their text. Capped so a huge
+ * agent reply can't blow the TTS request.
+ */
+function speechText(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, " code block omitted. ")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " link ")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[-*]\s+\[[ xX]\]\s*/gm, "")
+    .replace(/^[-*]\s+/gm, "")
+    .replace(/(\*\*|__|~~)/g, "")
+    .replace(/(?<![*\w])\*([^*\n]+)\*(?!\w)/g, "$1")
+    .replace(/(?<![_\w])_([^_\n]+)_(?!\w)/g, "$1")
+    .replace(/\|/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 4000);
+}
+
+// One read-aloud at a time app-wide: starting a new one stops whatever is
+// playing, even in a different bubble. The handle owns the Audio element and
+// its object URL, so stop() from anywhere tears both down and resets the
+// owning bubble's button state.
+let activeSpeech: { stop: () => void } | null = null;
+
+/** GFM table separator row, e.g. `| --- | :--: |`. Requires at least one pipe
+ * so a bare `---` horizontal rule can never start a table. */
+function isTableSeparator(line: string): boolean {
+  return line.includes("|") && /^\s*\|?(\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?\s*$/.test(line);
+}
+
+/** Split a GFM table row into trimmed cells (outer pipes optional). */
+function splitTableRow(row: string): string[] {
+  return row
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim());
+}
+
 // Lazy-import highlight.js so the main bundle stays small. First code block
 // in any message triggers the load, then it's cached for the session.
 let _hljs: typeof import("highlight.js").default | null = null;
@@ -109,19 +158,26 @@ function loadHljs(): Promise<void> {
 
 function CodeBlock({ lang, content }: { lang: string | null; content: string }) {
   const [html, setHtml] = useState<string | null>(null);
+  // Language highlightAuto guessed when no fence language was given — shown in
+  // the header instead of the generic "code" label.
+  const [autoLang, setAutoLang] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     let active = true;
     loadHljs().then(() => {
       if (!active || !_hljs) return;
       try {
-        const result =
-          lang && _hljs.getLanguage(lang)
-            ? _hljs.highlight(content, { language: lang, ignoreIllegals: true })
-            : _hljs.highlightAuto(content);
-        setHtml(result.value);
+        if (lang && _hljs.getLanguage(lang)) {
+          setHtml(_hljs.highlight(content, { language: lang, ignoreIllegals: true }).value);
+          setAutoLang(null);
+        } else {
+          const result = _hljs.highlightAuto(content);
+          setHtml(result.value);
+          setAutoLang(result.language ?? null);
+        }
       } catch {
         setHtml(null);
+        setAutoLang(null);
       }
     });
     return () => {
@@ -143,7 +199,7 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
           OpenWebUI/Discord/Slack. */}
       <div className="flex items-center justify-between gap-2 border-b border-line bg-white/[0.03] px-3 py-1.5">
         <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-slate-500">
-          {lang || "code"}
+          {lang || autoLang || "code"}
         </span>
         <button
           onClick={copy}
@@ -177,7 +233,7 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
   );
 }
 
-function QuickReact({ messageId }: { messageId: string }) {
+function QuickReact({ onReact }: { onReact: (emoji: string) => void }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -196,13 +252,9 @@ function QuickReact({ messageId }: { messageId: string }) {
           {QUICK_EMOJI.map((e) => (
             <button
               key={e}
-              onClick={async () => {
+              onClick={() => {
                 setOpen(false);
-                try {
-                  await api.toggleReaction(messageId, e);
-                } catch (err) {
-                  console.error("react failed", err);
-                }
+                onReact(e);
               }}
               className="rounded-md px-1 py-0.5 text-base transition-colors hover:bg-white/[0.08] focus-ring"
             >
@@ -308,11 +360,11 @@ function PollCard({
 }
 
 function ReactionRow({
-  messageId,
   reactions,
+  onToggle,
 }: {
-  messageId: string;
   reactions: Record<string, string[]> | null;
+  onToggle: (emoji: string) => void;
 }) {
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   if (!reactions || Object.keys(reactions).length === 0) return null;
@@ -323,7 +375,7 @@ function ReactionRow({
         return (
           <button
             key={emoji}
-            onClick={() => api.toggleReaction(messageId, emoji).catch(() => {})}
+            onClick={() => onToggle(emoji)}
             className={clsx(
               "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors focus-ring",
               mine
@@ -548,6 +600,121 @@ export function MessageBubble({
   const artifact = artifactMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
+  const currentUserId = useAppStore((s) => s.currentUser?.id);
+
+  const serverReactions =
+    (message.metadata as { reactions?: Record<string, string[]> } | undefined)
+      ?.reactions ?? null;
+  // Optimistic reaction overlay: shows the toggled state immediately instead
+  // of waiting on the ws echo. The echo rewrites metadata.reactions (new
+  // reference), which discards the overlay via the effect below — server
+  // truth always wins once it arrives.
+  const [reactionOverlay, setReactionOverlay] =
+    useState<Record<string, string[]> | null>(null);
+  useEffect(() => {
+    setReactionOverlay(null);
+  }, [serverReactions]);
+
+  function handleToggleReaction(emoji: string) {
+    if (currentUserId) {
+      const base = reactionOverlay ?? serverReactions ?? {};
+      const users = base[emoji] ?? [];
+      const next: Record<string, string[]> = {
+        ...base,
+        [emoji]: users.includes(currentUserId)
+          ? users.filter((u) => u !== currentUserId)
+          : [...users, currentUserId],
+      };
+      if (next[emoji]!.length === 0) delete next[emoji];
+      setReactionOverlay(next);
+    }
+    api.toggleReaction(message.id, emoji).catch((err) => {
+      setReactionOverlay(null);
+      pushToast({ title: "Reaction failed", body: errorMessage(err) });
+    });
+  }
+
+  function handleTogglePin() {
+    api
+      .togglePin(message.room_id, message.id)
+      .then((pins) =>
+        pushToast({
+          title: pins.includes(message.id) ? "Pinned to room" : "Unpinned",
+        }),
+      )
+      .catch((err) => pushToast({ title: "Pin failed", body: errorMessage(err) }));
+  }
+
+  function handleToggleSave() {
+    api
+      .toggleSave(message.id)
+      .then((updated) => {
+        // The updated message carries saved_by when the backend exposes it;
+        // fall back to generic phrasing when it doesn't.
+        const savedBy = (updated.metadata as { saved_by?: string[] } | undefined)
+          ?.saved_by;
+        const title =
+          Array.isArray(savedBy) && currentUserId
+            ? savedBy.includes(currentUserId)
+              ? "Saved"
+              : "Removed from saved"
+            : "Saved";
+        pushToast({ title });
+      })
+      .catch((err) => pushToast({ title: "Save failed", body: errorMessage(err) }));
+  }
+
+  // Read-aloud lifecycle. "loading" = TTS blob in flight, "speaking" = audio
+  // playing; a second click in either state stops. The module-level
+  // activeSpeech singleton guarantees at most one voice app-wide.
+  const [ttsState, setTtsState] = useState<"idle" | "loading" | "speaking">("idle");
+  const ttsHandleRef = useRef<{ stop: () => void } | null>(null);
+  // Unmount (room switch, delete) must not leak a playing Audio / object URL.
+  useEffect(() => () => ttsHandleRef.current?.stop(), []);
+
+  function handleReadAloud() {
+    if (ttsHandleRef.current) {
+      ttsHandleRef.current.stop();
+      return;
+    }
+    activeSpeech?.stop();
+    setTtsState("loading");
+    let cancelled = false;
+    let audio: HTMLAudioElement | null = null;
+    let url: string | null = null;
+    const handle = {
+      stop() {
+        cancelled = true;
+        audio?.pause();
+        if (url) URL.revokeObjectURL(url);
+        if (activeSpeech === handle) activeSpeech = null;
+        if (ttsHandleRef.current === handle) ttsHandleRef.current = null;
+        setTtsState("idle");
+      },
+    };
+    activeSpeech = handle;
+    ttsHandleRef.current = handle;
+    void api
+      .ttsSpeech(speechText(message.content))
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        audio = new Audio(url);
+        audio.onended = () => handle.stop();
+        audio.onerror = () => handle.stop();
+        return audio.play().then(() => {
+          if (!cancelled) setTtsState("speaking");
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        handle.stop();
+        pushToast({
+          title: "Read-aloud failed",
+          body: errorMessage(err) || "TTS service unreachable",
+        });
+      });
+  }
 
   // Close context menu on any window click or escape.
   useEffect(() => {
@@ -719,7 +886,9 @@ export function MessageBubble({
                 onClick={() =>
                   api
                     .decideAction(message.id, "approved")
-                    .catch((e) => alert("Approve failed: " + (e as Error).message))
+                    .catch((e) =>
+                      pushToast({ title: "Approve failed", body: errorMessage(e) }),
+                    )
                 }
                 className="flex-1 rounded-lg bg-emerald-500/15 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 focus-ring"
               >
@@ -729,7 +898,9 @@ export function MessageBubble({
                 onClick={() =>
                   api
                     .decideAction(message.id, "rejected")
-                    .catch((e) => alert("Reject failed: " + (e as Error).message))
+                    .catch((e) =>
+                      pushToast({ title: "Reject failed", body: errorMessage(e) }),
+                    )
                 }
                 className="flex-1 rounded-lg bg-rose-500/15 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 focus-ring"
               >
@@ -822,6 +993,67 @@ export function MessageBubble({
         continue;
       }
 
+      // GFM table: a pipe-bearing header row followed by a |---|---| separator.
+      // Wide tables scroll inside their own wrapper instead of breaking the
+      // bubble. Rows shorter than the header get empty trailing cells.
+      if (line.includes("|") && isTableSeparator(lines[i + 1] ?? "")) {
+        const header = splitTableRow(line);
+        const aligns = splitTableRow(lines[i + 1] ?? "").map((c) =>
+          c.startsWith(":") && c.endsWith(":")
+            ? ("center" as const)
+            : c.endsWith(":")
+              ? ("right" as const)
+              : ("left" as const),
+        );
+        i += 2;
+        const rows: string[][] = [];
+        while (i < lines.length && (lines[i] ?? "").includes("|")) {
+          rows.push(splitTableRow(lines[i]!));
+          i++;
+        }
+        out.push(
+          <div
+            key={key++}
+            className="my-2 overflow-x-auto rounded-lg border border-line"
+          >
+            <table className="w-full min-w-max border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-950/60">
+                  {header.map((h, hi) => (
+                    <th
+                      key={hi}
+                      className="border-b border-line px-2.5 py-1.5 font-semibold text-slate-200"
+                      style={{ textAlign: aligns[hi] ?? "left" }}
+                    >
+                      {renderInlineContent(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, ri) => (
+                  <tr
+                    key={ri}
+                    className={ri < rows.length - 1 ? "border-b border-line" : undefined}
+                  >
+                    {header.map((_h, ci) => (
+                      <td
+                        key={ci}
+                        className="px-2.5 py-1.5 text-slate-300"
+                        style={{ textAlign: aligns[ci] ?? "left" }}
+                      >
+                        {renderInlineContent(r[ci] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>,
+        );
+        continue;
+      }
+
       // Blockquote run
       if (line.startsWith("> ") || line === ">") {
         const buf: string[] = [];
@@ -857,9 +1089,31 @@ export function MessageBubble({
         }
         out.push(
           <ul key={key++} className="my-1 list-disc pl-5 marker:text-slate-500">
-            {items.map((it, idx) => (
-              <li key={idx}>{renderInlineContent(it)}</li>
-            ))}
+            {items.map((it, idx) => {
+              // Task-list item: `[ ]` / `[x]` after the bullet. Read-only —
+              // the glyph shows state, it doesn't toggle anything.
+              const task = it.match(/^\[([ xX])\]\s*(.*)$/);
+              if (!task) return <li key={idx}>{renderInlineContent(it)}</li>;
+              const checked = task[1] !== " ";
+              return (
+                <li key={idx} className="-ml-5 flex list-none items-start gap-1.5">
+                  {checked ? (
+                    <CheckSquare
+                      aria-hidden="true"
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stable-mint"
+                    />
+                  ) : (
+                    <Square
+                      aria-hidden="true"
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500"
+                    />
+                  )}
+                  <span className={checked ? "text-slate-400" : undefined}>
+                    {renderInlineContent(task[2] ?? "")}
+                  </span>
+                </li>
+              );
+            })}
           </ul>,
         );
         continue;
@@ -890,7 +1144,8 @@ export function MessageBubble({
           ln.match(/^(#{1,3})\s+/) ||
           ln.startsWith("> ") || ln === ">" ||
           /^[-*]\s+/.test(ln) ||
-          /^\d+\.\s+/.test(ln)
+          /^\d+\.\s+/.test(ln) ||
+          (ln.includes("|") && isTableSeparator(lines[i + 1] ?? ""))
         ) {
           break;
         }
@@ -1252,11 +1507,8 @@ export function MessageBubble({
         })()}
 
         <ReactionRow
-          messageId={message.id}
-          reactions={
-            (message.metadata as { reactions?: Record<string, string[]> } | undefined)
-              ?.reactions ?? null
-          }
+          reactions={reactionOverlay ?? serverReactions}
+          onToggle={handleToggleReaction}
         />
 
         {message.reply_count > 0 && !editing && (
@@ -1273,7 +1525,7 @@ export function MessageBubble({
 
       {hovered && !editing && (
         <div className="glass-heavy absolute -top-3 right-2 z-10 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-lg p-1 shadow-pop animate-fade-in md:max-w-none md:flex-nowrap">
-          <QuickReact messageId={message.id} />
+          <QuickReact onReact={handleToggleReaction} />
           <button
             onClick={() => onReply(message.id)}
             className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
@@ -1293,7 +1545,7 @@ export function MessageBubble({
             <Quote className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => api.toggleSave(message.id).catch(() => {})}
+            onClick={handleToggleSave}
             className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Save message"
             title="Save to your bookmarks"
@@ -1309,15 +1561,36 @@ export function MessageBubble({
             <BriefcaseBusiness className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() =>
-              api.togglePin(message.room_id, message.id).catch(() => {})
-            }
+            onClick={handleTogglePin}
             className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
             aria-label="Pin / unpin message"
             title="Pin or unpin"
           >
             <Pin className="h-3.5 w-3.5" />
           </button>
+          {isAgent && !isGenerating && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleReadAloud();
+              }}
+              className={clsx(
+                "rounded-md p-1.5 transition-colors focus-ring",
+                ttsState === "speaking"
+                  ? "text-stable-mint hover:bg-stable-mint/15"
+                  : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
+                ttsState === "loading" && "animate-pulse-soft",
+              )}
+              aria-label={ttsState === "idle" ? "Read aloud" : "Stop reading"}
+              title={ttsState === "idle" ? "Read this reply aloud" : "Stop reading"}
+            >
+              {ttsState === "speaking" ? (
+                <Square className="h-3.5 w-3.5 fill-current" />
+              ) : (
+                <Volume2 className="h-3.5 w-3.5" />
+              )}
+            </button>
+          )}
           {isAgent && !isGenerating && (
             <button
               disabled={regenerating}
@@ -1331,7 +1604,10 @@ export function MessageBubble({
                     // 409 = someone already regenerated this reply (double-tap /
                     // two members). Benign and expected — don't alarm the user.
                     if ((err as ApiError)?.status === 409) return;
-                    alert("Regenerate failed: " + (err as Error).message);
+                    pushToast({
+                      title: "Regenerate failed",
+                      body: errorMessage(err),
+                    });
                   })
                   .finally(() => setRegenerating(false));
               }}
@@ -1448,6 +1724,24 @@ export function MessageBubble({
               ↪ Reply / quote
             </button>
           </li>
+          {isAgent && !isGenerating && (
+            <li>
+              <button
+                onClick={() => {
+                  handleReadAloud();
+                  setCtxMenu(null);
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+              >
+                {ttsState === "idle" ? (
+                  <Volume2 className="h-3.5 w-3.5" />
+                ) : (
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                )}
+                {ttsState === "idle" ? "Read aloud" : "Stop reading"}
+              </button>
+            </li>
+          )}
           <li>
             <button
               onClick={() => {

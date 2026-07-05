@@ -402,3 +402,21 @@
     transform: translate3d(2%, 2%, 0) scale(1.08);
   }
 }
+
+/* Unlayered on purpose: the animate-* utilities live in Tailwind's utilities
+   layer, which beats anything inside @layer base regardless of order — an
+   unlayered rule is the only way this override wins. Decorative motion only;
+   framer-motion transitions are neutralized separately via
+   <MotionConfig reducedMotion="user"> in App.tsx. (The aurora drift is
+   already disabled in the base-layer block above.) */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-slide-up,
+  .animate-slide-left,
+  .animate-pulse-soft,
+  .animate-shimmer,
+  .animate-breathe,
+  .animate-live {
+    animation: none;
+  }
+}

@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Loader2 } from "lucide-react";
+import { ArrowDown, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
@@ -127,6 +127,59 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
     return () => window.clearInterval(id);
   }, [awaitingAgentSince, resync]);
 
+  // Slack-style "New messages" divider: snapshot the last-read point ONCE per
+  // room open — before the mark_read effect below tells the server we've read
+  // everything — then freeze it, so the divider never moves or vanishes while
+  // the user sits in the room. Resolution is deferred to the first render that
+  // has history (the initial page loads async). Preferred source is our own
+  // participant's last_read_at (live receipt first, then the member row): it
+  // stays correct through the stale-unread_count window after a quick
+  // leave/re-enter, since rooms[].unread_count only resets on the 60s refetch.
+  const unreadAnchorRef = useRef<{ roomId: string; resolved: boolean }>({
+    roomId,
+    resolved: false,
+  });
+  const [unreadAnchorId, setUnreadAnchorId] = useState<string | null>(null);
+  useEffect(() => {
+    if (unreadAnchorRef.current.roomId !== roomId) {
+      unreadAnchorRef.current = { roomId, resolved: false };
+      setUnreadAnchorId(null);
+    }
+    if (unreadAnchorRef.current.resolved || loading || messages.length === 0)
+      return;
+    unreadAnchorRef.current.resolved = true;
+
+    const state = useAppStore.getState();
+    const self = (state.participants[roomId] ?? []).find((p) => p.is_self);
+    const selfPid = self?.participant_id || self?.user_id || "";
+    const lastReadAt =
+      (selfPid ? state.readReceipts[roomId]?.[selfPid] : undefined) ||
+      self?.last_read_at ||
+      null;
+    // Own optimistic sends can never anchor the divider (and persisted own
+    // messages have selfPid as sender — currentUser.id is the Keycloak id and
+    // never matches server sender_ids, so it only guards optimistic copies).
+    const history = messages.filter((m) => !m.id.startsWith("optimistic-"));
+    let anchor: (typeof history)[number] | undefined;
+    if (lastReadAt) {
+      const readUpTo = new Date(lastReadAt).getTime();
+      anchor = history.find(
+        (m) =>
+          new Date(m.created_at).getTime() > readUpTo &&
+          m.sender_id !== currentUser?.id &&
+          (!selfPid || m.sender_id !== selfPid),
+      );
+    } else {
+      // No read receipt yet (participants may not have loaded): count back the
+      // room's cold-load unread_count from the end of the fetched history.
+      const unread = state.rooms.find((r) => r.id === roomId)?.unread_count ?? 0;
+      if (unread > 0) {
+        anchor = history[Math.max(0, history.length - unread)];
+      }
+    }
+    if (anchor) setUnreadAnchorId(anchor.id);
+  }, [roomId, loading, messages, currentUser?.id]);
+
   // Send mark_read for the latest message whenever (a) the room becomes
   // active, (b) a new message arrives while we're at bottom + visible.
   useEffect(() => {
@@ -140,7 +193,15 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  // Mirror of isAtBottomRef: the ref drives scroll decisions without
+  // re-rendering, but the jump pill needs a render when it flips.
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  // Others' messages that landed while scrolled up — the pill's count.
+  const [newWhileScrolledUp, setNewWhileScrolledUp] = useState(0);
   const prevMessageCountRef = useRef(0);
+  const prevLastMessageIdRef = useRef<string | null>(null);
+  // Which room we've already pinned to bottom after its content rendered.
+  const pinnedRoomRef = useRef<string | null>(null);
 
   const scrollToBottom = useCallback((smooth = false) => {
     bottomRef.current?.scrollIntoView({
@@ -149,16 +210,50 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
   }, []);
 
   useEffect(() => {
+    // Rooms always open pinned to bottom; clear pill state from the last room.
+    isAtBottomRef.current = true;
+    setIsAtBottom(true);
+    setNewWhileScrolledUp(0);
+    prevLastMessageIdRef.current = null;
+  }, [roomId]);
+
+  useEffect(() => {
     if (isAtBottomRef.current && messages.length > prevMessageCountRef.current) {
       scrollToBottom(true);
     }
     prevMessageCountRef.current = messages.length;
   }, [messages.length, scrollToBottom]);
 
+  // Instant-pin to bottom on room open, re-pinning until the room's first page
+  // has rendered (the initial fetch is async). After that the at-bottom effect
+  // above owns auto-scroll, so a reader who scrolled up is never yanked down
+  // by new traffic or a loadMore prepend.
   useEffect(() => {
+    if (pinnedRoomRef.current === roomId && messages.length > 0) return;
+    if (messages.length > 0) pinnedRoomRef.current = roomId;
     scrollToBottom(false);
     prevMessageCountRef.current = messages.length;
   }, [roomId, scrollToBottom, messages.length]);
+
+  // Count what arrived while scrolled up (the pill's "N new messages" label).
+  // Keyed on the last message ID, not list length, so loadMore prepends and
+  // the optimistic→server-id reconcile never count as new.
+  useEffect(() => {
+    const lastId = messages[messages.length - 1]?.id ?? null;
+    const prevId = prevLastMessageIdRef.current;
+    prevLastMessageIdRef.current = lastId;
+    if (!lastId || !prevId || lastId === prevId) return;
+    if (isAtBottomRef.current) return;
+    const prevIdx = messages.findIndex((m) => m.id === prevId);
+    if (prevIdx === -1) return; // room switch or in-place id reconcile
+    const fresh = messages
+      .slice(prevIdx + 1)
+      .filter(
+        (m) =>
+          !m.id.startsWith("optimistic-") && m.sender_id !== currentUser?.id,
+      );
+    if (fresh.length > 0) setNewWhileScrolledUp((c) => c + fresh.length);
+  }, [messages, currentUser?.id]);
 
   useEffect(() => {
     const messageId = new URLSearchParams(window.location.search).get("message");
@@ -179,7 +274,11 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
 
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
-    isAtBottomRef.current = distanceFromBottom < 80;
+    const atBottom = distanceFromBottom < 80;
+    isAtBottomRef.current = atBottom;
+    setIsAtBottom(atBottom);
+    // Reaching the bottom means everything's been seen — reset the pill count.
+    if (atBottom) setNewWhileScrolledUp(0);
 
     if (container.scrollTop < 100 && hasMore && !loading) {
       const prevScrollHeight = container.scrollHeight;
@@ -222,6 +321,9 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {/* Relative wrapper so the jump pill can float over the scroll area —
+          above the composer/typing rows, which live outside it. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
@@ -313,6 +415,18 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
                     <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-700/60" />
                   </div>
                 )}
+                {message.id === unreadAnchorId && (
+                  <div
+                    className="my-2 flex items-center gap-2 px-2"
+                    role="separator"
+                    aria-label="New messages"
+                  >
+                    <div className="h-px flex-1 bg-stable-purple/40" />
+                    <span className="rounded-full border border-stable-purple/40 bg-stable-purple/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stable-purple">
+                      New
+                    </span>
+                  </div>
+                )}
                 <MessageBubble
                   message={message}
                   isOwn={message.sender_id === currentUser?.id}
@@ -363,6 +477,32 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
         </div>
 
         <div ref={bottomRef} />
+      </div>
+
+      {/* Jump-to-latest pill — only while scrolled up, so it can't cover the
+          "Seen by" row (that row lives at the bottom of the scrolled content,
+          off-screen whenever the pill is showing). */}
+      {!isAtBottom && messages.length > 0 && (
+        <button
+          onClick={() => {
+            setNewWhileScrolledUp(0);
+            isAtBottomRef.current = true;
+            setIsAtBottom(true);
+            scrollToBottom(true);
+          }}
+          className="glass-heavy absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 animate-slide-up items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium text-slate-200 shadow-pop transition-colors hover:border-stable-purple/40 hover:text-white focus-ring"
+          aria-label={
+            newWhileScrolledUp > 0
+              ? `Jump to latest — ${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
+              : "Jump to latest"
+          }
+        >
+          <ArrowDown className="h-3.5 w-3.5 text-stable-purple" aria-hidden="true" />
+          {newWhileScrolledUp > 0
+            ? `${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
+            : "Jump to latest"}
+        </button>
+      )}
       </div>
 
       {(typingUsers.length > 0 || awaitingAgentSince !== null) && (

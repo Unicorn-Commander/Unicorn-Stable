@@ -295,7 +295,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         ensureAgent(1);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to connect to room");
+      const message =
+        err instanceof Error ? err.message : "Failed to connect to room";
+      setError(message);
+      // Nothing renders `error` inline yet — without a toast a failed connect
+      // is a silently dead Start-call button. Keep the state for future inline
+      // surfaces; the toast is the user-visible signal today.
+      useAppStore.getState().pushToast({
+        title: "Couldn't start the call",
+        body: message,
+      });
       roomRef.current = null;
       connectingRef.current = false;
       setIsConnecting(false);

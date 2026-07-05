@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Bookmark, Settings, LogOut } from "lucide-react";
+import { X, Bookmark, Settings, LogOut, Wifi, WifiOff } from "lucide-react";
+import clsx from "clsx";
 import { api } from "@/services/api";
 import { logout } from "@/services/auth";
+import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
+import { useChannelCategories } from "@/stores/categoryStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -24,6 +27,73 @@ import { RoomView } from "@/components/Room/RoomView";
 import { HomeDashboard } from "@/components/Home/HomeDashboard";
 import { AgentsPage } from "@/components/Agents/AgentsPage";
 import { BridgePage } from "@/components/Bridge/BridgePage";
+
+/**
+ * The sidebar's visual room order, flattened for Alt+↑/↓ navigation. Mirrors
+ * RoomList exactly: categorized channels (categories A→Z, list order within;
+ * collapsed categories skipped — their rows aren't visible), then ungrouped
+ * channels, then Direct messages where an agent's threads collapse to ONE
+ * entry (its newest thread — the collapsed group row's click target).
+ *
+ * Each entry is the set of room ids it represents; entry[0] is the navigation
+ * target. Multi-id entries let a non-newest agent thread still resolve to its
+ * group's position instead of falling off the list.
+ */
+function sidebarRoomOrder(): string[][] {
+  const { rooms } = useAppStore.getState();
+  const { categories, collapsed } = useChannelCategories.getState();
+  const entries: string[][] = [];
+
+  const grouped = new Map<string, string[]>();
+  const ungrouped: string[] = [];
+  for (const r of rooms) {
+    if (r.type !== "channel") continue;
+    const cat = categories[r.id];
+    if (!cat) {
+      ungrouped.push(r.id);
+    } else if (!collapsed[cat]) {
+      const arr = grouped.get(cat);
+      if (arr) arr.push(r.id);
+      else grouped.set(cat, [r.id]);
+    }
+  }
+  for (const [, ids] of [...grouped.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
+    for (const id of ids) entries.push([id]);
+  }
+  for (const id of ungrouped) entries.push([id]);
+
+  const byAgent = new Map<string, string[]>();
+  for (const r of rooms) {
+    if (r.type !== "dm" && r.type !== "group_dm") continue;
+    const agentId = r.brigade_agent_id;
+    if (agentId) {
+      const threads = byAgent.get(agentId);
+      if (threads) {
+        threads.push(r.id);
+      } else {
+        const fresh = [r.id];
+        byAgent.set(agentId, fresh);
+        entries.push(fresh);
+      }
+    } else {
+      entries.push([r.id]);
+    }
+  }
+  return entries;
+}
+
+function isEditableTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el) return false;
+  return (
+    el.tagName === "INPUT" ||
+    el.tagName === "TEXTAREA" ||
+    el.tagName === "SELECT" ||
+    el.isContentEditable
+  );
+}
 
 export function AppShell() {
   useGlobalNotifications();
@@ -50,44 +120,73 @@ export function AppShell() {
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
-  // Tab title shows total unread so background tabs can notify.
+  // Tab title: "(unread) #room — Stable" so background tabs can notify AND the
+  // tab strip identifies which conversation this window is sitting in.
   const unreadCounts = useAppStore((s) => s.unreadCounts);
+  const storeRooms = useAppStore((s) => s.rooms);
   useEffect(() => {
     const total = Object.values(unreadCounts).reduce(
       (a, b) => a + (b ?? 0),
       0,
     );
-    document.title =
-      total > 0 ? `(${total > 99 ? "99+" : total}) Stable` : "Stable";
+    const active = storeRooms.find((r) => r.id === activeRoomId);
+    const prefix = total > 0 ? `(${total > 99 ? "99+" : total}) ` : "";
+    const roomLabel = active
+      ? `${active.type === "channel" ? "#" : ""}${active.name} — `
+      : "";
+    document.title = `${prefix}${roomLabel}Stable`;
     return () => {
       document.title = "Stable";
     };
-  }, [unreadCounts]);
+  }, [unreadCounts, storeRooms, activeRoomId]);
 
+  // Global shortcuts, one listener: Cmd/Ctrl+/ cheatsheet, Cmd/Ctrl+K quick
+  // switcher, Alt+↑/↓ previous/next room in the sidebar's visual order.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      // Cmd+/ or Ctrl+/ → toggle cheatsheet
       if ((e.metaKey || e.ctrlKey) && e.key === "/") {
         e.preventDefault();
         useAppStore.getState().toggleCheatsheet();
+        return;
       }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-
-  // Cmd/Ctrl + K opens the quick switcher
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setSwitcherOpen(true);
+        return;
+      }
+      if (
+        e.altKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown")
+      ) {
+        // Not while typing — Alt+arrows are word/line motions in editors.
+        if (isEditableTarget(e.target)) return;
+        const entries = sidebarRoomOrder();
+        if (entries.length === 0) return;
+        e.preventDefault();
+        const current = useAppStore.getState().activeRoomId;
+        const idx = entries.findIndex((ids) =>
+          ids.includes(current ?? ""),
+        );
+        const delta = e.key === "ArrowUp" ? -1 : 1;
+        // No active room: enter the list from the end you're moving toward.
+        const next =
+          idx === -1
+            ? delta === 1
+              ? 0
+              : entries.length - 1
+            : Math.min(Math.max(idx + delta, 0), entries.length - 1);
+        const target = entries[next]?.[0];
+        if (target && target !== current) {
+          useAppStore.getState().clearUnread(target);
+          navigate(`/c/${target}`);
+        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [navigate]);
 
   const { data: rooms } = useQuery({
     queryKey: ["rooms"],
@@ -330,7 +429,101 @@ export function AppShell() {
         )}
       </AnimatePresence>
 
+      <ConnectionBanner />
       <ToastStack />
     </div>
+  );
+}
+
+/**
+ * Slim top-of-app banner for websocket health. websocket.ts already reconnects
+ * with backoff and emits "connected"/"disconnected" — this only renders that
+ * state. Debounced: a drop that recovers within 2s (backoff attempt #1) never
+ * shows, so brief blips don't flash the UI. After a real outage reconnects, a
+ * green "Reconnected" confirmation lingers ~2s then dismisses itself.
+ */
+function ConnectionBanner() {
+  const [phase, setPhase] = useState<"hidden" | "lost" | "restored">("hidden");
+
+  useEffect(() => {
+    let lostTimer: number | null = null;
+    let restoredTimer: number | null = null;
+
+    const offDown = ws.on("disconnected", () => {
+      if (restoredTimer !== null) {
+        window.clearTimeout(restoredTimer);
+        restoredTimer = null;
+      }
+      setPhase((p) => (p === "restored" ? "lost" : p));
+      if (lostTimer !== null) return;
+      lostTimer = window.setTimeout(() => {
+        lostTimer = null;
+        setPhase("lost");
+      }, 2000);
+    });
+
+    const offUp = ws.on("connected", () => {
+      if (lostTimer !== null) {
+        // Recovered inside the debounce window — the banner never showed.
+        window.clearTimeout(lostTimer);
+        lostTimer = null;
+        return;
+      }
+      setPhase((p) => {
+        if (p !== "lost") return p;
+        if (restoredTimer !== null) window.clearTimeout(restoredTimer);
+        restoredTimer = window.setTimeout(() => {
+          restoredTimer = null;
+          setPhase((q) => (q === "restored" ? "hidden" : q));
+        }, 2000);
+        return "restored";
+      });
+    });
+
+    return () => {
+      offDown();
+      offUp();
+      if (lostTimer !== null) window.clearTimeout(lostTimer);
+      if (restoredTimer !== null) window.clearTimeout(restoredTimer);
+    };
+  }, []);
+
+  return (
+    <AnimatePresence>
+      {phase !== "hidden" && (
+        <motion.div
+          key={phase}
+          initial={{ y: -32, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: -32, opacity: 0 }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
+          role="status"
+          aria-live="polite"
+          className="fixed inset-x-0 top-0 z-[60]"
+          style={{ paddingTop: "env(safe-area-inset-top)" }}
+        >
+          <div
+            className={clsx(
+              "flex items-center justify-center gap-2 border-b px-4 py-1.5 text-xs font-medium backdrop-blur-md",
+              phase === "lost"
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                : "border-stable-mint/30 bg-stable-mint/10 text-stable-mint",
+            )}
+          >
+            {phase === "lost" ? (
+              <>
+                <WifiOff className="h-3.5 w-3.5 shrink-0" />
+                Connection lost — reconnecting…
+              </>
+            ) : (
+              <>
+                <Wifi className="h-3.5 w-3.5 shrink-0" />
+                Reconnected
+              </>
+            )}
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
