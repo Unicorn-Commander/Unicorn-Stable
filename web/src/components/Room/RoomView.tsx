@@ -13,6 +13,11 @@ import { useCallUiStore } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
+import {
+  PANEL_RESIZE_HANDLE_CLASS,
+  useIsDesktop,
+  usePanelResize,
+} from "@/hooks/usePanelResize";
 import { useVoice } from "@/contexts/VoiceProvider";
 import { ChatPanel } from "./ChatPanel";
 import { ParticipantStrip } from "./ParticipantStrip";
@@ -38,6 +43,15 @@ interface RoomViewProps {
 export function RoomView({ roomId }: RoomViewProps) {
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
+  // Desktop drag-to-resize for the docked participants column. On phones the
+  // panel is a fixed-width overlay drawer, so the stored width never applies.
+  const isDesktop = useIsDesktop();
+  const participantsResize = usePanelResize("participants", {
+    defaultWidth: 240,
+    min: 200,
+    max: 420,
+    edge: "left",
+  });
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const threadMessageId = useAppStore((s) => s.ui.threadMessageId);
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
@@ -721,8 +735,23 @@ export function RoomView({ roomId }: RoomViewProps) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-line bg-slate-900/95 shadow-2xl backdrop-blur-xl md:static md:z-auto md:w-60 md:bg-transparent md:shadow-none md:backdrop-blur-none"
+              // md:relative (not md:static): the resize handle is absolutely
+              // positioned against this column. Desktop width comes from the
+              // inline style (resizable, persisted); the mobile overlay keeps
+              // its w-[min(85vw,260px)] class because the style is gated off.
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-line bg-slate-900/95 shadow-2xl backdrop-blur-xl md:relative md:z-auto md:bg-transparent md:shadow-none md:backdrop-blur-none"
+              style={isDesktop ? { width: participantsResize.width } : undefined}
             >
+              <div
+                {...participantsResize.dragHandleProps}
+                aria-label="Resize participants panel"
+                title="Drag to resize · double-click to reset"
+                className={clsx(
+                  PANEL_RESIZE_HANDLE_CLASS,
+                  "left-0 hidden md:block",
+                  participantsResize.isDragging && "bg-white/[0.1]",
+                )}
+              />
               <ParticipantStrip roomId={roomId} />
               <div className="border-t border-line shrink-0">
                 <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />

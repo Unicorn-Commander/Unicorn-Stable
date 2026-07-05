@@ -14,6 +14,11 @@ import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useAppHeight } from "@/hooks/useAppHeight";
+import {
+  PANEL_RESIZE_HANDLE_CLASS,
+  useIsDesktop,
+  usePanelResize,
+} from "@/hooks/usePanelResize";
 import { Header } from "./Header";
 import { ToastStack } from "./ToastStack";
 import { CheatsheetModal } from "./CheatsheetModal";
@@ -101,6 +106,15 @@ export function AppShell() {
   useAppHeight();
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  // Desktop drag-to-resize for the room-list sidebar. On phones the sidebar is
+  // an off-canvas overlay drawer at a fixed 280px — no handle, no stored width.
+  const isDesktop = useIsDesktop();
+  const sidebarResize = usePanelResize("sidebar", {
+    defaultWidth: 280,
+    min: 220,
+    max: 480,
+    edge: "right",
+  });
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
   const { roomId: routeRoomId } = useParams<{ roomId: string }>();
@@ -395,10 +409,21 @@ export function AppShell() {
           <motion.aside
             key="sidebar"
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 280, opacity: 1 }}
+            // Desktop width is user-resizable (persisted); the phone drawer
+            // stays at the fixed 280 the overlay was designed around.
+            animate={{ width: isDesktop ? sidebarResize.width : 280, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: "easeInOut" }}
-            className="absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line bg-surface-0/80 backdrop-blur-xl md:static md:z-auto"
+            // While the handle is being dragged the width must track the
+            // pointer 1:1 — a tween here would rubber-band behind the cursor.
+            // Open/close keeps the original ease.
+            transition={
+              sidebarResize.isDragging
+                ? { duration: 0 }
+                : { duration: 0.2, ease: "easeInOut" }
+            }
+            // md:relative (not md:static): the resize handle is absolutely
+            // positioned against this aside, which must stay a containing block.
+            className="absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line bg-surface-0/80 backdrop-blur-xl md:relative md:z-auto"
             aria-label="Room list sidebar"
           >
             <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
@@ -475,6 +500,18 @@ export function AppShell() {
                 Sign out
               </button>
             </div>
+            {/* Desktop-only drag handle (double-click resets, arrows nudge).
+                The phone drawer keeps its fixed width. */}
+            <div
+              {...sidebarResize.dragHandleProps}
+              aria-label="Resize sidebar"
+              title="Drag to resize · double-click to reset"
+              className={clsx(
+                PANEL_RESIZE_HANDLE_CLASS,
+                "right-0 hidden md:block",
+                sidebarResize.isDragging && "bg-white/[0.1]",
+              )}
+            />
           </motion.aside>
         )}
       </AnimatePresence>

@@ -15,6 +15,11 @@ import {
   Link2Off,
   RefreshCw,
 } from "lucide-react";
+import {
+  PANEL_RESIZE_HANDLE_CLASS,
+  useIsDesktop,
+  usePanelResize,
+} from "@/hooks/usePanelResize";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import type { Collection, KbDocument, KbDocumentStatus } from "@/types/knowledge";
 
@@ -369,6 +374,15 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
   const [uploading, setUploading] = useState(false);
   // Which collection row is mid attach/detach (for its spinner).
   const [attachBusyId, setAttachBusyId] = useState<string | null>(null);
+  // Desktop drag-to-resize (persisted). Mobile stays a full-screen takeover,
+  // so the inline width is gated to md+ where the panel is a docked column.
+  const isDesktop = useIsDesktop();
+  const resize = usePanelResize("knowledge", {
+    defaultWidth: 420,
+    min: 320,
+    max: 700,
+    edge: "left",
+  });
 
   // Load the global list + this room's attachments when the panel opens.
   // (setRoom in RoomView already kicked off refreshAttached, but the panel can
@@ -421,11 +435,23 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
-      // Mobile: full-screen takeover. Desktop: a docked right column beside chat
-      // (matches the canvas panel's footprint, a touch narrower).
-      className="glass-heavy fixed inset-0 z-40 flex h-full w-full flex-col shadow-2xl md:static md:z-auto md:w-[clamp(320px,32vw,460px)] md:shadow-none"
+      // Mobile: full-screen takeover. Desktop: a docked right column beside
+      // chat (a touch narrower than the canvas), user-resizable via the
+      // left-edge handle (inline width below; md:relative anchors the handle).
+      className="glass-heavy fixed inset-0 z-40 flex h-full w-full flex-col shadow-2xl md:relative md:z-auto md:shadow-none"
+      style={isDesktop ? { width: resize.width } : undefined}
       aria-label="Knowledge bases"
     >
+      <div
+        {...resize.dragHandleProps}
+        aria-label="Resize knowledge panel"
+        title="Drag to resize · double-click to reset"
+        className={clsx(
+          PANEL_RESIZE_HANDLE_CLASS,
+          "left-0 hidden md:block",
+          resize.isDragging && "bg-white/[0.1]",
+        )}
+      />
       {/* Header */}
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-line px-3">
         <div className="flex min-w-0 items-center gap-2">

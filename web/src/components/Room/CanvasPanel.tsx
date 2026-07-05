@@ -17,6 +17,11 @@ import {
   User as UserIcon,
 } from "lucide-react";
 import { api } from "@/services/api";
+import {
+  PANEL_RESIZE_HANDLE_CLASS,
+  useIsDesktop,
+  usePanelResize,
+} from "@/hooks/usePanelResize";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { ArtifactKind, ArtifactResponse } from "@/types/artifact";
 import { CanvasRenderer } from "./canvas/CanvasRenderer";
@@ -218,6 +223,15 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
   // Markdown: toggle source-edit vs rendered preview. Other kinds render natively.
   const [mdSource, setMdSource] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
+  // Desktop drag-to-resize (persisted). Mobile stays a full-screen takeover,
+  // so the inline width is gated to md+ where the panel is a docked column.
+  const isDesktop = useIsDesktop();
+  const resize = usePanelResize("canvas", {
+    defaultWidth: 560,
+    min: 360,
+    max: 900,
+    edge: "left",
+  });
 
   // The canvas store is scoped to the active room by RoomView (which remounts
   // per room), so the room's artifact list is already loading by the time this
@@ -317,10 +331,22 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
       transition={{ duration: 0.18 }}
       // Mobile: full-screen takeover (the owner is often on a phone — a cramped
       // column is unusable for editing). Desktop: a wide right column docked
-      // beside chat (the co-working layout). Wider than the other panels.
-      className="fixed inset-0 z-40 flex h-full w-full flex-col border-l border-slate-700/50 bg-slate-900 shadow-2xl md:static md:z-auto md:w-[clamp(360px,42vw,640px)] md:shadow-none"
+      // beside chat (the co-working layout), user-resizable via the left-edge
+      // handle (inline width below; md:relative keeps the handle anchored here).
+      className="fixed inset-0 z-40 flex h-full w-full flex-col border-l border-slate-700/50 bg-slate-900 shadow-2xl md:relative md:z-auto md:shadow-none"
+      style={isDesktop ? { width: resize.width } : undefined}
       aria-label="Canvas"
     >
+      <div
+        {...resize.dragHandleProps}
+        aria-label="Resize canvas panel"
+        title="Drag to resize · double-click to reset"
+        className={clsx(
+          PANEL_RESIZE_HANDLE_CLASS,
+          "left-0 hidden md:block",
+          resize.isDragging && "bg-white/[0.1]",
+        )}
+      />
       {/* Header */}
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-slate-700/50 px-3">
         <div className="flex min-w-0 items-center gap-2">

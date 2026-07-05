@@ -291,7 +291,9 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
 
   return (
     <aside
-      className="flex h-full w-full md:w-60 flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
+      // w-full only: the RoomView column owns the width (user-resizable on
+      // desktop) — a fixed md:w-60 here would pin the strip at 240px inside it.
+      className="flex h-full w-full flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
       aria-label="Room participants"
     >
       {presentMembers.length > 0 && (
