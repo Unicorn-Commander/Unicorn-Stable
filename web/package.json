@@ -46,7 +46,8 @@
     "rehype-highlight": "^7.0.2",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
-    "zustand": "^5.0.0"
+    "zustand": "^5.0.0",
+    "katex": "^0.16.21"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",

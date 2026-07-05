@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
@@ -139,6 +139,107 @@ export function AppShell() {
       document.title = "Stable";
     };
   }, [unreadCounts, storeRooms, activeRoomId]);
+
+  // Favicon unread badge: draw the site icon onto a 64px canvas with a red
+  // count pill and swap the <link rel="icon"> href to the data URL; restore
+  // the original href when unread returns to 0. The badge label ("1".."99",
+  // capped) is the redraw key — same label means no redraw, so a stream of
+  // messages into an already-badged bucket can't thrash the icon.
+  const faviconLinkRef = useRef<HTMLLinkElement | null>(null);
+  const faviconOriginalRef = useRef<string | null>(null);
+  const faviconLabelRef = useRef<string>("");
+  useEffect(() => {
+    const total = Object.values(unreadCounts).reduce(
+      (a, b) => a + (b ?? 0),
+      0,
+    );
+    const label = total <= 0 ? "" : total > 99 ? "99" : String(total);
+    if (label === faviconLabelRef.current) return;
+    faviconLabelRef.current = label;
+
+    const link =
+      faviconLinkRef.current ??
+      document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+    if (!link) return;
+    faviconLinkRef.current = link;
+    // Cache the pristine href once (link.href resolves to an absolute URL,
+    // which is exactly what Image.src and the restore path both want).
+    if (faviconOriginalRef.current === null) {
+      faviconOriginalRef.current = link.href;
+    }
+    const originalHref = faviconOriginalRef.current;
+
+    if (!label) {
+      link.href = originalHref;
+      return;
+    }
+
+    // Stale-draw guard: the icon loads async, so by the time it arrives a
+    // newer effect run may have moved the label on (or cleared it). Compare
+    // against the ref instead of a cleanup flag — a cleanup flag would also
+    // cancel the draw on StrictMode's mount->cleanup->remount cycle, where the
+    // rerun early-returns on the unchanged label and the badge never renders.
+    const drawBadge = (img: HTMLImageElement | null) => {
+      if (faviconLabelRef.current !== label) return;
+      try {
+        const size = 64;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        // Base icon; on load failure we fall through to a badge-only canvas
+        // so the unread signal still shows.
+        if (img) ctx.drawImage(img, 0, 0, size, size);
+        // Pill in the top-right quadrant — red (#ef4444) beats Aurora purple
+        // for 16px legibility. Wider pill for 2-digit counts. Manual arc path
+        // (not roundRect) for older canvas implementations.
+        const h = 34;
+        const r = h / 2;
+        const w = label.length > 1 ? 46 : h;
+        const x = size - w;
+        const y = 0;
+        ctx.fillStyle = "#ef4444";
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.arc(x + w - r, y + r, r, -Math.PI / 2, Math.PI / 2);
+        ctx.lineTo(x + r, y + h);
+        ctx.arc(x + r, y + r, r, Math.PI / 2, (3 * Math.PI) / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.font =
+          "bold 26px system-ui, -apple-system, 'Segoe UI', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+        // Only swap after toDataURL succeeds (it throws on a tainted canvas),
+        // so a failure leaves the real favicon untouched.
+        link.href = canvas.toDataURL("image/png");
+      } catch {
+        // Cosmetic — never let the favicon break anything.
+      }
+    };
+
+    // The favicon is same-origin (SVG or PNG both drawImage fine), but it
+    // loads async — badge once it arrives; badge-only if it never does.
+    const img = new Image();
+    img.onload = () => drawBadge(img);
+    img.onerror = () => drawBadge(null);
+    img.src = originalHref;
+  }, [unreadCounts]);
+
+  // Restore the pristine favicon if the shell ever unmounts mid-badge.
+  // Clearing the label ref first also voids any still-inflight badge draw.
+  useEffect(() => {
+    return () => {
+      faviconLabelRef.current = "";
+      if (faviconLinkRef.current && faviconOriginalRef.current) {
+        faviconLinkRef.current.href = faviconOriginalRef.current;
+      }
+    };
+  }, []);
 
   // Global shortcuts, one listener: Cmd/Ctrl+/ cheatsheet, Cmd/Ctrl+K quick
   // switcher, Alt+↑/↓ previous/next room in the sidebar's visual order.

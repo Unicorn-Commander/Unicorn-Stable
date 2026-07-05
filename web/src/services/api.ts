@@ -827,10 +827,15 @@ class StableApiClient {
   }
 
   /** Synthesize speech for a message (read-aloud). Returns an audio blob
-   * (wav) from the platform TTS (kokoro) via the backend proxy — the browser
-   * cannot reach the GPU TTS host directly. `voice` falls back server-side to
-   * the suite default (af_heart, Majik's voice). */
-  async ttsSpeech(text: string, voice?: string): Promise<Blob> {
+   * from the platform TTS (kokoro) via the backend proxy — the browser
+   * cannot reach the GPU TTS host directly. Pass `agent` (the sender's
+   * brigade agent id or display name) so the backend picks that agent's
+   * voice-call preset; explicit `voice` overrides; otherwise the suite
+   * default (af_heart, Majik's voice). */
+  async ttsSpeech(
+    text: string,
+    opts?: { voice?: string; agent?: string },
+  ): Promise<Blob> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(await this.getAuthHeaders()),
@@ -838,7 +843,11 @@ class StableApiClient {
     const response = await fetch(`${BASE_URL}/api/v1/tts`, {
       method: "POST",
       headers,
-      body: JSON.stringify(voice ? { text, voice } : { text }),
+      body: JSON.stringify({
+        text,
+        ...(opts?.voice ? { voice: opts.voice } : {}),
+        ...(opts?.agent ? { agent: opts.agent } : {}),
+      }),
     });
     if (!response.ok) {
       const error: ApiError = {

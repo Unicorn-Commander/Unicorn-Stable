@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/appStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { logout } from "@/services/auth";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -14,12 +15,14 @@ const PREFS_KEY = "stable.notification.prefs.v1";
 
 interface NotificationPrefs {
   inAppToasts: boolean;
+  soundCues: boolean;
   emailOnInvite: boolean;
   emailOnMention: boolean;
 }
 
 const DEFAULT_PREFS: NotificationPrefs = {
   inAppToasts: true,
+  soundCues: true,
   emailOnInvite: true,
   emailOnMention: false,
 };
@@ -53,17 +56,15 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [prefs, setPrefs] = useState<NotificationPrefs>(loadPrefs);
   const [showSaved, setShowSaved] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Esc-to-close, focus trap + restore — shared modal a11y (the panel-scoped
+  // Esc also keeps a stacked QuickSwitcher's Esc from closing settings too).
+  const panelRef = useModalA11y(true, onClose);
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("keydown", onKey);
       if (savedTimer.current) clearTimeout(savedTimer.current);
     };
-  }, [onClose]);
+  }, []);
 
   function set<K extends keyof NotificationPrefs>(key: K, value: NotificationPrefs[K]) {
     const next = { ...prefs, [key]: value };
@@ -84,6 +85,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       onClick={onClose}
     >
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}
@@ -91,7 +96,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between border-b border-line px-5 py-4">
-          <h2 className="font-display text-base font-semibold text-slate-100">
+          <h2
+            id="settings-title"
+            className="font-display text-base font-semibold text-slate-100"
+          >
             Settings
           </h2>
           <button
@@ -156,6 +164,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               hint="Show a corner pop-up when someone messages or invites you."
               checked={prefs.inAppToasts}
               onChange={(v) => set("inAppToasts", v)}
+            />
+            <Toggle
+              label="Sound cues"
+              hint="Soft audio cues for call join/leave and mentions."
+              checked={prefs.soundCues}
+              onChange={(v) => set("soundCues", v)}
             />
             <Toggle
               label="Email me when invited to a channel"

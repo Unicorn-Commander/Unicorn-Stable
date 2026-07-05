@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/appStore";
 import { ws, WsEventPayload, WsMessageEvent } from "@/services/websocket";
 import { loadPrefs } from "@/components/Layout/SettingsModal";
 import { isMuted } from "@/utils/mute";
+import { playCue } from "@/lib/sounds";
 
 interface RoomInvitedEvent {
   room_id: string;
@@ -52,12 +53,17 @@ export function useGlobalNotifications() {
 
       incrementUnread(event.room_id);
 
-      // Toast only if the room isn't the active one (or tab is hidden)
-      if (
-        loadPrefs().inAppToasts &&
-        (event.room_id !== activeRoomId ||
-          document.visibilityState !== "visible")
-      ) {
+      // Notify (toast + sound) only if the room isn't the active one (or the
+      // tab is hidden). The sound cue rides the same mute/self/active checks
+      // as the toast but has its OWN pref (playCue checks soundCues itself),
+      // so it stays independent of the inAppToasts toggle.
+      const shouldNotify =
+        event.room_id !== activeRoomId ||
+        document.visibilityState !== "visible";
+      if (shouldNotify) {
+        playCue("notify");
+      }
+      if (loadPrefs().inAppToasts && shouldNotify) {
         const room = rooms.find((r) => r.id === event.room_id);
         pushToast({
           title: `${event.message.sender_name} in ${room?.name ?? "a room"}`,
@@ -69,6 +75,9 @@ export function useGlobalNotifications() {
 
     const unsubInvited = ws.on("room_invited", (data: WsEventPayload) => {
       const event = data as unknown as RoomInvitedEvent;
+      // Invites are always notable — sound cue regardless of the toast pref
+      // (playCue gates on soundCues itself).
+      playCue("notify");
       if (loadPrefs().inAppToasts) {
         pushToast({
           title: "You were added to a channel",

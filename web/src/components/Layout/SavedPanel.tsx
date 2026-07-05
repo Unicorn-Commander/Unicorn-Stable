@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -6,6 +5,7 @@ import { Bookmark, X } from "lucide-react";
 import { api, type Message } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface SavedPanelProps {
   onClose: () => void;
@@ -18,14 +18,8 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
     queryKey: ["saved"],
     queryFn: () => api.getSaved(),
   });
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Esc-to-close, focus trap + restore — shared modal a11y.
+  const panelRef = useModalA11y(true, onClose);
 
   return (
     <motion.div
@@ -36,6 +30,10 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
       onClick={onClose}
     >
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="saved-panel-title"
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}
@@ -47,7 +45,10 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-stable-purple/15">
               <Bookmark className="h-4 w-4 text-stable-purple-light" />
             </span>
-            <h2 className="font-display text-base font-semibold text-slate-100">
+            <h2
+              id="saved-panel-title"
+              className="font-display text-base font-semibold text-slate-100"
+            >
               Saved
             </h2>
             {saved.length > 0 && (

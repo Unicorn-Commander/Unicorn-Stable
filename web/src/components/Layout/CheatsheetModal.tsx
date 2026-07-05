@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { X, Keyboard } from "lucide-react";
-import { useEffect } from "react";
 import { useAppStore } from "@/stores/appStore";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iP(hone|ad)/.test(navigator.platform);
 const mod = isMac ? "⌘" : "Ctrl";
@@ -74,15 +74,8 @@ function Section({ title, rows }: { title: string; rows: Row[] }) {
 export function CheatsheetModal() {
   const open = useAppStore((s) => s.ui.cheatsheetOpen);
   const toggle = useAppStore((s) => s.toggleCheatsheet);
-
-  useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") toggle();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, toggle]);
+  // Esc-to-close, focus trap + restore — shared modal a11y.
+  const panelRef = useModalA11y(open, toggle);
 
   if (!open) return null;
 
@@ -95,6 +88,10 @@ export function CheatsheetModal() {
       onClick={toggle}
     >
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cheatsheet-title"
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}
@@ -106,7 +103,10 @@ export function CheatsheetModal() {
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-stable-purple/15">
               <Keyboard className="h-4 w-4 text-stable-purple-light" />
             </span>
-            <h2 className="font-display text-base font-semibold text-slate-100">
+            <h2
+              id="cheatsheet-title"
+              className="font-display text-base font-semibold text-slate-100"
+            >
               Shortcuts &amp; commands
             </h2>
           </div>

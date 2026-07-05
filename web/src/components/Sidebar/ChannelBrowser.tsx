@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Hash, Search, X } from "lucide-react";
 import { api, type Room } from "@/services/api";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface ChannelBrowserProps {
   onClose: () => void;
@@ -16,6 +17,8 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [joiningId, setJoiningId] = useState<string | null>(null);
+  // Esc-to-close, focus trap + restore — shared modal a11y.
+  const panelRef = useModalA11y(true, onClose);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -24,13 +27,6 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
     const t = setTimeout(() => setDebounced(q.trim()), 200);
     return () => clearTimeout(t);
   }, [q]);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const { data: channels = [], refetch } = useQuery({
     queryKey: ["browse-channels", debounced],
@@ -65,6 +61,10 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
       onClick={onClose}
     >
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Browse channels"
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}

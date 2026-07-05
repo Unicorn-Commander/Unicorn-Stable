@@ -1,10 +1,27 @@
 /**
- * Tiny emoji shortcode dictionary. Covers the ~80 most common shortcodes used
- * in chat. Not exhaustive — for that we'd ship a full emoji library; this hits
- * the 95% case for ~1KB.
+ * Emoji :shortcode: dictionary + helpers for the composer autocomplete.
+ *
+ * The lookup is DERIVED from the full picker dataset (utils/emojiData.ts):
+ * every emoji name becomes a :snake_case: shortcode (e.g. "rolled-up
+ * newspaper" → :rolled_up_newspaper:, ~1,700 codes). The ~80 legacy
+ * shortcodes that predate the full dataset are layered on top as aliases so
+ * existing muscle memory (:thumbsup:, :+1:, :tada:, :check:, …) keeps
+ * working unchanged.
+ *
+ * Export contract (consumed by MessageInput):
+ *   EMOJI: Record<string, string>          shortcode → emoji char
+ *   emojiSuggestions(prefix, limit)        prefix matches for the : menu
+ *   replaceEmojiShortcodes(text)           :code: → char on send
  */
 
-export const EMOJI: Record<string, string> = {
+import { EMOJI as EMOJI_DATA } from "./emojiData";
+
+/**
+ * Legacy hand-picked shortcodes, kept verbatim as aliases. These OVERRIDE any
+ * derived code with the same name (e.g. :smile: stays 😄, not a derived
+ * match), so nothing that worked before resolves differently now.
+ */
+const LEGACY_SHORTCODES: Record<string, string> = {
   smile: "😄",
   smiley: "😃",
   grin: "😁",
@@ -172,7 +189,42 @@ export const EMOJI: Record<string, string> = {
   facepalm: "🤦",
 };
 
-/** Returns matching shortcodes that start with `prefix` (case-insensitive). */
+/**
+ * "rolled-up newspaper" → "rolled_up_newspaper". Output stays within the
+ * shortcode charset/length that replaceEmojiShortcodes recognizes
+ * ([a-z0-9_+-]{2,32}).
+ */
+function toShortcode(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32)
+    .replace(/_+$/, "");
+}
+
+function buildLookup(): Record<string, string> {
+  const table: Record<string, string> = {};
+  for (const entry of EMOJI_DATA) {
+    const code = toShortcode(entry.name);
+    // First-wins on the rare name collision (dataset is in CLDR order, so
+    // the more common emoji comes first).
+    if (code.length >= 2 && !(code in table)) {
+      table[code] = entry.char;
+    }
+  }
+  // Legacy aliases override derived codes of the same name.
+  for (const [code, char] of Object.entries(LEGACY_SHORTCODES)) {
+    table[code] = char;
+  }
+  return table;
+}
+
+/** Full shortcode → emoji lookup (~1,700 derived codes + legacy aliases). */
+export const EMOJI: Record<string, string> = buildLookup();
+
+/** Returns matching shortcodes that start with `prefix` (case-insensitive).
+ * Shortest names first so common codes surface before long descriptive ones. */
 export function emojiSuggestions(prefix: string, limit = 8): { name: string; emoji: string }[] {
   if (!prefix) return [];
   const p = prefix.toLowerCase();
@@ -180,10 +232,10 @@ export function emojiSuggestions(prefix: string, limit = 8): { name: string; emo
   for (const [name, emoji] of Object.entries(EMOJI)) {
     if (name.startsWith(p)) {
       out.push({ name, emoji });
-      if (out.length >= limit) break;
     }
   }
-  return out;
+  out.sort((a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name));
+  return out.slice(0, limit);
 }
 
 /** Replace `:shortcode:` occurrences in a string with their emoji. */

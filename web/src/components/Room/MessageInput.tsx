@@ -13,8 +13,10 @@ import {
   Phone,
   AtSign,
   MicOff,
+  Smile,
 } from "lucide-react";
 import clsx from "clsx";
+import { EmojiPicker } from "@/components/EmojiPicker";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
@@ -164,8 +166,31 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const slashMatches = SLASH_COMMANDS.filter((c) =>
     c.name.startsWith(slashQuery.toLowerCase()),
   );
+  // Full emoji picker popover (Smile button) — distinct from the
+  // :shortcode: suggestion menu above (showEmojiPicker).
+  const [showEmojiPanel, setShowEmojiPanel] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const emojiPanelRef = useRef<HTMLDivElement>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Close the emoji picker on click-outside (clicks on the toggle button are
+  // its own concern — it flips the state itself).
+  useEffect(() => {
+    if (!showEmojiPanel) return;
+    function onPointerDown(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        emojiPanelRef.current?.contains(target) ||
+        emojiButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setShowEmojiPanel(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [showEmojiPanel]);
 
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const voiceActive = useAppStore((s) => s.voiceActive);
@@ -310,6 +335,28 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     });
   }
 
+  /** Full-picker insertion: splice the emoji at the textarea's cursor
+   * (replacing any selection), then restore focus with the cursor placed
+   * right after it. The textarea keeps its selection offsets even while the
+   * picker's search input has focus, so this works mid-message. */
+  function insertEmojiAtCursor(emoji: string) {
+    const el = textareaRef.current;
+    if (!el) {
+      setContent((prev) => prev + emoji);
+      return;
+    }
+    const start = el.selectionStart ?? content.length;
+    const end = el.selectionEnd ?? start;
+    const next = content.slice(0, start) + emoji + content.slice(end);
+    setContent(next);
+    onTyping();
+    requestAnimationFrame(() => {
+      const pos = start + emoji.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }
+
   function insertSlashCommand(cmd: SlashCommandInfo) {
     const el = textareaRef.current;
     if (!el) return;
@@ -351,6 +398,13 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Esc closes the full emoji picker even when focus is back in the
+    // textarea (picking an emoji returns focus here while the panel stays
+    // open for multi-pick).
+    if (e.key === "Escape" && showEmojiPanel) {
+      setShowEmojiPanel(false);
+      return;
+    }
     // Cmd+Up (or plain Up on empty) → edit last own message.
     if (
       e.key === "ArrowUp" &&
@@ -469,6 +523,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     setPending([]);
     setShowMentions(false);
     setShowEmojiPicker(false);
+    setShowEmojiPanel(false);
     setShowSlashMenu(false);
     requestAnimationFrame(() => adjustHeight());
   }
@@ -563,6 +618,21 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {showEmojiPanel && (
+        <div
+          ref={emojiPanelRef}
+          className="absolute bottom-full left-3 z-30 mb-2 md:left-6"
+        >
+          <EmojiPicker
+            onPick={insertEmojiAtCursor}
+            onClose={() => {
+              setShowEmojiPanel(false);
+              textareaRef.current?.focus();
+            }}
+          />
+        </div>
+      )}
+
       {showSlashMenu && slashMatches.length > 0 && (
         <div
           className="glass-heavy absolute bottom-full left-3 right-3 z-30 mb-2 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6"
@@ -721,6 +791,21 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             onChange={handleFileChange}
             aria-hidden="true"
           />
+          <button
+            ref={emojiButtonRef}
+            onClick={() => setShowEmojiPanel((v) => !v)}
+            className={clsx(
+              "rounded-lg p-2.5 transition-colors hover:bg-white/[0.06] focus-ring md:p-1.5",
+              showEmojiPanel
+                ? "bg-stable-purple/15 text-stable-purple-light"
+                : "text-slate-400 hover:text-slate-100",
+            )}
+            aria-label="Insert emoji"
+            aria-expanded={showEmojiPanel}
+            aria-haspopup="dialog"
+          >
+            <Smile className="h-4 w-4" />
+          </button>
         </div>
 
         <div className="relative min-w-0 flex-1">

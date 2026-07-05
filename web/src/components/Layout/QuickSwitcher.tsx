@@ -7,6 +7,7 @@ import clsx from "clsx";
 import { api } from "@/services/api";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface QuickSwitcherProps {
   onClose: () => void;
@@ -48,6 +49,11 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
   // row's spinner. null = idle.
   const [busyId, setBusyId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Esc-to-close, focus trap + restore. The hook's panel-scoped Esc stops
+  // propagation, so when the switcher is stacked over SettingsModal one Esc
+  // closes only this layer. It only intercepts Tab/Esc — ↑/↓/Enter below
+  // keep working.
+  const panelRef = useModalA11y(true, onClose);
 
   const { data: agents = [] } = useQuery({
     queryKey: ["brigade-agents"],
@@ -121,9 +127,8 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
   }
 
   function onKey(e: React.KeyboardEvent) {
-    if (e.key === "Escape") {
-      onClose();
-    } else if (e.key === "ArrowDown") {
+    // Escape is handled by useModalA11y on the panel.
+    if (e.key === "ArrowDown") {
       e.preventDefault();
       setSel((s) => Math.min(s + 1, items.length - 1));
     } else if (e.key === "ArrowUp") {
@@ -145,6 +150,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       onClick={onClose}
     >
       <motion.div
+        ref={panelRef}
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}
@@ -152,6 +158,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
         role="dialog"
+        aria-modal="true"
         aria-label="Quick switcher"
       >
         <div className="flex items-center gap-2.5 border-b border-line px-4 py-3">

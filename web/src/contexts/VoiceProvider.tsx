@@ -25,6 +25,7 @@ import {
   setActiveCallRoom,
 } from "@/stores/callUiStore";
 import { handleArtifactEvent } from "@/stores/canvasStore";
+import { playCue } from "@/lib/sounds";
 
 /**
  * THE single LiveKit Room for the whole app.
@@ -88,6 +89,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const roomRef = useRef<Room | null>(null);
   const connectingRef = useRef(false);
+  // Join cue fires once per connect() — Reconnected/state churn must not
+  // re-chime. Reset when a fresh Room is created in connect().
+  const joinCuePlayedRef = useRef(false);
 
   const sync = useCallback((r: Room) => {
     setLocalParticipant(r.localParticipant);
@@ -99,7 +103,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     const r = roomRef.current;
     roomRef.current = null;
     connectingRef.current = false;
-    if (r) r.disconnect();
+    if (r) {
+      // Only a live (connected) room earns the hang-up cue — tearing down a
+      // failed/stale room object must stay silent.
+      if (r.state === ConnectionState.Connected) playCue("call-leave");
+      r.disconnect();
+    }
     setRoom(null);
     setLocalParticipant(null);
     setRemoteParticipants([]);
@@ -153,6 +162,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         },
       });
       roomRef.current = r;
+      joinCuePlayedRef.current = false;
 
       const onState = () => {
         setIsConnected(r.state === ConnectionState.Connected);
@@ -164,6 +174,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       };
 
       r.on(RoomEvent.Connected, onState)
+        // Join chime: once per connect (ref-guarded), never on reconnects.
+        .on(RoomEvent.Connected, () => {
+          if (joinCuePlayedRef.current) return;
+          joinCuePlayedRef.current = true;
+          playCue("call-join");
+        })
         .on(RoomEvent.Reconnected, onState)
         .on(RoomEvent.Reconnecting, () => setIsConnecting(true))
         .on(RoomEvent.ConnectionStateChanged, onState)

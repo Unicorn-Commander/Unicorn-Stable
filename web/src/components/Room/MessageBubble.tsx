@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect, createElement } from "react";
+import { useState, useRef, useEffect, useMemo, createElement } from "react";
 import {
   AlertTriangle,
   RotateCw,
   BriefcaseBusiness,
+  ChevronDown,
   Copy as CopyIcon,
+  ExternalLink,
   Link2,
   MessageSquare,
   Pencil,
@@ -23,6 +25,12 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict, format } from "date-fns";
+import { useQuery } from "@tanstack/react-query";
+// KaTeX is imported statically (unlike the lazy hljs): renderToString is
+// needed synchronously inside the inline renderer, and its stylesheet must be
+// in the bundle for math to lay out at all.
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import { api, type ApiError, type Message, type ProjectOpsProject } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -143,6 +151,67 @@ function splitTableRow(row: string): string[] {
     .map((c) => c.trim());
 }
 
+/**
+ * Scan for a display-math block starting at lines[start]: `$$ … $$` or
+ * `\[ … \]`, single-line (`$$x^2$$`) or spanning multiple lines. Returns the
+ * TeX body plus the index after the block, or null when the line doesn't open
+ * one — or the opener never closes, so an unmatched `$$` stays plain text
+ * instead of eating the rest of the message.
+ */
+function scanMathBlock(
+  lines: string[],
+  start: number,
+): { tex: string; next: number } | null {
+  const first = (lines[start] ?? "").trim();
+  const open = first.startsWith("$$") ? "$$" : first.startsWith("\\[") ? "\\[" : null;
+  if (!open) return null;
+  const close = open === "$$" ? "$$" : "\\]";
+  const rest = first.slice(2);
+  // Single-line form: `$$x^2$$` / `\[x^2\]`.
+  if (rest.length > close.length && rest.endsWith(close)) {
+    const tex = rest.slice(0, -close.length).trim();
+    return tex ? { tex, next: start + 1 } : null;
+  }
+  const buf: string[] = [rest];
+  for (let j = start + 1; j < lines.length; j++) {
+    const ln = lines[j] ?? "";
+    if (ln.trim().endsWith(close)) {
+      buf.push(ln.slice(0, ln.lastIndexOf(close)));
+      const tex = buf.join("\n").trim();
+      return tex ? { tex, next: j + 1 } : null;
+    }
+    buf.push(ln);
+  }
+  return null;
+}
+
+/**
+ * Currency guard for inline `$…$`: only treat the span as math when the body
+ * contains a backslash command or a letter/operator-ish char. "$5 and $10",
+ * "$5-$10" (digits + punctuation only) stay literal dollars.
+ */
+function looksLikeMath(content: string): boolean {
+  return /[\\a-zA-Z^_{}=<>±×÷√∑∫∞≈≠≤≥]/.test(content);
+}
+
+/** KaTeX display-math block. renderToString output is sanitized by
+ * construction (KaTeX escapes its input; throwOnError:false renders bad TeX
+ * as literal text instead of throwing). Wide equations scroll inside their
+ * own strip rather than breaking the bubble; KaTeX inherits currentColor, so
+ * text-slate-100 pins the equation to content color on the dark theme. */
+function MathBlock({ tex }: { tex: string }) {
+  const html = useMemo(
+    () => katex.renderToString(tex, { displayMode: true, throwOnError: false }),
+    [tex],
+  );
+  return (
+    <div
+      className="my-2 overflow-x-auto py-1 text-slate-100"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
 // Lazy-import highlight.js so the main bundle stays small. First code block
 // in any message triggers the load, then it's cached for the session.
 let _hljs: typeof import("highlight.js").default | null = null;
@@ -229,6 +298,80 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
           <code className="text-slate-300">{content}</code>
         )}
       </pre>
+    </div>
+  );
+}
+
+/**
+ * In-app image viewer for image attachments: full-screen dimmed overlay with
+ * the image centered at up to 90% of the viewport. Click-outside or Esc
+ * closes; "Open original" keeps the old open-in-new-tab behavior for
+ * full-res viewing / save-as. Non-image attachments never route here.
+ */
+function ImageLightbox({
+  url,
+  filename,
+  onClose,
+}: {
+  url: string;
+  filename: string;
+  onClose: () => void;
+}) {
+  // Mount at scale-95, release to scale-100 on the next frame — a subtle
+  // scale-in from existing transition utilities, no bespoke keyframe needed.
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setEntered(true));
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur animate-fade-in"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={filename}
+    >
+      <img
+        src={url}
+        alt={filename}
+        onClick={(e) => e.stopPropagation()}
+        className={clsx(
+          "max-h-[90%] max-w-[90%] rounded-xl object-contain shadow-pop transition-transform duration-200 ease-out",
+          entered ? "scale-100" : "scale-95",
+        )}
+      />
+      <div
+        className="glass-heavy absolute bottom-4 left-1/2 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-xs shadow-pop"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <span className="max-w-[40ch] truncate text-slate-300" title={filename}>
+          {filename}
+        </span>
+        <span aria-hidden="true" className="h-3 w-px shrink-0 bg-white/15" />
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-slate-200 transition-colors hover:bg-white/[0.08] hover:text-slate-100 focus-ring"
+        >
+          <ExternalLink className="h-3 w-3" /> Open original
+        </a>
+        <button
+          onClick={onClose}
+          className="shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.08] hover:text-slate-200 focus-ring"
+          aria-label="Close image viewer"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -596,6 +739,10 @@ export function MessageBubble({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  // Chevron half of the regenerate split control — a compact model menu.
+  const [regenMenuOpen, setRegenMenuOpen] = useState(false);
+  // Image attachment currently open in the in-app lightbox.
+  const [lightbox, setLightbox] = useState<{ url: string; filename: string } | null>(null);
   const promoted = projectOpsMeta(message);
   const artifact = artifactMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
@@ -664,6 +811,53 @@ export function MessageBubble({
       .catch((err) => pushToast({ title: "Save failed", body: errorMessage(err) }));
   }
 
+  // Models for "regenerate with…" — same query key as ModelSwitcher so the
+  // list is fetched once and shared; only fetched when the menu first opens.
+  const { data: regenModels = [] } = useQuery({
+    queryKey: ["chat-models"],
+    queryFn: () => api.getModels(),
+    staleTime: 5 * 60_000,
+    enabled: regenMenuOpen,
+  });
+
+  // Close the regenerate-model menu on any window click or escape (mirrors
+  // the context-menu dismissal below).
+  useEffect(() => {
+    if (!regenMenuOpen) return;
+    function onAway() {
+      setRegenMenuOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setRegenMenuOpen(false);
+    }
+    window.addEventListener("click", onAway);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", onAway);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [regenMenuOpen]);
+
+  /** Re-run the responder on this reply — optionally forcing a specific model
+   * for the new attempt (the chevron menu path). */
+  function runRegenerate(model?: string) {
+    if (regenerating) return;
+    setRegenMenuOpen(false);
+    setRegenerating(true);
+    void api
+      .regenerateReply(message.id, model)
+      .catch((err) => {
+        // 409 = someone already regenerated this reply (double-tap /
+        // two members). Benign and expected — don't alarm the user.
+        if ((err as ApiError)?.status === 409) return;
+        pushToast({
+          title: "Regenerate failed",
+          body: errorMessage(err),
+        });
+      })
+      .finally(() => setRegenerating(false));
+  }
+
   // Read-aloud lifecycle. "loading" = TTS blob in flight, "speaking" = audio
   // playing; a second click in either state stops. The module-level
   // activeSpeech singleton guarantees at most one voice app-wide.
@@ -694,8 +888,15 @@ export function MessageBubble({
     };
     activeSpeech = handle;
     ttsHandleRef.current = handle;
+    // Per-agent voice: the backend maps the agent identifier to that agent's
+    // voice-call preset. Prefer an explicit brigade agent id stamped on the
+    // message (stable slug like "majik"); fall back to the display name,
+    // which the backend normalizes.
+    const voiceAgent =
+      (message.metadata as { brigade_agent_id?: string } | undefined)
+        ?.brigade_agent_id || message.sender_name;
     void api
-      .ttsSpeech(speechText(message.content))
+      .ttsSpeech(speechText(message.content), { agent: voiceAgent })
       .then((blob) => {
         if (cancelled) return;
         url = URL.createObjectURL(blob);
@@ -970,6 +1171,15 @@ export function MessageBubble({
     while (i < lines.length) {
       const line = lines[i] ?? "";
 
+      // Display math: `$$ … $$` / `\[ … \]` on its own line(s). An opener
+      // that never closes falls through and renders as plain text.
+      const mathBlk = scanMathBlock(lines, i);
+      if (mathBlk) {
+        out.push(<MathBlock key={key++} tex={mathBlk.tex} />);
+        i = mathBlk.next;
+        continue;
+      }
+
       // Heading
       const heading = line.match(/^(#{1,3})\s+(.+)$/);
       if (heading) {
@@ -1145,7 +1355,8 @@ export function MessageBubble({
           ln.startsWith("> ") || ln === ">" ||
           /^[-*]\s+/.test(ln) ||
           /^\d+\.\s+/.test(ln) ||
-          (ln.includes("|") && isTableSeparator(lines[i + 1] ?? ""))
+          (ln.includes("|") && isTableSeparator(lines[i + 1] ?? "")) ||
+          scanMathBlock(lines, i) !== null
         ) {
           break;
         }
@@ -1162,14 +1373,14 @@ export function MessageBubble({
     // Inline: URL, `code`, **bold**, *italic*/_italic_, ~~strike~~.
     // Build a non-overlapping set of spans, longest-first to win on overlaps.
     const elements: Array<{
-      type: "url" | "code" | "bold" | "italic" | "strike" | "mention";
+      type: "url" | "code" | "bold" | "italic" | "strike" | "mention" | "math";
       content: string;
       start: number;
       end: number;
     }> = [];
     const collect = (
       re: RegExp,
-      type: "url" | "code" | "bold" | "italic" | "strike" | "mention",
+      type: "url" | "code" | "bold" | "italic" | "strike" | "mention" | "math",
       group: number,
     ) => {
       let m: RegExpExecArray | null;
@@ -1189,6 +1400,29 @@ export function MessageBubble({
     collect(/(?<![*\w])\*([^*\n]+)\*(?!\w)/g, "italic", 1);
     collect(/(?<![_\w])_([^_\n]+)_(?!\w)/g, "italic", 1);
     collect(/~~([^~\n]+)~~/g, "strike", 1);
+    // Inline math. `\( … \)` is unambiguous, so it collects unconditionally.
+    collect(/\\\(([^\n]+?)\\\)/g, "math", 1);
+    // `$…$` (and mid-line `$$…$$`) is gated hard against currency: the opening
+    // $ must not be preceded by a word char / $ / backslash nor followed by a
+    // space; the closing $ must not be preceded by a space nor followed by a
+    // digit; and the body must pass looksLikeMath. "$5 and $10" survives as
+    // dollars ("5 and " has a trailing space AND is digits/punct only).
+    for (const re of [
+      /(?<![\w$\\])\$\$([^\s$](?:[^$\n]*[^\s$])?)\$\$(?!\d)/g,
+      /(?<![\w$\\])\$([^\s$](?:[^$\n]*[^\s$])?)\$(?!\d)/g,
+    ]) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const body = m[1] ?? "";
+        if (!looksLikeMath(body)) continue;
+        elements.push({
+          type: "math",
+          content: body,
+          start: m.index,
+          end: m.index + m[0].length,
+        });
+      }
+    }
 
     if (elements.length === 0) return text;
 
@@ -1245,6 +1479,19 @@ export function MessageBubble({
           <s key={`s-${i}`} className="text-slate-500">
             {el.content}
           </s>,
+        );
+      } else if (el.type === "math") {
+        // KaTeX HTML is sanitized by construction (KaTeX escapes its input;
+        // throwOnError:false renders bad TeX as literal text). It inherits
+        // currentColor, so pin slate-100 for the dark theme.
+        result.push(
+          <span
+            key={`math-${i}`}
+            className="text-slate-100"
+            dangerouslySetInnerHTML={{
+              __html: katex.renderToString(el.content, { throwOnError: false }),
+            }}
+          />,
         );
       } else if (el.type === "mention") {
         const isBroad = el.content === "@channel" || el.content === "@here";
@@ -1467,19 +1714,23 @@ export function MessageBubble({
                   }>;
                 }).attachments).map((a, i) =>
                   a.content_type.startsWith("image/") ? (
-                    <a
+                    // Opens the in-app lightbox — "Open original" inside it
+                    // keeps the old open-in-new-tab behavior.
+                    <button
                       key={i}
-                      href={a.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="focus-ring block max-w-xs overflow-hidden rounded-xl border border-line transition-colors hover:border-line-strong"
+                      type="button"
+                      onClick={() =>
+                        setLightbox({ url: a.url, filename: a.filename })
+                      }
+                      className="focus-ring block max-w-xs cursor-zoom-in overflow-hidden rounded-xl border border-line transition-colors hover:border-line-strong"
+                      aria-label={`View ${a.filename}`}
                     >
                       <img
                         src={a.url}
                         alt={a.filename}
                         className="max-h-64 w-full object-cover"
                       />
-                    </a>
+                    </button>
                   ) : (
                     <a
                       key={i}
@@ -1523,7 +1774,9 @@ export function MessageBubble({
         </div>
       </div>
 
-      {hovered && !editing && (
+      {/* Toolbar stays mounted while the regenerate-model menu is open, even
+          if the pointer wanders off the bubble. */}
+      {(hovered || regenMenuOpen) && !editing && (
         <div className="glass-heavy absolute -top-3 right-2 z-10 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-lg p-1 shadow-pop animate-fade-in md:max-w-none md:flex-nowrap">
           <QuickReact onReact={handleToggleReaction} />
           <button
@@ -1592,33 +1845,95 @@ export function MessageBubble({
             </button>
           )}
           {isAgent && !isGenerating && (
-            <button
-              disabled={regenerating}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (regenerating) return;
-                setRegenerating(true);
-                void api
-                  .regenerateReply(message.id)
-                  .catch((err) => {
-                    // 409 = someone already regenerated this reply (double-tap /
-                    // two members). Benign and expected — don't alarm the user.
-                    if ((err as ApiError)?.status === 409) return;
-                    pushToast({
-                      title: "Regenerate failed",
-                      body: errorMessage(err),
-                    });
-                  })
-                  .finally(() => setRegenerating(false));
-              }}
-              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/15 hover:text-stable-purple-light focus-ring disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label="Regenerate reply"
-              title="Regenerate this reply"
-            >
-              <RefreshCw
-                className={clsx("h-3.5 w-3.5", regenerating && "animate-spin")}
-              />
-            </button>
+            // Split control: the refresh half regenerates as-is (unchanged
+            // behavior); the chevron half opens a compact model menu so one
+            // reply can be re-rolled on a different lane.
+            <div className="relative flex items-center">
+              <button
+                disabled={regenerating}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  runRegenerate();
+                }}
+                className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-stable-purple/15 hover:text-stable-purple-light focus-ring disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Regenerate reply"
+                title="Regenerate this reply"
+              >
+                <RefreshCw
+                  className={clsx("h-3.5 w-3.5", regenerating && "animate-spin")}
+                />
+              </button>
+              <button
+                disabled={regenerating}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRegenMenuOpen((v) => !v);
+                }}
+                className="-ml-0.5 rounded-md p-1 text-slate-400 transition-colors hover:bg-stable-purple/15 hover:text-stable-purple-light focus-ring disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Regenerate with a different model"
+                title="Regenerate with a different model"
+                aria-haspopup="menu"
+                aria-expanded={regenMenuOpen}
+              >
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {regenMenuOpen && (
+                <div
+                  role="menu"
+                  className="glass-heavy absolute right-0 top-full z-50 mt-1 max-h-64 w-60 overflow-auto rounded-xl p-1 shadow-pop animate-fade-in"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                    Regenerate with
+                  </div>
+                  <button
+                    role="menuitem"
+                    onClick={() => runRegenerate()}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+                  >
+                    <RefreshCw className="h-3 w-3 shrink-0 text-slate-400" />
+                    Same model
+                  </button>
+                  {regenModels.length === 0 ? (
+                    <div className="px-2 py-1.5 text-xs text-slate-500">
+                      No models available.
+                    </div>
+                  ) : (
+                    regenModels.map((m) => (
+                      <button
+                        key={m.id}
+                        role="menuitem"
+                        title={m.id}
+                        onClick={() => runRegenerate(m.id)}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+                      >
+                        <span className="truncate">{m.label}</span>
+                        {m.badge && (
+                          <span
+                            className={clsx(
+                              "ml-auto shrink-0 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide",
+                              m.badge === "Local"
+                                ? "bg-stable-mint/15 text-stable-mint"
+                                : "bg-sky-400/15 text-sky-300",
+                            )}
+                          >
+                            {m.badge}
+                          </span>
+                        )}
+                        {m.cost === "$" && (
+                          <span
+                            className="shrink-0 text-[10px] font-semibold text-amber-300/90"
+                            title="Paid cloud lane"
+                          >
+                            $
+                          </span>
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {isOwn && (
             <>
@@ -1788,6 +2103,13 @@ export function MessageBubble({
           message={message}
           onClose={() => setPromoteOpen(false)}
           onPromoted={handlePromoted}
+        />
+      )}
+      {lightbox && (
+        <ImageLightbox
+          url={lightbox.url}
+          filename={lightbox.filename}
+          onClose={() => setLightbox(null)}
         />
       )}
     </div>
