@@ -258,10 +258,16 @@ class StableWebSocket {
 
   private scheduleReconnect(): void {
     this.cancelReconnect();
-    const delay = Math.min(
+    // Cap the exponential backoff at the ceiling, then apply FULL JITTER:
+    // pick a random delay in [0, cappedExponentialDelay). When a server blip
+    // drops many clients at once, deterministic backoff makes them all wake
+    // and retry in lockstep — a thundering herd that hammers the server on
+    // every attempt. Randomizing spreads the reconnects across the window.
+    const cappedExponentialDelay = Math.min(
       BASE_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts),
       MAX_RECONNECT_DELAY_MS,
     );
+    const delay = Math.random() * cappedExponentialDelay;
     this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
       this.connect();

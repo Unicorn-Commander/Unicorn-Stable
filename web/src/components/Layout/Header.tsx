@@ -11,6 +11,7 @@ import {
   Users,
   Bookmark,
   Settings,
+  Keyboard,
   LogOut,
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
@@ -31,6 +32,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const toggleCheatsheet = useAppStore((s) => s.toggleCheatsheet);
   // SavedPanel is now rendered once at the AppShell level (so the mobile drawer
   // account section can open it); here we only need the opener.
   const setSavedOpen = useAppStore((s) => s.setSavedOpen);
@@ -297,6 +299,17 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
                   </p>
                 </div>
               </div>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  toggleCheatsheet();
+                }}
+                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+              >
+                <Keyboard className="h-4 w-4 text-slate-400" />
+                Keyboard shortcuts
+              </button>
               <button
                 role="menuitem"
                 onClick={() => {

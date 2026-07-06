@@ -16,7 +16,6 @@ import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
-  PANEL_RESIZE_ACTIVE_CLASS,
   useIsDesktop,
   usePanelResize,
 } from "@/hooks/usePanelResize";
@@ -261,6 +260,19 @@ export function AppShell() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+        e.preventDefault();
+        useAppStore.getState().toggleCheatsheet();
+        return;
+      }
+      // Bare "?" (Shift+/) opens the same cheatsheet — the near-universal
+      // "help" shortcut. Skipped while typing so it never eats a literal "?".
+      if (
+        e.key === "?" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !isEditableTarget(e.target)
+      ) {
         e.preventDefault();
         useAppStore.getState().toggleCheatsheet();
         return;
@@ -510,7 +522,6 @@ export function AppShell() {
               className={clsx(
                 PANEL_RESIZE_HANDLE_CLASS,
                 "right-0 hidden md:block",
-                sidebarResize.isDragging && PANEL_RESIZE_ACTIVE_CLASS,
               )}
             />
           </motion.aside>

@@ -35,22 +35,24 @@ export interface PanelResizeOptions {
 const KEYBOARD_STEP = 16;
 
 /**
- * Shared look for the drag strip. Call sites add positioning (`left-0` /
- * `right-0`), the desktop gate (`hidden md:block`), and a dragging highlight
- * (`isDragging && PANEL_RESIZE_ACTIVE_CLASS`). The 8px strip sits just INSIDE
- * the panel edge (several of these panels are overflow-hidden, so a
- * border-straddling negative offset would be clipped) and hugs the panel
- * border.
+ * Shared look for the drag strip. Call sites add only positioning (`left-0` /
+ * `right-0`) and the desktop gate (`hidden md:block`) — the lit dragging state
+ * rides on the `data-dragging` attribute the hook already sets, so no per-site
+ * conditional is needed. The 8px strip sits just INSIDE the panel edge (several
+ * of these panels are overflow-hidden, so a border-straddling negative offset
+ * would be clipped) and hugs the panel border.
  *
  * Discoverability: a persistent grip pill (`::before`) sits centred on the
  * strip so the edge visibly reads as draggable at rest — without it the
- * feature is a transparent 6px strip nobody finds. On hover / keyboard focus
- * the pill grows and turns accent-purple and a hairline (`::after`) glows down
- * the seam. `PANEL_RESIZE_ACTIVE_CLASS` drives that same lit state while a drag
- * is in progress even if the pointer outruns the strip.
+ * feature is a transparent strip nobody finds. On hover / keyboard focus / an
+ * active drag the pill grows and turns accent-purple and a hairline (`::after`)
+ * glows down the seam. The drag state uses `data-[dragging=true]` (not `[&::…]`
+ * arbitrary variants — Tailwind's content scanner silently drops those) so the
+ * grip stays lit even when the captured pointer outruns the strip.
  */
 export const PANEL_RESIZE_HANDLE_CLASS =
   "group absolute inset-y-0 z-10 w-2 cursor-col-resize touch-none select-none " +
+  "data-[dragging=true]:bg-stable-purple/5 " +
   // persistent grip pill — the at-rest affordance
   "before:pointer-events-none before:absolute before:left-1/2 before:top-1/2 before:h-8 before:w-[3px] " +
   "before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:bg-white/20 " +
@@ -60,15 +62,10 @@ export const PANEL_RESIZE_HANDLE_CLASS =
   "after:bg-transparent after:transition-colors after:duration-150 after:content-[''] " +
   // hover + keyboard focus: grip grows and turns purple, seam lights up
   "hover:before:h-14 hover:before:bg-stable-purple/80 hover:after:bg-stable-purple/40 " +
-  "focus:outline-none focus-visible:before:h-14 focus-visible:before:bg-stable-purple focus-visible:after:bg-stable-purple/50";
-
-/**
- * Appended by call sites while `isDragging` so the grip stays lit even when the
- * captured pointer leaves the strip. Arbitrary variants reach the same
- * pseudo-elements the hover state styles.
- */
-export const PANEL_RESIZE_ACTIVE_CLASS =
-  "bg-stable-purple/5 [&::before]:h-14 [&::before]:bg-stable-purple [&::after]:bg-stable-purple/50";
+  "focus:outline-none focus-visible:before:h-14 focus-visible:before:bg-stable-purple focus-visible:after:bg-stable-purple/50 " +
+  // active drag: same lit state, held regardless of pointer position
+  "data-[dragging=true]:before:h-14 data-[dragging=true]:before:bg-stable-purple " +
+  "data-[dragging=true]:after:bg-stable-purple/50";
 
 /** Tailwind `md` — matches the drawers' fixed/overlay↔docked breakpoint. */
 const DESKTOP_QUERY = "(min-width: 768px)";
@@ -122,6 +119,8 @@ export interface PanelResizeHandleProps {
   "aria-valuemin": number;
   "aria-valuemax": number;
   "aria-valuenow": number;
+  /** Drives the lit dragging state in `PANEL_RESIZE_HANDLE_CLASS`. */
+  "data-dragging": "true" | "false";
   tabIndex: 0;
   onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
   onPointerMove: (e: ReactPointerEvent<HTMLElement>) => void;
@@ -259,6 +258,7 @@ export function usePanelResize(
       "aria-valuemin": min,
       "aria-valuemax": max,
       "aria-valuenow": width,
+      "data-dragging": isDragging ? "true" : "false",
       tabIndex: 0,
       onPointerDown,
       onPointerMove,

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { installDevTranscriptGlobals } from "./lib/devTranscript";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/space-grotesk";
@@ -33,7 +34,12 @@ createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <App />
+        {/* Root boundary: a render crash anywhere above AppShell's own
+            boundaries (auth gate, providers, shell chrome) would otherwise
+            white-screen the whole app — catch it with a full-screen reload. */}
+        <ErrorBoundary fullScreen>
+          <App />
+        </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>
   </StrictMode>,

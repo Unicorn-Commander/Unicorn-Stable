@@ -38,9 +38,12 @@ import { MessageInput } from "./MessageInput";
 
 interface ChatPanelProps {
   roomId: string;
+  /** Opens the room's invite flow — wired from RoomView; used by the empty
+   * channel's "Invite an agent" chip. */
+  onInviteAgent?: () => void;
 }
 
-export function ChatPanel({ roomId }: ChatPanelProps) {
+export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const { messages, hasMore, loading, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
     useChat(roomId);
   const { typingUsers, sendTypingIndicator } = usePresence(roomId);
@@ -370,6 +373,7 @@ export function ChatPanel({ roomId }: ChatPanelProps) {
             onPrompt={(text: string) => {
               void sendMessage(text);
             }}
+            onInviteAgent={onInviteAgent}
           />
         )}
 
@@ -558,6 +562,7 @@ interface EmptyChannelProps {
   }>;
   currentUserId?: string;
   onPrompt: (content: string) => void;
+  onInviteAgent?: () => void;
 }
 
 const AGENT_PROMPTS = [
@@ -566,13 +571,38 @@ const AGENT_PROMPTS = [
   "Walk me through a typical task you handle.",
 ];
 
-const CHANNEL_PROMPTS = [
-  "👋 Say hi",
-  "📌 Pin a goal for this channel",
-  "🤖 Invite an agent",
+// Empty-channel starter chips. Each wires to a real action (see runChip):
+// "invite-agent" opens the room's invite flow; the other two seed the composer
+// and focus it via the store's requestInsert (consumed + focused by
+// MessageInput) — a safe, real default since there's nothing to pin yet in a
+// brand-new channel.
+type ChipAction = "say-hi" | "pin-goal" | "invite-agent";
+const CHANNEL_CHIPS: { label: string; action: ChipAction }[] = [
+  { label: "👋 Say hi", action: "say-hi" },
+  { label: "📌 Pin a goal for this channel", action: "pin-goal" },
+  { label: "🤖 Invite an agent", action: "invite-agent" },
 ];
 
-function EmptyChannel({ participants, currentUserId, onPrompt }: EmptyChannelProps) {
+function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteAgent }: EmptyChannelProps) {
+  const requestInsert = useAppStore((s) => s.requestInsert);
+
+  function runChip(action: ChipAction) {
+    switch (action) {
+      case "say-hi":
+        requestInsert(roomId, "👋 ");
+        break;
+      case "pin-goal":
+        requestInsert(roomId, "🎯 Our goal for this channel: ");
+        break;
+      case "invite-agent":
+        // Fall back to focusing the composer if the invite flow isn't wired
+        // (e.g. rendered outside a RoomView), rather than doing nothing.
+        if (onInviteAgent) onInviteAgent();
+        else requestInsert(roomId, "👋 ");
+        break;
+    }
+  }
+
   const others = participants.filter(
     (p) => (p.participant_id || p.user_id) !== currentUserId,
   );
@@ -643,13 +673,14 @@ function EmptyChannel({ participants, currentUserId, onPrompt }: EmptyChannelPro
           Be the first to say something — others see it the moment you hit enter.
         </p>
         <div className="mt-5 flex flex-wrap justify-center gap-2">
-          {CHANNEL_PROMPTS.map((p) => (
-            <span
-              key={p}
-              className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-slate-400"
+          {CHANNEL_CHIPS.map((chip) => (
+            <button
+              key={chip.action}
+              onClick={() => runChip(chip.action)}
+              className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-slate-400 transition-colors hover:border-stable-purple/40 hover:bg-white/[0.06] hover:text-slate-200 focus-ring"
             >
-              {p}
-            </span>
+              {chip.label}
+            </button>
           ))}
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect, useRef, type CSSProperties } from "react";
+import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Mic,
   MicOff,
@@ -329,6 +329,24 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localParticipant, remoteParticipants, version, matchAgent, getCameraTrack]);
 
+  // Active-speaker spotlight, DEBOUNCED. LiveKit flips isSpeaking on every
+  // syllable, so keying the focus tile straight off it would let a brief cough
+  // or "mm-hmm" yank the whole layout. Only promote a *new* speaker once they've
+  // held the floor continuously for ~2s; a pause (nobody speaking) keeps the
+  // current spotlight rather than snapping away. A manual focus pick (below)
+  // still wins immediately. (Declared here — above the early returns — so the
+  // hook order stays stable per the Rules of Hooks.)
+  const liveSpeakerId = participants.find((p) => p.isSpeaking)?.id ?? null;
+  const [stableSpeakerId, setStableSpeakerId] = useState<string | null>(null);
+  useEffect(() => {
+    // Silence, or the already-spotlighted speaker → nothing to promote. The
+    // effect re-running on any change clears a still-pending timer, so a
+    // speaker who drops out before 2s never gets promoted.
+    if (liveSpeakerId === null || liveSpeakerId === stableSpeakerId) return;
+    const t = setTimeout(() => setStableSpeakerId(liveSpeakerId), 2000);
+    return () => clearTimeout(t);
+  }, [liveSpeakerId, stableSpeakerId]);
+
   // Screen-shares (local + remote), one tile each.
   const screenShares = useMemo(() => {
     const out: { sid: string; label: string; track: LocalTrack | RemoteTrack }[] = [];
@@ -468,11 +486,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     </div>
   );
 
-  // Active speaker for focus mode: explicit agent-focused pick > anyone
-  // currently speaking > first remote > self.
+  // Active speaker for focus mode: explicit agent-focused pick > the debounced
+  // active speaker (if still present) > first remote > self.
   const focused =
     participants.find((p) => p.id === focusedParticipantId) ??
-    participants.find((p) => p.isSpeaking) ??
+    (stableSpeakerId
+      ? participants.find((p) => p.id === stableSpeakerId)
+      : undefined) ??
     participants.find((p) => !p.isLocal) ??
     participants[0];
 

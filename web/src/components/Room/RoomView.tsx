@@ -15,11 +15,11 @@ import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
-  PANEL_RESIZE_ACTIVE_CLASS,
   useIsDesktop,
   usePanelResize,
 } from "@/hooks/usePanelResize";
 import { useVoice } from "@/contexts/VoiceProvider";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ChatPanel } from "./ChatPanel";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { StageView } from "./StageView";
@@ -664,7 +664,12 @@ export function RoomView({ roomId }: RoomViewProps) {
             )}
           </AnimatePresence>
 
-          <ChatPanel roomId={roomId} />
+          <ErrorBoundary label="the chat area">
+            <ChatPanel
+              roomId={roomId}
+              onInviteAgent={() => setInviteOpen(true)}
+            />
+          </ErrorBoundary>
         </div>
 
         <AnimatePresence>
@@ -686,28 +691,34 @@ export function RoomView({ roomId }: RoomViewProps) {
 
         {/* Canvas (co-working artifacts). Mobile = full-screen takeover; desktop
             = a wide docked right column beside chat. Open state is in the canvas
-            store so the data channel can surface agent-created artifacts later. */}
-        <AnimatePresence>
-          {canvasOpen && (
-            <CanvasPanel
-              roomId={roomId}
-              onClose={() => toggleCanvas()}
-            />
-          )}
-        </AnimatePresence>
+            store so the data channel can surface agent-created artifacts later.
+            The boundary wraps AnimatePresence (not the panel) so a canvas render
+            crash is isolated to this drawer while exit animations still play. */}
+        <ErrorBoundary label="the canvas">
+          <AnimatePresence>
+            {canvasOpen && (
+              <CanvasPanel
+                roomId={roomId}
+                onClose={() => toggleCanvas()}
+              />
+            )}
+          </AnimatePresence>
+        </ErrorBoundary>
 
         {/* Knowledge bases (KB collection mgmt + room attach/detach). Same
             right-drawer footprint as the canvas; lazy-loaded (see import). */}
-        <AnimatePresence>
-          {knowledgeOpen && (
-            <Suspense fallback={null}>
-              <KnowledgePanel
-                roomId={roomId}
-                onClose={() => toggleKnowledge()}
-              />
-            </Suspense>
-          )}
-        </AnimatePresence>
+        <ErrorBoundary label="knowledge bases">
+          <AnimatePresence>
+            {knowledgeOpen && (
+              <Suspense fallback={null}>
+                <KnowledgePanel
+                  roomId={roomId}
+                  onClose={() => toggleKnowledge()}
+                />
+              </Suspense>
+            )}
+          </AnimatePresence>
+        </ErrorBoundary>
 
         {/* Sidebar view mode: the call docks into a narrow right column so the
             main area stays free for chat/canvas (the co-working layout).
@@ -750,13 +761,14 @@ export function RoomView({ roomId }: RoomViewProps) {
                 className={clsx(
                   PANEL_RESIZE_HANDLE_CLASS,
                   "left-0 hidden md:block",
-                  participantsResize.isDragging && PANEL_RESIZE_ACTIVE_CLASS,
                 )}
               />
-              <ParticipantStrip roomId={roomId} />
-              <div className="border-t border-line shrink-0">
-                <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />
-              </div>
+              <ErrorBoundary label="the participants panel">
+                <ParticipantStrip roomId={roomId} />
+                <div className="border-t border-line shrink-0">
+                  <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />
+                </div>
+              </ErrorBoundary>
             </motion.div>
           )}
         </AnimatePresence>
