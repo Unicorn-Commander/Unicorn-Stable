@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
+  PANEL_RESIZE_ACTIVE_CLASS,
   useIsDesktop,
   usePanelResize,
 } from "@/hooks/usePanelResize";
@@ -449,7 +450,7 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
         className={clsx(
           PANEL_RESIZE_HANDLE_CLASS,
           "left-0 hidden md:block",
-          resize.isDragging && "bg-white/[0.1]",
+          resize.isDragging && PANEL_RESIZE_ACTIVE_CLASS,
         )}
       />
       {/* Header */}

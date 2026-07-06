@@ -16,6 +16,7 @@ import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
+  PANEL_RESIZE_ACTIVE_CLASS,
   useIsDesktop,
   usePanelResize,
 } from "@/hooks/usePanelResize";
@@ -509,7 +510,7 @@ export function AppShell() {
               className={clsx(
                 PANEL_RESIZE_HANDLE_CLASS,
                 "right-0 hidden md:block",
-                sidebarResize.isDragging && "bg-white/[0.1]",
+                sidebarResize.isDragging && PANEL_RESIZE_ACTIVE_CLASS,
               )}
             />
           </motion.aside>

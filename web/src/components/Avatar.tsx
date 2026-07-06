@@ -7,6 +7,13 @@ interface AvatarProps {
   src?: string | null;
   size?: "xs" | "sm" | "md" | "lg" | "xl";
   isAgent?: boolean;
+  /**
+   * Emoji identity (agents carry one from Brigade's roster). Rendered on the
+   * identity gradient when there's no `src` — so every agent reads as itself
+   * instead of an interchangeable Bot glyph. Falls back to Bot (agents) or
+   * initials (people) when absent.
+   */
+  emoji?: string | null;
   className?: string;
   ringColor?: string;
   /**
@@ -39,6 +46,7 @@ export function Avatar({
   src,
   size = "md",
   isAgent,
+  emoji,
   className,
   ringColor,
   id,
@@ -47,6 +55,7 @@ export function Avatar({
   const ring = ringColor ? `ring-2 ${ringColor} ring-offset-2 ring-offset-slate-900` : "";
   // Identity hue — stable per resident of the Stable (id wins, name fallback).
   const ident = identityFor(id, name);
+  const glyph = emoji?.trim() || null;
 
   if (src) {
     return (
@@ -60,6 +69,25 @@ export function Avatar({
           className,
         )}
       />
+    );
+  }
+
+  if (glyph) {
+    return (
+      <div
+        className={clsx(
+          sz,
+          "flex shrink-0 select-none items-center justify-center rounded-full leading-none",
+          ring,
+          className,
+        )}
+        style={{ background: ident.gradient }}
+        title={name}
+      >
+        <span className="text-[1.05em]" aria-hidden="true">
+          {glyph}
+        </span>
+      </div>
     );
   }
 

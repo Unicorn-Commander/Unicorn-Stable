@@ -44,6 +44,13 @@ export function StageView({ agentId, roomId }: StageViewProps) {
   // The on-stage resident's identity hue — colors the avatar orb + name plate.
   const ident = identityFor(agentId.replace(/^agent-/, ""), displayName);
 
+  // Emoji identity from the rich roster — the store id is the un-prefixed slug,
+  // so fall back to that when the raw `agent-<id>` lookup misses. Renders in the
+  // stage orb / name plate instead of an interchangeable Bot glyph.
+  const stageAgent =
+    agent ?? agents.find((a) => a.id === agentId.replace(/^agent-/, ""));
+  const stageEmoji = stageAgent?.emoji?.trim() || null;
+
   const agentParticipant = useMemo(() => {
     return remoteParticipants.find((p) => {
       const identity = p.identity;
@@ -105,13 +112,19 @@ export function StageView({ agentId, roomId }: StageViewProps) {
       ) : (
         <div className="flex animate-fade-in flex-col items-center gap-3">
           <div
-            className="flex h-16 w-16 items-center justify-center rounded-full text-white/95"
+            className="flex h-16 w-16 select-none items-center justify-center rounded-full leading-none text-white/95"
             style={{
               background: ident.gradient,
               boxShadow: `0 0 32px ${ident.ring}`,
             }}
           >
-            <Bot className="h-8 w-8" />
+            {stageEmoji ? (
+              <span className="text-3xl" aria-hidden="true">
+                {stageEmoji}
+              </span>
+            ) : (
+              <Bot className="h-8 w-8" />
+            )}
           </div>
           <p className="font-display text-sm font-semibold text-slate-100">
             {displayName}
@@ -154,7 +167,13 @@ export function StageView({ agentId, roomId }: StageViewProps) {
 
       {(brigadeAgent || agent) && (
         <div className="glass absolute bottom-3 left-3 flex items-center gap-1.5 rounded-md px-2 py-0.5">
-          <Bot className="h-3.5 w-3.5" style={{ color: ident.text }} />
+          {stageEmoji ? (
+            <span className="text-xs leading-none" aria-hidden="true">
+              {stageEmoji}
+            </span>
+          ) : (
+            <Bot className="h-3.5 w-3.5" style={{ color: ident.text }} />
+          )}
           <span className="text-xs font-medium text-slate-100">
             {displayName}
           </span>

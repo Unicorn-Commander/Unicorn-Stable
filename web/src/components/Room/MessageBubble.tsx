@@ -990,6 +990,13 @@ export function MessageBubble({
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
+  // Agent turns: resolve the sender in the roster so its emoji / portrait shows
+  // in place of an interchangeable Bot glyph. Non-agent senders skip the lookup.
+  const senderAgent = useAppStore((s) =>
+    message.sender_type === "agent"
+      ? s.agents.find((a) => a.id === message.sender_id)
+      : undefined,
+  );
 
   const serverReactions =
     (message.metadata as { reactions?: Record<string, string[]> } | undefined)
@@ -1297,9 +1304,10 @@ export function MessageBubble({
           <div className="mb-3 flex items-start gap-2">
             <Avatar
               name={message.sender_name}
-              src={message.sender_avatar}
+              src={message.sender_avatar ?? senderAgent?.avatar_url}
               size="sm"
               isAgent={isAgent}
+              emoji={senderAgent?.emoji}
               id={message.sender_id}
             />
             <div className="min-w-0 flex-1">
@@ -1766,9 +1774,10 @@ export function MessageBubble({
         <div className="mt-0.5 shrink-0">
           <Avatar
             name={message.sender_name}
-            src={message.sender_avatar}
+            src={message.sender_avatar ?? senderAgent?.avatar_url}
             size="md"
             isAgent={isAgent}
+            emoji={senderAgent?.emoji}
             id={message.sender_id}
           />
         </div>

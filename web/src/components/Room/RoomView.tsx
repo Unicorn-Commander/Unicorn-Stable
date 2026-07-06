@@ -15,6 +15,7 @@ import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
+  PANEL_RESIZE_ACTIVE_CLASS,
   useIsDesktop,
   usePanelResize,
 } from "@/hooks/usePanelResize";
@@ -749,7 +750,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                 className={clsx(
                   PANEL_RESIZE_HANDLE_CLASS,
                   "left-0 hidden md:block",
-                  participantsResize.isDragging && "bg-white/[0.1]",
+                  participantsResize.isDragging && PANEL_RESIZE_ACTIVE_CLASS,
                 )}
               />
               <ParticipantStrip roomId={roomId} />
