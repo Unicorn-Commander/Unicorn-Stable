@@ -407,9 +407,21 @@ async def _call_brigade(
         if m.get("role") == "user":
             last_user_msg = m.get("content", "")
             break
+    # Split the chronological turns into prior-history + the current message.
+    # Brigade's ChatRequest reads PRIOR turns from `history` and appends
+    # `message` as the current user turn -> it IGNORES an unknown `messages`
+    # field, which is why the agent had zero memory turn-to-turn. `messages`
+    # (oldest-first) ends with the current user turn, so history = all before it.
+    history = list(messages)
+    if (
+        history
+        and history[-1].get("role") == "user"
+        and history[-1].get("content", "") == last_user_msg
+    ):
+        history = history[:-1]
     payload: dict[str, Any] = {
         "message": last_user_msg,
-        "messages": messages,
+        "history": history,
         "user": user_id,
     }
     # Per-conversation LLM override (model switcher). Brigade's /agents/{id}/chat
