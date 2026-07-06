@@ -308,6 +308,48 @@ class BrigadeBackedAgent(StableAgent):
         if tts_plugin is not None:
             agent_kwargs["tts"] = tts_plugin
 
+        # Cross-modal memory: seed the voice agent with recent room history so a
+        # voice call picks up where the (text) conversation left off. Fully
+        # fail-safe: any error leaves the context unseeded -> identical to prior
+        # behavior (LiveKit still accumulates the live call's own turns). Uses
+        # the same ChatContext mechanism LiveKit already feeds the LLM, so seeded
+        # turns are consumed exactly like in-call turns.
+        try:
+            from livekit.agents import ChatContext as _ChatContext
+
+            _rid = getattr(self, "_room_id", "") or ""
+            _http = getattr(self.tools, "http", None)
+            if _rid and _http is not None:
+                _resp = await _http.get(
+                    f"/api/rooms/{_rid}/messages",
+                    params={"limit": "20", "order": "desc"},
+                )
+                _resp.raise_for_status()
+                _rows = _resp.json() or []
+                if isinstance(_rows, list) and _rows:
+                    _seed = _ChatContext()
+                    _n = 0
+                    for _m in reversed(_rows):  # API is newest-first -> oldest-first
+                        _text = (_m.get("content") or "").strip()
+                        if not _text or _text == "\u2026":
+                            continue
+                        if _m.get("content_type") == "action":
+                            continue
+                        _role = (
+                            "assistant"
+                            if _m.get("sender_type") == "agent"
+                            else "user"
+                        )
+                        _seed.add_message(role=_role, content=_text)
+                        _n += 1
+                    if _n:
+                        agent_kwargs["chat_ctx"] = _seed
+                        logger.info(
+                            "voice_ctx_seeded", room_id=_rid, messages=_n
+                        )
+        except Exception:
+            logger.info("voice_ctx_seed_skipped", exc_info=True)
+
         self._lk_agent = Agent(**agent_kwargs)
 
         session = AgentSession()
