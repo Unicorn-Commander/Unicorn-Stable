@@ -215,7 +215,7 @@ class BrigadeBackedAgent(StableAgent):
         Returns the new message's id so callers can stream updates via
         _patch_chat_message.
         """
-        secret = self._settings.livekit_api_secret
+        secret = self._settings.internal_agent_secret or self._settings.livekit_api_secret
         if not secret:
             logger.warning("post_chat_no_secret")
             return None
@@ -249,7 +249,7 @@ class BrigadeBackedAgent(StableAgent):
         self, message_id: str, content: str, finalize: bool
     ) -> None:
         """Stream-update an existing agent message in place."""
-        secret = self._settings.livekit_api_secret
+        secret = self._settings.internal_agent_secret or self._settings.livekit_api_secret
         if not secret:
             return
         try:
@@ -273,7 +273,7 @@ class BrigadeBackedAgent(StableAgent):
 
     async def _post_typing(self, typing: bool) -> None:
         """Broadcast a typing/working indicator over LiveKit data."""
-        secret = self._settings.livekit_api_secret
+        secret = self._settings.internal_agent_secret or self._settings.livekit_api_secret
         if not secret:
             return
         try:

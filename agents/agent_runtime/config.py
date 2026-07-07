@@ -20,6 +20,11 @@ class AgentSettings(BaseSettings):
     livekit_api_key: str = "APIStable2026"
     livekit_api_secret: str = "stable_secret_change_in_production_2026"
 
+    # Bearer for Stable's /api/v1/internal/* routes. Split out from the
+    # LiveKit token secret so a leak of one doesn't compromise the other.
+    # Falls back to livekit_api_secret only when unset (migration safety).
+    internal_agent_secret: str = ""
+
     # Stable backend (FastAPI service)
     stable_backend_url: str = "http://localhost:8400"
 

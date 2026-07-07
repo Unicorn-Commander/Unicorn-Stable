@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._internal_auth import verify_internal_bearer
 from app.config import get_settings
 from app.deps import get_db, get_livekit
 from app.models.artifact import Artifact, ArtifactAuthorKind
@@ -131,13 +132,9 @@ class AgentVersionResult(BaseModel):
 
 
 def _check_agent_secret(request: Request) -> None:
-    """Authn for the internal agent surface — identical to the check in
-    ``messages.py``'s ``post_agent_message`` (shared LiveKit secret)."""
-    cfg = get_settings()
-    expected = cfg.livekit_api_secret
-    auth = request.headers.get("Authorization", "")
-    if not expected or auth != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Bad agent secret")
+    """Authn for the internal agent surface — constant-time bearer check
+    against the split ``internal_agent_secret`` (see ``app.api._internal_auth``)."""
+    verify_internal_bearer(request)
 
 
 async def _resolve_room(db: AsyncSession, body: _AgentArtifactBase) -> Room:

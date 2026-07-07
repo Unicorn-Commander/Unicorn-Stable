@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._internal_auth import verify_internal_bearer
 from app.config import get_settings
 from app.deps import (
     ensure_room_member,
@@ -842,10 +843,7 @@ async def post_agent_message(
     from app.models.room import Room as _Room
 
     cfg = get_settings()
-    expected = cfg.livekit_api_secret
-    auth = request.headers.get("Authorization", "")
-    if not expected or auth != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Bad agent secret")
+    verify_internal_bearer(request)
 
     room = (
         await db.execute(
@@ -952,10 +950,7 @@ async def post_voice_user_message(
     from app.models.room import Room as _Room, RoomMember as _RM
 
     cfg = get_settings()
-    expected = cfg.livekit_api_secret
-    auth = request.headers.get("Authorization", "")
-    if not expected or auth != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Bad agent secret")
+    verify_internal_bearer(request)
 
     room = (
         await db.execute(
@@ -1040,10 +1035,7 @@ async def update_agent_message(
     from app.models.room import Room as _Room
 
     cfg = get_settings()
-    expected = cfg.livekit_api_secret
-    auth = request.headers.get("Authorization", "")
-    if not expected or auth != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Bad agent secret")
+    verify_internal_bearer(request)
 
     msg = (
         await db.execute(_select(_Msg).where(_Msg.id == message_id))
@@ -1095,10 +1087,7 @@ async def post_agent_typing(
     from app.models.room import Room as _Room
 
     cfg = get_settings()
-    expected = cfg.livekit_api_secret
-    auth = request.headers.get("Authorization", "")
-    if not expected or auth != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Bad agent secret")
+    verify_internal_bearer(request)
 
     room = (
         await db.execute(

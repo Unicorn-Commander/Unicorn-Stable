@@ -116,6 +116,8 @@ services:
       - LIVEKIT_API_URL=http://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
+      - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
+      - UPLOAD_URL_SECRET=${UPLOAD_URL_SECRET:-}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-uchub}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-stable}
@@ -179,6 +181,7 @@ services:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
+      - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
       - STABLE_BACKEND_URL=http://backend:8400
       - REDIS_URL=redis://redis:6379/1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

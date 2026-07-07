@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     livekit_api_key: str = "APIStable2026"
     livekit_api_secret: str = "stable_secret_change_in_production_2026"
 
+    # Internal agent-surface bearer. Authenticates the /api/v1/internal/*
+    # routes (agent message-inject, artifact write, KB search). MUST be a
+    # distinct random secret from livekit_api_secret in production — sharing
+    # one value across the LiveKit-token, internal-bearer, and upload-signing
+    # trust boundaries meant a leak of any one compromised all three. Falls
+    # back to livekit_api_secret only when unset (migration safety); set it
+    # explicitly everywhere.
+    internal_agent_secret: str = ""
+
     # Keycloak
     keycloak_url: str = "http://localhost:8080"
     keycloak_realm: str = "stable"

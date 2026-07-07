@@ -358,7 +358,11 @@ class VoiceHistoryPersister:
         self._brigade_agent_id = brigade_agent_id or "majik"
         cfg = get_agent_settings()
         self._base = (getattr(cfg, "stable_backend_url", "") or "").rstrip("/")
-        self._secret = getattr(cfg, "livekit_api_secret", "") or ""
+        self._secret = (
+            getattr(cfg, "internal_agent_secret", "")
+            or getattr(cfg, "livekit_api_secret", "")
+            or ""
+        )
 
     # -- AgentSession event handlers (sync callbacks; must NOT raise) -- #
 

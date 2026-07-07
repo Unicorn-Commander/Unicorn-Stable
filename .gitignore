@@ -55,3 +55,4 @@ coverage/
 # Backups (auto-added by checkpoint)
 *.bak
 *.bak-*
+server/livekit.yaml

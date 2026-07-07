@@ -1,0 +1,52 @@
+# =============================================================================
+# LiveKit Server Configuration — Stable
+# =============================================================================
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  # No node_ip pin. Advertise the SFU's real container interface IPs so
+  # in-cluster agents (stable-agents on the shared stable-net bridge) complete
+  # ICE directly over the bridge. Off-box clients (phone / off-tailnet, and
+  # tailnet clients too) can't reach 172.x and use the TURN relay below —
+  # media tunnels in over TLS:443.
+  #
+  # WHY: node_ip=<Tailscale IP> + use_external_ip:false made the SFU offer ONLY
+  # that one hairpinned candidate. The agent (a container on the same host) then
+  # had every ICE pair fail with 0 STUN responses through docker NAT, so the
+  # voice agent could never establish its media PC. Removing the pin lets the
+  # agent pair on the shared 172.x bridge; external reach is the TURN relay.
+  use_external_ip: false
+  enable_loopback_candidate: true
+
+redis:
+  address: redis:6379
+
+keys:
+  APIStable2026: CHANGE_ME_set_LIVEKIT_API_SECRET_in_env
+
+room:
+  auto_create: true
+  empty_timeout: 300        # 5 min after last participant leaves
+  max_participants: 50
+
+webhook:
+  urls:
+    - http://backend:8400/api/v1/webhooks/livekit
+  api_key: APIStable2026
+
+logging:
+  level: info
+  pion_level: warn
+
+# TURN relay so off-tailnet browsers can do voice/video over the public domain.
+# Traefik terminates TLS on the shared :443 (TCP-SNI router, HostSNI=turn.magicunicorn.dev)
+# and forwards plaintext here -> external_tls: true makes LiveKit listen unencrypted
+# on tls_port and advertise turns:turn.magicunicorn.dev:443 to clients.
+# Reuses the one router-forwarded port (443); no new port forwards, no UDP TURN.
+turn:
+  enabled: true
+  domain: turn.magicunicorn.dev
+  tls_port: 443
+  external_tls: true
