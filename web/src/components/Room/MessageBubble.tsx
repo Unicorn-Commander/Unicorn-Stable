@@ -62,6 +62,17 @@ function artifactMeta(message: Message): { artifactId: string; artifactTitle: st
   return { artifactId: meta.artifact_id, artifactTitle: meta.artifact_title ?? null };
 }
 
+function delegationMeta(
+  message: Message,
+): { name: string; emoji?: string } | null {
+  const meta = message.metadata as
+    | { delegated_from?: { name?: string; agent_id?: string; emoji?: string } }
+    | undefined;
+  const d = meta?.delegated_from;
+  if (!d) return null;
+  return { name: d.name || d.agent_id || "orchestrator", emoji: d.emoji };
+}
+
 function defaultTaskTitle(content: string) {
   const compact = content.replace(/\s+/g, " ").trim();
   return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact || "Stable message follow-up";
@@ -987,6 +998,7 @@ export function MessageBubble({
   const [lightbox, setLightbox] = useState<{ url: string; filename: string } | null>(null);
   const promoted = projectOpsMeta(message);
   const artifact = artifactMeta(message);
+  const delegated = delegationMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
@@ -1815,6 +1827,16 @@ export function MessageBubble({
                 style={{ background: ident.soft, color: ident.text }}
               >
                 AI
+              </span>
+            )}
+            {isAgent && delegated && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-stable-purple/25 bg-stable-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-purple-light"
+                title={`Routed to this specialist by ${delegated.name}`}
+              >
+                <CornerDownRight className="h-3 w-3" />
+                {delegated.emoji ? `${delegated.emoji} ` : ""}
+                {delegated.name}
               </span>
             )}
             {isAgent && overrideModelLabel && (

@@ -24,6 +24,73 @@ import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { emojiSuggestions, ensureEmojiIndex, replaceEmojiShortcodes } from "@/utils/emoji";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
+import { FormatToolbar, type FormatKind } from "./FormatToolbar";
+
+/** Rough width of the format bar (6 icon buttons + padding) used to clamp its
+ * left offset so it can't overflow the composer on long lines. */
+const FORMAT_BAR_WIDTH = 200;
+
+/**
+ * Pixel coordinates of the caret at `position` within a textarea, relative to
+ * the textarea's own box. Measured with a hidden mirror element that copies the
+ * textarea's typography + padding — the standard technique for anchoring UI to
+ * a caret, since the DOM exposes no direct caret rect for form controls. Used
+ * only to place the floating format bar over the current selection.
+ */
+function measureCaret(
+  el: HTMLTextAreaElement,
+  position: number,
+): { top: number; left: number } {
+  const div = document.createElement("div");
+  const style = div.style;
+  const computed = window.getComputedStyle(el);
+  const props = [
+    "width",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "font-style",
+    "font-variant",
+    "font-weight",
+    "font-stretch",
+    "font-size",
+    "font-family",
+    "line-height",
+    "letter-spacing",
+    "text-align",
+    "text-indent",
+    "text-transform",
+    "word-spacing",
+    "tab-size",
+  ];
+  for (const p of props) style.setProperty(p, computed.getPropertyValue(p));
+  // getComputedStyle width is the content-box width, so mirror as content-box
+  // and let the copied padding/border reproduce the internal text offset.
+  style.boxSizing = "content-box";
+  style.position = "absolute";
+  style.top = "0";
+  style.left = "0";
+  style.visibility = "hidden";
+  style.whiteSpace = "pre-wrap";
+  style.overflowWrap = "break-word";
+  style.height = "auto";
+
+  div.textContent = el.value.slice(0, position);
+  const span = document.createElement("span");
+  // A non-empty marker keeps layout at end-of-text / on a blank line.
+  span.textContent = el.value.slice(position) || ".";
+  div.appendChild(span);
+  document.body.appendChild(div);
+  const top = span.offsetTop;
+  const left = span.offsetLeft;
+  document.body.removeChild(div);
+  return { top, left };
+}
 
 interface PollSpec {
   question: string;
@@ -75,6 +142,48 @@ function applySlashCommand(input: string): SlashResult {
     case "agent":
       if (!rest) return { text: input };
       return { text: "@" + rest };
+    case "research":
+      // Ask this room's agent to run deep web research via Center Deep and
+      // cite its sources. The agent surfaces a "🔬 Researching…" status while
+      // the cdr_deep_research tool runs. Purely a framed message — no special
+      // backend path; the research metadata is forward-compat and inert today.
+      if (!rest) {
+        alert(
+          "Usage: /research <question>\n" +
+            "Runs deep web research with citations via Center Deep.",
+        );
+        return { text: null };
+      }
+      return {
+        text: `🔬 Research request: ${rest}\n\nPlease run deep web research and cite your sources.`,
+        metadata: { research: { mode: "deep" } },
+      };
+    case "facilitate":
+    case "team":
+      // Ask the room's orchestrator to route this to the right specialist,
+      // who then answers in-room as itself (see backend facilitator). Best in
+      // a DM with an orchestrator (Majik / GFlow / The General). The
+      // `facilitate` flag rides in metadata; the text is just the question.
+      if (!rest) {
+        alert(
+          "Usage: /facilitate <question>\n" +
+            "Your orchestrator routes it to the best specialist, who answers here.",
+        );
+        return { text: null };
+      }
+      return { text: rest, metadata: { facilitate: true } };
+    case "council":
+      // Answer under several models in parallel and synthesize one reply
+      // (backend council.py). The `council` flag rides in metadata; the text
+      // is just the question. Best in a DM with an agent.
+      if (!rest) {
+        alert(
+          "Usage: /council <question>\n" +
+            "Several models answer in parallel, then one synthesis is posted.",
+        );
+        return { text: null };
+      }
+      return { text: rest, metadata: { council: true } };
     case "poll": {
       const poll = parsePoll(rest);
       if (!poll) {
@@ -114,6 +223,9 @@ const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: "tableflip", args: "[message]", description: "Append (╯°□°）╯︵ ┻━┻" },
   { name: "unflip", args: "[message]", description: "Append ┬─┬ ノ( ゜-゜ノ)" },
   { name: "agent", args: "<id> …", description: "Explicit agent mention" },
+  { name: "research", args: "<question>", description: "Deep web research with citations (Center Deep)" },
+  { name: "facilitate", args: "<question>", description: "Orchestrator routes to the best specialist" },
+  { name: "council", args: "<question>", description: "Several models answer + synthesis" },
   { name: "poll", args: '"Question?" option1 option2 …', description: "Inline poll with vote buttons" },
   { name: "help", args: "", description: "Open the shortcuts cheatsheet" },
 ];
@@ -183,6 +295,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   // Full emoji picker popover (Smile button) — distinct from the
   // :shortcode: suggestion menu above (showEmojiPicker).
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
+  // Floating markdown format bar — anchored (top/left px, relative to the
+  // textarea wrapper) over the current selection, null when hidden.
+  const [formatBar, setFormatBar] = useState<{ top: number; left: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiPanelRef = useRef<HTMLDivElement>(null);
@@ -426,7 +541,105 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     });
   }
 
+  /**
+   * Wrap the current selection (or the caret) in markdown, routed THROUGH the
+   * controlled `setContent` so drafts + auto-grow stay consistent, then restore
+   * the selection: around the wrapped text, or between empty markers when there
+   * was no selection. Only emits markdown MessageBubble actually renders.
+   */
+  function applyFormat(kind: FormatKind) {
+    const el = textareaRef.current;
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const selected = content.slice(start, end);
+    const before = content.slice(0, start);
+    const after = content.slice(end);
+
+    let next: string;
+    let selStart: number;
+    let selEnd: number;
+
+    if (kind === "codeblock") {
+      // Triple-backtick fence on its own lines; add a break only where the
+      // surrounding text would otherwise run into the fence.
+      const open = (before && !before.endsWith("\n") ? "\n" : "") + "```\n";
+      const close = "\n```" + (after && !after.startsWith("\n") ? "\n" : "");
+      next = before + open + selected + close + after;
+      selStart = before.length + open.length;
+      selEnd = selStart + selected.length;
+    } else if (kind === "blockquote") {
+      // Prefix "> " to every line the selection touches — or the whole current
+      // line when the selection is collapsed.
+      const lineStart = before.lastIndexOf("\n") + 1;
+      const nlAfter = content.indexOf("\n", end);
+      const regionEnd = nlAfter === -1 ? content.length : nlAfter;
+      const head = content.slice(0, lineStart);
+      const tail = content.slice(regionEnd);
+      const region = content.slice(lineStart, regionEnd);
+      const quoted = region
+        .split("\n")
+        .map((ln) => (ln.startsWith("> ") ? ln : `> ${ln}`))
+        .join("\n");
+      next = head + quoted + tail;
+      selStart = head.length;
+      selEnd = head.length + quoted.length;
+    } else {
+      const marker =
+        kind === "bold" ? "**" : kind === "italic" ? "*" : kind === "strike" ? "~~" : "`";
+      next = before + marker + selected + marker + after;
+      selStart = start + marker.length;
+      selEnd = selStart + selected.length;
+    }
+
+    setContent(next);
+    onTyping();
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(selStart, selEnd);
+    });
+  }
+
+  /**
+   * Track the textarea selection and drive the floating format bar. Shown only
+   * for a non-empty selection, and never while an autocomplete menu is open —
+   * so it can't collide with the mention/slash/emoji popovers.
+   */
+  function syncFormatBar() {
+    const el = textareaRef.current;
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    if (
+      start === end ||
+      showMentions ||
+      showEmojiPicker ||
+      showSlashMenu ||
+      showEmojiPanel
+    ) {
+      setFormatBar(null);
+      return;
+    }
+    const coords = measureCaret(el, start);
+    const maxLeft = Math.max(4, el.clientWidth - FORMAT_BAR_WIDTH);
+    setFormatBar({
+      top: coords.top - el.scrollTop,
+      left: Math.min(Math.max(4, coords.left), maxLeft),
+    });
+  }
+
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Markdown shortcuts (Discord/OpenWebUI): ⌘/Ctrl+B/I/E wrap the selection
+    // (or drop empty markers with the caret between them). Meta/ctrl-gated, so
+    // they never interfere with typing, Enter=send, or the menu nav keys below.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === "b" || k === "i" || k === "e") {
+        e.preventDefault();
+        applyFormat(k === "b" ? "bold" : k === "i" ? "italic" : "code");
+        return;
+      }
+    }
     // Esc closes the full emoji picker even when focus is back in the
     // textarea (picking an emoji returns focus here while the panel stays
     // open for multi-pick).
@@ -557,6 +770,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     setShowEmojiPicker(false);
     setShowEmojiPanel(false);
     setShowSlashMenu(false);
+    setFormatBar(null);
     requestAnimationFrame(() => adjustHeight());
   }
 
@@ -946,6 +1160,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            onSelect={syncFormatBar}
+            onScroll={syncFormatBar}
+            onBlur={() => setFormatBar(null)}
             placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
             rows={1}
             className="w-full resize-none bg-transparent px-2.5 py-2.5 pr-12 text-sm text-slate-100 placeholder:text-slate-500 outline-none md:pr-10"
@@ -965,6 +1182,16 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
           >
             <Send className="h-3.5 w-3.5" />
           </button>
+
+          {/* Selection format bar — gated off whenever an autocomplete menu is
+              open so the two popovers can never overlap. */}
+          {formatBar &&
+            !showMentions &&
+            !showEmojiPicker &&
+            !showSlashMenu &&
+            !showEmojiPanel && (
+              <FormatToolbar position={formatBar} onFormat={applyFormat} />
+            )}
         </div>
 
         {!isConnected && !voiceActive && (

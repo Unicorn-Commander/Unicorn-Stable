@@ -1,12 +1,15 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
+  AtSign,
   Bell,
   BellOff,
   Bot,
+  Check,
   CheckCheck,
   ChevronDown,
   ChevronRight,
+  Download,
   FolderPlus,
   Hash,
   MessageSquare,
@@ -21,7 +24,14 @@ import { formatDistanceToNowStrict } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, type Room } from "@/services/api";
 import { ws } from "@/services/websocket";
-import { isMuted, toggleMute, onMutedChange } from "@/utils/mute";
+import {
+  isMuted,
+  getNotifyLevel,
+  setNotifyLevel,
+  onMutedChange,
+  type NotifyLevel,
+} from "@/utils/mute";
+import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -211,6 +221,7 @@ export function RoomList() {
     const cat = categories[room.id];
     const menuOpen = menuRoomId === room.id;
     const muted = isMuted(room.id);
+    const level = getNotifyLevel(room.id);
     return (
       <li key={room.id} className="relative">
         <div
@@ -306,26 +317,37 @@ export function RoomList() {
               role="menu"
               className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
             >
-              <button
-                role="menuitem"
-                onClick={() => {
-                  toggleMute(room.id);
-                  setMenuRoomId(null);
-                }}
-                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-              >
-                {muted ? (
-                  <>
-                    <Bell className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                    Unmute
-                  </>
-                ) : (
-                  <>
-                    <BellOff className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                    Mute
-                  </>
-                )}
-              </button>
+              <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Notifications
+              </p>
+              {(
+                [
+                  { key: "all", label: "All messages", Icon: Bell },
+                  { key: "mentions", label: "Mentions only", Icon: AtSign },
+                  { key: "muted", label: "Muted", Icon: BellOff },
+                ] as { key: NotifyLevel; label: string; Icon: typeof Bell }[]
+              ).map(({ key, label, Icon }) => (
+                <button
+                  key={key}
+                  role="menuitemradio"
+                  aria-checked={level === key}
+                  onClick={() => {
+                    setNotifyLevel(room.id, key);
+                    setMenuRoomId(null);
+                  }}
+                  className={clsx(
+                    "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
+                    level === key ? "text-stable-purple-light" : "text-slate-300",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <span className="flex-1">{label}</span>
+                  {level === key && (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-stable-purple-light" />
+                  )}
+                </button>
+              ))}
+              <div className="my-0.5 border-t border-line" />
               <button
                 role="menuitem"
                 onClick={() => markRoomRead(room)}
@@ -333,6 +355,17 @@ export function RoomList() {
               >
                 <CheckCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                 Mark as read
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenuRoomId(null);
+                  void exportRoomToMarkdown(room);
+                }}
+                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+              >
+                <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                Export as Markdown
               </button>
               <p className="mt-0.5 border-t border-line px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                 Move to category

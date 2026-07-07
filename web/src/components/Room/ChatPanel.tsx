@@ -421,14 +421,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                 )}
                 {message.id === unreadAnchorId && (
                   <div
-                    className="my-2 flex items-center gap-2 px-2"
+                    className="my-3 flex items-center gap-3 px-2"
                     role="separator"
                     aria-label="New messages"
                   >
-                    <div className="h-px flex-1 bg-stable-purple/40" />
-                    <span className="rounded-full border border-stable-purple/40 bg-stable-purple/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stable-purple">
-                      New
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent to-stable-purple/40" />
+                    <span className="rounded-full border border-stable-purple/40 bg-stable-purple/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-stable-purple-light">
+                      New messages
                     </span>
+                    <div className="h-px flex-1 bg-gradient-to-l from-transparent to-stable-purple/40" />
                   </div>
                 )}
                 <MessageBubble

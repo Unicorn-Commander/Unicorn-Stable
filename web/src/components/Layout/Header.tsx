@@ -107,7 +107,11 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   return (
     <header
       className={clsx(
-        "flex h-14 shrink-0 items-center justify-between border-b border-line bg-stable-glass px-4 backdrop-blur-lg",
+        // relative z-30 lifts the header's (blur-induced) stacking context
+        // above the z-auto content column below it, so the account dropdown
+        // (which was pinned inside this context) paints OVER the message area
+        // and rails instead of behind them.
+        "relative z-30 flex h-14 shrink-0 items-center justify-between border-b border-line bg-stable-glass px-4 backdrop-blur-lg",
         // On phones, collapse this bar when a room is active (the RoomView
         // sub-header is the single bar there). Always shown >= md.
         hideOnMobile && "max-md:hidden",

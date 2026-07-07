@@ -3,8 +3,25 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { ws, WsEventPayload, WsMessageEvent } from "@/services/websocket";
 import { loadPrefs } from "@/components/Layout/SettingsModal";
-import { isMuted } from "@/utils/mute";
+import { getNotifyLevel } from "@/utils/mute";
 import { playCue } from "@/lib/sounds";
+import { ensurePushSubscription } from "@/lib/webpush";
+
+/**
+ * Does this message @-mention the current user? Matches @here / @channel
+ * (broad) or @<username> (word-boundary, case-insensitive). Used to gate
+ * pings for rooms set to the "mentions only" notification level.
+ */
+function messageMentionsUser(
+  content: string | undefined,
+  username: string | undefined,
+): boolean {
+  if (!content) return false;
+  if (/@channel\b|@here\b/i.test(content)) return true;
+  if (!username) return false;
+  const esc = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`@${esc}\\b`, "i").test(content);
+}
 
 interface RoomInvitedEvent {
   room_id: string;
@@ -22,6 +39,34 @@ export function useGlobalNotifications() {
   const pushToast = useAppStore((s) => s.pushToast);
   const rooms = useAppStore((s) => s.rooms);
   const queryClient = useQueryClient();
+
+  // Ask for OS-notification permission ONCE, on the user's first click after
+  // load — Chrome requires a genuine user gesture, so we can't prompt on mount.
+  // Silent if the user already granted or denied.
+  useEffect(() => {
+    // Already granted (e.g. returning user): register web-push now.
+    if (
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted"
+    ) {
+      void ensurePushSubscription();
+    }
+    if (
+      typeof Notification === "undefined" ||
+      Notification.permission !== "default"
+    ) {
+      return;
+    }
+    const ask = () => {
+      Notification.requestPermission()
+        .then((p) => {
+          if (p === "granted") void ensurePushSubscription();
+        })
+        .catch(() => {});
+    };
+    window.addEventListener("pointerdown", ask, { once: true });
+    return () => window.removeEventListener("pointerdown", ask);
+  }, []);
 
   useEffect(() => {
     const unsubMessage = ws.on("message", (data: WsEventPayload) => {
@@ -46,20 +91,30 @@ export function useGlobalNotifications() {
         return;
       }
 
-      // Skip muted channels entirely — no badge, no toast
-      if (isMuted(event.room_id)) {
+      // Per-room notification level (Discord-style):
+      //  - "muted"    → skip entirely: no unread badge, no ping
+      //  - "mentions" → still badge the room, but only ping on an @-mention
+      //  - "all"      → badge + ping (default)
+      const level = getNotifyLevel(event.room_id);
+      if (level === "muted") {
         return;
       }
 
       incrementUnread(event.room_id);
+
+      // For "mentions only" rooms, a ping requires the message to mention us.
+      const mentionOk =
+        level === "all" ||
+        messageMentionsUser(event.message.content, currentUser?.username);
 
       // Notify (toast + sound) only if the room isn't the active one (or the
       // tab is hidden). The sound cue rides the same mute/self/active checks
       // as the toast but has its OWN pref (playCue checks soundCues itself),
       // so it stays independent of the inAppToasts toggle.
       const shouldNotify =
-        event.room_id !== activeRoomId ||
-        document.visibilityState !== "visible";
+        mentionOk &&
+        (event.room_id !== activeRoomId ||
+          document.visibilityState !== "visible");
       if (shouldNotify) {
         playCue("notify");
       }
@@ -70,6 +125,34 @@ export function useGlobalNotifications() {
           body: event.message.content.slice(0, 120),
           roomId: event.room_id,
         });
+      }
+
+      // Backgrounded tab: the in-app toast is invisible, so surface a real OS
+      // notification when the user has granted permission. Best-effort — the
+      // installed-PWA / closed-app (web-push) path is a separate build.
+      if (
+        shouldNotify &&
+        document.hidden &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        const room = rooms.find((r) => r.id === event.room_id);
+        try {
+          const n = new Notification(
+            `${event.message.sender_name} in ${room?.name ?? "a room"}`,
+            {
+              body: event.message.content.slice(0, 140),
+              icon: "/icon-192.png",
+              tag: event.room_id,
+            },
+          );
+          n.onclick = () => {
+            window.focus();
+            n.close();
+          };
+        } catch {
+          /* Notification constructor throws on some mobile browsers */
+        }
       }
     });
 

@@ -13,6 +13,7 @@ interface Row {
 
 const KEYS: Row[] = [
   { combo: `${mod} K`, desc: "Quick channel switcher" },
+  { combo: `${mod} \u21e7 F`, desc: "Search messages across all channels" },
   { combo: `${mod} /`, desc: "This cheatsheet" },
   { combo: `${mod} ↑`, desc: "Edit your last message" },
   { combo: "↑ / ↓", desc: "Navigate mention/emoji suggestions" },
@@ -27,6 +28,9 @@ const SLASH: Row[] = [
   { combo: "/tableflip", desc: "Append (╯°□°）╯︵ ┻━┻" },
   { combo: "/unflip", desc: "Append ┬─┬ ノ( ゜-゜ノ)" },
   { combo: "/agent <id> ...", desc: "Explicit agent mention" },
+  { combo: "/research <question>", desc: "Deep web research with citations (Center Deep)" },
+  { combo: "/facilitate <question>", desc: "Orchestrator routes to the best specialist" },
+  { combo: "/council <question>", desc: "Several models answer + synthesis" },
   { combo: '/poll "Q?" a b c', desc: "Inline poll with vote buttons" },
   { combo: "/help", desc: "Open this cheatsheet" },
 ];

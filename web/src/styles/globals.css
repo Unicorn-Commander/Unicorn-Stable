@@ -21,26 +21,36 @@
   --color-stable-coral: #fb7185;
 
   /* -- Violet-cast neutral ramp (overrides Tailwind slate) ----------------- */
+  /* Muted text (400/500/600) lifted for legibility over long sessions — the
+     old 400 (#9193af) failed WCAG AA on surface-1; 500/600 were near-invisible
+     for timestamps/meta. Kept the violet cast, just raised luminance. */
   --color-slate-950: #08080f;
   --color-slate-900: #0e0e19;
   --color-slate-850: #131322;
   --color-slate-800: #191929;
-  --color-slate-700: #2b2b44;
-  --color-slate-600: #434360;
-  --color-slate-500: #626280;
-  --color-slate-400: #9193af;
-  --color-slate-300: #c5c7db;
-  --color-slate-200: #e0e1ee;
+  --color-slate-700: #313150;
+  --color-slate-600: #56567a;
+  --color-slate-500: #7c7da0;
+  --color-slate-400: #a7a9c8;
+  --color-slate-300: #cdcee0;
+  --color-slate-200: #e4e5f0;
   --color-slate-100: #eff0f8;
   --color-slate-50: #f8f8fd;
 
   /* -- Surfaces & lines ----------------------------------------------------- */
-  --color-surface-0: #0b0b15;
-  --color-surface-1: #121220;
-  --color-surface-2: #181829;
-  --color-surface-3: #1f1f33;
-  --color-line: rgba(148, 152, 196, 0.1);
-  --color-line-strong: rgba(148, 152, 196, 0.2);
+  /* Wider steps so panels read as distinct depths at a glance (was ~6-10 ΔL,
+     now ~14-18). Rails sit low (recede), the conversation sits a step up. */
+  --color-surface-0: #0a0a13;
+  --color-surface-1: #14141f;
+  --color-surface-2: #1d1d2e;
+  --color-surface-3: #26263c;
+  /* Section-identity tints — faint hue washes a panel lays over its surface so
+     the eye parses left-rail / conversation / right-rail without hard color. */
+  --color-tint-nav: rgba(139, 92, 246, 0.1);
+  --color-tint-agents: rgba(34, 211, 238, 0.085);
+  /* Hairlines strengthened so section boundaries are legible (were 0.1/0.2). */
+  --color-line: rgba(154, 158, 202, 0.16);
+  --color-line-strong: rgba(160, 164, 208, 0.3);
 
   /* -- Glass ---------------------------------------------------------------- */
   --color-stable-glass: rgba(22, 22, 38, 0.55);
@@ -63,6 +73,103 @@
   --shadow-glow-iris: 0 0 24px rgba(139, 92, 246, 0.35);
   --shadow-glow-aqua: 0 0 24px rgba(34, 211, 238, 0.3);
   --shadow-glow-mint: 0 0 24px rgba(52, 211, 153, 0.3);
+}
+
+
+/* ============================================================================
+   LIGHT THEME — "Daybreak"
+   Same token *names* as @theme (so Tailwind's var()-wired utilities all flip),
+   re-declared with light values under [data-theme="light"]. The slate ramp is
+   luminance-inverted (keeping the faint violet cast) so text-on-light stays
+   legible; surfaces go to clean greys (0 = whitest page, ascending = greyer
+   cards); hairlines switch to dark ink at raised alpha (the dark ~0.16 white
+   lines are invisible on white). Aimed at a calm Linear/Slack-light feel, not
+   a naive invert.
+   ========================================================================== */
+:root[data-theme="light"] {
+  /* -- Brand anchors — kept; the two that double as on-white *text* (link +
+     cyan accent) are darkened for AA contrast. Solid fills stay vivid. ----- */
+  --color-stable-purple: #7c3aed;
+  --color-stable-cyan: #0891b2;
+  --color-stable-purple-light: #7c3aed;
+  --color-stable-cyan-light: #0e7490;
+  --color-stable-mint: #059669;
+  --color-stable-gold: #d97706;
+  --color-stable-coral: #e11d48;
+
+  /* -- Neutral ramp — luminance-inverted violet-cast greys. 950 = lightest
+     (bg use), 50 = near-black (text use); muted 400/500 kept dark enough for
+     AA on white. -------------------------------------------------------- */
+  --color-slate-950: #f8f9fc;
+  --color-slate-900: #f1f2f8;
+  --color-slate-850: #e9ebf3;
+  --color-slate-800: #e1e3ee;
+  --color-slate-700: #c7cad9;
+  --color-slate-600: #989bb2;
+  --color-slate-500: #6b6d86;
+  --color-slate-400: #565873;
+  --color-slate-300: #41435a;
+  --color-slate-200: #2c2e40;
+  --color-slate-100: #1b1c29;
+  --color-slate-50: #0f1018;
+
+  /* -- Surfaces & lines — page whitest, cards a hair greyer. ------------- */
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f6f7fb;
+  --color-surface-2: #eef0f6;
+  --color-surface-3: #e5e7f0;
+  --color-tint-nav: rgba(124, 58, 237, 0.05);
+  --color-tint-agents: rgba(8, 145, 178, 0.05);
+  /* Dark ink at raised alpha so section boundaries actually read on white. */
+  --color-line: rgba(15, 18, 40, 0.12);
+  --color-line-strong: rgba(15, 18, 40, 0.22);
+
+  /* -- Glass — light translucent panes. --------------------------------- */
+  --color-stable-glass: rgba(255, 255, 255, 0.72);
+  --color-stable-glass-border: rgba(15, 18, 40, 0.1);
+  --color-stable-glass-hover: rgba(255, 255, 255, 0.9);
+
+  /* -- Shadows — soft neutral-ink instead of near-black. ----------------- */
+  --shadow-soft: 0 1px 2px rgba(15, 18, 40, 0.06), 0 6px 20px rgba(15, 18, 40, 0.08);
+  --shadow-pop:
+    0 4px 12px rgba(15, 18, 40, 0.1), 0 16px 40px rgba(15, 18, 40, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --shadow-glow-iris: 0 0 24px rgba(124, 58, 237, 0.22);
+  --shadow-glow-aqua: 0 0 24px rgba(8, 145, 178, 0.2);
+  --shadow-glow-mint: 0 0 24px rgba(5, 150, 105, 0.2);
+}
+
+/* glass-heavy hard-codes a dark rgba in its @utility, so it can't flip via a
+   var — override it (and the white sheen on `card`) explicitly for light.
+   Unlayered → beats the utilities layer regardless of source order. */
+:root[data-theme="light"] .glass-heavy {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+/* Lighter, cleaner aurora wash over the white page. */
+:root[data-theme="light"] body::before {
+  background:
+    radial-gradient(42% 36% at 18% 12%, rgba(124, 58, 237, 0.08), transparent 70%),
+    radial-gradient(36% 32% at 85% 8%, rgba(8, 145, 178, 0.06), transparent 70%),
+    radial-gradient(44% 40% at 78% 88%, rgba(139, 92, 246, 0.07), transparent 70%),
+    radial-gradient(30% 28% at 8% 85%, rgba(5, 150, 105, 0.05), transparent 70%);
+}
+
+/* Selection + scrollbars retuned for the light surface. */
+:root[data-theme="light"] ::selection {
+  background-color: rgba(124, 58, 237, 0.22);
+  color: #0f1018;
+}
+:root[data-theme="light"] *,
+:root[data-theme="light"] *::before,
+:root[data-theme="light"] *::after {
+  scrollbar-color: rgba(15, 18, 40, 0.28) transparent;
+}
+:root[data-theme="light"] *::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 18, 40, 0.28);
+}
+:root[data-theme="light"] *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 18, 40, 0.42);
 }
 
 @layer base {
@@ -208,6 +315,23 @@
     transform: translateY(-1px);
     box-shadow: var(--shadow-pop);
   }
+}
+
+/* Section identity — a faint hue wash over a panel's own surface. Pairs with a
+   base bg on the element; keep the base dark and let this tint carry identity.
+   The nav (left) reads cool-violet, the agents/participants rail reads aqua, so
+   the three columns parse at a glance without loud color blocks. */
+@utility section-nav {
+  background-image: linear-gradient(
+    var(--color-tint-nav),
+    var(--color-tint-nav)
+  );
+}
+@utility section-agents {
+  background-image: linear-gradient(
+    var(--color-tint-agents),
+    var(--color-tint-agents)
+  );
 }
 
 /* Keyboard-focus ring for any interactive element. */

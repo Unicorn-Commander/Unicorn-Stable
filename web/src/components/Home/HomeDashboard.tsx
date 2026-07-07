@@ -39,6 +39,24 @@ const CONFERENCE_ROOMS: { slug: string; name: string; blurb: string }[] = [
   },
 ];
 
+// Agent tier is DYNAMIC — derived from Brigade's roster metadata, never a
+// hardcoded id list. Brigade tags orchestrator-tier residents (Majik = Magic
+// Unicorn's, gflow = Genesis Flow's, the-general = fleet-wide) with
+// domain "orchestration" / rank "Field Marshal". Any new orchestrator added in
+// Brigade auto-tiers here with no code change.
+function isOrchestrator(a: Agent): boolean {
+  const domain = (a.domain || "").toLowerCase();
+  const rank = (a.rank || "").toLowerCase();
+  return domain === "orchestration" || rank === "field marshal";
+}
+
+/** Orchestrators first (source order preserved), then everyone else as-is. */
+function byTier(list: Agent[]): Agent[] {
+  const orch = list.filter(isOrchestrator);
+  const rest = list.filter((a) => !isOrchestrator(a));
+  return [...orch, ...rest];
+}
+
 type Filter = "all" | "unread" | "channels" | "direct";
 
 const FILTERS: { key: Filter; label: string }[] = [
@@ -586,7 +604,7 @@ export function HomeDashboard() {
           </section>
 
           <AgentsRail
-            agents={onlineAgents.slice(0, 8)}
+            agents={byTier(onlineAgents).slice(0, 8)}
             total={agents.length}
             disabled={startingChat}
             onChat={handleAgentChat}
@@ -680,6 +698,15 @@ function AgentsRail({
                         <span className="min-w-0 truncate text-sm font-medium text-slate-200">
                           {label}
                         </span>
+                        {isOrchestrator(a) && (
+                          <span
+                            className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-stable-gold/30 bg-stable-gold/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-stable-gold"
+                            title={a.title || "Orchestrator — runs the room and can pull in specialist agents"}
+                          >
+                            <Sparkles className="h-2.5 w-2.5" />
+                            Orchestrator
+                          </span>
+                        )}
                       </span>
                       <span className="block truncate text-xs text-slate-500">
                         {a.description || a.model}

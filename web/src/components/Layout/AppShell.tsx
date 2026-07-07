@@ -25,6 +25,7 @@ import { CheatsheetModal } from "./CheatsheetModal";
 import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
 import { QuickSwitcher } from "./QuickSwitcher";
+import { GlobalSearchModal } from "./GlobalSearchModal";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
@@ -133,6 +134,7 @@ export function AppShell() {
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
 
   // Tab title: "(unread) #room — Stable" so background tabs can notify AND the
   // tab strip identifies which conversation this window is sitting in.
@@ -275,6 +277,15 @@ export function AppShell() {
       ) {
         e.preventDefault();
         useAppStore.getState().toggleCheatsheet();
+        return;
+      }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "f"
+      ) {
+        e.preventDefault();
+        setGlobalSearchOpen(true);
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -436,18 +447,23 @@ export function AppShell() {
             }
             // md:relative (not md:static): the resize handle is absolutely
             // positioned against this aside, which must stay a containing block.
-            className="absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line bg-surface-0/80 backdrop-blur-xl md:relative md:z-auto"
+            className="section-nav absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line-strong bg-surface-0/85 backdrop-blur-xl md:relative md:z-auto"
             aria-label="Room list sidebar"
           >
             <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
-              <h1
-                className="flex items-center gap-2.5"
-                title="Unicorn Stable"
-              >
-                <StableMark className="h-7 w-7 shrink-0" />
-                <span className="gradient-text font-display text-lg font-bold tracking-tight">
-                  Stable
-                </span>
+              <h1 className="flex min-w-0 items-center">
+                <button
+                  type="button"
+                  onClick={() => navigate("/")}
+                  className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
+                  title="Home — Unicorn Stable"
+                  aria-label="Go to home"
+                >
+                  <StableMark className="h-7 w-7 shrink-0" />
+                  <span className="gradient-text font-display text-lg font-bold tracking-tight">
+                    Stable
+                  </span>
+                </button>
               </h1>
               {/* The hamburger is hidden behind the open drawer on phones, so
                   give the drawer its own close affordance. Desktop closes via
@@ -575,7 +591,16 @@ export function AppShell() {
 
       <AnimatePresence>
         {switcherOpen && (
-          <QuickSwitcher onClose={() => setSwitcherOpen(false)} />
+          <QuickSwitcher
+            onClose={() => setSwitcherOpen(false)}
+            onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {globalSearchOpen && (
+          <GlobalSearchModal onClose={() => setGlobalSearchOpen(false)} />
         )}
       </AnimatePresence>
 

@@ -8,8 +8,11 @@
  *   <span style={{ color: id.text }}>{name}</span>
  *   <div style={{ background: id.soft, borderColor: id.border }} />
  *
- * All hues are tuned for the dark violet-cast theme: text variants pass AA on
- * surface-1 (#121220), soft washes stay under 14% alpha so content wins.
+ * Hues carry two text tunings — a bright variant readable on the dark violet
+ * surface, and a darker variant readable on the light theme's white surface.
+ * These are inline-style hex (identity is applied via style props, which never
+ * see CSS vars), so identityFor() reads the active theme at call time and hands
+ * back the right one. The soft/faint/ring/border washes read on both surfaces.
  */
 
 export interface Identity {
@@ -17,7 +20,7 @@ export interface Identity {
   name: string;
   /** Solid anchor — avatar fills, orb cores, progress. */
   color: string;
-  /** Bright variant — sender names, icons, small text on dark. */
+  /** Readable text variant — theme-aware (bright on dark, deep on light). */
   text: string;
   /** 12% wash — tinted containers (agent reply cards, active rows). */
   soft: string;
@@ -35,24 +38,25 @@ interface HueDef {
   name: string;
   base: string; // solid
   text: string; // readable-on-dark variant
+  textLight: string; // readable-on-white variant (light theme)
   rgb: [number, number, number];
   to: string; // gradient partner
 }
 
 /** Curated 12-hue wheel, ordered for maximum adjacent contrast. */
 const WHEEL: HueDef[] = [
-  { name: "iris",    base: "#8b5cf6", text: "#b5a0fc", rgb: [139, 92, 246],  to: "#6d28d9" },
-  { name: "aqua",    base: "#22d3ee", text: "#67e8f9", rgb: [34, 211, 238],  to: "#0891b2" },
-  { name: "mint",    base: "#34d399", text: "#6ee7b7", rgb: [52, 211, 153],  to: "#059669" },
-  { name: "gold",    base: "#fbbf24", text: "#fcd34d", rgb: [251, 191, 36],  to: "#d97706" },
-  { name: "coral",   base: "#fb7185", text: "#fda4af", rgb: [251, 113, 133], to: "#e11d48" },
-  { name: "sky",     base: "#38bdf8", text: "#7dd3fc", rgb: [56, 189, 248],  to: "#0284c7" },
-  { name: "orchid",  base: "#e879f9", text: "#f0abfc", rgb: [232, 121, 249], to: "#a21caf" },
-  { name: "lime",    base: "#a3e635", text: "#bef264", rgb: [163, 230, 53],  to: "#65a30d" },
-  { name: "indigo",  base: "#818cf8", text: "#a5b4fc", rgb: [129, 140, 248], to: "#4f46e5" },
-  { name: "ember",   base: "#fb923c", text: "#fdba74", rgb: [251, 146, 60],  to: "#ea580c" },
-  { name: "teal",    base: "#2dd4bf", text: "#5eead4", rgb: [45, 212, 191],  to: "#0d9488" },
-  { name: "rose",    base: "#f472b6", text: "#f9a8d4", rgb: [244, 114, 182], to: "#be185d" },
+  { name: "iris",    base: "#8b5cf6", text: "#b5a0fc", textLight: "#6d28d9", rgb: [139, 92, 246],  to: "#6d28d9" },
+  { name: "aqua",    base: "#22d3ee", text: "#67e8f9", textLight: "#0e7490", rgb: [34, 211, 238],  to: "#0891b2" },
+  { name: "mint",    base: "#34d399", text: "#6ee7b7", textLight: "#047857", rgb: [52, 211, 153],  to: "#059669" },
+  { name: "gold",    base: "#fbbf24", text: "#fcd34d", textLight: "#b45309", rgb: [251, 191, 36],  to: "#d97706" },
+  { name: "coral",   base: "#fb7185", text: "#fda4af", textLight: "#be123c", rgb: [251, 113, 133], to: "#e11d48" },
+  { name: "sky",     base: "#38bdf8", text: "#7dd3fc", textLight: "#0369a1", rgb: [56, 189, 248],  to: "#0284c7" },
+  { name: "orchid",  base: "#e879f9", text: "#f0abfc", textLight: "#a21caf", rgb: [232, 121, 249], to: "#a21caf" },
+  { name: "lime",    base: "#a3e635", text: "#bef264", textLight: "#4d7c0f", rgb: [163, 230, 53],  to: "#65a30d" },
+  { name: "indigo",  base: "#818cf8", text: "#a5b4fc", textLight: "#4338ca", rgb: [129, 140, 248], to: "#4f46e5" },
+  { name: "ember",   base: "#fb923c", text: "#fdba74", textLight: "#c2410c", rgb: [251, 146, 60],  to: "#ea580c" },
+  { name: "teal",    base: "#2dd4bf", text: "#5eead4", textLight: "#0f766e", rgb: [45, 212, 191],  to: "#0d9488" },
+  { name: "rose",    base: "#f472b6", text: "#f9a8d4", textLight: "#be185d", rgb: [244, 114, 182], to: "#be185d" },
 ];
 
 /**
@@ -77,13 +81,22 @@ function hash(str: string): number {
   return h >>> 0;
 }
 
-function build(def: HueDef): Identity {
+/** Is the light theme active right now? Read live so a toggle takes effect on
+ *  the next identityFor() call (see reactivity note below). */
+function isLight(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    document.documentElement.dataset.theme === "light"
+  );
+}
+
+function build(def: HueDef, light: boolean): Identity {
   const [r, g, b] = def.rgb;
   const a = (alpha: number) => `rgba(${r}, ${g}, ${b}, ${alpha})`;
   return {
     name: def.name,
     color: def.base,
-    text: def.text,
+    text: light ? def.textLight : def.text,
     soft: a(0.12),
     faint: a(0.06),
     ring: a(0.45),
@@ -92,6 +105,10 @@ function build(def: HueDef): Identity {
   };
 }
 
+// Keyed by `${theme}:${resident}` so a theme flip returns the correctly-tuned
+// text hue rather than a stale cached one. Components that already rendered
+// won't recolor until their next render (acceptable for v1 — the modal that
+// hosts the toggle re-renders in place; message rows recolor on next update).
 const CACHE = new Map<string, Identity>();
 
 /**
@@ -102,23 +119,26 @@ export function identityFor(
   id?: string | null,
   name?: string | null,
 ): Identity {
-  const key = (id || name || "unknown").toLowerCase();
+  const light = isLight();
+  const resident = (id || name || "unknown").toLowerCase();
+  const key = `${light ? "l" : "d"}:${resident}`;
   const cached = CACHE.get(key);
   if (cached) return cached;
 
-  let idx = PINNED[key];
+  let idx = PINNED[resident];
   if (idx === undefined && name) {
     const byName = PINNED[name.toLowerCase()];
     if (byName !== undefined) idx = byName;
   }
-  if (idx === undefined) idx = hash(key) % WHEEL.length;
+  if (idx === undefined) idx = hash(resident) % WHEEL.length;
 
-  const identity = build(WHEEL[idx % WHEEL.length] ?? (WHEEL[0] as HueDef));
+  const identity = build(WHEEL[idx % WHEEL.length] ?? (WHEEL[0] as HueDef), light);
   CACHE.set(key, identity);
   return identity;
 }
 
 /** The full wheel, for legends/pickers. */
 export function identityWheel(): Identity[] {
-  return WHEEL.map(build);
+  const light = isLight();
+  return WHEEL.map((d) => build(d, light));
 }

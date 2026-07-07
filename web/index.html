@@ -10,8 +10,26 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Stable" />
-    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Stable — Unicorn Commander</title>
+    <script>
+      // Pre-paint theme stamp — no dark flash for light-mode users. Reads the
+      // same key as lib/theme.ts, which owns the runtime + system listener.
+      (function () {
+        try {
+          var c = localStorage.getItem("stable.theme.v1") || "system";
+          var r =
+            c === "light" || c === "dark"
+              ? c
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.dataset.theme = r;
+          var m = document.querySelector('meta[name="theme-color"]');
+          if (m) m.setAttribute("content", r === "light" ? "#ffffff" : "#0b0b15");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-slate-900 text-slate-50 antialiased">
     <div id="root"></div>

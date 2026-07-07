@@ -751,7 +751,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               // positioned against this column. Desktop width comes from the
               // inline style (resizable, persisted); the mobile overlay keeps
               // its w-[min(85vw,260px)] class because the style is gated off.
-              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-line bg-slate-900/95 shadow-2xl backdrop-blur-xl md:relative md:z-auto md:bg-transparent md:shadow-none md:backdrop-blur-none"
+              className="section-agents fixed inset-y-0 right-0 z-40 flex w-[min(85vw,260px)] flex-col overflow-hidden border-l border-line-strong bg-slate-900/95 shadow-2xl backdrop-blur-xl md:relative md:z-auto md:bg-transparent md:shadow-none md:backdrop-blur-none"
               style={isDesktop ? { width: participantsResize.width } : undefined}
             >
               <div

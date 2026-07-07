@@ -816,6 +816,34 @@ class StableApiClient {
     );
   }
 
+  /** Global search across every room the caller belongs to (server-scoped). */
+  async searchAllMessages(q: string): Promise<Message[]> {
+    return this.request<Message[]>(
+      "GET",
+      `/api/v1/search/messages?q=${encodeURIComponent(q)}`,
+    );
+  }
+
+  async getVapidPublicKey(): Promise<string> {
+    const r = await this.request<{ key: string }>(
+      "GET",
+      "/api/v1/push/vapid-public-key",
+    );
+    return r.key;
+  }
+
+  async subscribePush(sub: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    user_agent?: string;
+  }): Promise<void> {
+    await this.request<void>("POST", "/api/v1/push/subscribe", sub);
+  }
+
+  async unsubscribePush(endpoint: string): Promise<void> {
+    await this.request<void>("POST", "/api/v1/push/unsubscribe", { endpoint });
+  }
+
   async getThread(messageId: string): Promise<Message[]> {
     const resp = await this.request<{ messages: Message[] }>(
       "GET",

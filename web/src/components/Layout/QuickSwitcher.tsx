@@ -2,7 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Hash, Loader2, MessageSquare, Search } from "lucide-react";
+import {
+  Bookmark,
+  Hash,
+  Keyboard,
+  Loader2,
+  MessageSquare,
+  Plus,
+  Search,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
 import { identityFor } from "@/lib/identity";
@@ -11,6 +21,7 @@ import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface QuickSwitcherProps {
   onClose: () => void;
+  onOpenGlobalSearch: () => void;
 }
 
 // No "user" kind: there is no single-call human-DM API (CreateDmModal owns the
@@ -18,7 +29,15 @@ interface QuickSwitcherProps {
 type Item =
   | { kind: "channel"; id: string; label: string; sub: string }
   | { kind: "dm"; id: string; label: string; sub: string }
-  | { kind: "agent"; id: string; label: string; sub: string };
+  | { kind: "agent"; id: string; label: string; sub: string }
+  | {
+      kind: "action";
+      id: string;
+      label: string;
+      sub: string;
+      icon: LucideIcon;
+      run: () => void;
+    };
 
 function fuzzyScore(needle: string, hay: string): number {
   if (!needle) return 0;
@@ -39,7 +58,7 @@ function fuzzyScore(needle: string, hay: string): number {
   return i === n.length ? s : 0;
 }
 
-export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
+export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProps) {
   const rooms = useAppStore((s) => s.rooms);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -84,7 +103,15 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       label: a.name,
       sub: a.description?.slice(0, 60) ?? "agent",
     }));
-    const all = [...channelItems, ...dmItems, ...agentItems];
+    const g = useAppStore.getState;
+    const actionItems: Item[] = [
+      { kind: "action", id: "new-channel", label: "Create channel", sub: "Start a new room", icon: Plus, run: () => g().setCreateRoomModalOpen(true) },
+      { kind: "action", id: "search-all", label: "Search all messages", sub: "Across every conversation", icon: Search, run: onOpenGlobalSearch },
+      { kind: "action", id: "saved", label: "Saved messages", sub: "Your bookmarks", icon: Bookmark, run: () => g().setSavedOpen(true) },
+      { kind: "action", id: "settings", label: "Settings", sub: "Preferences & appearance", icon: Settings, run: () => g().toggleSettings() },
+      { kind: "action", id: "shortcuts", label: "Keyboard shortcuts", sub: "Cheatsheet", icon: Keyboard, run: () => g().toggleCheatsheet() },
+    ];
+    const all = [...actionItems, ...channelItems, ...dmItems, ...agentItems];
     if (!q.trim()) return all.slice(0, 12);
     const scored = all
       .map((it) => ({ it, score: Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub)) }))
@@ -92,7 +119,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
       .sort((a, b) => b.score - a.score)
       .map((s) => s.it);
     return scored.slice(0, 12);
-  }, [rooms, agents, q]);
+  }, [rooms, agents, q, onOpenGlobalSearch]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -103,6 +130,11 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
   }, [q]);
 
   async function activate(it: Item) {
+    if (it.kind === "action") {
+      onClose();
+      it.run();
+      return;
+    }
     if (it.kind === "channel" || it.kind === "dm") {
       navigate(`/c/${it.id}`);
       onClose();
@@ -167,7 +199,7 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Jump to a channel or agent…"
+            placeholder="Search channels, agents, commands…"
             className="min-w-0 flex-1 bg-transparent text-base text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
           <kbd className="shrink-0 rounded border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
@@ -252,6 +284,10 @@ export function QuickSwitcher({ onClose }: QuickSwitcherProps) {
 }
 
 function Icon({ item }: { item: Item }) {
+  if (item.kind === "action") {
+    const ActionIcon = item.icon;
+    return <ActionIcon className="h-4 w-4 shrink-0 text-stable-purple-light/80" />;
+  }
   if (item.kind === "channel")
     return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
   if (item.kind === "dm")
@@ -270,7 +306,13 @@ function Icon({ item }: { item: Item }) {
 
 function KindLabel({ kind }: { kind: Item["kind"] }) {
   const label =
-    kind === "channel" ? "Channel" : kind === "dm" ? "DM" : "Agent";
+    kind === "channel"
+      ? "Channel"
+      : kind === "dm"
+        ? "DM"
+        : kind === "action"
+          ? "Command"
+          : "Agent";
   return (
     <span className="shrink-0 rounded-md border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
       {label}
