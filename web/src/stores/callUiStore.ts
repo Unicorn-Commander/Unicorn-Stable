@@ -90,7 +90,9 @@ interface CallUiState {
 export const useCallUiStore = create<CallUiState>((set, get) => ({
   viewModes: typeof window !== "undefined" ? readPersistedViewModes() : {},
   showVideo: true,
-  showTranscript: false,
+  // Default ON: talking to an agent, you want to SEE what it says. The CC
+  // button in the call controls still toggles it off per session.
+  showTranscript: true,
   hiddenTileIds: new Set(),
   focusedParticipantId: null,
   videoPrompted: false,
