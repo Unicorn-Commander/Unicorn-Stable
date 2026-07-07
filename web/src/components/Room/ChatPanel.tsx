@@ -1,4 +1,5 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { ArrowDown, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
@@ -11,6 +12,11 @@ import { StableMark } from "@/components/StableMark";
 import { identityFor } from "@/lib/identity";
 import { EMPTY_MEMBERS, EMPTY_READ_RECEIPTS } from "@/stores/selectors";
 import { MessageBubble } from "./MessageBubble";
+
+// Virtuoso prepend anchoring base: firstItemIndex starts here and DECREMENTS by
+// the number of older messages prepended by loadMore, so the viewport stays
+// visually anchored automatically (replaces manual scrollHeight bookkeeping).
+const START = 100_000;
 
 function sameDay(a: Date, b: Date): boolean {
   return (
@@ -193,54 +199,115 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     ws.send("mark_read", { room_id: roomId, message_id: last.id });
   }, [roomId, messages.length]);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Virtuoso owns scrolling — its handle drives all programmatic scrolls
+  // (jump-to-latest, scroll-on-send, scroll-to-message).
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const isAtBottomRef = useRef(true);
   // Mirror of isAtBottomRef: the ref drives scroll decisions without
   // re-rendering, but the jump pill needs a render when it flips.
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Others' messages that landed while scrolled up — the pill's count.
   const [newWhileScrolledUp, setNewWhileScrolledUp] = useState(0);
-  const prevMessageCountRef = useRef(0);
   const prevLastMessageIdRef = useRef<string | null>(null);
-  // Which room we've already pinned to bottom after its content rendered.
-  const pinnedRoomRef = useRef<string | null>(null);
+  // Which room we've already force-pinned to newest after its first render.
+  const didInitialPinRef = useRef<string | null>(null);
 
-  const scrollToBottom = useCallback((smooth = false) => {
-    bottomRef.current?.scrollIntoView({
-      behavior: smooth ? "smooth" : "instant",
-    });
-  }, []);
+  // Prepend anchor for Virtuoso: decremented by exactly the number of older
+  // messages prepended on each loadMore so the viewport doesn't jump.
+  const [firstItemIndex, setFirstItemIndex] = useState(START);
+  // Fresh view of `messages` so we can measure how many were prepended after an
+  // async loadMore resolves (a state closure would read a stale length).
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  // Reset the prepend anchor SYNCHRONOUSLY on room change, before Virtuoso
+  // (keyed by roomId) remounts, so its mount-time firstItemIndex baseline is
+  // START rather than the previous room's decremented value (Virtuoso only
+  // supports firstItemIndex DEcreasing on an existing instance).
+  const prevRoomForAnchorRef = useRef(roomId);
+  if (prevRoomForAnchorRef.current !== roomId) {
+    prevRoomForAnchorRef.current = roomId;
+    setFirstItemIndex(START);
+  }
 
   useEffect(() => {
-    // Rooms always open pinned to bottom; clear pill state from the last room.
+    // Rooms always open pinned to bottom — Virtuoso's initialTopMostItemIndex
+    // (plus its per-room key) does the actual scroll on mount; here we just
+    // clear pill/anchor state carried over from the last room.
     isAtBottomRef.current = true;
     setIsAtBottom(true);
     setNewWhileScrolledUp(0);
     prevLastMessageIdRef.current = null;
+    setFirstItemIndex(START);
   }, [roomId]);
 
-  useEffect(() => {
-    if (isAtBottomRef.current && messages.length > prevMessageCountRef.current) {
-      scrollToBottom(true);
-    }
-    prevMessageCountRef.current = messages.length;
-  }, [messages.length, scrollToBottom]);
+  // Double-tap scroll to the newest message that survives the variable-height
+  // reflow: pin on the next frame, then again after a beat once real markdown
+  // heights have settled.
+  const pinTimersRef = useRef<{ raf?: number; timeout?: number }>({});
+  const clearPinTimers = useCallback(() => {
+    if (pinTimersRef.current.raf) cancelAnimationFrame(pinTimersRef.current.raf);
+    if (pinTimersRef.current.timeout) window.clearTimeout(pinTimersRef.current.timeout);
+    pinTimersRef.current = {};
+  }, []);
+  const pinToNewest = useCallback(() => {
+    clearPinTimers();
+    pinTimersRef.current.raf = requestAnimationFrame(() =>
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" }),
+    );
+    pinTimersRef.current.timeout = window.setTimeout(
+      () =>
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" }),
+      150,
+    );
+  }, [clearPinTimers]);
 
-  // Instant-pin to bottom on room open, re-pinning until the room's first page
-  // has rendered (the initial fetch is async). After that the at-bottom effect
-  // above owns auto-scroll, so a reader who scrolled up is never yanked down
-  // by new traffic or a loadMore prepend.
+  // One-shot pin-to-newest on room open. `initialTopMostItemIndex` positions
+  // Virtuoso using ESTIMATED row heights at mount; with variable-height markdown
+  // the real measured heights then shift the target off-screen, leaving the room
+  // looking blank / scrolled-up — so we force an explicit scroll to the newest
+  // message once the first page is available. Guarded to fire ONCE per room
+  // (didInitialPinRef === roomId) so it never fights a user who scrolls up
+  // afterward; comparing the ref to roomId re-arms it on a room switch. Skipped
+  // when a ?message deep-link owns the initial scroll target.
+  //
+  // Virtuoso renders 0 items while the tab is hidden (and rAF is suspended), so
+  // a room opened in a backgrounded tab CANNOT pin yet: leave the pin PENDING
+  // (do NOT stamp the ref) and let the visibilitychange handler below finish it
+  // once the tab is focused.
   useEffect(() => {
-    if (pinnedRoomRef.current === roomId && messages.length > 0) return;
-    if (messages.length > 0) pinnedRoomRef.current = roomId;
-    scrollToBottom(false);
-    prevMessageCountRef.current = messages.length;
-  }, [roomId, scrollToBottom, messages.length]);
+    if (messages.length === 0) return;
+    if (didInitialPinRef.current === roomId) return;
+    if (document.visibilityState !== "visible") return;
+    didInitialPinRef.current = roomId;
+    if (new URLSearchParams(window.location.search).get("message")) return;
+    pinToNewest();
+    return clearPinTimers;
+  }, [roomId, messages.length, pinToNewest, clearPinTimers]);
+
+  // Finish a pin that couldn't run while the tab was hidden: when the tab
+  // becomes visible and the initial pin is still PENDING for this room, pin to
+  // newest and stamp it done. Because the initial-pin effect only stamps while
+  // visible, a room pinned normally is already stamped and this never re-fires
+  // over a user who has since scrolled up.
+  useEffect(() => {
+    function onVisibility() {
+      if (document.visibilityState !== "visible") return;
+      if (didInitialPinRef.current === roomId) return;
+      if (messages.length === 0) return;
+      didInitialPinRef.current = roomId;
+      if (new URLSearchParams(window.location.search).get("message")) return;
+      pinToNewest();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [roomId, messages.length, pinToNewest]);
 
   // Count what arrived while scrolled up (the pill's "N new messages" label).
   // Keyed on the last message ID, not list length, so loadMore prepends and
-  // the optimistic→server-id reconcile never count as new.
+  // the optimistic→server-id reconcile never count as new. Reads isAtBottomRef,
+  // which Virtuoso's atBottomStateChange keeps current.
   useEffect(() => {
     const lastId = messages[messages.length - 1]?.id ?? null;
     const prevId = prevLastMessageIdRef.current;
@@ -258,43 +325,46 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     if (fresh.length > 0) setNewWhileScrolledUp((c) => c + fresh.length);
   }, [messages, currentUser?.id]);
 
+  // Deep-link scroll-to-message (?message=<id>). Under virtualization the row
+  // may be off-screen (unmounted), so first scroll Virtuoso to its index, then
+  // — once it's rendered — grab the element and flash the ring. Fail-safe: if
+  // the id isn't in the loaded window, do nothing.
   useEffect(() => {
     const messageId = new URLSearchParams(window.location.search).get("message");
     if (!messageId) return;
-    const target = document.getElementById(`m-${messageId}`);
-    if (!target) return;
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
-    target.classList.add("rounded-lg", "ring-1", "ring-emerald-400/60");
-    const timeout = window.setTimeout(() => {
-      target.classList.remove("rounded-lg", "ring-1", "ring-emerald-400/60");
-    }, 4000);
-    return () => window.clearTimeout(timeout);
+    const arrayIndex = messages.findIndex((m) => m.id === messageId);
+    if (arrayIndex === -1) return;
+    virtuosoRef.current?.scrollToIndex({
+      index: arrayIndex,
+      align: "center",
+      behavior: "smooth",
+    });
+    let removeTimeout: number | undefined;
+    const addTimeout = window.setTimeout(() => {
+      const target = document.getElementById(`m-${messageId}`);
+      if (!target) return;
+      target.classList.add("rounded-lg", "ring-1", "ring-emerald-400/60");
+      removeTimeout = window.setTimeout(() => {
+        target.classList.remove("rounded-lg", "ring-1", "ring-emerald-400/60");
+      }, 4000);
+    }, 300);
+    return () => {
+      window.clearTimeout(addTimeout);
+      if (removeTimeout) window.clearTimeout(removeTimeout);
+    };
   }, [roomId, messages.length]);
 
-  function handleScroll() {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    const distanceFromBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    const atBottom = distanceFromBottom < 80;
-    isAtBottomRef.current = atBottom;
-    setIsAtBottom(atBottom);
-    // Reaching the bottom means everything's been seen — reset the pill count.
-    if (atBottom) setNewWhileScrolledUp(0);
-
-    if (container.scrollTop < 100 && hasMore && !loading) {
-      const prevScrollHeight = container.scrollHeight;
-      loadMore().then(() => {
-        requestAnimationFrame(() => {
-          if (scrollContainerRef.current) {
-            const newScrollHeight = scrollContainerRef.current.scrollHeight;
-            scrollContainerRef.current.scrollTop = newScrollHeight - prevScrollHeight;
-          }
-        });
-      });
-    }
-  }
+  // Prepend older history via Virtuoso's startReached / the manual Header
+  // button. Both funnel here so firstItemIndex is decremented by exactly the
+  // number of items prepended, keeping the viewport anchored.
+  const handleLoadMore = useCallback(() => {
+    if (!hasMore || loading) return;
+    const prevLen = messagesRef.current.length;
+    void loadMore().then(() => {
+      const added = messagesRef.current.length - prevLen;
+      if (added > 0) setFirstItemIndex((f) => f - added);
+    });
+  }, [hasMore, loading, loadMore]);
 
   function handleSend(
     content: string,
@@ -304,7 +374,9 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   ) {
     sendMessage(content, threadId, attachments, extraMetadata);
     if (agentMembers.length > 0) setAwaitingAgentSince(Date.now());
-    requestAnimationFrame(() => scrollToBottom(true));
+    requestAnimationFrame(() =>
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth", align: "end" }),
+    );
   }
 
   function handleReply(messageId: string) {
@@ -322,192 +394,227 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     }
   }
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* Relative wrapper so the jump pill can float over the scroll area —
-          above the composer/typing rows, which live outside it. */}
-      <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        className="flex flex-1 flex-col overflow-y-auto px-4 py-3 md:px-8"
-        role="log"
-        aria-label="Chat messages"
-        aria-live="polite"
-      >
-        {loading && messages.length === 0 && (
-          <div
-            className="mx-auto w-full max-w-[52rem] space-y-6 px-2 pt-6"
-            aria-hidden="true"
-          >
-            {[68, 42, 84].map((w, i) => (
-              <div
-                key={i}
-                className="flex animate-pulse-soft gap-3"
-                style={{ animationDelay: `${i * 150}ms` }}
-              >
-                <div className="h-9 w-9 shrink-0 rounded-full bg-white/[0.05]" />
-                <div className="min-w-0 flex-1 space-y-2 pt-1">
-                  <div className="h-3 w-24 rounded bg-white/[0.06]" />
-                  <div
-                    className="h-3 rounded bg-white/[0.04]"
-                    style={{ width: `${w}%` }}
-                  />
-                  {i !== 1 && (
-                    <div
-                      className="h-3 rounded bg-white/[0.04]"
-                      style={{ width: `${Math.round(w * 0.6)}%` }}
-                    />
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {!loading && messages.length === 0 && (
-          <EmptyChannel
-            roomId={roomId}
-            participants={participants}
-            currentUserId={currentUser?.id}
-            onPrompt={(text: string) => {
-              void sendMessage(text);
-            }}
-            onInviteAgent={onInviteAgent}
-          />
-        )}
-
-        {/* Message column — capped for readable line lengths on wide screens. */}
-        <div className="mx-auto w-full max-w-[52rem]">
-        {hasMore && messages.length > 0 && (
+  // Virtuoso Header: the manual "Load older messages" affordance, rendered
+  // above the first message. Coexists with startReached (auto-load on scroll).
+  const Header = useMemo(() => {
+    function LoadOlderHeader() {
+      if (!hasMore || messages.length === 0) return null;
+      return (
+        <div className="mx-auto w-full max-w-[52rem] px-4 md:px-8">
           <div className="flex justify-center py-2">
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
             ) : (
               <button
-                onClick={() => loadMore()}
+                onClick={handleLoadMore}
                 className="rounded-full border border-line bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:border-line-strong hover:text-slate-200 focus-ring"
               >
                 Load older messages
               </button>
             )}
           </div>
+        </div>
+      );
+    }
+    return LoadOlderHeader;
+  }, [hasMore, messages.length, loading, handleLoadMore]);
+
+  const virtuosoComponents = useMemo(() => ({ Header }), [Header]);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Relative wrapper so the jump pill can float over the scroll area —
+          above the composer/typing rows, which live outside it. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {messages.length === 0 ? (
+          <div
+            className="flex flex-1 flex-col overflow-y-auto px-4 py-3 md:px-8"
+            role="log"
+            aria-label="Chat messages"
+            aria-live="polite"
+          >
+            {loading ? (
+              <div
+                className="mx-auto w-full max-w-[52rem] space-y-6 px-2 pt-6"
+                aria-hidden="true"
+              >
+                {[68, 42, 84].map((w, i) => (
+                  <div
+                    key={i}
+                    className="flex animate-pulse-soft gap-3"
+                    style={{ animationDelay: `${i * 150}ms` }}
+                  >
+                    <div className="h-9 w-9 shrink-0 rounded-full bg-white/[0.05]" />
+                    <div className="min-w-0 flex-1 space-y-2 pt-1">
+                      <div className="h-3 w-24 rounded bg-white/[0.06]" />
+                      <div
+                        className="h-3 rounded bg-white/[0.04]"
+                        style={{ width: `${w}%` }}
+                      />
+                      {i !== 1 && (
+                        <div
+                          className="h-3 rounded bg-white/[0.04]"
+                          style={{ width: `${Math.round(w * 0.6)}%` }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyChannel
+                roomId={roomId}
+                participants={participants}
+                currentUserId={currentUser?.id}
+                onPrompt={(text: string) => {
+                  void sendMessage(text);
+                }}
+                onInviteAgent={onInviteAgent}
+              />
+            )}
+          </div>
+        ) : (
+          <Virtuoso
+            key={roomId}
+            ref={virtuosoRef}
+            data={messages}
+            firstItemIndex={firstItemIndex}
+            initialTopMostItemIndex={messages.length - 1}
+            computeItemKey={(_index, message) => message.id}
+            followOutput={(atBottom) => (atBottom ? "smooth" : false)}
+            atBottomStateChange={(atBottom) => {
+              isAtBottomRef.current = atBottom;
+              setIsAtBottom(atBottom);
+              if (atBottom) setNewWhileScrolledUp(0);
+            }}
+            startReached={() => handleLoadMore()}
+            atTopThreshold={400}
+            components={virtuosoComponents}
+            style={{ flex: 1, minHeight: 0 }}
+            role="log"
+            aria-label="Chat messages"
+            aria-live="polite"
+            itemContent={(index, message) => {
+              const arrayIndex = index - firstItemIndex;
+              const prevMessage =
+                arrayIndex > 0 ? messages[arrayIndex - 1] : undefined;
+              const showAvatar =
+                !prevMessage ||
+                prevMessage.sender_id !== message.sender_id ||
+                new Date(message.created_at).getTime() -
+                  new Date(prevMessage.created_at).getTime() >
+                  300_000;
+
+              const showDaySeparator =
+                !prevMessage ||
+                !sameDay(
+                  new Date(prevMessage.created_at),
+                  new Date(message.created_at),
+                );
+
+              return (
+                <div className="mx-auto w-full max-w-[52rem] px-4 md:px-8">
+                  <div id={`m-${message.id}`}>
+                    {showDaySeparator && (
+                      <div className="my-4 flex items-center gap-3 px-2">
+                        <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-700/60" />
+                        <span className="glass rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                          {formatDayLabel(new Date(message.created_at))}
+                        </span>
+                        <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-700/60" />
+                      </div>
+                    )}
+                    {message.id === unreadAnchorId && (
+                      <div
+                        className="my-3 flex items-center gap-3 px-2"
+                        role="separator"
+                        aria-label="New messages"
+                      >
+                        <div className="h-px flex-1 bg-gradient-to-r from-transparent to-stable-purple/40" />
+                        <span className="rounded-full border border-stable-purple/40 bg-stable-purple/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-stable-purple-light">
+                          New messages
+                        </span>
+                        <div className="h-px flex-1 bg-gradient-to-l from-transparent to-stable-purple/40" />
+                      </div>
+                    )}
+                    <MessageBubble
+                      message={message}
+                      isOwn={message.sender_id === currentUser?.id}
+                      showAvatar={showAvatar}
+                      onEdit={editMessage}
+                      onDelete={deleteMessage}
+                      onReply={handleReply}
+                      onRetry={retryMessage}
+                      forceEditTick={editFocusId === message.id ? editTick : 0}
+                      overrideModelLabel={overrideModelLabel}
+                    />
+                    {/* "Seen by" pill — only on the most recent OWN message that
+                        other participants have read past. Shows up to 3 avatars. */}
+                    {message.sender_id === currentUser?.id &&
+                      arrayIndex === messages.length - 1 &&
+                      (() => {
+                        const seers = participants.filter((p) => {
+                          const pid = p.participant_id || p.user_id || "";
+                          if (!pid || pid === currentUser?.id) return false;
+                          const at = readReceipts[pid];
+                          if (!at) return false;
+                          return new Date(at) >= new Date(message.created_at);
+                        });
+                        if (seers.length === 0) return null;
+                        return (
+                          <div className="ml-12 mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+                            <span>Seen by</span>
+                            <div className="flex -space-x-1">
+                              {seers.slice(0, 3).map((p) => (
+                                <Avatar
+                                  key={p.participant_id || p.user_id}
+                                  name={p.display_name}
+                                  src={p.avatar_url}
+                                  size="xs"
+                                  id={p.participant_id || p.user_id}
+                                  className="ring-1 ring-slate-900"
+                                />
+                              ))}
+                            </div>
+                            {seers.length > 3 && <span>+{seers.length - 3}</span>}
+                          </div>
+                        );
+                      })()}
+                  </div>
+                </div>
+              );
+            }}
+          />
         )}
 
-        <div className="flex flex-col gap-0.5">
-          {messages.map((message, idx) => {
-            const prevMessage = idx > 0 ? messages[idx - 1] : undefined;
-            const showAvatar =
-              !prevMessage ||
-              prevMessage.sender_id !== message.sender_id ||
-              new Date(message.created_at).getTime() -
-                new Date(prevMessage.created_at).getTime() >
-                300_000;
-
-            const showDaySeparator =
-              !prevMessage ||
-              !sameDay(new Date(prevMessage.created_at), new Date(message.created_at));
-
-            return (
-              <div key={message.id} id={`m-${message.id}`}>
-                {showDaySeparator && (
-                  <div className="my-4 flex items-center gap-3 px-2">
-                    <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-700/60" />
-                    <span className="glass rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                      {formatDayLabel(new Date(message.created_at))}
-                    </span>
-                    <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-700/60" />
-                  </div>
-                )}
-                {message.id === unreadAnchorId && (
-                  <div
-                    className="my-3 flex items-center gap-3 px-2"
-                    role="separator"
-                    aria-label="New messages"
-                  >
-                    <div className="h-px flex-1 bg-gradient-to-r from-transparent to-stable-purple/40" />
-                    <span className="rounded-full border border-stable-purple/40 bg-stable-purple/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-stable-purple-light">
-                      New messages
-                    </span>
-                    <div className="h-px flex-1 bg-gradient-to-l from-transparent to-stable-purple/40" />
-                  </div>
-                )}
-                <MessageBubble
-                  message={message}
-                  isOwn={message.sender_id === currentUser?.id}
-                  showAvatar={showAvatar}
-                  onEdit={editMessage}
-                  onDelete={deleteMessage}
-                  onReply={handleReply}
-                  onRetry={retryMessage}
-                  forceEditTick={editFocusId === message.id ? editTick : 0}
-                  overrideModelLabel={overrideModelLabel}
-                />
-                {/* "Seen by" pill — only on the most recent OWN message that
-                    other participants have read past. Shows up to 3 avatars. */}
-                {message.sender_id === currentUser?.id &&
-                  idx === messages.length - 1 &&
-                  (() => {
-                    const seers = participants.filter((p) => {
-                      const pid = p.participant_id || p.user_id || "";
-                      if (!pid || pid === currentUser?.id) return false;
-                      const at = readReceipts[pid];
-                      if (!at) return false;
-                      return new Date(at) >= new Date(message.created_at);
-                    });
-                    if (seers.length === 0) return null;
-                    return (
-                      <div className="ml-12 mt-1 flex items-center gap-1 text-[10px] text-slate-500">
-                        <span>Seen by</span>
-                        <div className="flex -space-x-1">
-                          {seers.slice(0, 3).map((p) => (
-                            <Avatar
-                              key={p.participant_id || p.user_id}
-                              name={p.display_name}
-                              src={p.avatar_url}
-                              size="xs"
-                              id={p.participant_id || p.user_id}
-                              className="ring-1 ring-slate-900"
-                            />
-                          ))}
-                        </div>
-                        {seers.length > 3 && <span>+{seers.length - 3}</span>}
-                      </div>
-                    );
-                  })()}
-              </div>
-            );
-          })}
-        </div>
-        </div>
-
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Jump-to-latest pill — only while scrolled up, so it can't cover the
-          "Seen by" row (that row lives at the bottom of the scrolled content,
-          off-screen whenever the pill is showing). */}
-      {!isAtBottom && messages.length > 0 && (
-        <button
-          onClick={() => {
-            setNewWhileScrolledUp(0);
-            isAtBottomRef.current = true;
-            setIsAtBottom(true);
-            scrollToBottom(true);
-          }}
-          className="glass-heavy absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 animate-slide-up items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium text-slate-200 shadow-pop transition-colors hover:border-stable-purple/40 hover:text-white focus-ring"
-          aria-label={
-            newWhileScrolledUp > 0
-              ? `Jump to latest — ${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
-              : "Jump to latest"
-          }
-        >
-          <ArrowDown className="h-3.5 w-3.5 text-stable-purple" aria-hidden="true" />
-          {newWhileScrolledUp > 0
-            ? `${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
-            : "Jump to latest"}
-        </button>
-      )}
+        {/* Jump-to-latest pill — only while scrolled up, so it can't cover the
+            "Seen by" row (that row lives at the bottom of the scrolled content,
+            off-screen whenever the pill is showing). */}
+        {!isAtBottom && messages.length > 0 && (
+          <button
+            onClick={() => {
+              setNewWhileScrolledUp(0);
+              isAtBottomRef.current = true;
+              setIsAtBottom(true);
+              virtuosoRef.current?.scrollToIndex({
+                index: "LAST",
+                behavior: "smooth",
+                align: "end",
+              });
+            }}
+            className="glass-heavy absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 animate-slide-up items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium text-slate-200 shadow-pop transition-colors hover:border-stable-purple/40 hover:text-white focus-ring"
+            aria-label={
+              newWhileScrolledUp > 0
+                ? `Jump to latest — ${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
+                : "Jump to latest"
+            }
+          >
+            <ArrowDown className="h-3.5 w-3.5 text-stable-purple" aria-hidden="true" />
+            {newWhileScrolledUp > 0
+              ? `${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
+              : "Jump to latest"}
+          </button>
+        )}
       </div>
 
       {(typingUsers.length > 0 || awaitingAgentSince !== null) && (

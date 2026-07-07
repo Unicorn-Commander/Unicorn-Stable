@@ -130,6 +130,9 @@ services:
       - MS_GRAPH_CLIENT_SECRET=${MS_GRAPH_CLIENT_SECRET:-}
       - MS_GRAPH_FROM_ADDRESS=${MS_GRAPH_FROM_ADDRESS:-}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://stable.magicunicorn.dev}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:aaron@magicunicorn.tech}
       - INCOMING_WEBHOOK_SECRET=${INCOMING_WEBHOOK_SECRET:-}
       - PROJECTOPS_SERVICE_JWT=${PROJECTOPS_SERVICE_JWT:-}
       - PROJECTOPS_MCP_URL=${PROJECTOPS_MCP_URL:-https://api.projectops.magicunicorn.dev/api/v1/mcp}
