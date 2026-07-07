@@ -34,6 +34,22 @@ const queryClient = new QueryClient({
   },
 });
 
+// Error observability (Sentry/GlitchTip) — no-op unless VITE_SENTRY_DSN was
+// set at build time. Dynamically imported so the SDK only loads when active.
+const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined;
+if (SENTRY_DSN) {
+  import("@sentry/react")
+    .then((Sentry) => {
+      Sentry.init({
+        dsn: SENTRY_DSN,
+        environment: import.meta.env.MODE,
+        release: import.meta.env.VITE_GIT_SHA as string | undefined,
+        tracesSampleRate: 0,
+      });
+    })
+    .catch(() => {});
+}
+
 const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");

@@ -6,6 +6,13 @@ COPY package.json package-lock.json* ./
 # regenerating the lockfile locally still builds.
 RUN npm install --no-audit --no-fund
 COPY . .
+# Vite only bakes VITE_*-prefixed vars that exist in the build env. Pass the
+# Sentry DSN + git sha through as build args so frontend error capture and the
+# release tag are compiled in (no-op when VITE_SENTRY_DSN is empty).
+ARG VITE_SENTRY_DSN=
+ARG GIT_SHA=unknown
+ENV VITE_SENTRY_DSN=${VITE_SENTRY_DSN} \
+    VITE_GIT_SHA=${GIT_SHA}
 RUN npm run build
 
 # Stage 2: Serve

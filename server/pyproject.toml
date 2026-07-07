@@ -16,6 +16,7 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
     "httpx>=0.28",
     "structlog>=24.4",
+    "sentry-sdk[fastapi]>=2.0",
     "python-multipart>=0.0.18",
     # Document RAG text extraction (app/services/doc_extract.py).
     "pypdf>=5.1",

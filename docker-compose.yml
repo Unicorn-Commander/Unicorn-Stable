@@ -138,6 +138,8 @@ services:
       - PROJECTOPS_MCP_URL=${PROJECTOPS_MCP_URL:-https://api.projectops.magicunicorn.dev/api/v1/mcp}
       - PROJECTOPS_DASHBOARD_URL=${PROJECTOPS_DASHBOARD_URL:-https://projectops.magicunicorn.dev}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}
     depends_on:
       postgres:
         condition: service_healthy

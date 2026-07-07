@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     port: int = 8400
 
+    # -- Observability (Sentry / GlitchTip; both speak the Sentry API) --
+    # Empty => disabled. GLITCHTIP_DSN env is honoured as a fallback.
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.0
+
     # -- Backend hardening (appended; see feat/backend-hardening) --
 
     # Local filesystem directory where uploaded attachments are written.

@@ -128,6 +128,10 @@ def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    # Error/perf observability (Sentry/GlitchTip) — no-op unless a DSN is set.
+    from app.observability import init_observability
+    init_observability(settings)
+
     app = FastAPI(
         title="Stable",
         description="LiveKit-based chat/voice/video platform API",
