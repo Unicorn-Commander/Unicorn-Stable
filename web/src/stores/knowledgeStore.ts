@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { api } from "@/services/api";
-import type { Collection, KbDocument } from "@/types/knowledge";
+import type {
+  Collection,
+  DocumentContent,
+  KbDocument,
+  KnowledgeSearchHit,
+} from "@/types/knowledge";
 
 /**
  * Knowledge store — the Knowledge Bases panel state.
@@ -37,6 +42,17 @@ interface KnowledgeState {
   documents: KbDocument[];
   documentsLoading: boolean;
 
+  /** The document whose extracted chunks are being read (or null). */
+  openDocument: DocumentContent | null;
+  documentContentLoading: boolean;
+
+  /** Room-scoped KB search (the same search the agent runs). */
+  searchQuery: string;
+  searchResults: KnowledgeSearchHit[];
+  searching: boolean;
+  /** True once a search has run (drives the "no matches" empty state). */
+  searchRan: boolean;
+
   /** Last error (surfaced as a banner). */
   error: string | null;
 
@@ -65,6 +81,18 @@ interface KnowledgeState {
   /** Upload a file into the open collection, then refresh its documents. */
   uploadDocument: (file: File) => Promise<boolean>;
 
+  /** Open a document's extracted-chunk reader (within the open collection). */
+  openDocumentById: (documentId: string) => Promise<void>;
+  /** Close the document reader (back to the document list). */
+  closeDocument: () => void;
+
+  /** Update the search box text only (does not fire a request). */
+  setSearchQuery: (query: string) => void;
+  /** Run the room-scoped KB search (searches every attached collection). */
+  runSearch: (query: string) => Promise<void>;
+  /** Clear the search box + results. */
+  clearSearch: () => void;
+
   /** Attach a collection to the current room, then refresh attachments. */
   attach: (collectionId: string) => Promise<void>;
   /** Detach a collection from the current room, then refresh attachments. */
@@ -90,6 +118,12 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   openCollection: null,
   documents: [],
   documentsLoading: false,
+  openDocument: null,
+  documentContentLoading: false,
+  searchQuery: "",
+  searchResults: [],
+  searching: false,
+  searchRan: false,
   error: null,
 
   setPanelOpen: (open) => set({ panelOpen: open }),
@@ -99,8 +133,16 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     const prev = get().roomId;
     if (prev === roomId) return;
     // Switching rooms drops the per-room attachment state (but keeps the global
-    // collection listing — it isn't room-scoped).
-    set({ roomId, attached: [], error: null });
+    // collection listing — it isn't room-scoped). Search is room-scoped too, so
+    // clear it on a room switch.
+    set({
+      roomId,
+      attached: [],
+      searchQuery: "",
+      searchResults: [],
+      searchRan: false,
+      error: null,
+    });
     if (roomId) void get().refreshAttached(roomId);
   },
 
@@ -160,7 +202,12 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
 
   closeCollection: () =>
-    set({ openCollection: null, documents: [], error: null }),
+    set({
+      openCollection: null,
+      documents: [],
+      openDocument: null,
+      error: null,
+    }),
 
   refreshDocuments: async () => {
     const open = get().openCollection;
@@ -190,6 +237,56 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       return false;
     }
   },
+
+  openDocumentById: async (documentId) => {
+    const open = get().openCollection;
+    if (!open) return;
+    const collectionId = open.id;
+    set({ documentContentLoading: true, openDocument: null, error: null });
+    try {
+      const content = await api.getKbDocumentContent(collectionId, documentId);
+      // Bail if the user closed/swapped the collection while we were fetching.
+      if (get().openCollection?.id !== collectionId) return;
+      set({ openDocument: content, documentContentLoading: false });
+    } catch (e) {
+      if (get().openCollection?.id !== collectionId) return;
+      set({ documentContentLoading: false, error: errMsg(e) });
+    }
+  },
+
+  closeDocument: () => set({ openDocument: null }),
+
+  setSearchQuery: (query) => {
+    // Text-only; emptying the box also clears any prior results.
+    if (!query.trim()) {
+      set({ searchQuery: query, searchResults: [], searchRan: false });
+    } else {
+      set({ searchQuery: query });
+    }
+  },
+
+  runSearch: async (query) => {
+    const roomId = get().roomId;
+    const q = query.trim();
+    set({ searchQuery: query });
+    if (!roomId || !q) {
+      set({ searchResults: [], searchRan: false });
+      return;
+    }
+    set({ searching: true, error: null });
+    try {
+      const results = await api.searchRoomKnowledge(roomId, q);
+      // Ignore a response that resolved after the user switched rooms.
+      if (get().roomId !== roomId) return;
+      set({ searchResults: results, searching: false, searchRan: true });
+    } catch (e) {
+      if (get().roomId !== roomId) return;
+      set({ searching: false, searchRan: true, error: errMsg(e) });
+    }
+  },
+
+  clearSearch: () =>
+    set({ searchQuery: "", searchResults: [], searchRan: false }),
 
   attach: async (collectionId) => {
     const roomId = get().roomId;

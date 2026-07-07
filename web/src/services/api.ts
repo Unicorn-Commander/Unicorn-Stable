@@ -9,7 +9,9 @@ import type {
 import type {
   Collection,
   CreateCollectionRequest,
+  DocumentContent,
   KbDocument,
+  KnowledgeSearchHit,
 } from "@/types/knowledge";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
@@ -1118,6 +1120,39 @@ class StableApiClient {
       "GET",
       `/api/v1/rooms/${roomId}/knowledge`,
     );
+  }
+
+  /**
+   * Read a document's extracted text as its indexed chunks (human-viewable).
+   * These are the SAME chunks the agent retrieves over. `chunks` is empty when
+   * nothing is indexed (a `failed` doc, or one still `indexing`).
+   */
+  async getKbDocumentContent(
+    collectionId: string,
+    documentId: string,
+  ): Promise<DocumentContent> {
+    return this.request<DocumentContent>(
+      "GET",
+      `/api/v1/knowledge/collections/${collectionId}/documents/${documentId}/chunks`,
+    );
+  }
+
+  /**
+   * Run — as a human — the SAME KB search the room's agent runs: the top
+   * excerpts across every collection attached to the room. Returns [] when the
+   * room has no attached knowledge (or nothing matches).
+   */
+  async searchRoomKnowledge(
+    roomId: string,
+    query: string,
+    k?: number,
+  ): Promise<KnowledgeSearchHit[]> {
+    const res = await this.request<{ results: KnowledgeSearchHit[] }>(
+      "POST",
+      `/api/v1/rooms/${roomId}/knowledge/search`,
+      { query, ...(k ? { k } : {}) },
+    );
+    return res.results;
   }
 }
 
