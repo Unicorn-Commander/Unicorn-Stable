@@ -105,6 +105,50 @@ def _agent_display_name(brigade_agent_id: str | None) -> str:
     return brigade_agent_id.replace("-", " ").title()
 
 
+class _AgentInterim:
+    """Accumulates one agent utterance's streamed reply text and republishes a
+    growing interim caption line.
+
+    Created via ``TranscriptPublisher.begin_agent_interim()`` for each agent
+    speech generation. Each ``push(delta)`` appends to the buffer and publishes
+    the whole accumulated text as an ``isFinal: false`` line on a stable
+    segmentId, so the frontend replaces the agent's single interim line in place
+    while the reply is spoken. Fully guarded: ``push`` never raises, so it is
+    safe to call from inside the voice pipeline's ``transcription_node``.
+    """
+
+    __slots__ = ("_pub", "_segment_id", "_buf")
+
+    def __init__(self, pub: "TranscriptPublisher", segment_id: str) -> None:
+        self._pub = pub
+        self._segment_id = segment_id
+        self._buf: list[str] = []
+
+    def push(self, delta: str) -> None:
+        """Append a spoken/streamed text delta and publish the growing interim.
+
+        ``delta`` may be a plain ``str`` or a ``TimedString`` (a ``str``
+        subclass) -- either way it is treated as text. Never raises.
+        """
+        try:
+            if not delta:
+                return
+            self._buf.append(str(delta))
+            text = "".join(self._buf).strip()
+            if not text:
+                return
+            self._pub._publish(
+                participant_id=self._pub._agent_identity,
+                name=self._pub._agent_name,
+                text=text,
+                is_final=False,
+                segment_id=self._segment_id,
+            )
+        except Exception:
+            # NEVER let a captioning error bubble into the voice loop.
+            logger.debug("transcript_agent_interim_push_failed", exc_info=True)
+
+
 class TranscriptPublisher:
     """Publishes ``transcript`` data messages for one in-room AgentSession.
 
@@ -131,6 +175,12 @@ class TranscriptPublisher:
         # the frontend keys consecutive final lines distinctly even within the
         # same millisecond.
         self._agent_seq: int = 0
+        # Separate monotonic counter for the STREAMING interim caption line of
+        # each agent utterance. Interims collapse per participantId on the
+        # frontend, but we give each utterance a stable segmentId so its growing
+        # interim keeps one React key while it builds up in place; the turn-end
+        # final (on_conversation_item) then supersedes it.
+        self._agent_interim_seq: int = 0
 
     # ------------------------------------------------------------------ #
     # Event handlers — these are registered as sync callbacks on the
@@ -203,6 +253,25 @@ class TranscriptPublisher:
             )
         except Exception:
             logger.debug("transcript_agent_publish_failed", exc_info=True)
+
+    def begin_agent_interim(self) -> "_AgentInterim":
+        """Start a new streaming interim caption for one agent utterance.
+
+        The voice pipeline feeds the agent's reply text through
+        ``Agent.transcription_node`` as it is produced/spoken (the LLM token
+        stream, or TTS-aligned word timings when the TTS supports them). The
+        agent tees each delta into the returned handle, which publishes a
+        growing ``isFinal: false`` line under the agent's identity so the
+        caption builds up "as it reads" instead of appearing as one block at
+        turn end. The existing ``on_conversation_item`` still publishes the
+        committed ``isFinal: true`` line, which supersedes this interim.
+
+        Never raises: the returned handle swallows and logs its own errors so a
+        captioning hiccup can never disturb the voice loop.
+        """
+        self._agent_interim_seq += 1
+        segment_id = f"{self._agent_identity}-interim-{self._agent_interim_seq}"
+        return _AgentInterim(self, segment_id)
 
     # ------------------------------------------------------------------ #
     # Internals

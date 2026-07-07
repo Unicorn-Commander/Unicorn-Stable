@@ -41,6 +41,49 @@ from agent_runtime.config import AgentSettings, get_agent_settings
 logger = structlog.get_logger(__name__)
 
 
+class _CaptioningAgent(Agent):
+    """Agent that tees its streaming reply text into the live caption publisher.
+
+    ``transcription_node`` is the pipeline node livekit-agents 1.6 feeds the
+    agent's reply text through as it is produced/spoken -- the LLM token stream,
+    or TTS-aligned word timings when the TTS advertises aligned transcripts (see
+    livekit/agents/voice/agent_activity.py). The default node is a pure
+    passthrough; we override it to ADDITIONALLY publish a growing interim caption
+    line ("as it reads"), while still yielding every delta through UNCHANGED so
+    the built-in transcription forwarding and TTS pacing are unaffected.
+
+    Purely additive and never raises into the voice loop: the tee is guarded and
+    only ``push`` is wrapped; cancellation/interruption propagate normally
+    through the untouched ``async for`` / ``yield``.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._caption_publisher: TranscriptPublisher | None = None
+
+    def set_caption_publisher(
+        self, publisher: TranscriptPublisher | None
+    ) -> None:
+        self._caption_publisher = publisher
+
+    async def transcription_node(self, text, model_settings):  # type: ignore[override]
+        pub = self._caption_publisher
+        if pub is None:
+            async for delta in text:
+                yield delta
+            return
+        try:
+            interim = pub.begin_agent_interim()
+        except Exception:
+            logger.debug("caption_interim_begin_failed", exc_info=True)
+            interim = None
+        async for delta in text:
+            if interim is not None:
+                # push() is fully guarded and never raises.
+                interim.push(delta)
+            yield delta
+
+
 class BrigadeBackedAgent(StableAgent):
     """Generic agent whose personality + tools + memory come from Brigade."""
 
@@ -350,7 +393,10 @@ class BrigadeBackedAgent(StableAgent):
         except Exception:
             logger.info("voice_ctx_seed_skipped", exc_info=True)
 
-        self._lk_agent = Agent(**agent_kwargs)
+        # Use the captioning subclass so the agent's spoken reply streams into
+        # the live caption panel as it is produced (see _CaptioningAgent). The
+        # publisher is attached below once it exists.
+        self._lk_agent = _CaptioningAgent(**agent_kwargs)
 
         session = AgentSession()
         self._session = session
@@ -379,6 +425,14 @@ class BrigadeBackedAgent(StableAgent):
                 agent_identity=agent_identity,
                 agent_name=_agent_display_name(brigade_agent_id),
             )
+            # Tee the agent's streamed reply text (via transcription_node) into
+            # the publisher so the caption builds up live "as it reads"; the
+            # turn-end conversation_item_added final then supersedes the interim.
+            try:
+                if isinstance(self._lk_agent, _CaptioningAgent):
+                    self._lk_agent.set_caption_publisher(self._transcript)
+            except Exception:
+                logger.debug("caption_publisher_attach_failed", exc_info=True)
             # livekit-agents 1.6 AgentSession events (verified in-container):
             #   user_input_transcribed -> UserInputTranscribedEvent
             #       (.transcript, .is_final, .speaker_id) = human STT.
