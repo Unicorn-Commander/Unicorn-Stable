@@ -29,6 +29,17 @@ COPY --from=builder /install /usr/local
 
 COPY --chown=stable:stable . .
 
+# --- build provenance (stamped by scripts/deploy.sh / compose build args) ---
+ARG GIT_SHA=unknown
+ARG GIT_SHA_FULL=unknown
+ARG BUILD_TIME=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA_FULL}" \
+      org.opencontainers.image.version="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIME}" \
+      org.opencontainers.image.title="unicorn-stable-backend"
+ENV STABLE_GIT_SHA="${GIT_SHA}" \
+    STABLE_BUILD_TIME="${BUILD_TIME}"
+
 USER stable
 
 EXPOSE 8400
