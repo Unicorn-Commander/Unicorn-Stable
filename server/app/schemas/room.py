@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.message import MessageResponse
+
 
 class RoomCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$")
@@ -32,6 +34,7 @@ class RoomMemberResponse(BaseModel):
     joined_at: datetime
     last_read_at: datetime | None = None
     is_muted: bool
+    is_self: bool = False
     status: str | None = None
 
 
@@ -53,6 +56,12 @@ class RoomResponse(BaseModel):
     updated_at: datetime
     member_count: int = 0
     online_count: int = 0
+    # Conversation-list extras (populated by list_rooms_for_user): the latest
+    # non-deleted message in the room, and the caller's unread count since their
+    # last_read_at. Both let the sidebar + home feed show previews and badges
+    # on cold load. Default to empty so other RoomResponse callers are unaffected.
+    unread_count: int = 0
+    last_message: MessageResponse | None = None
 
 
 class RoomListResponse(BaseModel):

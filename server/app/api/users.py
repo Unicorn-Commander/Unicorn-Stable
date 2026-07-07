@@ -11,7 +11,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,52 @@ from app.services.keycloak_admin import KeycloakAdmin
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+class UserPreferences(BaseModel):
+    """Per-user preferences that follow the account across devices (stored on
+    the Participant's metadata). Currently just the default agent the
+    ChatGPT-style "New chat" button starts a conversation with."""
+
+    default_agent_id: str | None = None
+
+
+@router.get("/users/me/preferences", response_model=UserPreferences)
+async def get_my_preferences(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserPreferences:
+    """Return the caller's preferences (server-side, so they follow the user
+    across devices). Missing/unset → nulls; the client falls back to its
+    built-in default agent."""
+    p = await db.get(Participant, user["participant_id"])
+    meta = p.metadata_ if (p is not None and isinstance(p.metadata_, dict)) else {}
+    val = meta.get("default_agent_id")
+    return UserPreferences(
+        default_agent_id=val if isinstance(val, str) and val else None
+    )
+
+
+@router.put("/users/me/preferences", response_model=UserPreferences)
+async def set_my_preferences(
+    body: UserPreferences,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserPreferences:
+    """Update the caller's preferences. Passing a null/empty default_agent_id
+    clears it (revert to the client's built-in default)."""
+    p = await db.get(Participant, user["participant_id"])
+    if p is None:
+        raise HTTPException(status_code=404, detail="Participant not found")
+    meta = dict(p.metadata_ or {})
+    aid = (body.default_agent_id or "").strip()
+    if aid:
+        meta["default_agent_id"] = aid
+    else:
+        meta.pop("default_agent_id", None)
+    p.metadata_ = meta  # reassign (not mutate) so SQLAlchemy tracks the JSONB change
+    await db.commit()
+    return UserPreferences(default_agent_id=aid or None)
 
 
 class UserResult(BaseModel):

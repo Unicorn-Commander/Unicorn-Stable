@@ -14,6 +14,7 @@ so users get exactly one reply, not two.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -37,7 +38,81 @@ logger = structlog.get_logger(__name__)
 
 
 _HISTORY_LIMIT = 10
-_BRIGADE_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+_BRIGADE_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
+
+
+_pub_redis = None
+
+
+def _get_pub_redis():
+    """Lazily-created Redis client for cross-worker ws fan-out via pub/sub.
+
+    stable-backend runs ``uvicorn --workers 4``; the ws ConnectionManager is a
+    per-process singleton, so a client's socket lives on ONE worker while this
+    background responder runs on another. Publishing to Redis ``room:{id}`` —
+    which the ws handler subscribes to on every worker — is the only delivery
+    that reaches the browser regardless of which worker holds the socket."""
+    global _pub_redis
+    if _pub_redis is None:
+        from redis.asyncio import Redis
+
+        from app.config import get_settings
+
+        _pub_redis = Redis.from_url(
+            get_settings().redis_url, decode_responses=False
+        )
+    return _pub_redis
+
+
+async def _ws_deliver_to_room(
+    *,
+    db: Any,
+    room_id: uuid.UUID,
+    envelope: dict[str, Any],
+) -> None:
+    """Best-effort deliver a ``{type, payload}`` envelope to a room's members
+    over the web-client WebSocket plane.
+
+    Publishes to Redis ``room:{id}`` (cross-worker) — see :func:`_get_pub_redis`.
+    ``db`` is retained for signature stability but no longer used. Every delivery
+    is wrapped: a fanout failure must never break the agent reply.
+    """
+    try:
+        await _get_pub_redis().publish(f"room:{room_id}", json.dumps(envelope))
+    except Exception:
+        logger.debug("agent_chat_ws_deliver_failed", exc_info=True)
+
+
+def _stop_key(message_id: uuid.UUID | str) -> str:
+    return f"stable:agentstop:{message_id}"
+
+
+async def request_stop(message_id: uuid.UUID | str) -> None:
+    """Signal an in-flight agent reply (the placeholder message) to stop.
+
+    Cross-worker safe: the responder task runs on whichever uvicorn worker
+    scheduled it, while a ``/stop`` request can land on any of the 4 — so we
+    set a short-TTL Redis flag that the streaming loop polls between chunks,
+    the same Redis path used for ws fan-out. Best-effort; a failure just means
+    the reply finishes normally."""
+    try:
+        await _get_pub_redis().set(_stop_key(message_id), b"1", ex=120)
+    except Exception:
+        logger.debug("agent_chat_request_stop_failed", exc_info=True)
+
+
+async def _is_stop_requested(message_id: uuid.UUID | str) -> bool:
+    try:
+        return bool(await _get_pub_redis().get(_stop_key(message_id)))
+    except Exception:
+        return False
+
+
+async def _clear_stop(message_id: uuid.UUID | str) -> None:
+    try:
+        await _get_pub_redis().delete(_stop_key(message_id))
+    except Exception:
+        logger.debug("agent_chat_clear_stop_failed", exc_info=True)
 
 
 def schedule_response(
@@ -49,12 +124,20 @@ def schedule_response(
     session_factory: async_sessionmaker,
     livekit: LiveKitService,
     model: str | None = None,
+    is_regenerate: bool = False,
+    pinned_agent_id: str | None = None,
 ) -> None:
     """Fire-and-forget background task to generate an agent reply.
 
     Returns immediately. Errors are logged, not raised. ``model`` optionally
     overrides the resident agent's underlying LLM for this reply (the
     OpenWebUI-style mid-conversation model switcher).
+
+    ``is_regenerate`` marks an explicit user-driven regeneration: it bypasses
+    the channel @-mention gate (the user clicked Regenerate on a known reply,
+    so intent is unambiguous) and, with ``pinned_agent_id``, re-fires the SAME
+    agent that authored the original reply rather than re-deriving one from the
+    trigger's mentions (which could pick a different agent, or none).
     """
     if not settings.stable_text_agent_path_enabled:
         return
@@ -70,6 +153,8 @@ def schedule_response(
             session_factory=session_factory,
             livekit=livekit,
             model=model,
+            is_regenerate=is_regenerate,
+            pinned_agent_id=pinned_agent_id,
         )
     )
 
@@ -94,6 +179,8 @@ async def _respond(
     session_factory: async_sessionmaker,
     livekit: LiveKitService,
     model: str | None = None,
+    is_regenerate: bool = False,
+    pinned_agent_id: str | None = None,
 ) -> None:
     async with session_factory() as db:
         msg = (
@@ -126,13 +213,36 @@ async def _respond(
             return
 
         room_type = room.room_type.value if room.room_type else "channel"
-        brigade_agent_id, agent_participant = await _resolve_agent(
-            db=db, room=room
-        )
+
+        # On a regenerate we re-fire the SAME agent that authored the original
+        # reply (its id is pinned), not whichever agent the trigger's mentions
+        # would route to — otherwise a multi-agent channel could answer with a
+        # different agent, or none. Fall back to normal resolution only if that
+        # participant has since vanished.
+        brigade_agent_id: str | None = None
+        agent_participant: Participant | None = None
+        if pinned_agent_id:
+            agent_participant = (
+                await db.execute(
+                    select(Participant).where(
+                        Participant.keycloak_sub == f"brigade:{pinned_agent_id}"
+                    )
+                )
+            ).scalar_one_or_none()
+            if agent_participant is not None:
+                brigade_agent_id = pinned_agent_id
+        if brigade_agent_id is None or agent_participant is None:
+            brigade_agent_id, agent_participant = await _resolve_agent(
+                db=db, room=room, content=msg.content or "", room_type=room_type
+            )
         if not brigade_agent_id or agent_participant is None:
             return
 
-        if not _should_respond(
+        # Channel/group replies normally require an @-mention; an explicit
+        # Regenerate is unambiguous intent on a known reply, so it bypasses the
+        # gate (else regenerate could silently produce nothing after the old
+        # reply was already deleted).
+        if not is_regenerate and not _should_respond(
             room_type=room_type,
             content=msg.content or "",
             brigade_agent_id=brigade_agent_id,
@@ -173,6 +283,60 @@ async def _respond(
             except Exception:
                 logger.warning("rag_context_inject_failed", exc_info=True)
 
+        # Facilitator mode (opt-in via the /facilitate composer command): when
+        # the resident agent is an orchestrator, route this turn to the best
+        # specialist and let IT answer in-room as itself (turn-capped to one
+        # hand-off). Fully fail-safe — returns False on any issue so the
+        # orchestrator just answers normally.
+        if (
+            not is_regenerate
+            and isinstance(msg.metadata_, dict)
+            and msg.metadata_.get("facilitate")
+        ):
+            try:
+                from app.services.facilitator import try_facilitate
+
+                if await try_facilitate(
+                    db=db,
+                    settings=settings,
+                    livekit=livekit,
+                    room=room,
+                    user_msg=msg,
+                    sender_id=sender_id,
+                    orchestrator_id=brigade_agent_id,
+                    orchestrator_participant=agent_participant,
+                    history=oai_history,
+                ):
+                    return
+            except Exception:
+                logger.warning("facilitate_hook_failed", exc_info=True)
+
+        # Council mode (opt-in via the /council composer command): answer the
+        # question under several models in parallel and synthesize one reply.
+        # Fail-safe — returns False so a normal single-model reply proceeds.
+        if (
+            not is_regenerate
+            and isinstance(msg.metadata_, dict)
+            and msg.metadata_.get("council")
+        ):
+            try:
+                from app.services.council import try_council
+
+                if await try_council(
+                    db=db,
+                    settings=settings,
+                    livekit=livekit,
+                    room=room,
+                    user_msg=msg,
+                    sender_id=sender_id,
+                    agent_id=brigade_agent_id,
+                    agent_participant=agent_participant,
+                    history=oai_history,
+                ):
+                    return
+            except Exception:
+                logger.warning("council_hook_failed", exc_info=True)
+
         await _send_typing(
             livekit=livekit,
             livekit_room_name=room.livekit_room_name,
@@ -193,6 +357,34 @@ async def _respond(
             },
         )
 
+        # Deliver the (placeholder) agent reply to the web client over the ws
+        # plane in the exact WsMessageEvent shape. We reuse the REST serializer
+        # so field names match the frontend exactly. Best-effort; lazy import
+        # avoids an import cycle with app.api.messages.
+        try:
+            from app.api.messages import _msg_to_response as _serialize_msg
+
+            await _ws_deliver_to_room(
+                db=db,
+                room_id=room.id,
+                envelope={
+                    "type": "message",
+                    "payload": {
+                        "room_id": str(room.id),
+                        # streaming:true positively marks this as a live reply so
+                        # the client drives the Stop control off message.streaming
+                        # alone (never the "…" content heuristic, which a crashed
+                        # finalize could otherwise strand on a dead message).
+                        "streaming": True,
+                        "message": _serialize_msg(placeholder, 0).model_dump(
+                            mode="json"
+                        ),
+                    },
+                },
+            )
+        except Exception:
+            logger.debug("agent_chat_ws_new_message_failed", exc_info=True)
+
         # Effective LLM override: explicit per-message model wins; otherwise a
         # per-room override persisted on room metadata (set via the model
         # switcher / invite). None → Brigade uses the persona's default model.
@@ -201,15 +393,57 @@ async def _respond(
             raw_override = room.metadata_.get("model_override")
             if isinstance(raw_override, str) and raw_override:
                 effective_model = raw_override
+        if effective_model:
+            # Governed-override audit trail: overridden traffic still runs on
+            # Brigade's key (budgets/attribution hold); this line is the log.
+            logger.info(
+                "model_override_used",
+                room_id=str(room.id),
+                agent=brigade_agent_id,
+                model=effective_model,
+                source="message" if model else "room_metadata",
+            )
 
         accumulated = ""
+        artifact_meta: dict[str, str] | None = None
+        _last_push = [0.0]
+        _last_stop_check = [0.0]
+        stop_state: dict[str, bool] = {"stopped": False}
+
+        async def _should_stop() -> bool:
+            # Cross-worker stop check, throttled to ~4/s so we don't hit Redis
+            # per token. The user pressed Stop on this exact placeholder reply.
+            now = asyncio.get_running_loop().time()
+            if now - _last_stop_check[0] < 0.25:
+                return False
+            _last_stop_check[0] = now
+            return await _is_stop_requested(placeholder.id)
+
+        async def _on_progress(text: str, is_content: bool) -> None:
+            # Stream the reply (and pre-reply tool progress) into the placeholder
+            # over the ws plane as it arrives, so the user sees live activity
+            # instead of a static "…" for the whole 5-15s. Tool-status updates
+            # always push promptly; content tokens are throttled (~8/s).
+            now = asyncio.get_running_loop().time()
+            if (not is_content) or (now - _last_push[0] >= 0.12):
+                _last_push[0] = now
+                await _stream_patch(
+                    room_id=room.id,
+                    message_id=placeholder.id,
+                    content=text,
+                )
+
         try:
-            accumulated = await _call_brigade(
+            accumulated, artifact_meta = await _call_brigade(
                 settings=settings,
                 brigade_agent_id=brigade_agent_id,
                 user_id=str(sender_id) if sender_id else "anonymous",
                 messages=oai_history,
+                room=room,
                 model=effective_model,
+                on_progress=_on_progress,
+                should_stop=_should_stop,
+                stop_state=stop_state,
             )
         except Exception as exc:
             logger.exception("brigade_chat_call_failed")
@@ -218,15 +452,35 @@ async def _respond(
                     f"_(I had trouble reaching Brigade: {exc.__class__.__name__})_"
                 )
         finally:
+            stopped = bool(stop_state.get("stopped"))
             if not accumulated.strip():
-                accumulated = "_(empty reply)_"
+                accumulated = "_(stopped)_" if stopped else "_(empty reply)_"
+            elif stopped:
+                accumulated = accumulated.rstrip() + "\n\n_⏹ Stopped_"
+            # If the agent used a canvas tool, attach the artifact reference to
+            # this same reply message's metadata so the frontend can render an
+            # "Open in canvas" chip (merged, never clobbering existing keys).
+            # A `stopped` flag rides along when the user halted generation.
+            final_meta: dict[str, Any] | None = dict(artifact_meta or {})
+            if stopped:
+                final_meta["stopped"] = True
+            if not final_meta:
+                final_meta = None
             await _patch_message(
                 db=db,
                 livekit=livekit,
                 message_id=placeholder.id,
                 content=accumulated,
                 finalize=True,
+                extra_metadata=final_meta,
             )
+            await _clear_stop(placeholder.id)
+            if artifact_meta:
+                logger.info(
+                    "agent_chat_responder_artifact_attached",
+                    room_id=str(room.id),
+                    artifact_id=artifact_meta.get("artifact_id"),
+                )
             await _send_typing(
                 livekit=livekit,
                 livekit_room_name=room.livekit_room_name,
@@ -243,17 +497,50 @@ async def _respond(
 
 
 async def _resolve_agent(
-    *, db: Any, room: Room
+    *, db: Any, room: Room, content: str = "", room_type: str = "channel"
 ) -> tuple[str | None, Participant | None]:
-    """Find the Brigade agent attached to this room.
+    """Find the Brigade agent that should answer this message.
 
     Priority:
+        0. MULTI-AGENT ROOMS (group_dm/channel with >1 agent member): the agent
+           the message explicitly ``@``-mentions, so every invited agent is
+           individually addressable. DMs and single-agent rooms skip this.
         1. ``room.metadata_["brigade_agent_id"]`` (canonical, set when an
            agent is invited).
         2. First agent-typed RoomMember with a ``keycloak_sub`` of the form
            ``brigade:<id>`` (legacy rooms or rooms invited without metadata).
     Returns (brigade_agent_id, agent_participant) or (None, None).
     """
+    # 0. In a multi-agent group/channel, route to the @-mentioned member so a
+    # message like "@maj-metrics ..." reaches that agent even though it isn't
+    # the canonical (last-invited) one. Falls through when nobody specific is
+    # named (e.g. @all), leaving the canonical agent + _should_respond in charge.
+    if room_type != "dm" and content:
+        agent_members = (
+            await db.execute(
+                select(Participant)
+                .join(RoomMember, RoomMember.participant_id == Participant.id)
+                .where(
+                    RoomMember.room_id == room.id,
+                    Participant.participant_type == ParticipantType.AGENT,
+                )
+            )
+        ).scalars().all()
+        if len(agent_members) > 1:
+            lc = content.lower()
+            for p in agent_members:
+                sub = p.keycloak_sub or ""
+                if not sub.startswith("brigade:"):
+                    continue
+                bid = sub.split(":", 1)[1]
+                needles = {
+                    bid.lower(),
+                    bid.replace("-", " ").lower(),
+                    (p.display_name or "").lower(),
+                }
+                if any(n and f"@{n}" in lc for n in needles):
+                    return bid, p
+
     brigade_agent_id: str | None = None
     if room.metadata_ and isinstance(room.metadata_, dict):
         raw = room.metadata_.get("brigade_agent_id")
@@ -376,9 +663,237 @@ async def _build_history(
         text = (h.content or "").strip()
         if not text or text == "…":
             continue
+        # A user-stopped reply was abandoned on purpose — don't replay its
+        # partial text (or the "⏹ Stopped" UI marker) to the agent as if it
+        # were real assistant context on the next turn.
+        if isinstance(h.metadata_, dict) and h.metadata_.get("stopped"):
+            continue
         role = "assistant" if h.sender_id == agent_participant_id else "user"
         messages.append({"role": role, "content": text})
     return messages
+
+
+_CANVAS_TOOL_NAMES = {"canvas_create", "canvas_rewrite", "canvas_edit"}
+
+
+def _extract_canvas_artifact(data: Any) -> dict[str, str] | None:
+    """Pull a canvas artifact reference out of Brigade's ``toolCalls``.
+
+    Brigade runs tools server-side and returns, alongside ``content``, a
+    ``toolCalls`` array of ``{id, name, arguments, result, error}``. When the
+    agent used a canvas tool, one entry's ``name`` is in
+    :data:`_CANVAS_TOOL_NAMES` and its ``result`` carries the new/updated
+    artifact id — either nested (``{"result": {"artifact_id": ...}}``) or flat
+    (``{"artifact_id": ...}``). Returns
+    ``{"artifact_id": <uuid>, "artifact_title": <title>}`` (title omitted when
+    unknown) for the LAST successful canvas call, or ``None``.
+
+    Fully defensive: any missing/oddly-shaped field is a no-op (never raises).
+    The ``arguments`` may arrive as a dict or a JSON-encoded string.
+    """
+    try:
+        if not isinstance(data, dict):
+            return None
+        tool_calls = data.get("toolCalls")
+        if not isinstance(tool_calls, list):
+            return None
+
+        found: dict[str, str] | None = None
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            name = call.get("name")
+            if name not in _CANVAS_TOOL_NAMES:
+                continue
+            if call.get("error"):
+                continue
+
+            result = call.get("result")
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except Exception:
+                    result = None
+            if not isinstance(result, dict):
+                continue
+            # Handle both nested ({"result": {...}}) and flat ({...}) shapes.
+            inner = result.get("result")
+            body = inner if isinstance(inner, dict) else result
+            artifact_id = body.get("artifact_id")
+            if not isinstance(artifact_id, str) or not artifact_id:
+                continue
+
+            meta: dict[str, str] = {"artifact_id": artifact_id}
+            # Title only exists on create; pull from the tool arguments.
+            args = call.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = None
+            if isinstance(args, dict):
+                title = args.get("title")
+                if isinstance(title, str) and title.strip():
+                    meta["artifact_title"] = title.strip()
+            found = meta  # keep the last successful canvas call
+        return found
+    except Exception:
+        logger.warning("brigade_toolcalls_parse_failed", exc_info=True)
+        return None
+
+
+_TOOL_STATUS = {
+    "cdr_search": "🔍 _Searching the web…_",
+    "cdr_quick_answer": "🔍 _Searching the web…_",
+    "cdr_deep_research": "🔬 _Researching…_",
+    "web_search": "🔍 _Searching the web…_",
+    "search_knowledge": "📚 _Searching your documents…_",
+    "canvas_create": "📝 _Writing to the canvas…_",
+    "canvas_rewrite": "📝 _Updating the canvas…_",
+    "canvas_edit": "📝 _Editing the canvas…_",
+    "memory": "🧠 _Recalling…_",
+    "delegate_to_agent": "👥 _Asking a specialist…_",
+}
+
+
+def _tool_status(name: str | None) -> str:
+    if name and name in _TOOL_STATUS:
+        return _TOOL_STATUS[name]
+    return f"⚙️ _Using {name or 'a tool'}…_"
+
+
+async def _stream_patch(
+    *, room_id: uuid.UUID, message_id: uuid.UUID, content: str
+) -> None:
+    """Push an incremental streaming update of the agent's reply to the web
+    client over the ws plane (a ``message_edit``), WITHOUT a DB write — the final
+    ``_patch_message(finalize=True)`` persists the complete content, keeping the
+    DB off the per-chunk hot path. Best-effort; a failure never breaks the reply."""
+    from datetime import datetime, timezone
+
+    try:
+        await _ws_deliver_to_room(
+            db=None,
+            room_id=room_id,
+            envelope={
+                "type": "message_edit",
+                "payload": {
+                    "room_id": str(room_id),
+                    "message_id": str(message_id),
+                    "content": content,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "streaming": True,
+                },
+            },
+        )
+    except Exception:
+        logger.debug("agent_chat_stream_patch_failed", exc_info=True)
+
+
+def _brigade_error_reply(status: int, body: str) -> str:
+    """Friendly room message for a failed Brigade call.
+
+    Federated / edge agents (e.g. the laptop-backed ``companion``) return
+    502/503 when their backing node is asleep, offline, or has sharing toggled
+    off. Surface that plainly instead of a "check backend logs" reference so a
+    room reads cleanly when a device drops out of rotation."""
+    low = (body or "").lower()
+    if (
+        status in (502, 503)
+        or "serviceunavailable" in low
+        or "sharing disabled" in low
+        or "no fallback model group" in low
+        or "may be offline" in low
+    ):
+        return (
+            "_This agent is offline right now \u2014 its backing node (e.g. a "
+            "laptop) may be asleep or unavailable. It'll respond once it's back._"
+        )
+    return f"_(Brigade returned {status}; check backend logs.)_"
+
+
+async def _call_brigade_streaming(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    on_progress: Any,
+    should_stop: Any = None,
+    stop_state: dict[str, bool] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Stream Brigade's reply over SSE (POST stream=true). Forwards token deltas
+    (accumulated content) and pre-content tool_call events to
+    ``on_progress(text, is_content)``. Returns (final content, artifact meta).
+
+    If ``should_stop`` is given, it is awaited between SSE lines; when it returns
+    True the stream is abandoned (the httpx context manager closes the upstream
+    connection on break) and ``stop_state["stopped"]`` is set so the caller can
+    finalize whatever was produced so far."""
+    payload = {**payload, "stream": True}
+    full = ""
+    saw_token = False
+    final_evt: dict[str, Any] | None = None
+    tool_calls_log: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as http:
+        async with http.stream("POST", url, headers=headers, json=payload) as resp:
+            if resp.status_code >= 300:
+                body = (await resp.aread())[:300].decode("utf-8", "replace")
+                logger.warning(
+                    "brigade_chat_http_error",
+                    status=resp.status_code,
+                    body=body,
+                    url=url,
+                )
+                return (
+                    _brigade_error_reply(resp.status_code, body),
+                    None,
+                )
+            async for line in resp.aiter_lines():
+                if should_stop is not None:
+                    try:
+                        if await should_stop():
+                            if stop_state is not None:
+                                stop_state["stopped"] = True
+                            logger.info("brigade_stream_stopped_by_user")
+                            break
+                    except Exception:
+                        logger.debug("brigade_stream_stop_check_failed", exc_info=True)
+                if not line or not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    evt = json.loads(chunk)
+                except Exception:
+                    continue
+                etype = evt.get("type")
+                if etype == "token":
+                    tok = evt.get("content") or ""
+                    if tok:
+                        full += tok
+                        saw_token = True
+                        try:
+                            await on_progress(full, True)
+                        except Exception:
+                            logger.debug("brigade_stream_progress_failed", exc_info=True)
+                elif etype == "tool_call":
+                    tool_calls_log.append(
+                        {"name": evt.get("name"), "arguments": evt.get("arguments")}
+                    )
+                    if not saw_token:
+                        try:
+                            await on_progress(_tool_status(evt.get("name")), False)
+                        except Exception:
+                            logger.debug("brigade_stream_progress_failed", exc_info=True)
+                elif etype == "complete":
+                    final_evt = evt
+    if final_evt and isinstance(final_evt.get("content"), str) and final_evt["content"].strip():
+        full = final_evt["content"]
+    tool_calls = (final_evt or {}).get("toolCalls") or tool_calls_log
+    artifact_meta = _extract_canvas_artifact({"toolCalls": tool_calls, "content": full})
+    if not full.strip():
+        full = "_(empty reply from Brigade)_"
+    return full, artifact_meta
 
 
 async def _call_brigade(
@@ -387,14 +902,23 @@ async def _call_brigade(
     brigade_agent_id: str,
     user_id: str,
     messages: list[dict[str, str]],
+    room: Room,
     model: str | None = None,
-) -> str:
-    """POST to Brigade's dedicated chat endpoint and return the reply text.
+    on_progress: Any = None,
+    should_stop: Any = None,
+    stop_state: dict[str, bool] | None = None,
+) -> tuple[str, dict[str, str] | None]:
+    """POST to Brigade's chat endpoint; return (reply text, canvas artifact meta).
 
     Uses ``POST {brigade_api_base_url}/agents/{agent_id}/chat`` with an
     ``X-API-Key`` header — the path the brief specifies as the full-tool-use
-    contract. Non-streaming: Brigade returns ``{"content": "..."}`` once the
-    upstream agent finishes its reasoning + tool round-trips (5–15s typical).
+    contract. Non-streaming: Brigade returns ``{"content": "...", "toolCalls":
+    [...]}`` once the upstream agent finishes its reasoning + tool round-trips
+    (5–15s typical). ``room`` is threaded so the room context (id + livekit
+    name) can be sent — Brigade's server-side canvas tools need it to know
+    which room to write to. The second tuple element is the canvas artifact
+    reference (``{"artifact_id", "artifact_title"?}``) when the agent used a
+    canvas tool, else ``None``.
     """
     base = settings.brigade_api_base_url.rstrip("/")
     url = f"{base}/agents/{brigade_agent_id}/chat"
@@ -407,27 +931,34 @@ async def _call_brigade(
         if m.get("role") == "user":
             last_user_msg = m.get("content", "")
             break
-    # Split the chronological turns into prior-history + the current message.
     # Brigade's ChatRequest reads PRIOR turns from `history` and appends
-    # `message` as the current user turn -> it IGNORES an unknown `messages`
-    # field, which is why the agent had zero memory turn-to-turn. `messages`
-    # (oldest-first) ends with the current user turn, so history = all before it.
-    history = list(messages)
-    if (
-        history
-        and history[-1].get("role") == "user"
-        and history[-1].get("content", "") == last_user_msg
-    ):
-        history = history[:-1]
+    # `message` as the current turn; it has NO `messages` field, so sending the
+    # whole conversation as `messages` gave the agent zero memory turn-to-turn.
+    # Send prior turns as `history` (current trailing user turn stripped off).
+    _history = list(messages)
+    if (_history and _history[-1].get("role") == "user"
+            and _history[-1].get("content", "") == last_user_msg):
+        _history = _history[:-1]
     payload: dict[str, Any] = {
         "message": last_user_msg,
-        "history": history,
+        "history": _history,
         "user": user_id,
+        # Room context for server-side tools (e.g. canvas) — additive; Brigade
+        # ignores these if it doesn't use them.
+        "room_id": str(room.id),
+        "room_name": room.livekit_room_name,
     }
     # Per-conversation LLM override (model switcher). Brigade's /agents/{id}/chat
     # honors a `model` field that overrides the persona's configured model.
     if model:
         payload["model"] = model
+
+    # Streaming path: when the caller wants live progress, POST with stream=true
+    # and forward Brigade's SSE token / tool_call events through on_progress.
+    if on_progress is not None:
+        return await _call_brigade_streaming(
+            url, headers, payload, on_progress, should_stop, stop_state
+        )
 
     async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as http:
         resp = await http.post(url, headers=headers, json=payload)
@@ -438,11 +969,16 @@ async def _call_brigade(
                 body=resp.text[:300],
                 url=url,
             )
-            return f"_(Brigade returned {resp.status_code}; check backend logs.)_"
+            return (
+                _brigade_error_reply(resp.status_code, resp.text),
+                None,
+            )
         try:
             data = resp.json()
         except Exception:
-            return resp.text or "_(empty reply)_"
+            return resp.text or "_(empty reply)_", None
+
+    artifact_meta = _extract_canvas_artifact(data)
 
     content = data.get("content") if isinstance(data, dict) else None
     if not isinstance(content, str) or not content.strip():
@@ -451,14 +987,14 @@ async def _call_brigade(
         if isinstance(data, dict):
             for key in ("reply", "text", "answer"):
                 if isinstance(data.get(key), str) and data[key].strip():
-                    return data[key]
+                    return data[key], artifact_meta
             choices = data.get("choices") or []
             if choices and isinstance(choices, list):
                 msg0 = choices[0].get("message") if isinstance(choices[0], dict) else None
                 if isinstance(msg0, dict) and isinstance(msg0.get("content"), str):
-                    return msg0["content"]
-        return "_(empty reply from Brigade)_"
-    return content
+                    return msg0["content"], artifact_meta
+        return "_(empty reply from Brigade)_", artifact_meta
+    return content, artifact_meta
 
 
 async def _patch_message(
@@ -468,16 +1004,59 @@ async def _patch_message(
     message_id: uuid.UUID,
     content: str,
     finalize: bool,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> None:
     msg = (
         await db.execute(select(Message).where(Message.id == message_id))
     ).scalar_one_or_none()
-    if msg is None:
+    # Bail if the placeholder was deleted out from under us — e.g. a Regenerate
+    # soft-deleted this reply and started a fresh one. An orphaned responder
+    # task must never overwrite or "resurrect" a message every client already
+    # dropped. (Regenerate also request_stop()s this id, so this is rare.)
+    if msg is None or msg.is_deleted:
         return
     msg.content = content
     if finalize:
         msg.is_edited = True
+    # Merge any extra metadata (e.g. a canvas artifact reference) onto the
+    # message without clobbering keys set when the placeholder was created
+    # (agent_id, source). Defensive — a bad value must not break the reply.
+    if extra_metadata:
+        try:
+            merged = dict(msg.metadata_ or {})
+            merged.update(extra_metadata)
+            msg.metadata_ = merged
+        except Exception:
+            logger.warning("agent_chat_metadata_merge_failed", exc_info=True)
     await db.commit()
+
+    # Deliver the patched content to the web client over the ws plane as a
+    # `message_edit` (the WsMessageEditEvent shape). The LiveKit `message_updated`
+    # send below only reaches in-room voice agents.
+    from datetime import datetime, timezone
+
+    updated_at = (
+        msg.edited_at.isoformat()
+        if msg.edited_at
+        else datetime.now(timezone.utc).isoformat()
+    )
+    await _ws_deliver_to_room(
+        db=db,
+        room_id=msg.room_id,
+        envelope={
+            "type": "message_edit",
+            "payload": {
+                "room_id": str(msg.room_id),
+                "message_id": str(msg.id),
+                "content": msg.content,
+                "updated_at": updated_at,
+                # On finalize, positively assert the terminal state rather than
+                # leaving the client to infer it from the absence of the flag —
+                # so a single lost streaming frame can't strand the Stop pill.
+                **({"streaming": False} if finalize else {}),
+            },
+        },
+    )
 
     room = (
         await db.execute(select(Room).where(Room.id == msg.room_id))
@@ -492,6 +1071,7 @@ async def _patch_message(
                 "message_id": str(msg.id),
                 "room_id": str(msg.room_id),
                 "content": msg.content,
+                "metadata": msg.metadata_,
                 "finalize": finalize,
             },
         )

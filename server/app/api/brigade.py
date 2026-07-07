@@ -26,11 +26,48 @@ class BrigadeAgent(BaseModel):
     description: str = ""
 
 
+class BrigadeRosterAgent(BaseModel):
+    """Rich agent record for the org-chart / roster view.
+
+    Sourced from Brigade's native ``/agents`` endpoint (the source of truth),
+    flattened to the shape the Stable frontend's ``Agent`` type expects plus the
+    extra org-chart fields (rank, title, domain, tools). ``emoji`` carries
+    Brigade's single-glyph avatar; ``avatar_url`` passes through Brigade's
+    ``avatarUrl`` image URL (null for agents that haven't set one).
+    """
+
+    id: str
+    name: str
+    display_name: str
+    description: str = ""
+    avatar_url: str | None = None
+    emoji: str | None = None
+    status: str = "active"
+    capabilities: list[str] = []
+    model: str = ""
+    rank: str | None = None
+    title: str | None = None
+    domain: str | None = None
+    affiliation: str = "employee"
+    tools: list[str] = []
+    # Per-tool cost/permission detail + rollup (from Brigade's tool_catalog).
+    tool_details: list[dict[str, Any]] = []
+    tool_cost_summary: dict[str, Any] | None = None
+
+
 class InviteAgentRequest(BaseModel):
     brigade_agent_id: str
     # Optional per-conversation LLM override (model switcher), persisted on the
     # room so both the voice dispatch and the text responder use it.
     model: str | None = None
+    # When False, only bind the agent to the room (membership + metadata for
+    # the text responder) without dispatching a LiveKit voice worker. Text
+    # contexts (creating a DM thread, switching the resident agent outside a
+    # call) must pass False — a worker dispatched with no call to join sits in
+    # an empty LiveKit room, and a second dispatch at call time then collides
+    # with it (both jobs share the "agent-brigade" identity and kill each
+    # other, leaving the call agentless).
+    dispatch: bool = True
 
 
 class InviteAgentResponse(BaseModel):
@@ -88,22 +125,157 @@ async def list_brigade_agents(
     return await _fetch_brigade_agents()
 
 
+def _brigade_native_base() -> str:
+    """Brigade's native /api/v1 base (strip the OpenAI-compat ``/openai/v1`` tail)."""
+    base = get_settings().brigade_base_url.rstrip("/")
+    return base[: -len("/openai/v1")] if base.endswith("/openai/v1") else base
+
+
+async def _fetch_brigade_roster() -> list[BrigadeRosterAgent]:
+    """Fetch the RICH agent roster from Brigade's native ``/agents`` endpoint.
+
+    Unlike ``/models`` (OpenAI-shaped: id/name/description only), the native
+    ``/agents`` endpoint returns rank, title, model, avatar, domain, tools and
+    capabilities — everything the org-chart view needs. Fail-safe: any upstream
+    error raises 502 so the caller can degrade gracefully.
+    """
+    settings = get_settings()
+    if not settings.brigade_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Brigade not configured. Set BRIGADE_API_KEY in the Stable backend.",
+        )
+    url = _brigade_native_base() + "/agents"
+    headers = {"Authorization": f"Bearer {settings.brigade_api_key}"}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+        except httpx.HTTPError as e:
+            logger.error("brigade_roster_fetch_failed", url=url, error=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not reach Brigade: {e}",
+            )
+
+    items = body.get("agents", []) if isinstance(body, dict) else (body or [])
+    roster: list[BrigadeRosterAgent] = []
+    for it in items:
+        raw_status = (it.get("status") or "active").lower()
+        ui_status = "offline" if raw_status in ("offline", "inactive", "disabled") else "active"
+        name = it.get("displayName") or it.get("name") or it["id"]
+        caps = it.get("capabilities") or []
+        tools = it.get("tools") or []
+        tool_details = it.get("toolDetails") or []
+        # Affiliation now comes from Brigade's shared tool/affiliation catalog.
+        # Fall back to a model-derived guess if an older Brigade hasn't populated
+        # it yet (frontier API model -> frontier; otherwise we run it -> employee).
+        affiliation = (it.get("affiliation") or "").strip().lower()
+        if affiliation not in ("employee", "contractor", "third_party", "frontier"):
+            m = (it.get("model") or "").lower()
+            affiliation = (
+                "frontier"
+                if m.startswith(("anthropic/", "openai/", "google/"))
+                or m.startswith(("claude", "gpt", "gemini"))
+                else "employee"
+            )
+        roster.append(
+            BrigadeRosterAgent(
+                id=it["id"],
+                name=name,
+                display_name=it.get("displayName") or it.get("name") or it["id"],
+                description=it.get("bio") or it.get("title") or "",
+                avatar_url=it.get("avatarUrl") or None,
+                emoji=(it.get("avatar") or None),
+                status=ui_status,
+                capabilities=[str(c) for c in caps] if isinstance(caps, list) else [],
+                model=it.get("model") or "",
+                rank=it.get("rank"),
+                title=it.get("title"),
+                domain=it.get("domain"),
+                affiliation=affiliation,
+                tools=[str(t) for t in tools] if isinstance(tools, list) else [],
+                tool_details=tool_details if isinstance(tool_details, list) else [],
+                tool_cost_summary=it.get("toolCostSummary"),
+            )
+        )
+    return roster
+
+
+@router.get("/brigade/roster", response_model=list[BrigadeRosterAgent])
+async def list_brigade_roster(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> list[BrigadeRosterAgent]:
+    """The rich agent roster for the org-chart view (rank/title/model/tools)."""
+    return await _fetch_brigade_roster()
+
+
 class ChatModel(BaseModel):
     id: str
     label: str
     family: str = ""
+    # Curated-menu metadata (all optional so old clients keep working):
+    badge: str = ""  # "Local" | "Cloud"
+    desc: str = ""   # one-line human description
+    cost: str = ""   # "included" | "$" — coarse cost signal for the picker
 
 
-# Curated set of underlying LLMs the model switcher offers. Each id is a valid
-# Brigade `model` override, verified to route 200 + clean (no <think>); Brigade
-# resolves these through litellm (no-think baked in for qwen). The first entry
-# is the default Majik runs on. Add new ids only after verifying they route.
+# Curated tiers the model switcher offers — the governed menu (Glean/Researcher
+# pattern): a short allowlist of verified lanes, local-first, labeled by what
+# they are FOR rather than raw catalog ids. Every id is a verified-working
+# Brigade `model` override on the uchub gateway (checked 2026-07-04); qwen
+# lanes are no-think per fleet policy. "Auto" (no override) is rendered by the
+# client as the default row. Add ids only after verifying they route 200.
 _SWITCHER_MODELS: list[dict[str, str]] = [
-    {"id": "qwen3.6-35b-a3b", "label": "Qwen 3.6 35B A3B", "family": "qwen"},
-    {"id": "qwen3.5-35b-a3b", "label": "Qwen 3.5 35B A3B", "family": "qwen"},
-    {"id": "llama-3.3-70b-instruct", "label": "Llama 3.3 70B", "family": "llama"},
-    {"id": "gpt-4o", "label": "GPT-4o", "family": "openai"},
-    {"id": "gpt-4o-mini", "label": "GPT-4o mini", "family": "openai"},
+    {
+        "id": "uc/chat-default-nothink",
+        "label": "Qwen 3.6 35B - house brain",
+        "family": "Local fleet - private",
+        "badge": "Local",
+        "desc": "The 3090 lane Majik runs on. Fast, 131k context, never leaves the rack.",
+        "cost": "included",
+    },
+    {
+        "id": "uc/chat-local-p40",
+        "label": "Qwen 3.6 35B - long-haul P40",
+        "family": "Local fleet - private",
+        "badge": "Local",
+        "desc": "Same brain on the P40 pool - use when the 3090 lane is busy.",
+        "cost": "included",
+    },
+    {
+        "id": "openrouter/anthropic/claude-sonnet-4.6",
+        "label": "Claude Sonnet 4.6",
+        "family": "Frontier - cloud",
+        "badge": "Cloud",
+        "desc": "Frontier reasoning for the genuinely hard stuff.",
+        "cost": "$",
+    },
+    {
+        "id": "openrouter/anthropic/claude-haiku-4.5",
+        "label": "Claude Haiku 4.5",
+        "family": "Frontier - cloud",
+        "badge": "Cloud",
+        "desc": "Snappy frontier-lite - cheap cloud speed.",
+        "cost": "$",
+    },
+    {
+        "id": "openrouter/moonshotai/kimi-k2.5",
+        "label": "Kimi K2.5",
+        "family": "Frontier - cloud",
+        "badge": "Cloud",
+        "desc": "Open-weights agentic heavyweight - strong tool use.",
+        "cost": "$",
+    },
+    {
+        "id": "deepseek-v4-flash",
+        "label": "DeepSeek V4 Flash",
+        "family": "Frontier - cloud",
+        "badge": "Cloud",
+        "desc": "Cheap, fast cloud overflow lane.",
+        "cost": "$",
+    },
 ]
 
 
@@ -250,16 +422,46 @@ async def invite_brigade_agent(
     # so a False/degraded dispatch is not a hard failure -- it just means the
     # agent has no live in-room (voice/media) presence yet. dispatch_agent also
     # writes room metadata, so even an auto-accept worker gets brigade_agent_id.
-    result = await livekit.dispatch_agent(
-        room_name=lk_name,
-        agent_name=settings.brigade_worker_agent_name,
-        metadata={
-            "agent_type": "brigade",
-            "brigade_agent_id": body.brigade_agent_id,
-            **({"model_override": body.model} if body.model else {}),
-            "invited_by": user.get("sub") or user.get("preferred_username") or "",
-        },
-    )
+    skip_reason: str | None = None
+    if not body.dispatch:
+        skip_reason = "dispatch_not_requested"
+    else:
+        # Idempotency guard: all brigade workers join LiveKit as identity
+        # "agent-brigade", and LiveKit's duplicate-identity handling makes two
+        # live jobs in one room kill each other -- the room ends up agentless
+        # while the human sits in the call. If a worker is already in the
+        # room, keep it rather than dispatching a second one.
+        try:
+            lk_state = await livekit.get_room(lk_name)
+            for p in lk_state["participants"]:
+                identity = getattr(p, "identity", "") or ""
+                if identity.startswith("agent-"):
+                    skip_reason = f"agent_already_in_room:{identity}"
+                    break
+        except Exception:
+            logger.warning(
+                "agent_presence_check_failed", room=lk_name, exc_info=True
+            )
+
+    if skip_reason:
+        logger.info(
+            "agent_dispatch_skipped",
+            room=lk_name,
+            brigade_agent_id=body.brigade_agent_id,
+            reason=skip_reason,
+        )
+        result: dict[str, Any] = {"dispatched": False, "reason": skip_reason}
+    else:
+        result = await livekit.dispatch_agent(
+            room_name=lk_name,
+            agent_name=settings.brigade_worker_agent_name,
+            metadata={
+                "agent_type": "brigade",
+                "brigade_agent_id": body.brigade_agent_id,
+                **({"model_override": body.model} if body.model else {}),
+                "invited_by": user.get("sub") or user.get("preferred_username") or "",
+            },
+        )
 
     # Make the agent visible in the participant strip immediately by creating
     # the agent Participant + room membership now (instead of waiting for the

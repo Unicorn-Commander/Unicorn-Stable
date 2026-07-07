@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import structlog
@@ -23,6 +24,26 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
+async def _safe_send(ws: WebSocket, data: dict[str, Any]) -> None:
+    """Serialize every send on a socket behind a per-connection lock.
+
+    A single WS is written by THREE concurrent producers: the Redis pub/sub
+    forwarder task, the client-event handler (heartbeat/errors), and the
+    in-process ConnectionManager (reaction fanout from API handlers). Starlette
+    WebSockets are NOT safe for concurrent sends — two overlapping send_json
+    calls corrupt the ASGI send state and raise, which ends one of the endpoint
+    tasks and (via FIRST_COMPLETED) tears the whole socket down. That surfaced
+    as random "connection lost" drops, especially in a quiet room where the
+    heartbeat send was the only traffic to collide with. The lock lives on the
+    socket so all three producers share it."""
+    lock = getattr(ws, "_send_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        ws._send_lock = lock  # type: ignore[attr-defined]
+    async with lock:
+        await ws.send_json(data)
+
+
 class ConnectionManager:
     """Manages active WebSocket connections and Redis pub/sub subscriptions."""
 
@@ -42,7 +63,7 @@ class ConnectionManager:
         ws = self._connections.get(participant_id)
         if ws:
             try:
-                await ws.send_json(data)
+                await _safe_send(ws, data)
             except Exception:
                 logger.exception("ws_send_failed", participant_id=participant_id)
                 self.disconnect(participant_id)
@@ -108,10 +129,34 @@ async def _subscribe_to_rooms(
     channels.append(f"user:{participant_id}")
 
     await pubsub.subscribe(*channels)
+    subscribed: set[str] = set(channels)
     logger.debug("ws_subscribed_to_channels", channels=channels, participant_id=participant_id)
+
+    # Rooms the user joins/opens AFTER connect (e.g. a brand-new DM with an
+    # agent) aren't in the snapshot above, so their live messages would never
+    # arrive until a page refresh. Re-derive the membership list periodically
+    # and subscribe to any new room channels so realtime just works.
+    session_factory = websocket.app.state.db_session_factory
+    last_refresh = time.monotonic()
+    REFRESH_EVERY_S = 4.0
 
     try:
         while True:
+            if time.monotonic() - last_refresh >= REFRESH_EVERY_S:
+                last_refresh = time.monotonic()
+                try:
+                    async with session_factory() as _db:
+                        _rids = await _get_user_room_ids(_db, participant_id)
+                    _fresh = [
+                        f"room:{rid}" for rid in _rids
+                        if f"room:{rid}" not in subscribed
+                    ]
+                    if _fresh:
+                        await pubsub.subscribe(*_fresh)
+                        subscribed.update(_fresh)
+                        logger.debug("ws_dyn_subscribed", channels=_fresh, participant_id=participant_id)
+                except Exception:
+                    logger.debug("ws_room_refresh_failed", exc_info=True)
             # Poll with an explicit per-read timeout rather than pubsub.listen().
             # redis-py 8.x derives a *blocking* read's timeout from the connection's
             # socket_timeout, so listen() — which is meant to block forever — instead
@@ -134,14 +179,14 @@ async def _subscribe_to_rooms(
                 if isinstance(data_raw, bytes):
                     data_raw = data_raw.decode("utf-8")
                 data = json.loads(data_raw)
-                await websocket.send_json(data)
+                await _safe_send(websocket, data)
             except (json.JSONDecodeError, WebSocketDisconnect):
                 break
             except Exception:
                 logger.exception("ws_pubsub_forward_error", participant_id=participant_id)
                 break
     finally:
-        await pubsub.unsubscribe(*channels)
+        await pubsub.unsubscribe()
         await pubsub.aclose()
 
 
@@ -159,7 +204,7 @@ async def _handle_client_events(
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_json({"error": "invalid_json"})
+                await _safe_send(websocket, {"error": "invalid_json"})
                 continue
 
             event_type = data.get("type")
@@ -227,12 +272,17 @@ async def _handle_client_events(
                         }),
                     )
 
-            elif event_type == "heartbeat":
+            elif event_type in ("heartbeat", "ping"):
+                # The web client sends {type:"ping"} every 25s and treats ANY
+                # inbound frame as proof-of-life (it also special-cases "pong").
+                # Refresh presence TTL and answer so a quiet room never looks
+                # dead. (Previously "ping" fell through to the else and got an
+                # error back + never refreshed presence.)
                 await presence.heartbeat(participant_id)
-                await websocket.send_json({"type": "heartbeat_ack"})
+                await _safe_send(websocket, {"type": "pong"})
 
             else:
-                await websocket.send_json({
+                await _safe_send(websocket, {
                     "error": "unknown_event_type",
                     "event_type": event_type,
                 })

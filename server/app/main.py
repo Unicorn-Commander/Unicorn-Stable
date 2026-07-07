@@ -13,13 +13,19 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.agents import router as agents_router
+from app.api.artifacts import router as artifacts_router
+from app.api.internal_artifacts import router as internal_artifacts_router
 from app.api.brigade import router as brigade_router
 from app.api.health import router as health_router
+from app.api.internal_knowledge import router as internal_knowledge_router
+from app.api.knowledge import router as knowledge_router
 from app.api.messages import router as messages_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
+from app.api.tts import router as tts_router
 from app.api.uploads import router as uploads_router
 from app.api.users import router as users_router
+from app.api.push import router as push_router
 from app.api.webhooks import router as webhooks_router
 from app.auth.keycloak import fetch_jwks, start_jwks_refresh_task
 from app.config import get_settings
@@ -153,11 +159,17 @@ def create_app() -> FastAPI:
     app.include_router(rooms_router, prefix="/api/v1", tags=["Rooms"])
     app.include_router(messages_router, prefix="/api/v1", tags=["Messages"])
     app.include_router(tokens_router, prefix="/api/v1", tags=["Tokens"])
+    app.include_router(tts_router, prefix="/api/v1", tags=["TTS"])
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
+    app.include_router(artifacts_router, prefix="/api/v1", tags=["Artifacts"])
+    app.include_router(internal_artifacts_router, prefix="/api/v1", tags=["Artifacts"])
+    app.include_router(knowledge_router, prefix="/api/v1", tags=["Knowledge"])
+    app.include_router(internal_knowledge_router, prefix="/api/v1", tags=["Knowledge"])
     app.include_router(users_router, prefix="/api/v1", tags=["Users"])
     app.include_router(uploads_router, prefix="/api/v1", tags=["Uploads"])
     app.include_router(webhooks_router, prefix="/api/v1", tags=["Webhooks"])
+    app.include_router(push_router, prefix="/api/v1", tags=["Push"])
     app.include_router(ws_router, tags=["WebSocket"])
 
     # Uploaded attachments are served ONLY by the authenticated signed-URL route

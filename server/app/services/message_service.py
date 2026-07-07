@@ -46,10 +46,19 @@ class MessageService:
                 RoomMember.participant_id == sender_id,
             )
         )
-        if membership_result.scalar_one_or_none() is None:
+        membership = membership_result.scalar_one_or_none()
+        if membership is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not a member of this room",
+            )
+        # A muted member can read but not post (per-room moderation). Enforced
+        # here so every send path — HTTP and the internal agent reply — honors
+        # it; the API/UI also surfaces it, but this is the authoritative gate.
+        if membership.is_muted:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You've been muted in this room and can't post right now.",
             )
 
         # If parent_id provided, verify it exists and belongs to the same room
@@ -390,6 +399,38 @@ class MessageService:
             select(Message)
             .where(
                 Message.room_id == room_id,
+                Message.is_deleted == False,  # noqa: E712
+                Message.content.ilike(f"%{query_text}%"),
+            )
+            .order_by(desc(Message.created_at))
+            .limit(limit)
+        )
+
+        result = await self._db.execute(query)
+        return list(result.scalars().all())
+
+    async def search_all_messages(
+        self,
+        participant_id: uuid.UUID,
+        query_text: str,
+        limit: int = 30,
+    ) -> list[Message]:
+        """Full-text search across every room the participant belongs to.
+
+        Scoped to the caller's room memberships so results never leak from
+        rooms the user is not in. Reuses the ``ix_messages_content_trgm`` GIN
+        index that backs the per-room search.
+        """
+        if not query_text.strip():
+            return []
+
+        member_subq = select(RoomMember.room_id).where(
+            RoomMember.participant_id == participant_id
+        )
+        query = (
+            select(Message)
+            .where(
+                Message.room_id.in_(member_subq),
                 Message.is_deleted == False,  # noqa: E712
                 Message.content.ilike(f"%{query_text}%"),
             )

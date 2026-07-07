@@ -16,7 +16,7 @@ from app.deps import (
     get_presence,
     require_room_member,
 )
-from app.models.room import Room, RoomMember
+from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageResponse
 from app.schemas.room import (
     RoomCreate,
@@ -42,7 +42,20 @@ def _build_room_service(
     return RoomService(db=db, livekit=livekit, presence=presence)
 
 
-def _room_to_response(room: Any, member_count: int = 0, online_count: int = 0) -> RoomResponse:
+def _room_to_response(
+    room: Any,
+    member_count: int = 0,
+    online_count: int = 0,
+    last_message: Any = None,
+    unread_count: int = 0,
+) -> RoomResponse:
+    last_msg_resp = None
+    if last_message is not None:
+        # Reuse the canonical Message serializer (flattens sender_*, maps
+        # parent_id -> thread_id) so last_message matches getMessages output.
+        from app.api.messages import _msg_to_response
+
+        last_msg_resp = _msg_to_response(last_message)
     return RoomResponse(
         id=room.id,
         name=room.name,
@@ -59,6 +72,8 @@ def _room_to_response(room: Any, member_count: int = 0, online_count: int = 0) -
         updated_at=room.updated_at,
         member_count=member_count,
         online_count=online_count,
+        last_message=last_msg_resp,
+        unread_count=unread_count,
     )
 
 
@@ -119,6 +134,111 @@ async def bootstrap_default_rooms(
         created_count=len(created),
     )
     return created
+
+
+# Standing always-on video/conference rooms. Public channels (self-joinable),
+# flagged conference in metadata so the UI surfaces them with a call affordance.
+# Created lazily the first time anyone enters one, then they persist.
+CONFERENCE_ROOMS = [
+    # slug, display_name, description
+    (
+        "main-conference",
+        "Main Conference Hall",
+        "Always-on video room for the whole team — drop in anytime.",
+    ),
+    (
+        "war-room",
+        "War Room",
+        "Standing room for incidents, deep work, and live problem-solving.",
+    ),
+]
+
+
+class ConferenceRoomInfo(BaseModel):
+    slug: str
+    display_name: str
+    description: str
+
+
+@router.get("/rooms/conference/catalog", response_model=list[ConferenceRoomInfo])
+async def conference_catalog(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> list[ConferenceRoomInfo]:
+    """The fixed set of standing conference rooms (whether or not yet created)."""
+    return [
+        ConferenceRoomInfo(slug=s, display_name=d, description=desc)
+        for s, d, desc in CONFERENCE_ROOMS
+    ]
+
+
+@router.post("/rooms/conference/{slug}/enter", response_model=RoomResponse)
+async def enter_conference_room(
+    slug: str,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+) -> RoomResponse:
+    """Enter a standing conference room — create-or-get, then ensure membership.
+
+    Idempotent and race-safe: lazily creates the canonical room the first time
+    anyone enters, then every subsequent caller just joins the existing one.
+    """
+    match = next((c for c in CONFERENCE_ROOMS if c[0] == slug), None)
+    if match is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Unknown conference room",
+        )
+    name, display_name, description = match
+    svc = _build_room_service(db, livekit, presence)
+
+    async def _by_name() -> Room | None:
+        res = await db.execute(select(Room).where(Room.name == name))
+        return res.scalar_one_or_none()
+
+    room = await _by_name()
+    if room is None:
+        try:
+            room = await svc.create_room(
+                name=name,
+                display_name=display_name,
+                room_type="channel",
+                creator_id=user["participant_id"],
+                description=description,
+                max_participants=50,
+                metadata={"conference": True},
+            )
+        except HTTPException as exc:
+            # Lost a create race with a concurrent enterer — fetch theirs.
+            if exc.status_code == status.HTTP_409_CONFLICT:
+                room = await _by_name()
+            else:
+                raise
+    if room is None:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not open the conference room",
+        )
+
+    # Ensure the caller is a member (no-op if the create above already added
+    # them as owner, or if they joined earlier).
+    try:
+        await svc.join_room(
+            room_id=room.id,
+            participant_id=user["participant_id"],
+            self_join=True,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_409_CONFLICT:  # 409 = already a member
+            raise
+
+    info = await svc.get_room(room.id)
+    return _room_to_response(
+        room,
+        member_count=info["member_count"],
+        online_count=info["online_count"],
+    )
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
@@ -196,7 +316,13 @@ async def list_rooms(
         limit=limit,
     )
     rooms = [
-        _room_to_response(r["room"], r["member_count"], r["online_count"])
+        _room_to_response(
+            r["room"],
+            r["member_count"],
+            r["online_count"],
+            last_message=r.get("last_message"),
+            unread_count=r.get("unread_count", 0),
+        )
         for r in result["rooms"]
     ]
     return RoomListResponse(
@@ -459,16 +585,21 @@ async def invite_member(
 
     _asyncio.create_task(_send_invite_email())
 
-    # Also emit a WS notification to the invitee (if they're online)
+    # Also emit a WS notification to the invitee (if they're online). Publish to
+    # the invitee's Redis user:{id} channel — the in-process ConnectionManager
+    # only reaches sockets on the current worker, so with `uvicorn --workers 4`
+    # send_to_participant missed the invitee ~3/4 of the time.
     try:
-        from app.ws.handler import manager as ws_manager
+        from app.api.messages import _ws_send_participant
 
-        await ws_manager.send_to_participant(
+        await _ws_send_participant(
             str(target.id),
             {
                 "type": "room_invited",
-                "room_id": str(room_id),
-                "inviter_name": user.get("display_name") or user.get("username"),
+                "payload": {
+                    "room_id": str(room_id),
+                    "inviter_name": user.get("display_name") or user.get("username"),
+                },
             },
         )
     except Exception:
@@ -505,7 +636,6 @@ async def toggle_pin(
     first). Idempotent: posting twice with the same id removes it.
     """
     from app.models.message import Message as _Msg
-    from app.ws.handler import manager as _ws_manager
 
     # Caller must be a member of the room
     caller = await db.execute(
@@ -547,19 +677,21 @@ async def toggle_pin(
     room.metadata_ = meta
     await db.commit()
 
-    # Fanout to room members
+    # Fanout to room members over Redis room:{id} (cross-worker). The in-process
+    # ConnectionManager only reaches sockets on the current worker, so under
+    # `uvicorn --workers 4` this missed ~3/4 of open clients.
     try:
-        member_ids = (
-            await db.execute(
-                select(RoomMember.participant_id).where(RoomMember.room_id == room_id)
-            )
-        ).scalars().all()
-        await _ws_manager.broadcast_to_room(
-            [str(m) for m in member_ids],
+        from app.api.messages import _ws_broadcast_room
+
+        await _ws_broadcast_room(
+            db,
+            room_id,
             {
                 "type": "pins_changed",
-                "room_id": str(room_id),
-                "pinned_message_ids": pinned,
+                "payload": {
+                    "room_id": str(room_id),
+                    "pinned_message_ids": pinned,
+                },
             },
         )
     except Exception:
@@ -624,6 +756,22 @@ async def leave_room(
     )
 
 
+def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
+    return RoomMemberResponse(
+        id=m["id"],
+        participant_id=m["participant_id"],
+        username=m["username"],
+        display_name=m["display_name"],
+        participant_type=m["participant_type"],
+        role=m["role"],
+        joined_at=m["joined_at"],
+        last_read_at=m["last_read_at"],
+        is_muted=m["is_muted"],
+        is_self=m.get("is_self", False),
+        status=m["status"],
+    )
+
+
 @router.get("/rooms/{room_id}/members", response_model=list[RoomMemberResponse])
 async def list_members(
     room_id: uuid.UUID,
@@ -634,19 +782,129 @@ async def list_members(
 ) -> list[RoomMemberResponse]:
     """List members of a room. Caller must be a member of the room."""
     svc = _build_room_service(db, livekit, presence)
-    members = await svc.get_members(room_id)
-    return [
-        RoomMemberResponse(
-            id=m["id"],
-            participant_id=m["participant_id"],
-            username=m["username"],
-            display_name=m["display_name"],
-            participant_type=m["participant_type"],
-            role=m["role"],
-            joined_at=m["joined_at"],
-            last_read_at=m["last_read_at"],
-            is_muted=m["is_muted"],
-            status=m["status"],
+    members = await svc.get_members(room_id, caller_id=user["participant_id"])
+    return [_member_to_response(m) for m in members]
+
+
+# ---------------------------------------------------------------------------
+# Moderation: remove / change-role / mute a member (owner/admin)
+# ---------------------------------------------------------------------------
+
+
+class RoleBody(BaseModel):
+    role: str  # owner | admin | member | guest
+
+
+class MuteBody(BaseModel):
+    is_muted: bool
+
+
+async def _broadcast_members_changed(
+    db: AsyncSession,
+    room_id: uuid.UUID,
+    *,
+    removed_participant_id: str | None = None,
+) -> None:
+    """Tell every connected client in the room to refresh its member list.
+
+    ``removed_participant_id`` lets a kicked client recognize it's the target
+    and drop the room locally without waiting for a poll.
+    """
+    try:
+        from app.api.messages import _ws_broadcast_room
+
+        await _ws_broadcast_room(
+            db,
+            room_id,
+            {
+                "type": "members_changed",
+                "payload": {
+                    "room_id": str(room_id),
+                    "removed_participant_id": removed_participant_id,
+                },
+            },
         )
-        for m in members
-    ]
+    except Exception:
+        logger.warning("members_changed_fanout_failed", exc_info=True)
+
+
+async def _member_response_for(
+    svc: RoomService, room_id: uuid.UUID, participant_id: uuid.UUID
+) -> RoomMemberResponse:
+    members = await svc.get_members(room_id)
+    for m in members:
+        if str(m["participant_id"]) == str(participant_id):
+            return _member_to_response(m)
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Member not found after update",
+    )
+
+
+@router.delete(
+    "/rooms/{room_id}/members/{participant_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_member(
+    room_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+) -> None:
+    """Remove a member from a room (kick). Owner or admin only."""
+    svc = _build_room_service(db, livekit, presence)
+    info = await svc.remove_member(room_id, user["participant_id"], participant_id)
+    await _broadcast_members_changed(
+        db, room_id, removed_participant_id=info["participant_id"]
+    )
+
+
+@router.patch(
+    "/rooms/{room_id}/members/{participant_id}/role",
+    response_model=RoomMemberResponse,
+)
+async def set_member_role(
+    room_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    body: RoleBody,
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+) -> RoomMemberResponse:
+    """Change a member's role. Owner only."""
+    try:
+        new_role = MemberRole(body.role)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid role: {body.role}",
+        )
+    svc = _build_room_service(db, livekit, presence)
+    await svc.set_member_role(room_id, user["participant_id"], participant_id, new_role)
+    await _broadcast_members_changed(db, room_id)
+    return await _member_response_for(svc, room_id, participant_id)
+
+
+@router.patch(
+    "/rooms/{room_id}/members/{participant_id}/mute",
+    response_model=RoomMemberResponse,
+)
+async def set_member_mute(
+    room_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    body: MuteBody,
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+) -> RoomMemberResponse:
+    """Mute or unmute a member (blocks them from posting). Owner or admin."""
+    svc = _build_room_service(db, livekit, presence)
+    await svc.set_member_mute(
+        room_id, user["participant_id"], participant_id, body.is_muted
+    )
+    await _broadcast_members_changed(db, room_id)
+    return await _member_response_for(svc, room_id, participant_id)

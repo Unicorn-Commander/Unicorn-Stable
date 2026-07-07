@@ -22,6 +22,9 @@ context". RAG must never break message send or the chat reply.
 
 from __future__ import annotations
 
+import hashlib
+import math
+import re
 import uuid
 from typing import Any
 from urllib.parse import urlparse
@@ -47,6 +50,45 @@ _DOC_CONTENT_TYPES = (
     "application/json",
 )
 _DOC_CONTENT_PREFIXES = ("text/",)
+
+# -- Hybrid retrieval: a named dense vector + a pure-Python sparse (keyword)
+# vector, fused server-side by Qdrant RRF. The sparse vector is a stable-hashed
+# log-term-frequency map, so exact names/codes/terms match even when the dense
+# (semantic) embedding misses them. No extra dependency.
+_DENSE = "dense"
+_SPARSE = "sparse"
+_SPARSE_STOPWORDS = frozenset(
+    "the a an and or of to in is it for on with as at by be this that are was "
+    "from but not you your we our they i he she him her his".split()
+)
+
+
+def _sparse_vector(text: str) -> dict[str, list] | None:
+    """Pure-Python BM25-ish sparse vector: token -> stable-hashed index ->
+    log term-frequency weight. Index- and query-time use the SAME stable hash
+    (hashlib, not the per-process-salted builtin ``hash``) so vectors align
+    across workers/restarts. Returns None when there's nothing useful."""
+    if not text:
+        return None
+    low = text.lower()
+    # alphanumeric words + whitespace tokens (keeps codes like "blue-heron-42")
+    toks = re.findall(r"[a-z0-9]+", low)
+    toks += [t for t in low.split() if t and not t.isalnum()]
+    counts: dict[int, int] = {}
+    for t in toks:
+        if len(t) < 2 or t in _SPARSE_STOPWORDS:
+            continue
+        idx = (
+            int.from_bytes(hashlib.blake2b(t.encode("utf-8"), digest_size=4).digest(), "big")
+            & 0x7FFFFFFF
+        )
+        counts[idx] = counts.get(idx, 0) + 1
+    if not counts:
+        return None
+    return {
+        "indices": list(counts.keys()),
+        "values": [1.0 + math.log(c) for c in counts.values()],
+    }
 
 
 def _is_doc_content_type(content_type: str) -> bool:
@@ -108,6 +150,56 @@ class RagService:
                         out.append(emb)
         return out
 
+    # ---- Contextual chunking (Anthropic "contextual retrieval") -----------
+
+    async def _doc_summary(self, settings: Settings, text: str) -> str:
+        """One short local-LLM call: a 1-sentence "what this doc is about".
+
+        Used to ground every chunk before embedding. Fail-safe: returns "" on
+        disabled / any error / timeout, so indexing never depends on it.
+        """
+        if not getattr(settings, "context_enabled", False):
+            return ""
+        head = (text or "")[:3000]
+        if not head.strip():
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as http:
+                resp = await http.post(
+                    settings.context_llm_url,
+                    json={
+                        "model": settings.context_model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": (
+                                    "In ONE short sentence, state what this document "
+                                    "is about (its subject/title). Reply with only the "
+                                    "sentence, no preamble.\n\n---\n" + head
+                                ),
+                            }
+                        ],
+                        "max_tokens": 64,
+                        "temperature": 0.0,
+                        "stream": False,
+                    },
+                )
+                resp.raise_for_status()
+                choices = resp.json().get("choices") or []
+                msg = (choices[0].get("message") or {}).get("content", "") if choices else ""
+                return " ".join(str(msg).split())[:300]
+        except Exception:
+            logger.warning("rag_context_summary_failed", exc_info=True)
+            return ""
+
+    def _contextualize(self, chunks: list[str], filename: str, summary: str) -> list[str]:
+        """Prepend a document-context header to each chunk (for embedding only;
+        the original chunk text is still what we store + return)."""
+        prefix = f"Document: {filename}."
+        if summary:
+            prefix += f" {summary}"
+        return [f"{prefix}\n\n{c}" for c in chunks]
+
     async def _rerank(
         self, settings: Settings, query: str, documents: list[str]
     ) -> list[dict[str, Any]]:
@@ -151,7 +243,8 @@ class RagService:
                 resp = await http.put(
                     url,
                     json={
-                        "vectors": {"size": _VECTOR_SIZE, "distance": "Cosine"}
+                        "vectors": {_DENSE: {"size": _VECTOR_SIZE, "distance": "Cosine"}},
+                        "sparse_vectors": {_SPARSE: {}},
                     },
                 )
                 if resp.status_code in (200, 201):
@@ -177,24 +270,48 @@ class RagService:
             resp = await http.put(url, json={"points": points})
             resp.raise_for_status()
 
-    async def _search(
-        self, settings: Settings, vector: list[float], room_id: str, limit: int
+    async def _hybrid_query(
+        self,
+        settings: Settings,
+        dense: list[float],
+        sparse: dict | None,
+        qfilter: dict | None,
+        limit: int,
     ) -> list[dict[str, Any]]:
+        """Qdrant Query API: dense + (optional) sparse prefetch, fused by RRF.
+        Returns the ``result.points`` list ([{id, score, payload}, ...])."""
         url = (
             f"{settings.qdrant_url.rstrip('/')}/collections/"
-            f"{settings.rag_collection}/points/search"
+            f"{settings.rag_collection}/points/query"
         )
+        prefetch: list[dict[str, Any]] = [
+            {"query": dense, "using": _DENSE, "limit": limit, "filter": qfilter}
+        ]
+        if sparse and sparse.get("indices"):
+            prefetch.append(
+                {"query": sparse, "using": _SPARSE, "limit": limit, "filter": qfilter}
+            )
         body = {
-            "vector": vector,
+            "prefetch": prefetch,
+            "query": {"fusion": "rrf"},
             "limit": limit,
             "with_payload": True,
-            "filter": {"must": [{"key": "room_id", "match": {"value": room_id}}]},
         }
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:
             resp = await http.post(url, json=body)
             resp.raise_for_status()
-            data = resp.json()
-            return data.get("result") or []
+            return (resp.json().get("result") or {}).get("points") or []
+
+    async def _search(
+        self,
+        settings: Settings,
+        dense: list[float],
+        sparse: dict | None,
+        room_id: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        qfilter = {"must": [{"key": "room_id", "match": {"value": room_id}}]}
+        return await self._hybrid_query(settings, dense, sparse, qfilter, limit)
 
     # ---- High-level: index + retrieve ------------------------------------
 
@@ -236,7 +353,11 @@ class RagService:
             if not chunks:
                 return 0
 
-            vectors = await self.embed(settings, chunks)
+            # Contextual retrieval: ground each chunk in its document before
+            # embedding (the stored payload text stays the raw chunk).
+            summary = await self._doc_summary(settings, text)
+            embed_texts = self._contextualize(chunks, filename, summary)
+            vectors = await self.embed(settings, embed_texts)
             if len(vectors) != len(chunks):
                 # Partial embedding — index only the chunks we have vectors for.
                 logger.warning(
@@ -249,21 +370,26 @@ class RagService:
             if n == 0:
                 return 0
 
-            points = [
-                {
-                    "id": str(uuid.uuid4()),
-                    "vector": vectors[i],
-                    "payload": {
-                        "room_id": str(room_id),
-                        "message_id": str(message_id),
-                        "stored_name": stored_name,
-                        "filename": filename,
-                        "chunk_idx": i,
-                        "text": chunks[i],
-                    },
-                }
-                for i in range(n)
-            ]
+            points = []
+            for i in range(n):
+                vec: dict[str, Any] = {_DENSE: vectors[i]}
+                sp = _sparse_vector(chunks[i])
+                if sp:
+                    vec[_SPARSE] = sp
+                points.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "vector": vec,
+                        "payload": {
+                            "room_id": str(room_id),
+                            "message_id": str(message_id),
+                            "stored_name": stored_name,
+                            "filename": filename,
+                            "chunk_idx": i,
+                            "text": chunks[i],
+                        },
+                    }
+                )
             await self._upsert(settings, points)
             logger.info(
                 "rag_indexed_document",
@@ -302,7 +428,9 @@ class RagService:
             q_vectors = await self.embed(settings, [q])
             if not q_vectors:
                 return []
-            hits = await self._search(settings, q_vectors[0], str(room_id), k_search)
+            hits = await self._search(
+                settings, q_vectors[0], _sparse_vector(q), str(room_id), k_search
+            )
             if not hits:
                 return []
 

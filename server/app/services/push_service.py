@@ -1,0 +1,119 @@
+"""Web-Push dispatch (VAPID). Sends a browser push to offline @-mentioned
+users so they get a notification with the app closed. Mirrors the offline-
+mention email dispatch; fully fail-safe (never raises into the request)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from typing import Any
+
+import structlog
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings
+from app.models.participant import Participant, ParticipantStatus, ParticipantType
+from app.models.push_subscription import PushSubscription
+from app.models.room import Room
+
+logger = structlog.get_logger(__name__)
+
+_MENTION_RE = re.compile(r"@([A-Za-z0-9_.\-]{2,64})")
+
+
+def push_configured(settings: Settings) -> bool:
+    return bool(
+        getattr(settings, "vapid_private_key", "")
+        and getattr(settings, "vapid_public_key", "")
+    )
+
+
+async def send_web_push(sub: PushSubscription, payload: dict, settings: Settings) -> bool:
+    """Send one push. Returns False iff the endpoint is permanently dead
+    (404/410) and its row should be pruned. Any other failure returns True
+    (transient — keep the subscription)."""
+    try:
+        from pywebpush import WebPushException, webpush
+    except Exception:  # noqa: BLE001 - library missing
+        logger.warning("pywebpush_unavailable")
+        return True
+
+    def _do() -> None:
+        webpush(
+            subscription_info={
+                "endpoint": sub.endpoint,
+                "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
+            },
+            data=json.dumps(payload),
+            vapid_private_key=settings.vapid_private_key,
+            vapid_claims={"sub": settings.vapid_subject},
+            timeout=10,
+        )
+
+    try:
+        await asyncio.to_thread(_do)
+        return True
+    except WebPushException as exc:  # type: ignore[misc]
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        if code in (404, 410):
+            return False
+        logger.warning("web_push_failed", status=code, err=str(exc)[:120])
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("web_push_error", err=str(exc)[:120])
+        return True
+
+
+async def dispatch_mention_pushes(
+    *,
+    db: AsyncSession,
+    content: str,
+    room_id: Any,
+    sender_name: str,
+    settings: Settings,
+) -> None:
+    """Find @-mentioned offline humans and web-push each of their devices."""
+    if not push_configured(settings):
+        return
+    handles = {m.lower() for m in _MENTION_RE.findall(content or "")}
+    if not handles:
+        return
+    room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
+    if room is None:
+        return
+    rows = (
+        await db.execute(
+            select(Participant).where(
+                Participant.participant_type == ParticipantType.HUMAN,
+                Participant.status != ParticipantStatus.ONLINE,
+            )
+        )
+    ).scalars().all()
+    targets = [p for p in rows if (p.username or "").lower() in handles]
+    if not targets:
+        return
+
+    body = content if len(content) <= 140 else content[:140] + "…"
+    payload = {
+        "title": f"{sender_name} in {room.display_name or room.name}",
+        "body": body,
+        "url": f"{settings.public_base_url}/?room={room.id}",
+        "tag": str(room.id),
+    }
+    subs = (
+        await db.execute(
+            select(PushSubscription).where(
+                PushSubscription.participant_id.in_([p.id for p in targets])
+            )
+        )
+    ).scalars().all()
+    dead: list[str] = []
+    for s in subs:
+        if not await send_web_push(s, payload, settings):
+            dead.append(s.endpoint)
+    if dead:
+        await db.execute(delete(PushSubscription).where(PushSubscription.endpoint.in_(dead)))
+        await db.commit()
+        logger.info("web_push_pruned", n=len(dead))

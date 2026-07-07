@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # Public URL shown in outgoing emails so recipients can click through.
     public_base_url: str = "https://stable.magicunicorn.dev"
 
+    # Web Push (VAPID). Public key is handed to the browser as its
+    # applicationServerKey; the private key signs pushes. Empty = web-push
+    # disabled (subscribe + dispatch become no-ops).
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = "mailto:aaron@magicunicorn.tech"
+
     # Project Ops MCP service-account token. Stable uses this only server-side
     # when promoting messages into Project Ops tasks.
     projectops_service_jwt: str = ""
@@ -124,6 +131,15 @@ class Settings(BaseSettings):
     # Embedding + rerank model names passed to Infinity.
     embedding_model: str = "BAAI/bge-m3"
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    # Contextual chunking: at index time a tiny local (billing-exempt) model
+    # writes a 1-sentence "what this document is about" summary that is prepended
+    # to every chunk before embedding. Grounds each chunk in its document
+    # (Anthropic "contextual retrieval"), cutting cross-doc retrieval misses.
+    # Fully fail-safe: one short call per document; on any error/timeout the
+    # chunk falls back to a filename-only prefix. Flip off to embed raw chunks.
+    context_enabled: bool = True
+    context_llm_url: str = "http://172.17.0.1:8085/v1/chat/completions"
+    context_model: str = "Llama-3.2-3B-Instruct-Q4_K_M"
 
     # -- Rate limiting (Redis token-bucket; see app.deps.rate_limit) --
     # Master switch. When False, rate limiting is a no-op (useful for tests).
@@ -139,6 +155,15 @@ class Settings(BaseSettings):
     rate_limit_webhook_per_min: int = 120
     # agent-chat trigger fallback (used when an agent has no rate_limit_rpm)
     rate_limit_agent_chat_per_min: int = 30
+    # read-aloud TTS synthesis (GPU-bound upstream — keep this tight)
+    rate_limit_tts_per_min: int = 20
+
+    # -- Read-aloud TTS proxy (app/api/tts.py) --
+    # kokoro-fastapi front (kokoro-ha nginx on this host -> uc-1 GTX1070
+    # primary). Same value the agents container uses as KOKORO_BASE_URL.
+    kokoro_base_url: str = "http://192.168.10.10:8883"
+    # Suite default voice = Majik (af_heart).
+    tts_default_voice: str = "af_heart"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

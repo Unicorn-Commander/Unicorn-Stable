@@ -88,6 +88,65 @@ def _msg_to_response(msg: Any, reply_count: int = 0) -> MessageResponse:
     )
 
 
+_pub_redis = None
+
+
+def _get_pub_redis():
+    """Lazily-created Redis client for cross-worker ws fan-out via pub/sub.
+
+    The ws ConnectionManager is an in-process singleton, so with
+    ``uvicorn --workers 4`` a connection lives on exactly ONE worker while a
+    request/agent-reply runs on any of the 4. Delivering over Redis ``room:{id}``
+    — which the ws handler subscribes to on every worker — is the only path that
+    reaches the client regardless of which worker holds its socket."""
+    global _pub_redis
+    if _pub_redis is None:
+        from redis.asyncio import Redis
+
+        from app.config import get_settings
+
+        _pub_redis = Redis.from_url(
+            get_settings().redis_url, decode_responses=False
+        )
+    return _pub_redis
+
+
+async def _ws_broadcast_room(
+    db: AsyncSession,
+    room_id: Any,
+    envelope: dict[str, Any],
+) -> None:
+    """Best-effort deliver a ``{type, payload}`` envelope to a room's members
+    over the web-client WebSocket plane.
+
+    Publishes to Redis ``room:{id}`` (cross-worker) rather than the in-process
+    ConnectionManager — see :func:`_get_pub_redis`. ``db`` is retained for
+    signature stability but no longer used. A delivery failure must never break
+    the request, so everything here is wrapped and only logged."""
+    try:
+        await _get_pub_redis().publish(f"room:{room_id}", json.dumps(envelope))
+    except Exception:
+        logger.warning("ws_room_broadcast_failed", exc_info=True)
+
+
+async def _ws_send_participant(
+    participant_id: Any,
+    envelope: dict[str, Any],
+) -> None:
+    """Best-effort deliver a ``{type, payload}`` envelope to a single user over
+    the web-client WebSocket plane.
+
+    Publishes to Redis ``user:{id}`` (cross-worker), which the ws handler
+    subscribes to per connection — the same reason :func:`_ws_broadcast_room`
+    avoids the in-process ConnectionManager under ``uvicorn --workers 4``."""
+    try:
+        await _get_pub_redis().publish(
+            f"user:{participant_id}", json.dumps(envelope)
+        )
+    except Exception:
+        logger.warning("ws_user_send_failed", exc_info=True)
+
+
 @router.post(
     "/rooms/{room_id}/messages",
     response_model=MessageResponse,
@@ -135,6 +194,21 @@ async def send_message(
         )
     except Exception:
         logger.warning("mention_email_dispatch_error", exc_info=True)
+
+    # Web-push the same offline @-mentioned users (closed/backgrounded app).
+    # Fail-safe; no-op unless VAPID is configured.
+    try:
+        from app.services.push_service import dispatch_mention_pushes
+
+        await dispatch_mention_pushes(
+            db=db,
+            content=body.content or "",
+            room_id=room_id,
+            sender_name=user.get("display_name") or user.get("username") or "Someone",
+            settings=get_settings(),
+        )
+    except Exception:
+        logger.warning("mention_push_dispatch_error", exc_info=True)
 
     # Text-only agent reply path. If the room is agent-attached, route the
     # user's message through Brigade's chat API in a background task so the
@@ -199,11 +273,25 @@ async def send_message(
     except Exception:
         logger.warning("rag_index_schedule_failed", exc_info=True)
 
-    # Note: MessageService.send_message already broadcasts the message onto
-    # the LiveKit data channel as `{type: "new_message", ...}` for any agents
-    # in the room. No second fanout needed here.
+    # MessageService.send_message already broadcasts onto the LiveKit data
+    # channel as `{type: "new_message", ...}` for in-room (voice-path) agents.
+    # That does NOT reach the web client, which listens on the WebSocket — so
+    # ALSO deliver the message to the room's members over the ws plane in the
+    # exact WsMessageEvent shape the frontend expects ({type, payload}).
+    response = _msg_to_response(msg)
+    await _ws_broadcast_room(
+        db,
+        room_id,
+        {
+            "type": "message",
+            "payload": {
+                "room_id": str(room_id),
+                "message": response.model_dump(mode="json"),
+            },
+        },
+    )
 
-    return _msg_to_response(msg)
+    return response
 
 
 _MENTION_RE = None
@@ -379,6 +467,20 @@ class AgentMessageBody(BaseModel):
     brigade_agent_id: str
     content: str
     parent_id: uuid.UUID | None = None
+    # Optional channel tag (e.g. "voice") merged into the message metadata so
+    # the client can badge a spoken turn distinctly from a typed one.
+    via: str | None = None
+
+
+class VoiceUserMessageBody(BaseModel):
+    """A human's spoken (STT) turn, persisted to room history by the voice
+    agent runtime. ``speaker_identity`` is the LiveKit identity, which the
+    agent token mints as ``"{username}_{participant_id}"`` (see api/tokens.py),
+    so the trailing UUID resolves the backend participant."""
+
+    livekit_room_name: str
+    speaker_identity: str
+    content: str
 
 
 class AgentMessageUpdateBody(BaseModel):
@@ -807,13 +909,111 @@ async def post_agent_message(
         body=MessageCreate(
             content=body.content,
             content_type="text",
-            metadata={"agent_id": body.brigade_agent_id},
+            metadata={
+                "agent_id": body.brigade_agent_id,
+                **({"via": body.via} if body.via else {}),
+            },
             parent_id=body.parent_id,
         ),
         user=fake_user,
         db=db,
         livekit=livekit,
         request=request,
+    )
+
+
+@router.post(
+    "/internal/voice-user-message",
+    response_model=MessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_voice_user_message(
+    body: VoiceUserMessageBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> MessageResponse:
+    """Persist a human's spoken (STT) turn into room history.
+
+    The voice agent runtime calls this for each FINAL user transcript so a
+    spoken conversation is reviewable later (the live caption data-channel is
+    ephemeral). Authenticated via the LiveKit shared secret, like the other
+    internal agent routes.
+
+    Attributed to the resolved human participant and tagged ``via=voice``.
+    Crucially we pass ``request=None`` into ``send_message`` so this does NOT
+    schedule a *text* agent reply — the voice agent already answers over TTS;
+    a text reply here would double-respond.
+    """
+    from sqlalchemy import select as _select
+
+    from app.config import get_settings
+    from app.models.participant import Participant as _P, ParticipantType as _PT
+    from app.models.room import Room as _Room, RoomMember as _RM
+
+    cfg = get_settings()
+    expected = cfg.livekit_api_secret
+    auth = request.headers.get("Authorization", "")
+    if not expected or auth != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Bad agent secret")
+
+    room = (
+        await db.execute(
+            _select(_Room).where(_Room.livekit_room_name == body.livekit_room_name)
+        )
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # LiveKit identity is "{username}_{participant_id}". The participant_id is a
+    # UUID (no underscores), so the trailing segment after the last "_" is it.
+    raw_id = body.speaker_identity.rsplit("_", 1)[-1]
+    try:
+        speaker_pid = uuid.UUID(raw_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Unrecognized speaker identity"
+        )
+
+    participant = (
+        await db.execute(
+            _select(_P).where(
+                _P.id == speaker_pid, _P.participant_type == _PT.HUMAN
+            )
+        )
+    ).scalar_one_or_none()
+    if participant is None:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+
+    is_member = (
+        await db.execute(
+            _select(_RM.id).where(
+                _RM.room_id == room.id, _RM.participant_id == participant.id
+            )
+        )
+    ).scalar_one_or_none()
+    if is_member is None:
+        raise HTTPException(status_code=403, detail="Speaker not in this room")
+
+    fake_user = {
+        "participant_id": participant.id,
+        "sub": participant.keycloak_sub,
+        "username": participant.username,
+        "display_name": participant.display_name,
+        "email": None,
+    }
+    # request=None → persist + broadcast, but DON'T trigger a text agent reply.
+    return await send_message(
+        room_id=room.id,
+        body=MessageCreate(
+            content=body.content,
+            content_type="text",
+            metadata={"via": "voice"},
+        ),
+        user=fake_user,
+        db=db,
+        livekit=livekit,
+        request=None,
     )
 
 
@@ -968,7 +1168,23 @@ async def edit_message(
         sender_id=user["participant_id"],
         new_content=body.content,
     )
-    return _msg_to_response(msg)
+    response = _msg_to_response(msg)
+    await _ws_broadcast_room(
+        db,
+        msg.room_id,
+        {
+            "type": "message_edit",
+            "payload": {
+                "room_id": str(msg.room_id),
+                "message_id": str(msg.id),
+                "content": response.content,
+                "updated_at": response.updated_at.isoformat()
+                if response.updated_at
+                else None,
+            },
+        },
+    )
+    return response
 
 
 @router.delete("/messages/{message_id}", response_model=MessageResponse)
@@ -984,7 +1200,190 @@ async def delete_message(
         message_id=message_id,
         sender_id=user["participant_id"],
     )
+    await _ws_broadcast_room(
+        db,
+        msg.room_id,
+        {
+            "type": "message_delete",
+            "payload": {
+                "room_id": str(msg.room_id),
+                "message_id": str(msg.id),
+            },
+        },
+    )
     return _msg_to_response(msg)
+
+
+@router.post("/messages/{message_id}/stop", status_code=status.HTTP_204_NO_CONTENT)
+async def stop_generation(
+    message_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Stop an in-flight agent reply that is currently streaming.
+
+    ``message_id`` is the agent reply (placeholder) message. Any member of the
+    room may stop it. The signal is cross-worker (Redis flag the responder
+    polls); whatever the agent produced so far is finalized with a `stopped`
+    marker. Idempotent — stopping a finished reply is a harmless no-op.
+    """
+    from app.models.message import Message as _Msg
+    from app.services.agent_chat_responder import request_stop
+
+    room_id = (
+        await db.execute(select(_Msg.room_id).where(_Msg.id == message_id))
+    ).scalar_one_or_none()
+    if room_id is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await ensure_room_member(db, room_id, user)
+    await request_stop(message_id)
+    return None
+
+
+class RegenerateBody(BaseModel):
+    # Optional per-attempt model override (the mid-conversation switcher). When
+    # omitted, the room's model_override / the persona default is used.
+    model: str | None = None
+
+
+@router.post("/messages/{message_id}/regenerate", response_model=MessageResponse)
+async def regenerate_reply(
+    message_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    request: Request = None,  # type: ignore[assignment]
+    body: RegenerateBody | None = None,
+    _rl: Annotated[
+        None, Depends(rate_limit("msg_regen", "rate_limit_message_send_per_min"))
+    ] = None,
+) -> MessageResponse:
+    """Regenerate an agent reply.
+
+    Soft-deletes the given agent reply and re-runs the text responder on the
+    user turn that prompted it — a fresh reply streams in over the ws plane
+    (exactly like the first time). ``message_id`` must be an agent reply; any
+    room member may regenerate it. Returns the now-deleted old message so the
+    optimistic caller can drop it immediately.
+    """
+    from app.models.message import Message as _Msg
+    from app.models.participant import (
+        Participant as _P,
+        ParticipantType as _PT,
+    )
+
+    agent_msg = (
+        await db.execute(select(_Msg).where(_Msg.id == message_id))
+    ).scalar_one_or_none()
+    if agent_msg is None or agent_msg.is_deleted:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await ensure_room_member(db, agent_msg.room_id, user)
+
+    meta = agent_msg.metadata_ if isinstance(agent_msg.metadata_, dict) else {}
+    is_agent_reply = (
+        meta.get("source") == "agent_chat_responder" or bool(meta.get("agent_id"))
+    )
+    if not is_agent_reply:
+        raise HTTPException(
+            status_code=400, detail="Only an agent reply can be regenerated"
+        )
+
+    # The user turn that prompted this reply = the most recent non-deleted,
+    # non-agent message created before it.
+    trigger = (
+        await db.execute(
+            select(_Msg)
+            .join(_P, _P.id == _Msg.sender_id)
+            .where(
+                _Msg.room_id == agent_msg.room_id,
+                _Msg.is_deleted == False,  # noqa: E712
+                _Msg.created_at < agent_msg.created_at,
+                _P.participant_type != _PT.AGENT,
+            )
+            .order_by(_Msg.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if trigger is None:
+        raise HTTPException(
+            status_code=409, detail="No user message to regenerate from"
+        )
+
+    # Drop the stale reply (and tell every client to remove it) before the
+    # fresh one streams in, so history fed to the agent excludes it. The delete
+    # is an atomic guarded UPDATE: only the request that actually flips
+    # is_deleted proceeds to re-fire, so two clients regenerating the same reply
+    # at once can't produce two replies (the loser gets 409).
+    from sqlalchemy import update as _sa_update
+
+    res = await db.execute(
+        _sa_update(_Msg)
+        .where(_Msg.id == agent_msg.id, _Msg.is_deleted == False)  # noqa: E712
+        .values(is_deleted=True)
+    )
+    await db.commit()
+    if res.rowcount == 0:
+        raise HTTPException(
+            status_code=409, detail="This reply is already being regenerated"
+        )
+    agent_msg.is_deleted = True  # reflect the committed state in the response
+
+    # Halt any responder still streaming THIS reply (regenerating a mid-stream
+    # reply) so its orphaned task winds down instead of emitting edits for a
+    # message every client just dropped.
+    from app.services.agent_chat_responder import request_stop as _request_stop
+
+    await _request_stop(agent_msg.id)
+
+    await _ws_broadcast_room(
+        db,
+        agent_msg.room_id,
+        {
+            "type": "message_delete",
+            "payload": {
+                "room_id": str(agent_msg.room_id),
+                "message_id": str(agent_msg.id),
+            },
+        },
+    )
+
+    model = body.model if body else None
+    # Re-fire the SAME agent that authored the original reply (pinned), and on
+    # the per-agent paid-Brigade budget — regenerate must not be a hole that
+    # bypasses the throttle the send path enforces.
+    pinned_agent_id = meta.get("agent_id") if isinstance(meta, dict) else None
+    try:
+        if request is not None:
+            settings_now = get_settings()
+            redis_now = getattr(request.app.state, "redis", None)
+            if await _agent_chat_within_budget(
+                db=db,
+                redis=redis_now,
+                settings=settings_now,
+                room_id=agent_msg.room_id,
+            ):
+                schedule_agent_chat_response(
+                    room_id=agent_msg.room_id,
+                    message_id=trigger.id,
+                    sender_id=trigger.sender_id,
+                    settings=settings_now,
+                    session_factory=request.app.state.db_session_factory,
+                    livekit=livekit,
+                    model=model,
+                    is_regenerate=True,
+                    pinned_agent_id=pinned_agent_id
+                    if isinstance(pinned_agent_id, str) and pinned_agent_id
+                    else None,
+                )
+            else:
+                logger.info(
+                    "agent_chat_regenerate_rate_limited",
+                    room_id=str(agent_msg.room_id),
+                )
+    except Exception:
+        logger.warning("agent_chat_regenerate_schedule_failed", exc_info=True)
+
+    return _msg_to_response(agent_msg)
 
 
 @router.get("/messages/{message_id}/thread", response_model=MessageListResponse)
@@ -1187,7 +1586,6 @@ async def toggle_reaction(
     """
     from sqlalchemy import select as _select
     from app.models.message import Message as _Msg
-    from app.ws.handler import manager as _ws_manager
 
     # Lock the row across the read-modify-write so concurrent reactions on
     # the same message don't clobber each other's emoji lists (the JSONB
@@ -1220,24 +1618,16 @@ async def toggle_reaction(
     await db.commit()
     await db.refresh(msg)
 
-    # Fanout to room members
+    # Fanout to room members over the cross-worker Redis ws plane.
     try:
-        # Build list of recipients
-        from app.models.room import RoomMember as _RM
-
-        member_ids = (
-            await db.execute(
-                _select(_RM.participant_id).where(_RM.room_id == msg.room_id)
-            )
-        ).scalars().all()
-        await _ws_manager.broadcast_to_room(
-            [str(m) for m in member_ids],
-            {
+        await _get_pub_redis().publish(
+            f"room:{msg.room_id}",
+            json.dumps({
                 "type": "message_reaction",
                 "message_id": str(msg.id),
                 "room_id": str(msg.room_id),
                 "reactions": reactions,
-            },
+            }),
         )
     except Exception:
         logger.warning("reaction_fanout_failed", exc_info=True)
@@ -1259,6 +1649,24 @@ async def search_messages(
     svc = _build_message_service(db, livekit)
     messages = await svc.search_messages(
         room_id=room_id,
+        query_text=q,
+        limit=limit,
+    )
+    return [_msg_to_response(msg) for msg in messages]
+
+
+@router.get("/search/messages", response_model=list[MessageResponse])
+async def search_all_messages(
+    q: str = Query(..., min_length=1, max_length=500),
+    user: Annotated[dict[str, Any], Depends(get_current_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+    livekit: Annotated[LiveKitService, Depends(get_livekit)] = None,
+    limit: int = Query(30, ge=1, le=100),
+) -> list[MessageResponse]:
+    """Global search across every room the caller belongs to."""
+    svc = _build_message_service(db, livekit)
+    messages = await svc.search_all_messages(
+        participant_id=user["participant_id"],
         query_text=q,
         limit=limit,
     )

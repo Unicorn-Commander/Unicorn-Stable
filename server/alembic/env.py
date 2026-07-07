@@ -12,10 +12,16 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.models import (  # noqa: F401
     AgentConfig,
     AgentRun,
+    Artifact,
+    ArtifactSuggestion,
+    ArtifactVersion,
     Base,
+    KnowledgeCollection,
+    KnowledgeDocument,
     Message,
     Participant,
     Room,
+    RoomKnowledge,
     RoomMember,
 )
 

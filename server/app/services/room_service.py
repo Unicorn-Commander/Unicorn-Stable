@@ -5,10 +5,12 @@ from typing import Any
 
 import structlog
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.agent import AgentConfig
+from app.models.message import Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember, RoomType
 from app.services.livekit_service import LiveKitService
@@ -38,17 +40,39 @@ class RoomService:
         creator_id: uuid.UUID,
         description: str | None = None,
         max_participants: int = 50,
+        metadata: dict | None = None,
     ) -> Room:
-        """Create a new room in the database and LiveKit."""
-        # Check for duplicate name
-        existing = await self._db.execute(
-            select(Room).where(Room.name == name)
-        )
-        if existing.scalar_one_or_none() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Room with name '{name}' already exists",
-            )
+        """Create a new room in the database and LiveKit.
+
+        ``name`` is the internal slug (it also seeds ``livekit_room_name``), so
+        it must be globally unique. Channels are uniquely *named* on purpose
+        (they're shared and browsable), so a collision there is a real
+        "name taken" error the creator should see and resolve. DM / group-DM
+        names, by contrast, are auto-derived (e.g. "Chat with Majik") and many
+        legitimately coexist — the same user starting a second chat, or two
+        users each chatting the same agent. For those we uniquify the slug
+        instead of rejecting; otherwise the very first such room makes every
+        later "New chat" fail with 409 forever (the user can't start a new
+        conversation at all).
+        """
+        existing = (
+            await self._db.execute(select(Room).where(Room.name == name))
+        ).scalar_one_or_none()
+        if existing is not None:
+            if RoomType(room_type) == RoomType.CHANNEL:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Room with name '{name}' already exists",
+                )
+            # Preserve the human label, uniquify only the internal slug.
+            if not display_name:
+                display_name = name
+            base = name
+            name = f"{base}-{uuid.uuid4().hex[:8]}"
+            while (
+                await self._db.execute(select(Room).where(Room.name == name))
+            ).scalar_one_or_none() is not None:
+                name = f"{base}-{uuid.uuid4().hex[:8]}"
 
         # Create in LiveKit first
         lk_room_name = f"stable-{name}"
@@ -67,6 +91,7 @@ class RoomService:
             livekit_sid=lk_room.sid if lk_room.sid else None,
             max_participants=max_participants,
             created_by=creator_id,
+            metadata_=metadata or {},
         )
         self._db.add(room)
         await self._db.flush()
@@ -161,7 +186,54 @@ class RoomService:
         total_result = await self._db.execute(count_query)
         total = total_result.scalar() or 0
 
-        # Enrich rooms with member and online counts
+        # Batch the conversation-list extras for the whole page in two queries
+        # (avoids an N+1 and lets the sidebar/home feed show previews + unread
+        # badges on cold load). Keyed by str(room_id) so UUID vs str column
+        # typing can't cause a lookup miss.
+        room_ids = [room.id for room in rooms]
+        last_msg_by_room: dict[str, Message] = {}
+        unread_by_room: dict[str, int] = {}
+        if room_ids:
+            # Latest non-deleted message per room (Postgres DISTINCT ON; the
+            # leading ORDER BY column must match the DISTINCT column).
+            lm_rows = await self._db.execute(
+                select(Message)
+                .where(
+                    Message.room_id.in_(room_ids),
+                    Message.is_deleted == False,  # noqa: E712
+                )
+                .order_by(Message.room_id, Message.created_at.desc())
+                .distinct(Message.room_id)
+                .options(selectinload(Message.sender))
+            )
+            for m in lm_rows.scalars().all():
+                last_msg_by_room[str(m.room_id)] = m
+
+            # Unread = messages after the caller's last_read_at, excluding the
+            # caller's own. One grouped query across the page.
+            unread_rows = await self._db.execute(
+                select(Message.room_id, func.count())
+                .select_from(Message)
+                .join(
+                    RoomMember,
+                    (RoomMember.room_id == Message.room_id)
+                    & (RoomMember.participant_id == participant_id),
+                )
+                .where(
+                    Message.room_id.in_(room_ids),
+                    Message.is_deleted == False,  # noqa: E712
+                    Message.sender_id != participant_id,
+                    or_(
+                        RoomMember.last_read_at.is_(None),
+                        Message.created_at > RoomMember.last_read_at,
+                    ),
+                )
+                .group_by(Message.room_id)
+            )
+            for rid, cnt in unread_rows.all():
+                unread_by_room[str(rid)] = cnt
+
+        # Enrich rooms with member/online counts + conversation-list extras
         enriched_rooms: list[dict[str, Any]] = []
         for room in rooms:
             mc_result = await self._db.execute(
@@ -173,6 +245,8 @@ class RoomService:
                 "room": room,
                 "member_count": mc,
                 "online_count": len(online_ids),
+                "last_message": last_msg_by_room.get(str(room.id)),
+                "unread_count": unread_by_room.get(str(room.id), 0),
             })
 
         return {
@@ -379,8 +453,19 @@ class RoomService:
 
         return memberships
 
-    async def get_members(self, room_id: uuid.UUID) -> list[dict[str, Any]]:
-        """Get all members of a room with their participant info."""
+    async def get_members(
+        self,
+        room_id: uuid.UUID,
+        caller_id: uuid.UUID | str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get all members of a room with their participant info.
+
+        ``caller_id`` (the requesting participant) flags exactly one row with
+        ``is_self=True`` so the client can reliably identify "me" in the list —
+        the FE's Keycloak id never equals the participant UUID, so client-side
+        matching isn't possible without this server-side marker. The moderation
+        UI keys off it to decide whose row gets owner/admin action controls.
+        """
         result = await self._db.execute(
             select(RoomMember, Participant)
             .join(Participant, Participant.id == RoomMember.participant_id)
@@ -389,9 +474,12 @@ class RoomService:
         )
         rows = result.all()
 
+        # One presence lookup for the whole room (was N+1 inside the loop).
+        online_ids = await self._presence.get_online_in_room(str(room_id))
+        caller = str(caller_id) if caller_id is not None else None
+
         members: list[dict[str, Any]] = []
         for membership, participant in rows:
-            online_ids = await self._presence.get_online_in_room(str(room_id))
             members.append({
                 "id": membership.id,
                 "participant_id": participant.id,
@@ -402,6 +490,7 @@ class RoomService:
                 "joined_at": membership.joined_at,
                 "last_read_at": membership.last_read_at,
                 "is_muted": membership.is_muted,
+                "is_self": caller is not None and str(participant.id) == caller,
                 "status": "online" if str(participant.id) in online_ids else participant.status.value,
             })
 
@@ -432,3 +521,193 @@ class RoomService:
                 detail=f"Requires one of roles: {', '.join(roles)}",
             )
         return membership
+
+    # ------------------------------------------------------------------
+    # Moderation: per-room member management (remove / role / mute)
+    # ------------------------------------------------------------------
+    #
+    # Authorization model (per-room, mirrors the existing OWNER/ADMIN ladder):
+    #   * owner  — full control; the only role that can grant/revoke roles.
+    #   * admin  — can remove/mute MEMBERs and GUESTs, but not owners or other
+    #              admins (no peer/superior moderation).
+    #   * member/guest — no moderation.
+    # Invariants enforced here, not in the API layer, so every caller is safe:
+    #   * a room always keeps at least one owner (can't remove/demote the last);
+    #   * you can't moderate yourself through these paths (use leave_room).
+
+    async def _get_membership(
+        self, room_id: uuid.UUID, participant_id: uuid.UUID | str
+    ) -> RoomMember | None:
+        return (
+            await self._db.execute(
+                select(RoomMember).where(
+                    RoomMember.room_id == room_id,
+                    RoomMember.participant_id == participant_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def _count_owners(self, room_id: uuid.UUID) -> int:
+        return int(
+            (
+                await self._db.execute(
+                    select(func.count())
+                    .select_from(RoomMember)
+                    .where(
+                        RoomMember.room_id == room_id,
+                        RoomMember.role == MemberRole.OWNER,
+                    )
+                )
+            ).scalar_one()
+        )
+
+    def _assert_can_target(
+        self, actor: RoomMember, target: RoomMember, action: str
+    ) -> None:
+        """An admin may not act on an owner or another admin; only owners can."""
+        if actor.role != MemberRole.OWNER and target.role in (
+            MemberRole.OWNER,
+            MemberRole.ADMIN,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Only an owner can {action} an admin or owner",
+            )
+
+    async def remove_member(
+        self,
+        room_id: uuid.UUID,
+        actor_id: uuid.UUID | str,
+        target_id: uuid.UUID | str,
+    ) -> dict[str, Any]:
+        """Remove (kick) a member. Returns info for live fanout / LiveKit."""
+        actor = await self._require_role(room_id, actor_id, ["owner", "admin"])
+        if str(actor_id) == str(target_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Use leave to remove yourself from a room",
+            )
+        target = await self._get_membership(room_id, target_id)
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That participant is not a member of this room",
+            )
+        self._assert_can_target(actor, target, "remove")
+        if target.role == MemberRole.OWNER and await self._count_owners(room_id) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Can't remove the last owner — assign another owner first",
+            )
+
+        # Grab what we need for LiveKit eviction before deleting the row.
+        room = (
+            await self._db.execute(select(Room).where(Room.id == room_id))
+        ).scalar_one_or_none()
+        participant = (
+            await self._db.execute(
+                select(Participant).where(Participant.id == target_id)
+            )
+        ).scalar_one_or_none()
+
+        await self._db.delete(target)
+        await self._db.commit()
+
+        # Best-effort: evict from the live LiveKit room too. Identity matches
+        # the token format in api/tokens.py: "{username}_{participant_id}".
+        if room is not None and participant is not None:
+            try:
+                identity = f"{participant.username}_{participant.id}"
+                await self._livekit.remove_participant(
+                    room.livekit_room_name, identity
+                )
+            except Exception:  # noqa: BLE001 — eviction is best-effort
+                logger.warning(
+                    "livekit_evict_failed",
+                    room_id=str(room_id),
+                    participant_id=str(target_id),
+                    exc_info=True,
+                )
+
+        logger.info(
+            "member_removed",
+            room_id=str(room_id),
+            actor=str(actor_id),
+            target=str(target_id),
+        )
+        return {
+            "participant_id": str(target_id),
+            "livekit_room_name": room.livekit_room_name if room else None,
+        }
+
+    async def set_member_role(
+        self,
+        room_id: uuid.UUID,
+        actor_id: uuid.UUID | str,
+        target_id: uuid.UUID | str,
+        new_role: MemberRole,
+    ) -> RoomMember:
+        """Change a member's role. Owner-only."""
+        await self._require_role(room_id, actor_id, ["owner"])
+        target = await self._get_membership(room_id, target_id)
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That participant is not a member of this room",
+            )
+        if target.role == new_role:
+            return target
+        # Don't strip the last owner of ownership and orphan the room.
+        if (
+            target.role == MemberRole.OWNER
+            and new_role != MemberRole.OWNER
+            and await self._count_owners(room_id) <= 1
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Can't demote the last owner — promote another owner first",
+            )
+        target.role = new_role
+        await self._db.commit()
+        await self._db.refresh(target)
+        logger.info(
+            "member_role_changed",
+            room_id=str(room_id),
+            actor=str(actor_id),
+            target=str(target_id),
+            new_role=new_role.value,
+        )
+        return target
+
+    async def set_member_mute(
+        self,
+        room_id: uuid.UUID,
+        actor_id: uuid.UUID | str,
+        target_id: uuid.UUID | str,
+        is_muted: bool,
+    ) -> RoomMember:
+        """Mute/unmute a member (blocks them from posting). Owner/admin."""
+        actor = await self._require_role(room_id, actor_id, ["owner", "admin"])
+        if str(actor_id) == str(target_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You can't mute yourself",
+            )
+        target = await self._get_membership(room_id, target_id)
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That participant is not a member of this room",
+            )
+        self._assert_can_target(actor, target, "mute")
+        target.is_muted = is_muted
+        await self._db.commit()
+        await self._db.refresh(target)
+        logger.info(
+            "member_mute_changed",
+            room_id=str(room_id),
+            actor=str(actor_id),
+            target=str(target_id),
+            is_muted=is_muted,
+        )
+        return target
