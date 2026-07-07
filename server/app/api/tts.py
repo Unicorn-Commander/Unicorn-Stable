@@ -88,6 +88,16 @@ async def synthesize_speech(
     settings: Annotated[Settings, Depends(get_settings_dep)],
     _rl: Annotated[None, Depends(rate_limit("tts", "rate_limit_tts_per_min"))],
 ) -> Response:
+    # Kokoro's phonemizer raises ValueError on text with no speakable
+    # content (whitespace-only, or anything that yields zero phonemes),
+    # which the upstream returns as a 500 and this proxy surfaces as a 502.
+    # A message with nothing to say returns a clean 422 so read-aloud fails
+    # gracefully instead of erroring.
+    if not body.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nothing to read aloud",
+        )
     if body.voice:
         voice = body.voice
     elif body.agent:
