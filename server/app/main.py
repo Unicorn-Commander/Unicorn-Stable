@@ -154,6 +154,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Baseline security headers on every API response (B4 hardening). The SPA
+    # is served by the separate nginx container, so a strict default here is
+    # safe: this backend serves JSON + attachment downloads only. Attachment
+    # responses additionally carry their own locked-down CSP (see uploads.py).
+    @app.middleware("http")
+    async def _security_headers(request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
+
     # Mount API routers under /api/v1
     app.include_router(health_router, tags=["Health"])
     app.include_router(rooms_router, prefix="/api/v1", tags=["Rooms"])
@@ -163,6 +175,12 @@ def create_app() -> FastAPI:
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
     app.include_router(artifacts_router, prefix="/api/v1", tags=["Artifacts"])
+    # Internal agent-surface routers (/api/v1/internal/*). Agents reach these
+    # directly over the Docker network (http://backend:8400); they are removed
+    # from the PUBLIC edge by the Traefik rule
+    # (`... && !PathPrefix(/api/v1/internal)`) so the internet cannot reach them
+    # (B2). The constant-time internal bearer (B1) is defense-in-depth behind
+    # that. Keep these mounts — they serve the internal Docker traffic.
     app.include_router(internal_artifacts_router, prefix="/api/v1", tags=["Artifacts"])
     app.include_router(knowledge_router, prefix="/api/v1", tags=["Knowledge"])
     app.include_router(internal_knowledge_router, prefix="/api/v1", tags=["Knowledge"])

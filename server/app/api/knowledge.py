@@ -39,7 +39,7 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -47,12 +47,18 @@ from app.deps import (
     get_current_user,
     get_db,
     get_settings_dep,
+    is_room_member,
+    rate_limit,
     require_room_member,
 )
 from app.models.knowledge import (
     KnowledgeCollection,
     KnowledgeDocument,
     RoomKnowledge,
+)
+from app.security.upload_guard import (
+    is_dangerous_content_type,
+    sniff_is_markup,
 )
 from app.services.knowledge_service import knowledge_service
 
@@ -171,6 +177,62 @@ async def _load_collection(
     return collection
 
 
+async def _authz_collection(
+    db: AsyncSession,
+    collection_id: uuid.UUID,
+    user: dict[str, Any],
+    settings: Settings,
+    *,
+    write: bool = False,
+) -> KnowledgeCollection:
+    """Load a collection and authorize the caller (B5: KB tenant isolation).
+
+    Access is granted iff ONE of:
+      1. the caller created it (``created_by``), OR
+      2. this is a per-org instance and the collection belongs to that org
+         (``org_id`` == ``settings.instance_org_id``) — colleagues in the same
+         org share Knowledge Bases, which is the whole point of offering C, OR
+      3. (READS only) the collection is attached to a room the caller is a
+         member of — a KB shared into a room is readable by that room's members.
+
+    Anything else is ``404`` (not 403) so a probing user can't even confirm a
+    collection id exists. Writes never fall through to the room-membership
+    branch: being in a room a KB is attached to does not grant upload rights.
+    """
+    collection = await _load_collection(db, collection_id)
+    participant_id = user["participant_id"]
+
+    # 1) Creator.
+    if collection.created_by is not None and str(collection.created_by) == str(
+        participant_id
+    ):
+        return collection
+
+    # 2) Same-org sharing (only when an instance org is configured).
+    org = settings.instance_org_id
+    if org is not None and collection.org_id is not None and str(
+        collection.org_id
+    ) == str(org):
+        return collection
+
+    # 3) Read via room attachment.
+    if not write:
+        attached_rooms = (
+            await db.execute(
+                select(RoomKnowledge.room_id).where(
+                    RoomKnowledge.collection_id == collection_id
+                )
+            )
+        ).scalars().all()
+        for room_id in attached_rooms:
+            if await is_room_member(db, room_id, participant_id):
+                return collection
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Collection routes (user-auth)
 # ---------------------------------------------------------------------------
@@ -184,7 +246,11 @@ async def _load_collection(
 async def create_collection(
     body: CollectionCreate,
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _rl: Annotated[
+        None, Depends(rate_limit("kb_create", "rate_limit_kb_create_per_min"))
+    ] = None,
 ) -> CollectionResponse:
     """Create a new Knowledge Base."""
     collection = await knowledge_service.create_collection(
@@ -193,6 +259,9 @@ async def create_collection(
         description=body.description,
         created_by=user["participant_id"],
     )
+    # B5: stamp the instance org so same-org colleagues can share it (per-org
+    # deploy). On a community box ``instance_org_id`` is None → ownership-only.
+    collection.org_id = settings.instance_org_id
     await db.commit()
     await db.refresh(collection)
     return _collection_to_response(collection)
@@ -201,14 +270,27 @@ async def create_collection(
 @router.get("/knowledge/collections", response_model=list[CollectionResponse])
 async def list_collections(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[CollectionResponse]:
-    """List all Knowledge Bases (most-recent first)."""
+    """List the caller's Knowledge Bases (most-recent first).
+
+    B5: deny-by-default — returns the caller's own KBs plus, on a per-org
+    instance, every KB in the caller's org (shared org knowledge). Previously
+    this listed EVERY org's KBs to any authenticated user.
+    """
+    from sqlalchemy import or_
+
+    conds = [KnowledgeCollection.created_by == user["participant_id"]]
+    org = settings.instance_org_id
+    if org is not None:
+        conds.append(KnowledgeCollection.org_id == org)
+
     rows = (
         await db.execute(
-            select(KnowledgeCollection).order_by(
-                KnowledgeCollection.created_at.desc()
-            )
+            select(KnowledgeCollection)
+            .where(or_(*conds))
+            .order_by(KnowledgeCollection.created_at.desc())
         )
     ).scalars().all()
     return [_collection_to_response(c) for c in rows]
@@ -220,16 +302,49 @@ async def list_collections(
 async def get_collection(
     collection_id: uuid.UUID,
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CollectionResponse:
-    """Get one Knowledge Base by id."""
-    collection = await _load_collection(db, collection_id)
+    """Get one Knowledge Base by id (B5: caller must be authorized)."""
+    collection = await _authz_collection(db, collection_id, user, settings)
     return _collection_to_response(collection)
 
 
 # ---------------------------------------------------------------------------
 # Document routes (user-auth) — upload-to-disk + fire-and-forget index
 # ---------------------------------------------------------------------------
+
+
+async def _enforce_kb_quota(
+    db: AsyncSession, settings: Settings, participant_id: Any
+) -> None:
+    """B7: cap the total documents a single user owns across their collections.
+
+    Bytes are bounded transitively: each doc is ≤ ``MAX_FILE_BYTES`` (20 MB),
+    so the document count is the effective disk/GPU-queue ceiling. 0 disables.
+    """
+    cap = int(getattr(settings, "max_kb_documents_per_user", 0) or 0)
+    if cap <= 0:
+        return
+    count = (
+        await db.execute(
+            select(func.count())
+            .select_from(KnowledgeDocument)
+            .join(
+                KnowledgeCollection,
+                KnowledgeCollection.id == KnowledgeDocument.collection_id,
+            )
+            .where(KnowledgeCollection.created_by == participant_id)
+        )
+    ).scalar() or 0
+    if count >= cap:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Knowledge-Base document quota reached ({cap}). "
+                "Delete documents or contact your admin to raise the limit."
+            ),
+        )
 
 
 @router.post(
@@ -243,6 +358,9 @@ async def upload_document(
     settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
     file: UploadFile = File(...),
+    _rl: Annotated[
+        None, Depends(rate_limit("kb_upload", "rate_limit_kb_upload_per_min"))
+    ] = None,
 ) -> DocumentResponse:
     """Upload a document into a collection and index it (fire-and-forget).
 
@@ -253,7 +371,13 @@ async def upload_document(
     like ``messages.py`` schedules ``index_message_attachments``. The returned
     document is ``indexing``; clients poll the list endpoint for ``ready``.
     """
-    await _load_collection(db, collection_id)
+    # B5: only the owner / same-org colleague may write into a collection —
+    # NOT merely someone who shares a room it's attached to (write=True).
+    await _authz_collection(db, collection_id, user, settings, write=True)
+
+    # B7: per-user footprint quota — cap total docs + bytes across the user's
+    # own collections so one account can't fill the shared disk / GPU queue.
+    await _enforce_kb_quota(db, settings, user["participant_id"])
 
     content_type = (file.content_type or "").lower() or (
         mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
@@ -263,12 +387,25 @@ async def upload_document(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"File type not allowed: {content_type}",
         )
+    # B4: block browser-executable markup even in the doc-ingest path (defense
+    # in depth — a poisoned "document" is also an indirect prompt-injection
+    # vector into agents that later read it).
+    if is_dangerous_content_type(content_type):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"File type not allowed (executable/markup): {content_type}",
+        )
 
     body = await file.read(MAX_FILE_BYTES + 1)
     if len(body) > MAX_FILE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB limit",
+        )
+    if sniff_is_markup(body):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="File content looks like HTML/SVG/script and is not allowed",
         )
 
     # Save to disk (same scheme as uploads.py: random-hex name + safe suffix).
@@ -370,10 +507,11 @@ async def _index_document_task(
 async def list_documents(
     collection_id: uuid.UUID,
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[DocumentResponse]:
-    """List a collection's documents (most-recent first)."""
-    await _load_collection(db, collection_id)
+    """List a collection's documents (most-recent first). B5: authorized only."""
+    await _authz_collection(db, collection_id, user, settings)
     rows = (
         await db.execute(
             select(KnowledgeDocument)
@@ -404,7 +542,7 @@ async def get_document_content(
     must belong to the addressed collection (404 otherwise). Content-fetch is
     fail-safe (``chunks: []`` when nothing is indexed, e.g. a ``failed`` doc).
     """
-    await _load_collection(db, collection_id)
+    await _authz_collection(db, collection_id, user, settings)
     document = await db.get(KnowledgeDocument, document_id)
     if document is None or document.collection_id != collection_id:
         raise HTTPException(
@@ -439,14 +577,21 @@ async def attach_collection(
     room_id: uuid.UUID,
     body: AttachBody,
     user: Annotated[dict[str, Any], Depends(require_room_member)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CollectionResponse:
     """Attach a Knowledge Base to a room (caller must be a member).
 
+    B5: the caller must also be authorized FOR THE COLLECTION (own it, or same
+    org) — ``write=True`` so being in the room isn't enough to graft an
+    arbitrary KB (by guessed UUID) into it and read its chunks via RAG.
+
     Idempotent: re-attaching an already-bound collection returns it without
     creating a duplicate (UNIQUE(room_id, collection_id) also guards this).
     """
-    collection = await _load_collection(db, body.collection_id)
+    collection = await _authz_collection(
+        db, body.collection_id, user, settings, write=True
+    )
 
     existing = (
         await db.execute(

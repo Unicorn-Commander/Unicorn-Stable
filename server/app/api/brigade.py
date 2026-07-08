@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_current_user, get_db, get_livekit
+from app.deps import get_current_user, get_db, get_livekit, rate_limit
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
@@ -382,6 +382,10 @@ async def invite_brigade_agent(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    _rl: Annotated[
+        None,
+        Depends(rate_limit("agent_invite", "rate_limit_agent_invite_per_min")),
+    ] = None,
 ) -> InviteAgentResponse:
     """Spawn a Brigade-backed agent into an existing LiveKit room.
 

@@ -50,7 +50,9 @@ services:
     container_name: stable-postgres
     restart: unless-stopped
     ports:
-      - "5433:5432"
+      # Loopback-only (§3): the app reaches PG over the Docker network; the
+      # host port is for local psql/backup only, never off-box.
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./server/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -75,19 +77,29 @@ services:
     container_name: stable-redis
     restart: unless-stopped
     ports:
-      - "6381:6379"  # remapped (6380 taken by FalkorDB)
+      # Bound to loopback (§3 hardening): this is Stable's OWN redis (rate-limit
+      # counters, presence). It never needs to be reachable off-host; the app
+      # talks to it over the Docker network. Also password-protected below.
+      - "127.0.0.1:6381:6379"  # remapped (6380 taken by FalkorDB)
     volumes:
       - redis_data:/data
+    # requirepass (§3): without it, an unauth client on the network could
+    # FLUSHALL the rate-limit counters or CONFIG SET dir for a file-write RCE.
+    # dangerous admin verbs are also renamed away.
     command: >
       redis-server
       --appendonly yes
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
     networks:
       - stable-net
       - web
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -102,15 +114,22 @@ services:
     container_name: stable-backend
     restart: unless-stopped
     ports:
-      - "8400:8400"
+      # Loopback-only (§3/B2): the public entrypoint is Traefik on the `web`
+      # network, not this host port. Nothing off-host should hit :8400 directly.
+      - "127.0.0.1:8400:8400"
     volumes:
       - ./server:/app
       - backend_uploads:/home/stable/server/uploads
     environment:
-      - ENVIRONMENT=development
+      # production => SQLAlchemy echo OFF (dev leaked every SQL statement +
+      # message body to stdout) and JSON structured logs.
+      - ENVIRONMENT=${ENVIRONMENT:-production}
       - PORT=8400
+      # Instance tenancy binding (offering C). Empty = community/ownership mode.
+      - STABLE_ORG_ID=${STABLE_ORG_ID:-}
+      - ORG_ID=${STABLE_ORG_ID:-}
       - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@postgres:5432/stable
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-wss://livekit.magicunicorn.dev}
       - LIVEKIT_API_URL=http://livekit:7880
@@ -155,10 +174,25 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
+      # Public API router.
       - "traefik.http.routers.stable-api.rule=Host(`stable.magicunicorn.dev`) && PathPrefix(`/api`)"
       - "traefik.http.routers.stable-api.entrypoints=websecure"
       - "traefik.http.routers.stable-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.stable-api.loadbalancer.server.port=8400"
+      # B2: take the internal agent surface OFF the public edge. A higher-
+      # priority router captures /api/v1/internal/* and runs it through an
+      # ipAllowList that permits only loopback — so every request arriving via
+      # Traefik (i.e. from the internet) gets 403. Legitimate agent traffic
+      # never transits Traefik: the agents sidecar calls http://backend:8400
+      # directly over the Docker network, bypassing this router entirely. The
+      # constant-time internal bearer (B1) remains as defense-in-depth.
+      - "traefik.http.routers.stable-internal-deny.rule=Host(`stable.magicunicorn.dev`) && PathPrefix(`/api/v1/internal`)"
+      - "traefik.http.routers.stable-internal-deny.entrypoints=websecure"
+      - "traefik.http.routers.stable-internal-deny.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.stable-internal-deny.priority=1000"
+      - "traefik.http.routers.stable-internal-deny.service=stable-api"
+      - "traefik.http.routers.stable-internal-deny.middlewares=stable-internal-denylist"
+      - "traefik.http.middlewares.stable-internal-denylist.ipallowlist.sourcerange=127.0.0.1/32"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/health')"]
       interval: 15s
@@ -183,7 +217,7 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
       - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
       - STABLE_BACKEND_URL=http://backend:8400
-      - REDIS_URL=redis://redis:6379/1
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}

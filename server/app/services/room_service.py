@@ -41,6 +41,7 @@ class RoomService:
         description: str | None = None,
         max_participants: int = 50,
         metadata: dict | None = None,
+        org_id: str | None = None,
     ) -> Room:
         """Create a new room in the database and LiveKit.
 
@@ -91,6 +92,7 @@ class RoomService:
             livekit_sid=lk_room.sid if lk_room.sid else None,
             max_participants=max_participants,
             created_by=creator_id,
+            org_id=org_id,
             metadata_=metadata or {},
         )
         self._db.add(room)
@@ -288,6 +290,22 @@ class RoomService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This room is invite-only",
             )
+
+        # B6: cross-org gate. On a per-org instance a user may only self-join a
+        # channel belonging to their org (or an org-less/community channel).
+        # Blocks discovering + joining another org's channel by UUID. An invite
+        # (self_join=False) still works cross-org for explicit collaboration.
+        if self_join:
+            from app.config import get_settings as _get_settings
+
+            org = _get_settings().instance_org_id
+            if org is not None and room.org_id is not None and str(
+                room.org_id
+            ) != str(org):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This room belongs to another organization",
+                )
 
         # Archived channels are closed to new self-joins.
         if self_join and room.is_archived:

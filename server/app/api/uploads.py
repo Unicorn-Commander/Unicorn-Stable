@@ -46,6 +46,12 @@ from app.deps import (
     get_settings_dep,
     rate_limit,
 )
+from app.security.upload_guard import (
+    dangerous_suffix,
+    is_dangerous_content_type,
+    safe_download_headers,
+    sniff_is_markup,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -131,6 +137,13 @@ async def upload_file(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"File type not allowed: {content_type}",
         )
+    # B4: block browser-executable types (html/xhtml/svg/xml/js). ``text/`` and
+    # ``image/`` in ALLOWED_PREFIXES otherwise wave through text/html + svg.
+    if is_dangerous_content_type(content_type):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"File type not allowed (executable/markup): {content_type}",
+        )
 
     # Read + size check
     body = await file.read(MAX_FILE_BYTES + 1)
@@ -138,6 +151,14 @@ async def upload_file(
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB limit",
+        )
+    # B4: sniff the real bytes — a dangerous payload can be smuggled under a
+    # benign client-supplied Content-Type. Reject anything that looks like
+    # markup/script regardless of the declared type.
+    if sniff_is_markup(body):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="File content looks like HTML/SVG/script and is not allowed",
         )
 
     # Normalize filename (keep extension, prefix UUID)
@@ -147,6 +168,10 @@ async def upload_file(
     )
     # Keep only a safe extension; the body of the stored name is random hex.
     if suffix and not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", suffix):
+        suffix = ""
+    # B4: never persist a suffix that would make download re-derive a
+    # renderable type (a stored ``.html`` re-guesses text/html).
+    if dangerous_suffix(suffix):
         suffix = ""
     fid = uuid.uuid4().hex
     stored_name = f"{fid}{suffix}"
@@ -252,9 +277,13 @@ async def download_upload(
             )
 
     guessed_type = mimetypes.guess_type(stored_name)[0] or "application/octet-stream"
+    # B4: neutralize the served type — dangerous types download as octet-stream
+    # attachments, only an image/pdf allowlist renders inline, nosniff + a
+    # locked-down CSP are always set. ``download_name`` restores a friendly name.
+    download_name = request.query_params.get("name") or stored_name
+    media_type, headers = safe_download_headers(guessed_type, download_name)
     return FileResponse(
         path=str(target),
-        media_type=guessed_type,
-        # Let browsers cache rendered attachments; the URL itself is the token.
-        headers={"Cache-Control": "private, max-age=3600"},
+        media_type=media_type,
+        headers=headers,
     )

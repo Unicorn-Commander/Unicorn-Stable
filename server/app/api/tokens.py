@@ -71,6 +71,7 @@ async def generate_livekit_token(
         room_name=room.livekit_room_name,
         identity=identity,
         name=body.participant_name or user.get("display_name") or user["username"],
+        ttl=int(settings.livekit_token_ttl_seconds or 3600),
         api_key=settings.livekit_api_key,
         api_secret=settings.livekit_api_secret,
     )

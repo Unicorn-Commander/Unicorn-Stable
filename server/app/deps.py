@@ -231,32 +231,58 @@ async def _rate_limit_hit(
     identifier: str,
     limit: int,
     window_seconds: int = 60,
+    fail_open: bool = True,
 ) -> None:
-    """Increment a fixed-window counter; raise 429 when over ``limit``.
+    """Sliding-window counter; raise 429 when the weighted rate exceeds ``limit``.
 
-    Fails OPEN: if Redis is unreachable we log and allow the request rather
-    than hard-failing user traffic on an infra blip.
+    Uses the standard two-window weighted approximation: the current window's
+    count plus the previous window's count scaled by the fraction of the
+    current window still "in view". This smooths the fixed-window burst edge
+    (where a caller could do 2×limit across a window boundary).
+
+    ``fail_open`` controls Redis-outage behavior. Cheap/idempotent routes stay
+    OPEN (don't hard-fail user traffic on an infra blip). Scarce-resource
+    routes (GPU embedding, disk writes, TTS) pass ``fail_open=False`` so a
+    Redis outage can't be used to bypass the only backpressure on an expensive
+    upstream — better a 503 than an unmetered GPU stampede.
     """
     if limit <= 0:
         return
-    # Window-aligned key so counters reset cleanly and old keys self-expire.
-    window = int(time.time()) // window_seconds
-    key = f"ratelimit:{bucket}:{identifier}:{window}"
+    now = time.time()
+    window = int(now) // window_seconds
+    elapsed = now - (window * window_seconds)
+    cur_key = f"ratelimit:{bucket}:{identifier}:{window}"
+    prev_key = f"ratelimit:{bucket}:{identifier}:{window - 1}"
     try:
-        current = await redis.incr(key)
+        current = await redis.incr(cur_key)
         if current == 1:
-            # First hit in this window — set TTL slightly beyond the window.
-            await redis.expire(key, window_seconds + 1)
+            # TTL spans this window + the next so the prev-window read survives.
+            await redis.expire(cur_key, window_seconds * 2 + 1)
+        prev_raw = await redis.get(prev_key)
+        prev = int(prev_raw) if prev_raw is not None else 0
     except Exception:
-        logger.warning("rate_limit_redis_error", bucket=bucket, exc_info=True)
-        return
+        logger.warning(
+            "rate_limit_redis_error",
+            bucket=bucket,
+            fail_open=fail_open,
+            exc_info=True,
+        )
+        if fail_open:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate limiter unavailable; try again shortly.",
+            headers={"Retry-After": str(window_seconds)},
+        )
 
-    if current > limit:
+    weight = max(0.0, (window_seconds - elapsed) / window_seconds)
+    estimated = current + prev * weight
+    if estimated > limit:
         logger.info(
             "rate_limited",
             bucket=bucket,
             identifier=identifier,
-            count=current,
+            estimated=round(estimated, 2),
             limit=limit,
         )
         raise HTTPException(
@@ -266,20 +292,33 @@ async def _rate_limit_hit(
         )
 
 
+# Buckets whose upstream is a scarce shared resource (GPU embedding/synthesis,
+# disk). These fail CLOSED so a Redis outage can't lift the only backpressure.
+_FAIL_CLOSED_BUCKETS = frozenset(
+    {"upload", "kb_upload", "kb_create", "tts", "agent_invite", "agent_chat"}
+)
+
+
 def rate_limit(
     bucket: str,
     limit_attr: str,
     *,
     window_seconds: int = 60,
+    fail_open: bool | None = None,
 ) -> Callable[..., Any]:
     """Build a FastAPI dependency that rate-limits the current user.
 
     ``bucket`` namespaces the counter; ``limit_attr`` is the Settings field
-    holding the per-window cap. Keyed per participant_id.
+    holding the per-window cap. Keyed per participant_id. ``fail_open`` defaults
+    to False for scarce-resource buckets (``_FAIL_CLOSED_BUCKETS``) and True
+    otherwise; pass it explicitly to override.
 
         user: Annotated[dict, Depends(get_current_user)]
         _rl: Annotated[None, Depends(rate_limit("msg_send", "rate_limit_message_send_per_min"))]
     """
+    effective_fail_open = (
+        (bucket not in _FAIL_CLOSED_BUCKETS) if fail_open is None else fail_open
+    )
 
     async def _dep(
         user: Annotated[dict[str, Any], Depends(get_current_user)],
@@ -295,6 +334,7 @@ def rate_limit(
             identifier=str(user["participant_id"]),
             limit=limit,
             window_seconds=window_seconds,
+            fail_open=effective_fail_open,
         )
 
     return _dep

@@ -36,6 +36,15 @@ class MemberRole(str, enum.Enum):
 class Room(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "rooms"
 
+    # Forward/tenancy column (B6). Nullable: NULL rooms are "community/public"
+    # (visible on any instance); a non-NULL org_id scopes browse + self-join to
+    # that org on a per-org (offering C) deployment. Stamped from
+    # ``settings.instance_org_id`` at create time.
+    org_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )
     name: Mapped[str] = mapped_column(
         String(100), unique=True, index=True, nullable=False
     )

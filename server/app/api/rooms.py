@@ -9,11 +9,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.deps import (
     get_current_user,
     get_db,
     get_livekit,
     get_presence,
+    get_settings_dep,
+    rate_limit,
     require_room_member,
 )
 from app.models.room import MemberRole, Room, RoomMember
@@ -123,6 +126,7 @@ async def bootstrap_default_rooms(
                 room_type="channel",
                 creator_id=user["participant_id"],
                 description=description,
+                org_id=get_settings_dep().instance_org_id,
             )
             created.append(_room_to_response(room, member_count=1, online_count=1))
         except Exception:
@@ -208,6 +212,7 @@ async def enter_conference_room(
                 description=description,
                 max_participants=50,
                 metadata={"conference": True},
+                org_id=get_settings_dep().instance_org_id,
             )
         except HTTPException as exc:
             # Lost a create race with a concurrent enterer — fetch theirs.
@@ -245,9 +250,13 @@ async def enter_conference_room(
 async def create_room(
     body: RoomCreate,
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
+    _rl: Annotated[
+        None, Depends(rate_limit("room_create", "rate_limit_room_create_per_min"))
+    ] = None,
 ) -> RoomResponse:
     """Create a new room."""
     svc = _build_room_service(db, livekit, presence)
@@ -258,6 +267,7 @@ async def create_room(
         creator_id=user["participant_id"],
         description=body.description,
         max_participants=body.max_participants,
+        org_id=settings.instance_org_id,  # B6: stamp the instance org
     )
     return _room_to_response(room, member_count=1, online_count=1)
 
@@ -265,6 +275,7 @@ async def create_room(
 @router.get("/rooms/browse", response_model=list[RoomResponse])
 async def browse_channels(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
@@ -274,8 +285,10 @@ async def browse_channels(
     """List channels (room_type=channel) the caller is NOT yet a member of.
 
     Used by the channel browser. DMs and group_dms are intentionally excluded.
+    B6: on a per-org instance, only this org's (or org-less community) channels
+    are discoverable — not every other org's channels in a shared Postgres.
     """
-    from sqlalchemy import and_, not_, select as _select
+    from sqlalchemy import not_, or_, select as _select
 
     from app.models.room import Room as _Room, RoomMember as _RM, RoomType as _RT
 
@@ -287,6 +300,10 @@ async def browse_channels(
         _Room.is_archived == False,  # noqa: E712
         not_(_Room.id.in_(member_subq)),
     )
+    org = settings.instance_org_id
+    if org is not None:
+        # Show this org's channels + org-less/community channels; hide others'.
+        stmt = stmt.where(or_(_Room.org_id == org, _Room.org_id.is_(None)))
     if q.strip():
         like = f"%{q.strip().lower()}%"
         stmt = stmt.where(

@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     livekit_api_key: str = "APIStable2026"
     livekit_api_secret: str = "stable_secret_change_in_production_2026"
 
+    # -- Instance tenancy binding (offering C = one stack per org) --
+    # The UUID of the org this instance belongs to. When set, every resource
+    # created here (Knowledge Bases, rooms/channels) is stamped with this org
+    # and reads are scoped to it — so even if two orgs' rows ever share one
+    # Postgres, one org can never see another's. When EMPTY (offering B =
+    # shared community / individuals), isolation falls back to ownership +
+    # room-membership (a resource is private to its creator unless shared into
+    # a room). Leave empty for a community box; set STABLE_ORG_ID for a per-org
+    # deployment. Empty string normalizes to None via ``instance_org_id``.
+    org_id: str = ""
+
     # Internal agent-surface bearer. Authenticates the /api/v1/internal/*
     # routes (agent message-inject, artifact write, KB search). MUST be a
     # distinct random secret from livekit_api_secret in production — sharing
@@ -166,6 +177,27 @@ class Settings(BaseSettings):
     rate_limit_agent_chat_per_min: int = 30
     # read-aloud TTS synthesis (GPU-bound upstream — keep this tight)
     rate_limit_tts_per_min: int = 20
+    # Knowledge-Base abuse controls (GPU-embedding + disk are the scarce
+    # resources; keep create/upload tight and cap total footprint per user).
+    rate_limit_kb_create_per_min: int = 10
+    rate_limit_kb_upload_per_min: int = 20
+    # Room/channel creation (cheap but fan-out-able).
+    rate_limit_room_create_per_min: int = 20
+    # Brigade agent invites (each spawns a GPU-backed worker + agent turns).
+    rate_limit_agent_invite_per_min: int = 20
+
+    # -- Per-user quota caps (hard ceilings, independent of the rate window) --
+    # Total KB documents a single user may own across all their collections,
+    # and the total bytes on disk those uploads may consume. 0 disables the
+    # check. Guards the shared upload volume + embedding GPU from a single
+    # account filling the box.
+    max_kb_documents_per_user: int = 500
+    max_kb_bytes_per_user: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+    # LiveKit join-token lifetime. The token only needs to live long enough to
+    # establish the WebRTC session (the media session outlives it), so a short
+    # TTL bounds the blast radius of a leaked token. Was an implicit 24h.
+    livekit_token_ttl_seconds: int = 3600
 
     # -- Read-aloud TTS proxy (app/api/tts.py) --
     # kokoro-fastapi front (kokoro-ha nginx on this host -> uc-1 GTX1070
@@ -180,6 +212,18 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
+
+    @property
+    def instance_org_id(self) -> str | None:
+        """The configured instance org UUID, or None for a community box.
+
+        Centralizes the empty-string→None normalization so authz code can do a
+        simple truthiness check (``if settings.instance_org_id``) to branch
+        between org-scoped (per-org deploy) and ownership-scoped (community)
+        isolation.
+        """
+        v = (self.org_id or "").strip()
+        return v or None
 
 
 @lru_cache(maxsize=1)
