@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Unicorn Stable — provision a per-org instance (offering C: one stack per org).
+#
+# Generates an isolated stack (own DB/redis/livekit/backend/agents/web, own
+# secrets, own org UUID, own domains + LiveKit media-port block) from the
+# canonical base compose. Inherits every hardening default from the base.
+#
+# This script does the DETERMINISTIC, SAFE parts (secrets, port allocation,
+# artifact rendering). It STOPS before the steps that need human decisions or
+# external systems (DNS, Keycloak realm/client, firewall, Brigade roster) and
+# prints them as a runbook. Re-run with --deploy once those are done.
+#
+# Usage:
+#   provision-org.sh <slug>                 # render artifacts + print runbook
+#   provision-org.sh <slug> --deploy        # also bring the stack up + smoke-test
+#
+# <slug>: lowercase [a-z0-9-], the org's short name (e.g. "acme"). Everything
+#         derives from it: stable-acme-*, acme.stable.unicorncommander.ai, etc.
+set -euo pipefail
+
+SLUG="${1:-}"
+DEPLOY=""
+[[ "${2:-}" == "--deploy" ]] && DEPLOY=1
+
+if [[ -z "$SLUG" || ! "$SLUG" =~ ^[a-z0-9]([a-z0-9-]{1,30}[a-z0-9])?$ ]]; then
+  echo "usage: $0 <slug> [--deploy]   (slug: lowercase a-z0-9-, 2-32 chars)" >&2
+  exit 2
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root
+BASE_COMPOSE="$ROOT/docker-compose.yml"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORG_DIR="$ROOT/deploy/per-org/instances/$SLUG"
+DOMAIN_BASE="stable.unicorncommander.ai"
+
+echo "▶ provision Stable org: slug=$SLUG dir=$ORG_DIR"
+mkdir -p "$ORG_DIR"
+
+gen() { python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range($1)))"; }
+
+# --- 1) allocate a LiveKit media-port block (the hard multi-instance limit) --
+# Scan for a free 3-port block starting at 7890, stepping by 10, avoiding the
+# dogfood 7880-7882 and anything already bound on the host.
+port_free() { ! (ss -lntu 2>/dev/null || netstat -lntu 2>/dev/null) | grep -q ":$1 "; }
+LK_API=""
+for base in $(seq 7890 10 8090); do
+  if port_free "$base" && port_free "$((base+1))" && port_free "$((base+2))"; then
+    LK_API=$base; LK_TCP=$((base+1)); LK_UDP=$((base+2)); break
+  fi
+done
+[[ -z "$LK_API" ]] && { echo "no free LiveKit port block found" >&2; exit 1; }
+echo "  ✓ LiveKit port block: api=$LK_API tcp=$LK_TCP udp=$LK_UDP"
+
+# --- 2) generate per-org secrets + identity --------------------------------
+ORG_UUID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+PG_PW="$(gen 40)"; REDIS_PW="$(gen 40)"; LK_KEY="API$(gen 12)"; LK_SECRET="$(gen 48)"
+INTERNAL_SECRET="$(gen 48)"; UPLOAD_SECRET="$(gen 48)"; WEBHOOK_SECRET="$(gen 40)"
+echo "  ✓ generated secrets + org_id=$ORG_UUID"
+
+# VAPID keypair (web push). Correct EC P-256 base64url encoding via
+# `cryptography`. Best-effort: if the lib is absent, leave blank (push disabled).
+VAPID_PUB=""; VAPID_PRIV=""
+if VAPID_OUT="$(python3 - 2>/dev/null <<'PY'
+import base64
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization
+pk = ec.generate_private_key(ec.SECP256R1())
+priv = pk.private_numbers().private_value.to_bytes(32, "big")
+pub = pk.public_key().public_bytes(
+    serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+b = lambda x: base64.urlsafe_b64encode(x).rstrip(b"=").decode()
+print(b(pub), b(priv))
+PY
+)"; then
+  VAPID_PUB="${VAPID_OUT%% *}"; VAPID_PRIV="${VAPID_OUT##* }"
+  echo "  ✓ generated VAPID keypair"
+fi
+[[ -z "$VAPID_PUB" ]] && echo "  ⚠ VAPID keypair not generated (cryptography absent) — web push disabled until set"
+
+# --- 3) render the per-org .env from the template --------------------------
+ENV_OUT="$ORG_DIR/.env"
+sed \
+  -e "s|__SLUG__|$SLUG|g" \
+  -e "s|__ORG_UUID__|$ORG_UUID|g" \
+  -e "s|__LK_API__|$LK_API|g" -e "s|__LK_TCP__|$LK_TCP|g" -e "s|__LK_UDP__|$LK_UDP|g" \
+  -e "s|__KC_REALM__|uchub|g" -e "s|__KC_CLIENT__|stable-$SLUG|g" -e "s|__KC_SECRET__||g" \
+  "$HERE/env.tmpl" > "$ENV_OUT"
+# fill generated secrets (use a temp to avoid sed-escaping secret chars)
+python3 - "$ENV_OUT" "$PG_PW" "$REDIS_PW" "$LK_KEY" "$LK_SECRET" "$INTERNAL_SECRET" "$UPLOAD_SECRET" "$WEBHOOK_SECRET" "$VAPID_PUB" "$VAPID_PRIV" <<'PY'
+import sys
+f,pg,rd,lkk,lks,ints,ups,wh,vpub,vpriv = sys.argv[1:11]
+sub = {
+ "POSTGRES_PASSWORD=__GEN__":f"POSTGRES_PASSWORD={pg}",
+ "REDIS_PASSWORD=__GEN__":f"REDIS_PASSWORD={rd}",
+ "LIVEKIT_API_KEY=__GEN_KEY__":f"LIVEKIT_API_KEY={lkk}",
+ "LIVEKIT_API_SECRET=__GEN__":f"LIVEKIT_API_SECRET={lks}",
+ "INTERNAL_AGENT_SECRET=__GEN__":f"INTERNAL_AGENT_SECRET={ints}",
+ "UPLOAD_URL_SECRET=__GEN__":f"UPLOAD_URL_SECRET={ups}",
+ "INCOMING_WEBHOOK_SECRET=__GEN__":f"INCOMING_WEBHOOK_SECRET={wh}",
+ "VAPID_PUBLIC_KEY=__GEN_VAPID_PUB__":f"VAPID_PUBLIC_KEY={vpub}",
+ "VAPID_PRIVATE_KEY=__GEN_VAPID_PRIV__":f"VAPID_PRIVATE_KEY={vpriv}",
+ "BRIGADE_API_KEY=__BRIGADE_KEY__":"BRIGADE_API_KEY=",
+ "METERING_KEY=__BILLING_KEY__":"METERING_KEY=",
+}
+t=open(f).read()
+for k,v in sub.items(): t=t.replace(k,v)
+open(f,"w").write(t)
+PY
+chmod 600 "$ENV_OUT"
+echo "  ✓ rendered $ENV_OUT (mode 600)"
+
+# --- 4) render the per-org compose from the canonical base -----------------
+python3 "$HERE/render_compose.py" \
+  "$BASE_COMPOSE" "$ORG_DIR/docker-compose.yml" \
+  "$SLUG" "$SLUG.$DOMAIN_BASE" "$SLUG-livekit.$DOMAIN_BASE" "$SLUG-turn.$DOMAIN_BASE" \
+  "$LK_API" "$LK_TCP" "$LK_UDP"
+
+# --- 5) render per-org livekit.yaml (own key/secret + redis password) ------
+LK_YAML_SRC="$ROOT/server/livekit.yaml.example"
+[[ -f "$LK_YAML_SRC" ]] || LK_YAML_SRC="$ROOT/server/livekit.yaml"
+python3 - "$LK_YAML_SRC" "$ORG_DIR/livekit.yaml" "$LK_KEY" "$LK_SECRET" "$REDIS_PW" <<'PY'
+import sys, yaml
+src,out,key,secret,rpw = sys.argv[1:6]
+try:
+    d = yaml.safe_load(open(src)) or {}
+except Exception:
+    d = {}
+d.setdefault("port",7880)
+d["keys"] = {key: secret}
+d.setdefault("redis",{})["address"]="redis:6379"
+d["redis"]["password"]=rpw
+d.setdefault("room",{})["auto_create"]=True
+yaml.safe_dump(d,open(out,"w"),sort_keys=False)
+print("  ✓ rendered", out)
+PY
+chmod 600 "$ORG_DIR/livekit.yaml"
+
+echo ""
+echo "════════════════════════════════════════════════════════════════════"
+echo " ARTIFACTS READY in $ORG_DIR"
+echo "   .env  docker-compose.yml  livekit.yaml"
+echo "════════════════════════════════════════════════════════════════════"
+echo " MANUAL STEPS before --deploy (need decisions / external systems):"
+echo "  1. DNS (Cloudflare): A/AAAA for"
+echo "       $SLUG.stable.unicorncommander.ai"
+echo "       $SLUG-livekit.stable.unicorncommander.ai"
+echo "       $SLUG-turn.stable.unicorncommander.ai   -> this host"
+echo "  2. Keycloak: create client 'stable-$SLUG' in realm uchub (or a per-org"
+echo "     realm — see project_per_org_sso_design), set redirect URIs to the"
+echo "     domain above, paste the client secret into KEYCLOAK_CLIENT_SECRET."
+echo "  3. Firewall: open UDP $LK_UDP (LiveKit media) + TCP $LK_TCP to this host."
+echo "  4. Brigade: scope the org's agent roster (accessPolicy) + set"
+echo "     BRIGADE_API_KEY; set METERING_KEY for billing."
+echo "  5. Then: $0 $SLUG --deploy"
+echo "════════════════════════════════════════════════════════════════════"
+
+if [[ -z "$DEPLOY" ]]; then
+  exit 0
+fi
+
+# --- 6) deploy + smoke test -------------------------------------------------
+echo "▶ deploying stack for $SLUG…"
+cd "$ORG_DIR"
+docker compose --env-file .env -p "stable-$SLUG" up -d
+echo "  ⏳ settling…"; sleep 10
+docker compose -p "stable-$SLUG" ps
+code="$(curl -s -o /dev/null -w '%{http_code}' "https://$SLUG.$DOMAIN_BASE/" || echo 000)"
+echo "  🌐 https://$SLUG.$DOMAIN_BASE/ -> HTTP $code"
+[[ "$code" =~ ^(2|3)[0-9][0-9]$ ]] && echo "✅ $SLUG provisioned + live." || {
+  echo "❌ external check failed ($code) — check DNS/cert/Keycloak; stack is up, debug with: docker compose -p stable-$SLUG logs" >&2
+  exit 1
+}
