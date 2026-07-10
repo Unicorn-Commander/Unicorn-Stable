@@ -97,10 +97,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}
-        className="glass-heavy w-full max-w-lg overflow-hidden rounded-2xl shadow-pop"
+        className="glass-heavy flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between border-b border-line px-5 py-4">
+        <div className="flex shrink-0 items-start justify-between border-b border-line px-5 py-4">
           <h2
             id="settings-title"
             className="font-display text-base font-semibold text-slate-100"
@@ -116,7 +116,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           </button>
         </div>
 
-        <div className="p-5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-5">
         {/* Profile */}
         {currentUser && (
           <div className="mb-5 flex items-center gap-3.5 rounded-xl border border-line bg-surface-2/60 p-3.5">

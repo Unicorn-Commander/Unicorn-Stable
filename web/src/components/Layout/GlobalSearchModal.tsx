@@ -73,13 +73,13 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}
-        className="glass-heavy w-full max-w-xl overflow-hidden rounded-2xl shadow-pop"
+        className="glass-heavy flex max-h-[85dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label="Search all messages"
       >
-        <div className="flex items-center gap-2.5 border-b border-line px-4 py-3">
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-line px-4 py-3">
           <Search className="h-4 w-4 shrink-0 text-stable-cyan/80" />
           <input
             ref={inputRef}
@@ -97,7 +97,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
           )}
         </div>
 
-        <div className="max-h-96 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {!debounced ? (
             <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-10 text-center">
               <div className="grid h-11 w-11 place-items-center rounded-2xl bg-stable-cyan/10 text-stable-cyan shadow-[0_0_24px_rgba(34,211,238,0.15)]">

@@ -186,14 +186,14 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
         initial={{ scale: 0.96, y: -8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: -8 }}
-        className="glass-heavy w-full max-w-xl overflow-hidden rounded-2xl shadow-pop"
+        className="glass-heavy flex max-h-[85dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
         role="dialog"
         aria-modal="true"
         aria-label="Quick switcher"
       >
-        <div className="flex items-center gap-2.5 border-b border-line px-4 py-3">
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-line px-4 py-3">
           <Search className="h-4 w-4 shrink-0 text-slate-500" />
           <input
             ref={inputRef}
@@ -207,7 +207,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
           </kbd>
         </div>
 
-        <ul className="max-h-96 overflow-y-auto p-1.5">
+        <ul className="flex-1 min-h-0 overflow-y-auto p-1.5">
           {items.length === 0 ? (
             <li className="flex flex-col items-center gap-1.5 px-3 py-10 text-center">
               <Search className="mb-1 h-6 w-6 text-slate-600" />
@@ -258,7 +258,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
           )}
         </ul>
 
-        <div className="flex items-center gap-3 border-t border-line px-3.5 py-2 text-[10px] text-slate-500">
+        <div className="flex shrink-0 items-center gap-3 border-t border-line px-3.5 py-2 text-[10px] text-slate-500">
           <span>
             <kbd className="mr-1 rounded border border-line bg-white/[0.04] px-1 py-0.5 text-[10px] font-medium text-slate-400">
               ↑↓

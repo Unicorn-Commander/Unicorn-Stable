@@ -424,7 +424,7 @@ export function HomeDashboard() {
         </div>
 
         {/* Stat ribbon — each stat gets its own hue family */}
-        <div className="mb-6 grid grid-cols-3 gap-3">
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <button
             onClick={() => setFilter("unread")}
             className={clsx(

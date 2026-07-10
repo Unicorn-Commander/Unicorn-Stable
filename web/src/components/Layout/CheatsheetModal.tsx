@@ -88,7 +88,7 @@ export function CheatsheetModal() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-20 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[8dvh] backdrop-blur-sm"
       onClick={toggle}
     >
       <motion.div
@@ -99,10 +99,10 @@ export function CheatsheetModal() {
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}
-        className="glass-heavy w-full max-w-2xl overflow-hidden rounded-2xl shadow-pop"
+        className="glass-heavy flex max-h-[85dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between border-b border-line px-6 py-4">
+        <div className="flex shrink-0 items-start justify-between border-b border-line px-6 py-4">
           <div className="flex items-center gap-2.5">
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-stable-purple/15">
               <Keyboard className="h-4 w-4 text-stable-purple-light" />
@@ -122,7 +122,7 @@ export function CheatsheetModal() {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="px-6 pt-5">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-5">
           <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
             <div>
               <Section title="Keyboard" rows={KEYS} />
@@ -134,7 +134,7 @@ export function CheatsheetModal() {
             </div>
           </div>
         </div>
-        <p className="border-t border-line px-6 py-3 text-center text-xs text-slate-500">
+        <p className="shrink-0 border-t border-line px-6 py-3 text-center text-xs text-slate-500">
           Press{" "}
           <kbd className="rounded-md border border-line bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] font-medium text-slate-200">
             {mod} /
