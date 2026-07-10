@@ -1,4 +1,5 @@
 import { getToken } from "./auth";
+import { useFederationStore } from "@/stores/federationStore";
 
 type EventCallback = (data: WsEventPayload) => void;
 
@@ -141,12 +142,17 @@ class StableWebSocket {
 
     this.intentionalClose = false;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = import.meta.env.VITE_API_BASE_URL
-      ? new URL(import.meta.env.VITE_API_BASE_URL).host
-      : window.location.host;
-
-    const url = `${protocol}//${host}/ws?token=${encodeURIComponent(token)}`;
+    // Route the socket at the ACTIVE federated instance (falls back to the
+    // build-time base, then same-origin) so a server switch reconnects the WS
+    // to the right backend.
+    const instance = useFederationStore
+      .getState()
+      .accessibleInstances.find(
+        (item) => item.id === useFederationStore.getState().activeInstanceId,
+      );
+    const url = instance?.wsUrl
+      ? `${instance.wsUrl}${instance.wsUrl.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+      : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
 
     this.ws = new WebSocket(url);
 
@@ -202,7 +208,20 @@ class StableWebSocket {
     this.intentionalClose = true;
     this.stopHeartbeat();
     this.cancelReconnect();
-    this.ws?.close();
+    const old = this.ws;
+    if (old) {
+      // Detach handlers BEFORE closing. A federated server switch does
+      // disconnect()+connect() on this singleton; without this, the dead
+      // socket's async onclose/onerror/onmessage can still fire afterwards and
+      // mutate the NEW socket (onerror closes it), spawn a duplicate reconnect,
+      // or emit the old server's buffered messages to the shared listener set —
+      // a cross-instance bleed.
+      old.onopen = null;
+      old.onmessage = null;
+      old.onclose = null;
+      old.onerror = null;
+      old.close();
+    }
     this.ws = null;
     this._connected = false;
   }

@@ -13,8 +13,22 @@ import type {
   KbDocument,
   KnowledgeSearchHit,
 } from "@/types/knowledge";
+import { useFederationStore } from "@/stores/federationStore";
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+/**
+ * The API origin of the ACTIVE federated instance. Falls back to the build-time
+ * base, then same-origin. Every request/upload/TTS/KB-doc URL routes through
+ * this so switching servers retargets them ALL at once — never a stale home URL.
+ */
+function activeBaseUrl(): string {
+  const fed = useFederationStore.getState();
+  return (
+    fed.accessibleInstances.find((i) => i.id === fed.activeInstanceId)
+      ?.apiBaseUrl ??
+    import.meta.env.VITE_API_BASE_URL ??
+    ""
+  );
+}
 
 export interface ApiError {
   status: number;
@@ -242,7 +256,7 @@ class StableApiClient {
       ...(await this.getAuthHeaders()),
     };
 
-    const response = await fetch(`${BASE_URL}${path}`, {
+    const response = await fetch(`${activeBaseUrl()}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -600,7 +614,7 @@ class StableApiClient {
         reject(abortError());
         return;
       }
-      xhr.open("POST", `${BASE_URL}/api/v1/uploads`);
+      xhr.open("POST", `${activeBaseUrl()}/api/v1/uploads`);
       for (const [key, value] of Object.entries(headers)) {
         xhr.setRequestHeader(key, value);
       }
@@ -913,7 +927,7 @@ class StableApiClient {
       "Content-Type": "application/json",
       ...(await this.getAuthHeaders()),
     };
-    const response = await fetch(`${BASE_URL}/api/v1/tts`, {
+    const response = await fetch(`${activeBaseUrl()}/api/v1/tts`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -1062,7 +1076,7 @@ class StableApiClient {
     const fd = new FormData();
     fd.append("file", file);
     const resp = await fetch(
-      `${BASE_URL}/api/v1/knowledge/collections/${collectionId}/documents`,
+      `${activeBaseUrl()}/api/v1/knowledge/collections/${collectionId}/documents`,
       { method: "POST", headers, body: fd },
     );
     if (!resp.ok) {

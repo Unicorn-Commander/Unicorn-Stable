@@ -87,6 +87,7 @@ interface AppState {
   addOnlineUser: (userId: string) => void;
   removeOnlineUser: (userId: string) => void;
   setVoiceActive: (active: boolean) => void;
+  resetForServer: () => void;
 
   toggleSidebar: () => void;
   toggleParticipantPanel: () => void;
@@ -348,6 +349,34 @@ export const useAppStore = create<AppState>((set) => ({
     })),
 
   setVoiceActive: (active) => set({ voiceActive: active }),
+  // Wipe all server-scoped state when switching federated instances so no room,
+  // message, agent, or per-server preference bleeds into the next server. The
+  // persisted UI chrome (drawer open, panel widths) is intentionally kept.
+  resetForServer: () =>
+    set((state) => {
+      // Clear pending typing-indicator timers so they don't fire into the
+      // freshly-reset store after a server switch.
+      for (const users of Object.values(state.typing)) {
+        for (const u of users) clearTimeout(u.timeout);
+      }
+      return {
+        rooms: [],
+        activeRoomId: null,
+        messages: {},
+        participants: {},
+        agents: [],
+        defaultAgentId: null,
+        typing: {},
+        onlineUsers: [],
+        unreadCounts: {},
+        readReceipts: {},
+        modelOverrides: {},
+        toasts: [],
+        pendingInsert: null,
+        voiceActive: false,
+        ui: { ...state.ui, threadMessageId: null, stageAgentId: null },
+      };
+    }),
 
   toggleSidebar: () =>
     set((state) => ({

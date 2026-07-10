@@ -85,6 +85,7 @@ interface CallUiState {
 
   ingestTranscript: (msg: TranscriptMessage) => void;
   clearTranscript: () => void;
+  resetForServer: () => void;
 }
 
 export const useCallUiStore = create<CallUiState>((set, get) => ({
@@ -167,6 +168,15 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
     }),
 
   clearTranscript: () => set({ transcript: [] }),
+  // Drop per-call visual state on a server switch. View-mode prefs and the
+  // show-video/show-transcript toggles are user preferences, so they're kept.
+  resetForServer: () =>
+    set({
+      hiddenTileIds: new Set(),
+      focusedParticipantId: null,
+      videoPrompted: false,
+      transcript: [],
+    }),
 }));
 
 /**

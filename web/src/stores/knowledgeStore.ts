@@ -97,6 +97,9 @@ interface KnowledgeState {
   attach: (collectionId: string) => Promise<void>;
   /** Detach a collection from the current room, then refresh attachments. */
   detach: (collectionId: string) => Promise<void>;
+
+  /** Clear all server-scoped knowledge state on a federated server switch. */
+  resetForServer: () => void;
 }
 
 function errMsg(e: unknown): string {
@@ -311,4 +314,24 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       set({ error: errMsg(e) });
     }
   },
+
+  resetForServer: () =>
+    set({
+      panelOpen: false,
+      roomId: null,
+      collections: [],
+      collectionsLoading: false,
+      attached: [],
+      attachedLoading: false,
+      openCollection: null,
+      documents: [],
+      documentsLoading: false,
+      openDocument: null,
+      documentContentLoading: false,
+      searchQuery: "",
+      searchResults: [],
+      searching: false,
+      searchRan: false,
+      error: null,
+    }),
 }));

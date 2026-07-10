@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Bookmark, Settings, LogOut, Wifi, WifiOff } from "lucide-react";
 import clsx from "clsx";
@@ -9,6 +9,7 @@ import { logout } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
+import { useFederationStore } from "@/stores/federationStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -26,6 +27,7 @@ import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
+import { ServerRail } from "./ServerRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
@@ -135,6 +137,27 @@ export function AppShell() {
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  // Federated multi-server: the active instance id keys the per-server
+  // react-query caches; a switch clears the cache and returns to the home view.
+  const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const switching = useFederationStore((s) => s.switching);
+  const queryClient = useQueryClient();
+  const previousInstanceId = useRef(activeInstanceId);
+
+  useEffect(() => {
+    if (!activeInstanceId) return;
+    if (previousInstanceId.current === null) {
+      previousInstanceId.current = activeInstanceId;
+      return;
+    }
+    if (previousInstanceId.current === activeInstanceId) return;
+    previousInstanceId.current = activeInstanceId;
+    // Rooms/agents (and everything derived from them) belonged to the old
+    // server — drop the whole react-query cache and land on the home view.
+    queryClient.removeQueries();
+    void queryClient.invalidateQueries();
+    navigate("/", { replace: true });
+  }, [activeInstanceId, navigate, queryClient]);
 
   // Tab title: "(unread) #room — Stable" so background tabs can notify AND the
   // tab strip identifies which conversation this window is sitting in.
@@ -328,13 +351,13 @@ export function AppShell() {
   }, [navigate]);
 
   const { data: rooms } = useQuery({
-    queryKey: ["rooms"],
+    queryKey: ["rooms", activeInstanceId],
     queryFn: () => api.getRooms(),
     refetchInterval: 60_000,
   });
 
   const { data: agents } = useQuery({
-    queryKey: ["agents"],
+    queryKey: ["agents", activeInstanceId],
     queryFn: () => api.getAgents(),
     staleTime: 120_000,
   });
@@ -428,6 +451,9 @@ export function AppShell() {
         paddingTop: "env(safe-area-inset-top)",
       }}
     >
+      {/* Discord-style server rail — 72px, far left, desktop only. Renders null
+          unless the user can reach more than one federated instance. */}
+      <ServerRail />
       <AnimatePresence mode="wait">
         {sidebarOpen && (
           <motion.aside
@@ -450,6 +476,8 @@ export function AppShell() {
             className="section-nav absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line-strong bg-surface-0/85 backdrop-blur-xl md:relative md:z-auto"
             aria-label="Room list sidebar"
           >
+            {/* Mobile server switcher — horizontal strip atop the drawer. */}
+            <ServerRail mobile />
             <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
               <h1 className="flex min-w-0 items-center">
                 <button
@@ -603,6 +631,14 @@ export function AppShell() {
           <GlobalSearchModal onClose={() => setGlobalSearchOpen(false)} />
         )}
       </AnimatePresence>
+
+      {switching && (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40">
+          <div className="rounded-xl bg-slate-800 px-4 py-3 text-sm text-slate-200 shadow-xl">
+            Switching Stable instance…
+          </div>
+        </div>
+      )}
 
       <ConnectionBanner />
       <ToastStack />

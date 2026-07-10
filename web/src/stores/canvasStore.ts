@@ -77,6 +77,9 @@ interface CanvasState {
     content?: string,
     language?: string,
   ) => Promise<ArtifactResponse | null>;
+
+  /** Clear all server-scoped canvas state on a federated server switch. */
+  resetForServer: () => void;
 }
 
 function errMsg(e: unknown): string {
@@ -199,6 +202,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return null;
     }
   },
+
+  resetForServer: () =>
+    set({
+      panelOpen: false,
+      roomId: null,
+      artifacts: [],
+      artifactsLoading: false,
+      openArtifact: null,
+      versions: [],
+      viewIndex: -1,
+      loading: false,
+      error: null,
+    }),
 }));
 
 /**

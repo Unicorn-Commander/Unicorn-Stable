@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { MotionConfig } from "framer-motion";
-import { initAuth, isAuthenticated, login, getUserProfile } from "@/services/auth";
+import { isAuthenticated, login, getUserProfile } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
+import { useFederationStore } from "@/stores/federationStore";
 import { AppShell } from "@/components/Layout/AppShell";
 import { StableMark } from "@/components/StableMark";
 import { VoiceProvider } from "@/contexts/VoiceProvider";
@@ -18,7 +19,11 @@ function AuthGate({ children }: { children: ReactNode }) {
 
     async function checkAuth() {
       try {
-        const authenticated = await initAuth();
+        // Federation-aware: authenticate the HOME instance (top-level redirect,
+        // not the CF-blocked iframe) and resolve any sibling instances the user
+        // can reach. Falls back to a single-instance login when instances.json
+        // is absent/empty.
+        const authenticated = await useFederationStore.getState().initialize();
         if (!mounted) return;
 
         if (authenticated) {
