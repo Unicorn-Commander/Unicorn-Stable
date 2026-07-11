@@ -17,9 +17,13 @@ interface FederationState {
   activeInstanceId: string | null;
   initialized: boolean;
   switching: boolean;
+  unreadByInstance: Record<string, number>;
+  addServerOpen: boolean;
   initialize: () => Promise<boolean>;
   switchInstance: (id: string) => Promise<void>;
   addInstance: (origin: string) => Promise<void>;
+  setAddServerOpen: (open: boolean) => void;
+  refreshInstanceUnread: () => Promise<void>;
 }
 
 const ACTIVE_INSTANCE_KEY = "stable.active-instance.v1";
@@ -31,6 +35,8 @@ export const useFederationStore = create<FederationState>((set, get) => ({
   activeInstanceId: null,
   initialized: false,
   switching: false,
+  unreadByInstance: {},
+  addServerOpen: false,
 
   initialize: async () => {
     if (get().initialized) {
@@ -110,7 +116,8 @@ export const useFederationStore = create<FederationState>((set, get) => ({
     useCanvasStore.getState().resetForServer();
     useKnowledgeStore.getState().resetForServer();
     setActiveAuthInstance(id);
-    set({ activeInstanceId: id });
+    // The instance you switch TO is now being viewed → clear its rail badge.
+    set((state) => ({ activeInstanceId: id, unreadByInstance: { ...state.unreadByInstance, [id]: 0 } }));
     localStorage.setItem(ACTIVE_INSTANCE_KEY, id);
     ws.connect();
     set({ switching: false });
@@ -143,5 +150,35 @@ export const useFederationStore = create<FederationState>((set, get) => ({
     } catch {
       // An instance that cannot silently authenticate is not added to the rail.
     }
+  },
+
+  setAddServerOpen: (open) => set({ addServerOpen: open }),
+
+  refreshInstanceUnread: async () => {
+    const { accessibleInstances, activeInstanceId } = get();
+    // Poll only the INACTIVE reachable instances — the active one's unread is
+    // already reflected in the in-app room list. Fail-safe: on any error keep the
+    // previous count so a transient blip doesn't clear a real badge.
+    const targets = accessibleInstances.filter((i) => i.id !== activeInstanceId);
+    if (targets.length === 0) return;
+    const entries = await Promise.all(
+      targets.map(async (inst) => {
+        const prior = get().unreadByInstance[inst.id] ?? 0;
+        try {
+          const token = getInstanceToken(inst.id);
+          if (!token) return [inst.id, prior] as const;
+          const res = await fetch(`${inst.apiBaseUrl}/api/v1/rooms`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return [inst.id, prior] as const;
+          const data = (await res.json()) as { rooms?: Array<{ unread_count?: number }> };
+          const total = (data.rooms ?? []).reduce((sum, r) => sum + (r.unread_count ?? 0), 0);
+          return [inst.id, total] as const;
+        } catch {
+          return [inst.id, prior] as const;
+        }
+      }),
+    );
+    set((state) => ({ unreadByInstance: { ...state.unreadByInstance, ...Object.fromEntries(entries) } }));
   },
 }));

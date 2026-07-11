@@ -28,6 +28,7 @@ import { SavedPanel } from "./SavedPanel";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
 import { ServerRail } from "./ServerRail";
+import { AddServerModal } from "./AddServerModal";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
@@ -141,6 +142,7 @@ export function AppShell() {
   // react-query caches; a switch clears the cache and returns to the home view.
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
   const switching = useFederationStore((s) => s.switching);
+  const addServerOpen = useFederationStore((s) => s.addServerOpen);
   const queryClient = useQueryClient();
   const previousInstanceId = useRef(activeInstanceId);
 
@@ -158,6 +160,19 @@ export function AppShell() {
     void queryClient.invalidateQueries();
     navigate("/", { replace: true });
   }, [activeInstanceId, navigate, queryClient]);
+
+  // Poll the OTHER reachable servers for unread so the rail can badge them.
+  // Cheap + fail-safe (inactive instances only, every 60s); no-op single-server.
+  useEffect(() => {
+    const fed = useFederationStore.getState();
+    if (fed.accessibleInstances.length <= 1) return;
+    void fed.refreshInstanceUnread();
+    const timer = setInterval(
+      () => void useFederationStore.getState().refreshInstanceUnread(),
+      60_000,
+    );
+    return () => clearInterval(timer);
+  }, [activeInstanceId]);
 
   // Tab title: "(unread) #room — Stable" so background tabs can notify AND the
   // tab strip identifies which conversation this window is sitting in.
@@ -630,6 +645,10 @@ export function AppShell() {
         {globalSearchOpen && (
           <GlobalSearchModal onClose={() => setGlobalSearchOpen(false)} />
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {addServerOpen && <AddServerModal />}
       </AnimatePresence>
 
       {switching && (
