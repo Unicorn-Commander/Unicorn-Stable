@@ -25,7 +25,9 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
-def _agent_to_response(config: AgentConfig) -> AgentConfigResponse:
+def _agent_to_response(
+    config: AgentConfig, include_prompt: bool = True
+) -> AgentConfigResponse:
     return AgentConfigResponse(
         id=config.id,
         participant_id=config.participant_id,
@@ -34,7 +36,7 @@ def _agent_to_response(config: AgentConfig) -> AgentConfigResponse:
         agent_type=config.agent_type.value,
         model_provider=config.model_provider,
         model_name=config.model_name,
-        system_prompt=config.system_prompt,
+        system_prompt=config.system_prompt if include_prompt else "",
         voice_id=config.voice_id,
         voice_provider=config.voice_provider,
         capabilities=config.capabilities,
@@ -67,7 +69,9 @@ async def list_agents(
         select(AgentConfig).order_by(AgentConfig.created_at.desc())
     )
     configs = result.scalars().all()
-    return [_agent_to_response(c) for c in configs]
+    # The LIST surface omits system_prompt (an agent's internal instructions);
+    # the admin create/update/get responses still include it.
+    return [_agent_to_response(c, include_prompt=False) for c in configs]
 
 
 @router.post("/agents", response_model=AgentConfigResponse, status_code=status.HTTP_201_CREATED)

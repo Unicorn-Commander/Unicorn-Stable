@@ -112,7 +112,10 @@ class Settings(BaseSettings):
 
     # Application
     log_level: str = "info"
-    environment: str = "development"
+    # Default to production so a self-hoster who doesn't set ENVIRONMENT gets
+    # the safe posture (JSON logs, no SQL echo, the startup secret guard on).
+    # Set ENVIRONMENT=development locally for console logs + SQL echo.
+    environment: str = "production"
     port: int = 8400
 
     # -- Observability (Sentry / GlitchTip; both speak the Sentry API) --

@@ -56,6 +56,50 @@ def configure_logging(log_level: str) -> None:
     )
 
 
+def _validate_production_secrets(settings) -> None:
+    """Refuse to boot in production on a WORLD-KNOWN default secret; warn on
+    softer insecure fallbacks. No-op outside production. This protects a
+    self-hoster from silently running on the shipped defaults."""
+    if settings.environment != "production":
+        return
+    log = structlog.get_logger("startup_guard")
+    if (
+        not settings.livekit_api_secret
+        or settings.livekit_api_secret == "stable_secret_change_in_production_2026"
+    ):
+        log.critical(
+            "insecure_default_secret",
+            detail="LIVEKIT_API_SECRET is unset or the built-in default — "
+            "anyone could mint LiveKit join tokens for any room.",
+        )
+        raise RuntimeError(
+            "Refusing to start in production: LIVEKIT_API_SECRET is unset or the "
+            "built-in default. Set a strong random value (see .env.example)."
+        )
+    if settings.livekit_api_key == "APIStable2026":
+        log.warning(
+            "default_livekit_api_key",
+            detail="LIVEKIT_API_KEY is the built-in default; set your own.",
+        )
+    if not settings.internal_agent_secret:
+        log.warning(
+            "internal_agent_secret_fallback",
+            detail="INTERNAL_AGENT_SECRET unset; falling back to the LiveKit "
+            "secret. Set a distinct random value.",
+        )
+    if not settings.upload_url_secret:
+        log.warning(
+            "upload_url_secret_fallback",
+            detail="UPLOAD_URL_SECRET unset; falling back to the LiveKit secret. "
+            "Set a distinct random value.",
+        )
+    if "stable:stable@" in settings.database_url:
+        log.warning(
+            "default_db_password",
+            detail="DATABASE_URL uses the default 'stable' password.",
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application lifecycle: startup and shutdown."""
@@ -63,6 +107,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = structlog.get_logger("lifespan")
 
     # -- Startup --
+
+    # Fail-safe: refuse to boot on a world-known default secret in production.
+    _validate_production_secrets(settings)
 
     # Database engine
     engine = create_async_engine(

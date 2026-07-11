@@ -136,7 +136,7 @@ async def search_users(
                 keycloak_sub=sub,
                 username=u.get("username") or "",
                 display_name=name,
-                email=u.get("email"),
+                email=None,  # not exposed via search — avoid realm-wide email enumeration (invite uses keycloak_sub)
                 avatar_url=p.avatar_url if p else None,
                 signed_in=p is not None,
             )
