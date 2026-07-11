@@ -241,7 +241,9 @@ async def _handle_client_events(
             elif event_type == "mark_read":
                 room_id = data.get("room_id")
                 message_id = data.get("message_id")
-                if room_id:
+                # Guard like typing_*: only act on a room the caller belongs to,
+                # else a stranger could spoof read-receipts into any room by id.
+                if room_id and room_id in room_ids:
                     # Persist last_read_at on the room_member row, then
                     # broadcast a read_receipt event to everyone in the room
                     # so their UI can show "seen by …".

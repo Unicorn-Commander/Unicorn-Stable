@@ -421,6 +421,37 @@ async def invite_brigade_agent(
     ).scalar_one_or_none()
     lk_name = _resolved_room.livekit_room_name if _resolved_room else room_name
 
+    # AUTHZ: the caller must be a member of the target room (mirrors the human
+    # invite route in rooms.py). Without this, any authenticated user could
+    # inject/hijack an agent — and force a model_override — into ANY room by
+    # id/name, including private DMs they are not in.
+    if _resolved_room is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
+        )
+    from app.models.room import RoomMember as _RM_auth
+
+    _caller_member = (
+        await db.execute(
+            _sel_rr(_RM_auth).where(
+                _RM_auth.room_id == _resolved_room.id,
+                _RM_auth.participant_id == user["participant_id"],
+            )
+        )
+    ).scalar_one_or_none()
+    if _caller_member is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must be a member of this room to invite an agent",
+        )
+    # Only allow a model_override the switcher actually offers, so a caller can't
+    # pin an arbitrary or expensive cloud lane on the conversation.
+    if body.model and body.model not in {m["id"] for m in _SWITCHER_MODELS}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported model override: {body.model}",
+        )
+
     # Dual-path design: the SERVER text responder
     # (services/agent_chat_responder.py) answers chat regardless of this call,
     # so a False/degraded dispatch is not a hard failure -- it just means the
@@ -543,7 +574,6 @@ async def remove_brigade_agent(
     from app.models.participant import Participant as _P, ParticipantType as _PT
     from app.models.room import Room as _Room, RoomMember as _RM
 
-    _ = user
     room = (
         await db.execute(_select(_Room).where(_Room.livekit_room_name == room_name))
     ).scalar_one_or_none()
@@ -559,6 +589,20 @@ async def remove_brigade_agent(
             room = None
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    # AUTHZ: caller must be a member of the room (was previously ungated — any
+    # authenticated user could evict an agent from any room by id/name).
+    _caller_member = (
+        await db.execute(
+            _select(_RM).where(
+                _RM.room_id == room.id,
+                _RM.participant_id == user["participant_id"],
+            )
+        )
+    ).scalar_one_or_none()
+    if _caller_member is None:
+        raise HTTPException(
+            status_code=403, detail="You must be a member of this room"
+        )
 
     pseudo_sub = f"brigade:{brigade_agent_id}"
     agent_p = (
