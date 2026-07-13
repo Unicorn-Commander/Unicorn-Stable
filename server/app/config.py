@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -108,7 +109,7 @@ class Settings(BaseSettings):
     incoming_webhook_secret: str = ""
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:3000"]
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
     # Application
     log_level: str = "info"
@@ -212,8 +213,21 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
+        # cors_origins is annotated NoDecode, so pydantic-settings hands us the
+        # RAW env string instead of JSON-decoding list fields itself (that
+        # implicit decode crashes boot on a comma-separated value under
+        # pydantic-settings >=2.7). Accept BOTH a JSON array (["a","b"]) and a
+        # bare comma list (a,b) so either .env style boots cleanly.
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
+            s = v.strip()
+            if s.startswith("["):
+                import json
+
+                try:
+                    return json.loads(s)
+                except ValueError:
+                    pass
+            return [origin.strip() for origin in s.split(",") if origin.strip()]
         return v
 
     @property
