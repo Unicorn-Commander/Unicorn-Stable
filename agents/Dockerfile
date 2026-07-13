@@ -24,6 +24,16 @@ RUN pip install --no-cache-dir .
 
 COPY . .
 
+# --- build provenance (stamped by scripts/deploy.sh / compose build args) ---
+ARG GIT_SHA=unknown
+ARG GIT_SHA_FULL=unknown
+ARG BUILD_TIME=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA_FULL}" \
+      org.opencontainers.image.version="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIME}" \
+      org.opencontainers.image.title="unicorn-stable-agent-runtime"
+ENV STABLE_GIT_SHA="${GIT_SHA}"
+
 # Non-root user
 RUN groupadd --gid 1000 agent \
     && useradd --uid 1000 --gid agent --shell /bin/bash --create-home agent \
