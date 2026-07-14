@@ -1,14 +1,13 @@
-import { useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useVoice } from "@/contexts/VoiceProvider";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useIsDesktop } from "@/hooks/usePanelResize";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { motion, AnimatePresence } from "framer-motion";
 import { ChatPanel } from "./ChatPanel";
 import { StageView } from "./StageView";
 import { VoiceVideoBar } from "./VoiceVideoBar";
 import { SplitPane } from "./SplitPane";
+import type { CallViewMode } from "@/lib/roomDataProtocol";
 
 interface CallRoomLayoutProps {
   roomId: string;
@@ -17,17 +16,30 @@ interface CallRoomLayoutProps {
 }
 
 /**
+ * Modes that want the big, resizable [ video stage │ chat ] arrangement — the
+ * "video is the star" layout. All four map onto a stage of tiles (people show as
+ * avatar tiles until a camera/screen is live), so we key the arrangement on the
+ * CHOSEN mode rather than on whether a camera happens to be publishing. That's
+ * what lets a user pick Gallery/Speaker/Spotlight/Presentation and immediately
+ * get the stage, instead of it collapsing to the audio bar while everyone's
+ * camera is still off.
+ */
+const VIDEO_STAGE_MODES: ReadonlySet<CallViewMode> = new Set<CallViewMode>([
+  "grid",
+  "focus",
+  "spotlight",
+  "screen",
+]);
+
+/**
  * CallRoomLayout — decides how the CALL surface and the CHAT coexist.
  *
- * The old layout stacked the call into a height-animated top region (video
- * modes) or a fixed, chat-clipping overlay column (sidebar mode). This replaces
- * both with a single resizable {@link SplitPane} so chat and video sit BESIDE
- * each other (or stacked on mobile) and you can always read + send while in a
- * call. Three arrangements, chosen off the same per-room view mode agents
- * already drive:
+ * A single resizable {@link SplitPane} keeps chat and video BESIDE each other
+ * (or stacked on mobile) so you can always read + send while in a call. Three
+ * arrangements, chosen off the same per-room view mode agents already drive:
  *
- *   • video call (grid / focus, camera live) → video is the star: a resizable
- *     split of [ video stage │ chat dock ] (chat collapsible).
+ *   • video stage (grid / focus / spotlight / screen) → video is the star: a
+ *     resizable split of [ video stage │ chat dock ] (chat collapsible).
  *   • sidebar (co-working) → chat is the star: [ chat │ narrow call dock ].
  *   • compact / audio / video-off → a slim call bar docked above full chat.
  *
@@ -43,26 +55,9 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const showVideo = useCallUiStore((s) => s.showVideo);
   const isDesktop = useIsDesktop();
 
-  // Does anyone in the call have a live camera/screen track? Mirrors the old
-  // RoomView computation exactly (version bumps on every publish/mute).
-  const { localParticipant, remoteParticipants, version } = useVoice();
-  const callHasVideo = useMemo(() => {
-    const localHasVideo =
-      !!localParticipant &&
-      Array.from(localParticipant.trackPublications.values()).some(
-        (t) => t.kind === "video" && t.track,
-      );
-    const remoteHasVideo = remoteParticipants.some((p) =>
-      Array.from(p.trackPublications.values()).some(
-        (t) => t.kind === "video" && t.track,
-      ),
-    );
-    return localHasVideo || remoteHasVideo;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localParticipant, remoteParticipants, version]);
-
-  const videoShowing = voiceActive && showVideo && callHasVideo;
-  const videoMain = videoShowing && (viewMode === "grid" || viewMode === "focus");
+  // Arrangement follows the chosen mode (see VIDEO_STAGE_MODES). Turning video
+  // off globally (showVideo=false) collapses any stage back to the slim bar.
+  const videoMain = voiceActive && showVideo && VIDEO_STAGE_MODES.has(viewMode);
   const callDock = voiceActive && viewMode === "sidebar";
   const slimBar = voiceActive && !videoMain && !callDock;
 

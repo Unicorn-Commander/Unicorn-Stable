@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -17,11 +23,19 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
  * (e.g. a short-wide mobile video pane keeps 2 people readable). Beyond
  * `maxTiles` it paginates — off-page tiles simply aren't mounted, so LiveKit's
  * adaptive stream pauses their layers until you page to them.
+ *
+ * DRAG-TO-REORDER: when `onReorder` is supplied, items flagged `draggable` get
+ * HTML5 drag handlers on their WRAPPER div (never on the tile node itself), so
+ * no LiveKit track handling lives here — reordering is a pure array move the
+ * caller owns. Native DnD is a desktop-pointer affordance; touch devices reorder
+ * via the mode switcher instead (native DnD doesn't fire from touch).
  */
 
 export interface VideoTileItem {
   key: string;
   node: ReactNode;
+  /** Opt this tile into drag-to-reorder (requires `onReorder`). Default false. */
+  draggable?: boolean;
 }
 
 interface VideoGridProps {
@@ -32,6 +46,11 @@ interface VideoGridProps {
   aspect?: number;
   /** Max tiles per page before paginating. */
   maxTiles?: number;
+  /**
+   * Reorder callback: the user dropped `fromKey` onto `toKey`. The caller
+   * splices its own order array (keys map to whatever stable id it chose).
+   */
+  onReorder?: (fromKey: string, toKey: string) => void;
   className?: string;
 }
 
@@ -83,11 +102,17 @@ export function VideoGrid({
   gap = 8,
   aspect = 16 / 9,
   maxTiles = 12,
+  onReorder,
   className,
 }: VideoGridProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [page, setPage] = useState(0);
+
+  // Live drag session (null when idle). `dragKey` is the tile being dragged;
+  // `overKey` is the current drop target (for the insertion highlight).
+  const [dragKey, setDragKey] = useState<string | null>(null);
+  const [overKey, setOverKey] = useState<string | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -113,6 +138,67 @@ export function VideoGrid({
     ? bestFit(visible.length, size.w, size.h, gap, aspect)
     : null;
 
+  const canReorder = !!onReorder;
+
+  function endDrag() {
+    setDragKey(null);
+    setOverKey(null);
+  }
+
+  function onDragStart(e: DragEvent<HTMLDivElement>, key: string) {
+    setDragKey(key);
+    e.dataTransfer.effectAllowed = "move";
+    // Some browsers require data to be set for a drag to begin.
+    try {
+      e.dataTransfer.setData("text/plain", key);
+    } catch {
+      // Ignore — drag still works via the dragKey state.
+    }
+  }
+
+  function onDragOver(e: DragEvent<HTMLDivElement>, key: string) {
+    if (!dragKey || key === dragKey) return;
+    // preventDefault marks this element a valid drop target.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (overKey !== key) setOverKey(key);
+  }
+
+  function onDrop(e: DragEvent<HTMLDivElement>, key: string) {
+    e.preventDefault();
+    const from = dragKey ?? e.dataTransfer.getData("text/plain");
+    if (from && from !== key) onReorder?.(from, key);
+    endDrag();
+  }
+
+  /** Wrap a tile node in its grid cell + (optionally) the DnD affordances. */
+  function renderCell(it: VideoTileItem, style?: { width: number }) {
+    const enabled = canReorder && it.draggable;
+    return (
+      <div
+        key={it.key}
+        data-tile-key={it.key}
+        className={clsx(
+          "min-w-0 transition-[opacity,transform] duration-150",
+          style ? undefined : "min-h-0",
+          enabled && "cursor-grab active:cursor-grabbing",
+          enabled && dragKey === it.key && "opacity-40",
+          enabled &&
+            overKey === it.key &&
+            "scale-[1.02] rounded-2xl ring-2 ring-stable-purple ring-offset-2 ring-offset-transparent",
+        )}
+        style={style ? { width: style.width } : undefined}
+        draggable={enabled || undefined}
+        onDragStart={enabled ? (e) => onDragStart(e, it.key) : undefined}
+        onDragOver={enabled ? (e) => onDragOver(e, it.key) : undefined}
+        onDrop={enabled ? (e) => onDrop(e, it.key) : undefined}
+        onDragEnd={enabled ? endDrag : undefined}
+      >
+        {it.node}
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -129,20 +215,12 @@ export function VideoGrid({
             gap: `${gap}px`,
           }}
         >
-          {visible.map((it) => (
-            <div key={it.key} className="min-w-0" style={{ width: fit.tileW }}>
-              {it.node}
-            </div>
-          ))}
+          {visible.map((it) => renderCell(it, { width: fit.tileW }))}
         </div>
       ) : (
         // Pre-measure fallback: never render an empty stage for a frame.
         <div className="grid h-full w-full auto-rows-min content-center gap-2 sm:grid-cols-2">
-          {visible.map((it) => (
-            <div key={it.key} className="min-w-0">
-              {it.node}
-            </div>
-          ))}
+          {visible.map((it) => renderCell(it))}
         </div>
       )}
 

@@ -13,8 +13,8 @@
  *     final). Produced by the STT pipeline (Amanuensis) later; consumed by the
  *     live-transcript panel.
  *   - `ui_command`  — AG-UI-style imperative UI control ("change the call view",
- *     "focus this participant", …). Only honored when the sender is an AGENT —
- *     this is the seam that lets Majik drive the interface.
+ *     "focus this participant", "pin this participant", …). Only honored when the
+ *     sender is an AGENT — this is the seam that lets Majik drive the interface.
  *   - artifact events (`artifact_created` / `artifact_updated`) — the canvas
  *     co-working channel. The backend broadcasts these when an artifact gains a
  *     new version (human OR agent edit); the canvas store re-fetches the
@@ -23,6 +23,20 @@
  *
  * The envelope is JSON encoded as UTF-8 bytes (LiveKit data packets are
  * `Uint8Array`). Keep messages small; data packets are not a bulk channel.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WIRE-CONTRACT EVOLUTION (view-modes + tile-interaction system)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This is a DELIBERATE, ADDITIVE two-sided change (see audit §4c). The closed
+ * unions below GREW — they were never narrowed — so old producers/consumers keep
+ * working and new capabilities are allow-listed in lockstep:
+ *   • `CallViewMode` gained `"spotlight"` (auto active-speaker, SFU-ranked) and
+ *     `"screen"` (screen-share-first / presentation stage). `"compact" | "focus"
+ *     | "grid" | "sidebar"` are all preserved.
+ *   • `UiCommandAction` gained `"pinParticipant"` — agent-drivable (no user
+ *     gesture needed), unlike pop-out / picture-in-picture which are
+ *     user-activation-gated and therefore intentionally NOT on the wire.
+ * The producer side (Brigade agent) must mirror these additions.
  */
 
 import { ParticipantKind } from "livekit-client";
@@ -59,26 +73,63 @@ export interface TranscriptMessage {
  * UI-command messages (AG-UI seam)
  * ------------------------------------------------------------------ */
 
-/** The four call view modes the UI can switch between. */
-export type CallViewMode = "compact" | "focus" | "grid" | "sidebar";
+/**
+ * The call view modes the UI can switch between. CLOSED union — the receiver
+ * allow-lists against {@link CALL_VIEW_MODES}, so growing it is a deliberate
+ * two-sided change.
+ *
+ *   - `compact`   — audio-first bar: avatar chips, no video tiles (the default).
+ *   - `grid`      — "Gallery": equal, paginated, best-fit tiles.
+ *   - `focus`     — legacy alias of the big-stage layout; kept for back-compat.
+ *                   Renders identically to `spotlight` (one big tile + filmstrip)
+ *                   and is what `focusParticipant` still switches to.
+ *   - `spotlight` — "Speaker" / "Spotlight": one big tile + a filmstrip. Who is
+ *                   big resolves as pinned ?? focused ?? active-speaker ?? …, so
+ *                   the SAME mode serves BOTH auto-active-speaker (no pin) and a
+ *                   sticky manual pin.
+ *   - `sidebar`   — co-working dock: a narrow vertical column beside chat.
+ *   - `screen`    — "Presentation": a screen share fills the stage with a people
+ *                   filmstrip.
+ */
+export type CallViewMode =
+  | "compact"
+  | "focus"
+  | "grid"
+  | "sidebar"
+  | "spotlight"
+  | "screen";
 
 /**
  * Imperative UI actions an agent may invoke. Keep this list closed — the
  * receiver allow-lists against it and silently drops anything else, so adding a
  * capability is a deliberate two-sided change.
+ *
+ * NOTE: pop-out (`window.open`) and picture-in-picture
+ * (`requestPictureInPicture`) are intentionally NOT here. They require a
+ * synchronous user-activation gesture (a click) and would silently fail if
+ * driven by an inbound data packet, so they stay human-only controls. The
+ * agent-drivable additions are the view modes + `pinParticipant`.
  */
 export type UiCommandAction =
   | "setViewMode"
   | "toggleVideo"
   | "toggleTranscript"
-  | "focusParticipant";
+  | "focusParticipant"
+  | "pinParticipant";
 
 /** Args per action, discriminated by `action` for exhaustive handling. */
 export type UiCommandArgs =
   | { action: "setViewMode"; args: { mode: CallViewMode } }
   | { action: "toggleVideo"; args: { on?: boolean } }
   | { action: "toggleTranscript"; args: { on?: boolean } }
-  | { action: "focusParticipant"; args: { participantId: string } };
+  | { action: "focusParticipant"; args: { participantId: string } }
+  /**
+   * Durable, sticky spotlight pin. `participantId: null` clears the pin (returns
+   * spotlight to auto active-speaker). A non-null id both pins AND switches the
+   * room to `spotlight` so the agent's intent is visible (see
+   * `uiCommandBus.pinParticipant`), mirroring `focusParticipant` → `focus`.
+   */
+  | { action: "pinParticipant"; args: { participantId: string | null } };
 
 /**
  * UI-command envelope. `type` discriminates it from transcript packets on the
@@ -190,6 +241,7 @@ const UI_COMMAND_ACTIONS: ReadonlySet<string> = new Set<UiCommandAction>([
   "toggleVideo",
   "toggleTranscript",
   "focusParticipant",
+  "pinParticipant",
 ]);
 
 const CALL_VIEW_MODES: ReadonlySet<string> = new Set<CallViewMode>([
@@ -197,6 +249,8 @@ const CALL_VIEW_MODES: ReadonlySet<string> = new Set<CallViewMode>([
   "focus",
   "grid",
   "sidebar",
+  "spotlight",
+  "screen",
 ]);
 
 export function isCallViewMode(v: unknown): v is CallViewMode {
@@ -223,7 +277,16 @@ export function isUiCommandMessage(v: unknown): v is UiCommandMessage {
     case "toggleTranscript":
       return args.on === undefined || typeof args.on === "boolean";
     case "focusParticipant":
-      return typeof args.participantId === "string" && args.participantId.length > 0;
+      return (
+        typeof args.participantId === "string" && args.participantId.length > 0
+      );
+    case "pinParticipant":
+      // `null` clears the pin; a non-empty string pins that participant.
+      return (
+        args.participantId === null ||
+        (typeof args.participantId === "string" &&
+          args.participantId.length > 0)
+      );
     default:
       return false;
   }
