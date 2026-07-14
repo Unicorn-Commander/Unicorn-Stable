@@ -374,7 +374,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                       />
                       <div className="absolute right-0 top-full z-50 mt-2 w-80">
                         <BrigadeAgentPicker
-                          roomName={roomDetail?.name ?? roomId}
+                          roomName={roomDetail?.id ?? roomId}
                           defaultOpen
                           onInvited={() => setAgentSwitchOpen(false)}
                         />
@@ -683,7 +683,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               <ErrorBoundary label="the participants panel">
                 <ParticipantStrip roomId={roomId} />
                 <div className="border-t border-line shrink-0">
-                  <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />
+                  <BrigadeAgentPicker roomName={roomDetail?.id ?? roomId} />
                 </div>
               </ErrorBoundary>
             </motion.div>
