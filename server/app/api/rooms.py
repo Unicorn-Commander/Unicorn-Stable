@@ -25,6 +25,7 @@ from app.schemas.room import (
     RoomCreate,
     RoomListResponse,
     RoomMemberResponse,
+    RoomPresenceResponse,
     RoomResponse,
     RoomUpdate,
 )
@@ -801,6 +802,24 @@ async def list_members(
     svc = _build_room_service(db, livekit, presence)
     members = await svc.get_members(room_id, caller_id=user["participant_id"])
     return [_member_to_response(m) for m in members]
+
+
+@router.get("/rooms/{room_id}/presence", response_model=RoomPresenceResponse)
+async def get_room_presence(
+    room_id: uuid.UUID,
+    _user: Annotated[dict[str, Any], Depends(require_room_member)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+) -> RoomPresenceResponse:
+    """Snapshot the Participant IDs currently online in a room.
+
+    Authz: caller must be a member of the room (``require_room_member`` — the
+    same guard as GET /members). Lets a client seed presence on room open so
+    peers who were already connected before the caller opened the room show
+    online immediately, instead of only learning about them from subsequent
+    live presence deltas.
+    """
+    online_ids = await presence.get_online_in_room(str(room_id))
+    return RoomPresenceResponse(online=sorted(online_ids))
 
 
 # ---------------------------------------------------------------------------

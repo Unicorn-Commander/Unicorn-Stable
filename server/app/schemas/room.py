@@ -68,3 +68,13 @@ class RoomListResponse(BaseModel):
     rooms: list[RoomResponse]
     total: int
     cursor: str | None = None
+
+
+class RoomPresenceResponse(BaseModel):
+    """Snapshot of who is currently online in a room.
+
+    ``online`` is a list of Participant IDs (Participant.id) — the same identity
+    the web roster matches its online dot on and the WS presence event carries.
+    """
+
+    online: list[str]

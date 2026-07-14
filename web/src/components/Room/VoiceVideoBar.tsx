@@ -21,6 +21,7 @@ import { api, type BrigadeAgent } from "@/services/api";
 import { CallViewSwitcher } from "./CallViewSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { VoiceAgentStatus } from "./VoiceAgentStatus";
+import { VideoGrid } from "./VideoGrid";
 
 interface VoiceVideoBarProps {
   roomId: string;
@@ -546,13 +547,24 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             {participants.map((p) => renderTile(p))}
           </div>
         ) : (
-          // Grid (preserves the original responsive tile grid behavior).
-          <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-1 content-start gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
-            {participants.map((p) => renderTile(p))}
-            {screenShares.map((s) => (
-              <ScreenShareTile key={s.sid} label={s.label} videoRef={attachTrack(s.track)} />
-            ))}
-          </div>
+          // Grid: responsive best-fit tiles (1 → full, 2 → 2-up, 3-4 → 2×2,
+          // more → auto grid + pagination). Every tile keeps the SAME attach
+          // wiring as the other modes — only the arrangement changes, so no
+          // LiveKit track handling moves here.
+          <VideoGrid
+            items={[
+              ...participants.map((p) => ({ key: p.sid, node: renderTile(p) })),
+              ...screenShares.map((s) => ({
+                key: s.sid,
+                node: (
+                  <ScreenShareTile
+                    label={s.label}
+                    videoRef={attachTrack(s.track)}
+                  />
+                ),
+              })),
+            ]}
+          />
         )}
       </div>
 

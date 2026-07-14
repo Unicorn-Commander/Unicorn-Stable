@@ -83,6 +83,11 @@ export interface RoomMember {
   status?: string;
 }
 
+export interface RoomPresenceResponse {
+  /** Participant IDs (Participant.id) currently online in the room. */
+  online: string[];
+}
+
 export interface UploadedAttachment {
   url: string;
   filename: string;
@@ -550,6 +555,20 @@ class StableApiClient {
     return this.request<RoomMember[]>(
       "GET",
       `/api/v1/rooms/${roomId}/members`,
+    );
+  }
+
+  /**
+   * Snapshot the participant IDs currently online in a room. Seeds the roster's
+   * presence on room open so peers who were already connected before you opened
+   * the room show online immediately (live WS presence deltas only cover changes
+   * AFTER you connect). Returns Participant IDs — the identity the roster matches
+   * its online dot on.
+   */
+  async getRoomPresence(roomId: string): Promise<RoomPresenceResponse> {
+    return this.request<RoomPresenceResponse>(
+      "GET",
+      `/api/v1/rooms/${roomId}/presence`,
     );
   }
 

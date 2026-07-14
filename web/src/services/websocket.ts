@@ -40,10 +40,17 @@ export interface WsTypingEvent {
 }
 
 export interface WsPresenceEvent {
-  user_id: string;
-  username: string;
-  is_online: boolean;
-  last_seen: string;
+  /** Canonical identity the roster resolves on (Participant.id). The server
+   * sends this and mirrors it as `user_id`. */
+  participant_id?: string;
+  /** Mirror of participant_id (what the presence hook reads today). */
+  user_id?: string;
+  username?: string;
+  /** Boolean online flag (current server). */
+  is_online?: boolean;
+  /** String status ("online"/"offline") — legacy/alt shape; accepted as a fallback. */
+  status?: string;
+  last_seen?: string;
 }
 
 export interface WsMessageEditEvent {
