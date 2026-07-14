@@ -8,6 +8,7 @@ import { useFederationStore } from "@/stores/federationStore";
 import { AppShell } from "@/components/Layout/AppShell";
 import { StableMark } from "@/components/StableMark";
 import { VoiceProvider } from "@/contexts/VoiceProvider";
+import { CallDock } from "@/components/Room/CallDock";
 
 function AuthGate({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
@@ -275,6 +276,11 @@ export function App() {
         {/* Unknown paths fall back home. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      {/* Persistent-call affordance: a live call now survives navigation, so a
+          floating dock (return + mic/camera/leave) rides above every view
+          EXCEPT the call's own room, where the full surface is on screen. It
+          self-gates, so mounting it unconditionally here is safe. */}
+      <CallDock />
       </VoiceProvider>
     </AuthGate>
     </MotionConfig>

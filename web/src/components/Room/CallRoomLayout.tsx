@@ -51,15 +51,25 @@ const VIDEO_STAGE_MODES: ReadonlySet<CallViewMode> = new Set<CallViewMode>([
 export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
   const voiceActive = useAppStore((s) => s.voiceActive);
+  const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   const viewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
   const showVideo = useCallUiStore((s) => s.showVideo);
+  const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
+  const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
   const isDesktop = useIsDesktop();
 
+  // The call PERSISTS across navigation, so "is there a call to show HERE?" is
+  // not the global voiceActive flag — it's whether THIS room owns the live
+  // call. In every other room the call surface stays hidden and the app-level
+  // floating CallDock represents the call instead.
+  const callIsHere = voiceActive && roomId === activeCallRoomId;
+
   // Arrangement follows the chosen mode (see VIDEO_STAGE_MODES). Turning video
-  // off globally (showVideo=false) collapses any stage back to the slim bar.
-  const videoMain = voiceActive && showVideo && VIDEO_STAGE_MODES.has(viewMode);
-  const callDock = voiceActive && viewMode === "sidebar";
-  const slimBar = voiceActive && !videoMain && !callDock;
+  // off (showVideo=false) collapses any stage back to the slim bar — that's the
+  // user's "hide the video section → chat gets the whole screen" toggle.
+  const videoMain = callIsHere && showVideo && VIDEO_STAGE_MODES.has(viewMode);
+  const callDock = callIsHere && viewMode === "sidebar";
+  const slimBar = callIsHere && !videoMain && !callDock;
 
   const chatColumn = (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -91,7 +101,10 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   );
 
   // Video is the star: resizable [ video │ chat ]. Chat is collapsible so a
-  // presenter can reclaim the full stage, then re-open chat with one click.
+  // presenter can reclaim the full stage, then re-open chat with one click. The
+  // collapse is CONTROLLED off the shared `chatCollapsed` flag so the in-call
+  // "hide chat" button (VoiceVideoBar controls) and the divider chevron stay in
+  // lockstep — the chat pane stays mounted behind display:none either way.
   if (videoMain) {
     return (
       <SplitPane
@@ -101,6 +114,8 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
         min={isDesktop ? 280 : 180}
         max={isDesktop ? 680 : 520}
         collapsible
+        collapsed={chatCollapsed}
+        onCollapsedChange={setChatCollapsed}
         secondaryLabel="chat"
         primary={callSurface}
         secondary={chatColumn}

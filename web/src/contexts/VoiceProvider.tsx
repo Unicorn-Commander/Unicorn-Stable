@@ -93,7 +93,6 @@ const VoiceContext = createContext<VoiceContextValue | null>(null);
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
   const setVoiceActive = useAppStore((s) => s.setVoiceActive);
-  const activeRoomId = useAppStore((s) => s.activeRoomId);
 
   const [room, setRoom] = useState<Room | null>(null);
   const [localParticipant, setLocalParticipant] =
@@ -259,13 +258,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     if (!roomId || connectingRef.current) return;
     const leftover = roomRef.current;
     if (leftover) {
-      // A live room means we're already in a call. But a room object left
-      // behind by a just-ended call must not brick the Start-call button
-      // (the "hang up, immediately call again → click silently ignored"
-      // trap) — clear it and connect fresh.
-      if (leftover.state !== ConnectionState.Disconnected) return;
-      console.warn("voice connect: clearing stale disconnected room");
-      roomRef.current = null;
+      if (leftover.state !== ConnectionState.Disconnected) {
+        // Already in a LIVE call. The call now PERSISTS across navigation, so
+        // being connected no longer means "connect() for the current view" —
+        // it might be a call still running in another room. If it's THIS room's
+        // call, nothing to do. If it's a different room, this connect() is an
+        // explicit call-switch (you can only be in one LiveKit room): tear the
+        // old call down, then fall through to join the new one.
+        if (useCallUiStore.getState().activeCallRoomId === roomId) return;
+        disconnect();
+      } else {
+        // A room object left behind by a just-ended call must not brick the
+        // Start-call button (the "hang up, immediately call again → click
+        // silently ignored" trap) — clear it and connect fresh.
+        console.warn("voice connect: clearing stale disconnected room");
+        roomRef.current = null;
+      }
     }
     connectingRef.current = true;
     setIsConnecting(true);
@@ -472,18 +480,19 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setVoiceActive,
     sync,
     startAudio,
+    disconnect,
     attachScreenAudioToSink,
     detachScreenAudioFromSink,
   ]);
 
-  // Leaving the room (or switching rooms) ends any live call.
-  const prevRoomIdRef = useRef(activeRoomId);
-  useEffect(() => {
-    if (prevRoomIdRef.current !== activeRoomId) {
-      prevRoomIdRef.current = activeRoomId;
-      if (roomRef.current) disconnect();
-    }
-  }, [activeRoomId, disconnect]);
+  // NOTE: the call intentionally PERSISTS across navigation now. We used to
+  // disconnect whenever `activeRoomId` changed (leaving/switching rooms ended
+  // the call) — that's exactly the "navigating off a room kicks you out of the
+  // call" behavior. The call surface is now keyed off `activeCallRoomId`
+  // (callUiStore), so the full call UI shows only in the call's own room and a
+  // floating CallDock covers every other view; the LiveKit Room stays live
+  // until the user explicitly hangs up (or an explicit call-switch — see
+  // connect() above — or this provider unmounts).
 
   // Tear down on unmount.
   useEffect(() => {

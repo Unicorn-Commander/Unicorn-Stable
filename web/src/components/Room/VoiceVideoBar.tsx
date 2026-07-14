@@ -34,6 +34,7 @@ import {
   PictureInPicture2,
   ExternalLink,
   GripVertical,
+  MessageSquare,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
@@ -638,6 +639,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const showVideo = useCallUiStore((s) => s.showVideo);
   const showTranscript = useCallUiStore((s) => s.showTranscript);
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
+  const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
+  const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
   const hiddenTileIds = useCallUiStore((s) => s.hiddenTileIds);
   const setTileHidden = useCallUiStore((s) => s.setTileHidden);
   const focusedParticipantId = useCallUiStore((s) => s.focusedParticipantId);
@@ -864,6 +867,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   // Audio-first / video-off shows chips; the video modes show tiles.
   const showChips = viewMode === "compact" || !showVideo;
+  // The user's "video section" is hidden when we're in the audio-compact layout
+  // (slim bar + full chat). Drives the hide/show-video control below.
+  const videoHidden = viewMode === "compact";
 
   // A popped-out stage makes no sense once we're back in chips; auto-close it.
   useEffect(() => {
@@ -1122,6 +1128,54 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       >
         {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
       </button>
+
+      {/* Hide / show the VIDEO section. "Hidden" is the designed audio-compact
+          layout: a slim bar (avatars + THESE controls) with the chat filling the
+          rest of the screen. "Show" returns to Gallery (the switcher beside this
+          bar picks any other stage mode). This is the discoverable half of the
+          user's "use the whole screen for just the one I'm using" ask. */}
+      <button
+        onClick={() => setViewMode(roomId, videoHidden ? "grid" : "compact")}
+        className={clsx(
+          "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-transparent transition-colors active:scale-[0.98]",
+          !videoHidden
+            ? "text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+            : "bg-stable-purple/20 text-stable-purple-light hover:bg-stable-purple/30",
+        )}
+        aria-label={videoHidden ? "Show video" : "Hide video"}
+        aria-pressed={videoHidden}
+        title={
+          videoHidden
+            ? "Show the video"
+            : "Hide the video — audio only, chat fills the screen"
+        }
+      >
+        {videoHidden ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+      </button>
+
+      {/* Hide / show the CHAT section. Hidden ⇒ the video fills the screen. Only
+          in the video-stage arrangement, where chat is the collapsible side
+          pane (mirrors the divider's collapse chevron via `chatCollapsed`). */}
+      {!showChips && viewMode !== "sidebar" && (
+        <button
+          onClick={() => setChatCollapsed()}
+          className={clsx(
+            "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-transparent transition-colors active:scale-[0.98]",
+            !chatCollapsed
+              ? "text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+              : "bg-stable-purple/20 text-stable-purple-light hover:bg-stable-purple/30",
+          )}
+          aria-label={chatCollapsed ? "Show chat" : "Hide chat"}
+          aria-pressed={chatCollapsed}
+          title={
+            chatCollapsed
+              ? "Show the chat"
+              : "Hide the chat — video fills the screen"
+          }
+        >
+          <MessageSquare className="h-5 w-5" />
+        </button>
+      )}
 
       {/* Pop out the video stage into a separate window (desktop only). */}
       {!showChips && popoutSupported && (

@@ -87,6 +87,13 @@ interface CallUiState {
   showVideo: boolean;
   /** Global: transcript panel open. Kept cheap when false (no ingest cost). */
   showTranscript: boolean;
+  /**
+   * Global: the chat pane is collapsed while video is the star (the user's
+   * "hide chat → give video the whole screen" toggle). Drives the videoMain
+   * SplitPane's controlled collapse so the in-call button and the divider
+   * chevron stay in sync. `showVideo=false` is the mirror-image "hide video".
+   */
+  chatCollapsed: boolean;
   /** Participant identities whose video tile the user hid individually. */
   hiddenTileIds: Set<string>;
   /**
@@ -96,6 +103,14 @@ interface CallUiState {
   focusedParticipantId: string | null;
   /** Which room's video is currently popped out (transient — never persisted). */
   popout: PopoutState;
+  /**
+   * The room whose call is currently LIVE. The call now persists across
+   * navigation, so this — not the viewed room — is what the call surface keys
+   * off: the full call UI renders only in this room, and a floating CallDock
+   * shows everywhere else. Kept in sync by VoiceProvider via
+   * {@link setActiveCallRoom}. `null` ⇒ no active call.
+   */
+  activeCallRoomId: string | null;
   /** Auto-prompt latch: we surfaced "someone turned video on" once already. */
   videoPrompted: boolean;
   /** Transcript buffer (final + the current interim line per speaker). */
@@ -107,6 +122,7 @@ interface CallUiState {
   setPinnedParticipant: (roomId: string, id: string | null) => void;
   toggleVideo: (on?: boolean) => void;
   toggleTranscript: (on?: boolean) => void;
+  setChatCollapsed: (v?: boolean) => void;
   setTileHidden: (participantId: string, hidden: boolean) => void;
   focusParticipant: (participantId: string | null) => void;
   setPopoutOpen: (roomId: string, open: boolean) => void;
@@ -126,9 +142,11 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   // Default ON: talking to an agent, you want to SEE what it says. The CC
   // button in the call controls still toggles it off per session.
   showTranscript: true,
+  chatCollapsed: false,
   hiddenTileIds: new Set(),
   focusedParticipantId: null,
   popout: { open: false, ownerRoomId: null },
+  activeCallRoomId: null,
   videoPrompted: false,
   transcript: [],
 
@@ -158,6 +176,11 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   toggleTranscript: (on) =>
     set((state) => ({
       showTranscript: on === undefined ? !state.showTranscript : on,
+    })),
+
+  setChatCollapsed: (v) =>
+    set((state) => ({
+      chatCollapsed: v === undefined ? !state.chatCollapsed : v,
     })),
 
   setTileHidden: (participantId, hidden) =>
@@ -238,6 +261,12 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
 let activeRoomIdForCommands: string | null = null;
 export function setActiveCallRoom(roomId: string | null): void {
   activeRoomIdForCommands = roomId;
+  // Also mirror into reactive store state so React surfaces (the floating
+  // CallDock, the call-is-here gate in CallRoomLayout) can subscribe. Guarded
+  // against a redundant set so this is a no-op when the room is unchanged.
+  if (useCallUiStore.getState().activeCallRoomId !== roomId) {
+    useCallUiStore.setState({ activeCallRoomId: roomId });
+  }
 }
 
 /**
