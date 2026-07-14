@@ -220,6 +220,14 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // Only a live (connected) room earns the hang-up cue — tearing down a
       // failed/stale room object must stay silent.
       if (r.state === ConnectionState.Connected) playCue("call-leave");
+      // Silence this room's events BEFORE tearing it down. LiveKit emits
+      // Disconnected/ConnectionStateChanged asynchronously (after its internal
+      // close() awaits), so if we immediately start a NEW call (End→Start, or a
+      // call-switch) those late events from the OLD room would run their still-
+      // attached handlers and flip the LIVE call's UI state off — leaving an
+      // invisible, uncontrollable call. We do the teardown manually below, so
+      // the room's own events are redundant here anyway.
+      r.removeAllListeners();
       r.disconnect();
     }
     // Belt-and-suspenders: drop any lingering screen-audio sink elements +

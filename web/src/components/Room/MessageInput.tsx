@@ -22,6 +22,7 @@ import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
+import { useCallUiStore } from "@/stores/callUiStore";
 import { emojiSuggestions, ensureEmojiIndex, replaceEmojiShortcodes } from "@/utils/emoji";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
 import { FormatToolbar, type FormatKind } from "./FormatToolbar";
@@ -337,7 +338,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   }, []);
 
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
-  const voiceActive = useAppStore((s) => s.voiceActive);
+  // The active call's room (persists across navigation). Start-call keys off
+  // THIS rather than the global "in a call" flag, so the button correctly shows
+  // in every room except the one that already owns the live call.
+  const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   // Shared call (VoiceProvider): tapping the phone/mic just calls connect();
   // mic publish + agent dispatch + audio playback all happen in the provider.
   const {
@@ -877,7 +881,11 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   }
 
   function handleStartCall() {
-    if (isConnected || isConnecting) return;
+    if (isConnecting) return;
+    // Already in THIS room's call → nothing to start (the call surface is on
+    // screen). Connected to a DIFFERENT room's call → connect() treats this as
+    // an explicit call-switch (tear the old one down, join here).
+    if (isConnected && activeCallRoomId === roomId) return;
     void lkConnect();
   }
 
@@ -1194,11 +1202,16 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             )}
         </div>
 
-        {!isConnected && !voiceActive && (
+        {activeCallRoomId !== roomId && !isConnecting && (
           <button
             onClick={handleStartCall}
             className="shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring md:p-1.5 md:pb-2.5"
-            aria-label="Start call"
+            aria-label={
+              isConnected ? "Move the call to this room" : "Start call"
+            }
+            title={
+              isConnected ? "Move the call to this room" : "Start a call"
+            }
           >
             <Phone className="h-4 w-4" />
           </button>

@@ -6,8 +6,6 @@ import {
   Presentation,
   Rows3,
   PanelRight,
-  Video,
-  VideoOff,
   Captions,
   type LucideIcon,
 } from "lucide-react";
@@ -115,8 +113,6 @@ export function ViewModeSwitcher({
   const pinnedId = useCallUiStore((s) => s.pinnedParticipantId[roomId] ?? null);
   const setViewMode = useCallUiStore((s) => s.setViewMode);
   const setPinnedParticipant = useCallUiStore((s) => s.setPinnedParticipant);
-  const showVideo = useCallUiStore((s) => s.showVideo);
-  const toggleVideo = useCallUiStore((s) => s.toggleVideo);
   const showTranscript = useCallUiStore((s) => s.showTranscript);
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
 
@@ -187,41 +183,24 @@ export function ViewModeSwitcher({
         ))}
       </div>
 
+      {/* Video hide/show lives in the call controls bar (VoiceVideoBar) as the
+          single canonical toggle — it used to be duplicated here, which let the
+          two desync. This switcher keeps only the transcript (captions) toggle. */}
       {!compact && (
-        <>
-          <button
-            onClick={() => toggleVideo()}
-            className={clsx(
-              "focus-ring flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-              showVideo
-                ? "text-slate-200 hover:bg-white/[0.06]"
-                : "text-slate-500 hover:bg-white/[0.06] hover:text-slate-300",
-            )}
-            aria-label={showVideo ? "Hide everyone's video" : "Show video"}
-            aria-pressed={showVideo}
-            title={showVideo ? "Hide everyone's video" : "Show video"}
-          >
-            {showVideo ? (
-              <Video className="h-3.5 w-3.5" />
-            ) : (
-              <VideoOff className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <button
-            onClick={() => toggleTranscript()}
-            className={clsx(
-              "focus-ring flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-              showTranscript
-                ? "bg-stable-cyan/15 text-stable-cyan"
-                : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
-            )}
-            aria-label={showTranscript ? "Hide transcript" : "Show transcript"}
-            aria-pressed={showTranscript}
-            title={showTranscript ? "Hide live transcript" : "Show live transcript"}
-          >
-            <Captions className="h-3.5 w-3.5" />
-          </button>
-        </>
+        <button
+          onClick={() => toggleTranscript()}
+          className={clsx(
+            "focus-ring flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+            showTranscript
+              ? "bg-stable-cyan/15 text-stable-cyan"
+              : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
+          )}
+          aria-label={showTranscript ? "Hide transcript" : "Show transcript"}
+          aria-pressed={showTranscript}
+          title={showTranscript ? "Hide live transcript" : "Show live transcript"}
+        >
+          <Captions className="h-3.5 w-3.5" />
+        </button>
       )}
     </div>
   );

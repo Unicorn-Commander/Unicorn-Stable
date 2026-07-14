@@ -637,6 +637,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const viewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
   const setViewMode = useCallUiStore((s) => s.setViewMode);
   const showVideo = useCallUiStore((s) => s.showVideo);
+  const toggleVideo = useCallUiStore((s) => s.toggleVideo);
   const showTranscript = useCallUiStore((s) => s.showTranscript);
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
   const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
@@ -867,9 +868,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   // Audio-first / video-off shows chips; the video modes show tiles.
   const showChips = viewMode === "compact" || !showVideo;
-  // The user's "video section" is hidden when we're in the audio-compact layout
-  // (slim bar + full chat). Drives the hide/show-video control below.
-  const videoHidden = viewMode === "compact";
+  // The user's "video section" is hidden whenever no video stage is on screen —
+  // whether because video is toggled off (showVideo) OR the audio-compact mode
+  // is selected. This is exactly `showChips`; naming it makes the hide/show
+  // control below read clearly. It drives the SAME `showVideo` flag the
+  // ViewModeSwitcher's (removed) toggle used, so the two can't disagree.
+  const videoHidden = showChips;
 
   // A popped-out stage makes no sense once we're back in chips; auto-close it.
   useEffect(() => {
@@ -1129,13 +1133,22 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
       </button>
 
-      {/* Hide / show the VIDEO section. "Hidden" is the designed audio-compact
-          layout: a slim bar (avatars + THESE controls) with the chat filling the
-          rest of the screen. "Show" returns to Gallery (the switcher beside this
-          bar picks any other stage mode). This is the discoverable half of the
-          user's "use the whole screen for just the one I'm using" ask. */}
+      {/* Hide / show the VIDEO section — the single, canonical control for it
+          (the ViewModeSwitcher's old duplicate video toggle was removed so the
+          two can't disagree). Hidden ⇒ audio-only: a slim bar keeps THESE
+          controls and the chat fills the screen. It drives `showVideo`; "show"
+          also lifts audio-compact into Gallery so a stage actually appears.
+          This is the discoverable half of "use the whole screen for just the
+          one I'm using." */}
       <button
-        onClick={() => setViewMode(roomId, videoHidden ? "grid" : "compact")}
+        onClick={() => {
+          if (videoHidden) {
+            toggleVideo(true);
+            if (viewMode === "compact") setViewMode(roomId, "grid");
+          } else {
+            toggleVideo(false);
+          }
+        }}
         className={clsx(
           "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-transparent transition-colors active:scale-[0.98]",
           !videoHidden
