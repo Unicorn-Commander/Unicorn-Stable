@@ -174,9 +174,16 @@
 
 @layer base {
   html,
-  body,
-  #root {
+  body {
     height: 100%;
+  }
+
+  /* The shell sizes to the *visual* viewport (useAppHeight), never the layout
+     viewport — so when the keyboard shrinks --app-height, the document itself
+     shrinks too and there's no dead region below for the viewport to get
+     stranded in. */
+  #root {
+    height: var(--app-height, 100%);
   }
 
   body {
@@ -267,9 +274,11 @@
 
 /* Unlayered so it beats Tailwind's utility layer (e.g. text-sm). iOS Safari
    auto-zooms the page when you focus an input whose font is < 16px (and leaves
-   it zoomed). Force 16px on phones so focusing the composer / search never
-   triggers that jarring zoom. Desktop keeps the compact utility sizes. */
-@media (max-width: 767px) {
+   it zoomed). Force 16px wherever touch exists — portrait phones by width,
+   plus landscape iPhones (812-932px CSS width) and iPads via the touch query —
+   so focusing the composer / search never triggers that jarring zoom. Desktop
+   keeps the compact utility sizes. */
+@media (max-width: 767px), ((hover: none) and (pointer: coarse)) {
   input:not([type="checkbox"]):not([type="radio"]),
   textarea,
   select {

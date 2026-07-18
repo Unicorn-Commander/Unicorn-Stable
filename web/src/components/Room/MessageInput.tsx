@@ -31,6 +31,11 @@ import { FormatToolbar, type FormatKind } from "./FormatToolbar";
  * left offset so it can't overflow the composer on long lines. */
 const FORMAT_BAR_WIDTH = 200;
 
+// Touch devices get the native selection callout — our floating format bar
+// would collide with it (iOS draws its own bar over the same selection).
+const isCoarsePointer =
+  typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+
 /**
  * Pixel coordinates of the caret at `position` within a textarea, relative to
  * the textarea's own box. Measured with a hidden mirror element that copies the
@@ -308,7 +313,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   // its own concern — it flips the state itself).
   useEffect(() => {
     if (!showEmojiPanel) return;
-    function onPointerDown(e: MouseEvent) {
+    function onPointerDown(e: MouseEvent | TouchEvent) {
       const target = e.target as Node;
       if (
         emojiPanelRef.current?.contains(target) ||
@@ -318,8 +323,14 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       }
       setShowEmojiPanel(false);
     }
+    // touchstart too: on touch a scroll/drag gesture never produces a
+    // mousedown, so without it the panel only dismisses on a full tap.
     document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
   }, [showEmojiPanel]);
 
   // Warm the emoji shortcode index (async chunk) so the : autocomplete has
@@ -387,6 +398,34 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     adjustHeight();
   }, [content]);
 
+  // Re-measure when the textarea's size context changes (rotation, keyboard-
+  // driven shell resize, side-panel open/close): a width change re-wraps the
+  // text, so the px height stamped for the OLD width goes stale, and the
+  // viewport-aware cap in adjustHeight needs the fresh height.
+  //
+  // Two bindings on purpose: the composer row is shrink-0, so when the
+  // keyboard shrinks the shell the message list absorbs ALL of it and the
+  // wrapper's own box never resizes — the ResizeObserver alone would miss
+  // keyboard show/hide, leaving an already-tall composer un-clamped exactly
+  // when the 35%-of-viewport cap matters. visualViewport resize covers that;
+  // the observer covers width-driven re-wraps (rotation, panel toggles).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const onResize = () => adjustHeight();
+    window.visualViewport?.addEventListener("resize", onResize);
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(onResize);
+      ro.observe(el.parentElement ?? el);
+    }
+    return () => {
+      window.visualViewport?.removeEventListener("resize", onResize);
+      ro?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Persist draft per room. Restoring on switch is handled by re-mounting:
   // when roomId changes the parent ChatPanel keys MessageInput by roomId,
   // so this component remounts and useState's lazy init reads the new draft.
@@ -417,8 +456,14 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   function adjustHeight() {
     const el = textareaRef.current;
     if (!el) return;
+    // Viewport-aware cap: with the keyboard open a small iPhone's shell is only
+    // ~250-330px tall, so a fixed 160px composer would eat the whole chat.
+    const maxH = Math.min(
+      160,
+      Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.35),
+    );
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
   }
 
   function handleChange(e: ChangeEvent<HTMLTextAreaElement>) {
@@ -610,6 +655,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
    * so it can't collide with the mention/slash/emoji popovers.
    */
   function syncFormatBar() {
+    if (isCoarsePointer) {
+      setFormatBar(null);
+      return;
+    }
     const el = textareaRef.current;
     if (!el) return;
     const start = el.selectionStart;

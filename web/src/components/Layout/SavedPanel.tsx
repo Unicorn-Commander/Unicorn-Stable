@@ -26,7 +26,7 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[10vh] backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[8dvh] backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
@@ -66,7 +66,7 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
           </button>
         </div>
 
-        <div className="max-h-[70vh] overflow-y-auto">
+        <div className="max-h-[70dvh] overflow-y-auto">
           {saved.length === 0 ? (
             <div className="flex flex-col items-center px-4 py-14 text-center">
               <div className="relative mb-4">

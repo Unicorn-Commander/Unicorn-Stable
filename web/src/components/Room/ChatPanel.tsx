@@ -202,6 +202,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // Virtuoso owns scrolling — its handle drives all programmatic scrolls
   // (jump-to-latest, scroll-on-send, scroll-to-message).
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const listWrapRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   // Mirror of isAtBottomRef: the ref drives scroll decisions without
   // re-rendering, but the jump pill needs a render when it flips.
@@ -262,6 +263,24 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
       150,
     );
   }, [clearPinTimers]);
+
+  // Keep the list pinned to the newest message when the scroller SHRINKS —
+  // mobile keyboard opening (--app-height collapses) or the composer growing.
+  // "auto" so the pin lands on every observer tick during the keyboard
+  // animation; gated on isAtBottomRef so it never fights a user who scrolled
+  // up.
+  useEffect(() => {
+    const el = listWrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!isAtBottomRef.current) return;
+      requestAnimationFrame(() =>
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" }),
+      );
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // One-shot pin-to-newest on room open. `initialTopMostItemIndex` positions
   // Virtuoso using ESTIMATED row heights at mount; with variable-height markdown
@@ -425,7 +444,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Relative wrapper so the jump pill can float over the scroll area —
           above the composer/typing rows, which live outside it. */}
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={listWrapRef} className="relative flex min-h-0 flex-1 flex-col">
         {messages.length === 0 ? (
           <div
             className="flex flex-1 flex-col overflow-y-auto px-4 py-3 md:px-8"

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
@@ -281,7 +281,12 @@ export function RoomView({ roomId }: RoomViewProps) {
             />
           ) : (
             <button
-              onClick={() => setEditingName(true)}
+              onClick={() => {
+                // Desktop-only: on phones a natural tap on the title would
+                // summon an autofocused input + keyboard. Mobile renames via
+                // the ⋮ overflow menu's "Rename channel" entry instead.
+                if (window.matchMedia("(min-width: 768px)").matches) setEditingName(true);
+              }}
               className="truncate font-display text-sm font-semibold text-slate-50 transition-colors hover:text-stable-purple-light focus-ring"
               title="Click to rename"
             >
@@ -534,6 +539,19 @@ export function RoomView({ roomId }: RoomViewProps) {
                 >
                   {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                   {muted ? "Unmute channel" : "Mute channel"}
+                </button>
+                {/* Phones: rename lives here (the inline title tap is gated
+                    to desktop pointers so it can't summon the keyboard). */}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setEditingName(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
+                >
+                  <Pencil className="h-4 w-4" />
+                  Rename channel
                 </button>
                 <div className="my-1 h-px bg-white/[0.06] md:hidden" />
                 <button
