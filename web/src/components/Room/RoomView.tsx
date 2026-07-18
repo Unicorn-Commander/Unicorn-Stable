@@ -503,15 +503,16 @@ export function RoomView({ roomId }: RoomViewProps) {
                   <Pin className="h-4 w-4" />
                   Pinned messages
                 </button>
-                {/* Canvas is reachable on every viewport (its inline button is
-                    hidden < md); the desktop toolbar button covers >= md. */}
+                {/* Canvas stays in this menu on EVERY viewport (not md:hidden):
+                    the inline toolbar icon is easy to miss, so the labeled
+                    entry doubles as its discoverable path on desktop too. */}
                 <button
                   role="menuitem"
                   onClick={() => {
                     setOverflowOpen(false);
                     toggleCanvas();
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
                 >
                   <LayoutTemplate className="h-4 w-4" />
                   {canvasOpen ? "Hide canvas" : "Open canvas"}
