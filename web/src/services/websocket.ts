@@ -76,13 +76,26 @@ export interface WsRoomUpdateEvent {
   member_count?: number;
 }
 
+/** Someone started a call in a room the user belongs to. */
+export interface WsCallStartedEvent {
+  room_id: string;
+  room_type: "dm" | "group_dm" | "channel";
+  room_name: string;
+  caller: {
+    id: string;
+    display_name: string;
+  };
+  started_at: string;
+}
+
 export type WsEventPayload =
   | WsMessageEvent
   | WsTypingEvent
   | WsPresenceEvent
   | WsMessageEditEvent
   | WsMessageDeleteEvent
-  | WsRoomUpdateEvent;
+  | WsRoomUpdateEvent
+  | WsCallStartedEvent;
 
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 30000;

@@ -1,7 +1,13 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
-import { ws, WsEventPayload, WsMessageEvent } from "@/services/websocket";
+import { useIncomingCallStore } from "@/stores/incomingCallStore";
+import {
+  ws,
+  WsCallStartedEvent,
+  WsEventPayload,
+  WsMessageEvent,
+} from "@/services/websocket";
 import { loadPrefs } from "@/components/Layout/SettingsModal";
 import { getNotifyLevel } from "@/utils/mute";
 import { playCue } from "@/lib/sounds";
@@ -173,6 +179,29 @@ export function useGlobalNotifications() {
       queryClient.invalidateQueries({ queryKey: ["rooms"] });
     });
 
+    const unsubCallStarted = ws.on("call_started", (data: WsEventPayload) => {
+      const event = data as unknown as WsCallStartedEvent;
+      if (!event?.room_id || !event?.caller?.id) return;
+      // Our own call echoing back — nothing to announce.
+      if (event.caller.id === currentUser?.id) return;
+      if (event.room_type === "channel") {
+        // Channel calls don't RING (too broad an audience for an interruptive
+        // banner) — downgrade to the regular toast + notify cue.
+        playCue("notify");
+        if (loadPrefs().inAppToasts) {
+          pushToast({
+            title: `${event.caller.display_name} started a call`,
+            body: `in #${event.room_name}`,
+            roomId: event.room_id,
+          });
+        }
+        return;
+      }
+      // dm/group_dm → the ringing banner. The store applies the suppression
+      // policy (already in a call, already seen, etc.).
+      useIncomingCallStore.getState().ingest(event);
+    });
+
     const unsubRead = ws.on("read_receipt", (data: WsEventPayload) => {
       const e = data as unknown as {
         room_id: string;
@@ -246,6 +275,7 @@ export function useGlobalNotifications() {
     return () => {
       unsubMessage();
       unsubInvited();
+      unsubCallStarted();
       unsubReaction();
       unsubRead();
       unsubMsgUpdate();

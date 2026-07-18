@@ -7,6 +7,8 @@
  *   call-join   rising two-note chime  (sine 520Hz -> 660Hz)
  *   call-leave  falling two-note chime (sine 660Hz -> 520Hz)
  *   notify      single soft "pop"      (triangle 880Hz, fast decay)
+ *   ring        gentle two-tone chirp  (sine 660Hz -> 880Hz) — the incoming-
+ *               call banner repeats this while it is ringing
  *
  * Callers stay dumb: playCue() itself checks the `soundCues` preference in
  * the shared "stable.notification.prefs.v1" localStorage blob (missing key ==
@@ -15,7 +17,7 @@
  * handler or the call path.
  */
 
-export type CueName = "call-join" | "call-leave" | "notify";
+export type CueName = "call-join" | "call-leave" | "notify" | "ring";
 
 // Same key SettingsModal owns; read defensively rather than importing so this
 // module stays dependency-free (usable from non-React code paths).
@@ -117,6 +119,12 @@ export function playCue(name: CueName): void {
       case "notify":
         // Single soft pop: short triangle blip with a fast decay. ~140ms.
         tone(ctx, { type: "triangle", freq: 880, at: 0, dur: 0.14, peak: 0.09, attack: 0.008 });
+        break;
+      case "ring":
+        // Gentle two-tone chirp — repeated by the incoming-call banner while
+        // ringing, so keep it soft and short. Total ~360ms.
+        tone(ctx, { type: "sine", freq: 660, at: 0, dur: 0.15, peak: 0.09, attack: 0.012 });
+        tone(ctx, { type: "sine", freq: 880, at: 0.16, dur: 0.2, peak: 0.09, attack: 0.012 });
         break;
     }
   } catch {

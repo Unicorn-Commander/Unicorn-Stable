@@ -33,6 +33,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
 import { RoomView } from "@/components/Room/RoomView";
+import { IncomingCallBanner } from "@/components/Call/IncomingCallBanner";
 import { HomeDashboard } from "@/components/Home/HomeDashboard";
 import { AgentsPage } from "@/components/Agents/AgentsPage";
 import { BridgePage } from "@/components/Bridge/BridgePage";
@@ -660,6 +661,7 @@ export function AppShell() {
       )}
 
       <ConnectionBanner />
+      <IncomingCallBanner />
       <ToastStack />
     </div>
   );
