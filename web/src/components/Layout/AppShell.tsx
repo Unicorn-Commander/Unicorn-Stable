@@ -9,6 +9,11 @@ import { logout } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
+import { useSidebarUi } from "@/stores/sidebarUiStore";
+import {
+  buildSidebarModel,
+  flattenSidebarOrder,
+} from "@/components/Sidebar/sidebarModel";
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { Avatar } from "@/components/Avatar";
@@ -40,59 +45,34 @@ import { AgentsPage } from "@/components/Agents/AgentsPage";
 import { BridgePage } from "@/components/Bridge/BridgePage";
 
 /**
- * The sidebar's visual room order, flattened for Alt+↑/↓ navigation. Mirrors
- * RoomList exactly: categorized channels (categories A→Z, list order within;
- * collapsed categories skipped — their rows aren't visible), then ungrouped
- * channels, then Direct messages where an agent's threads collapse to ONE
- * entry (its newest thread — the collapsed group row's click target).
+ * The sidebar's visible room order, flattened for Alt+↑/↓.
  *
- * Each entry is the set of room ids it represents; entry[0] is the navigation
- * target. Multi-id entries let a non-newest agent thread still resolve to its
- * group's position instead of falling off the list.
+ * Derived from the SAME model RoomList renders (see sidebarModel.ts), not from
+ * a second description of the layout. There used to be one here, hand-written
+ * to mirror the sidebar, and it silently rotted the moment the sidebar changed:
+ * human DMs collapsed to one row per person, group DMs moved into their own
+ * section, sections and folders learned to collapse — and the keyboard went on
+ * walking an order that matched none of it. A copy that has to be kept in sync
+ * by hand is the bug, so there is no copy.
  */
 function sidebarRoomOrder(): string[][] {
   const { rooms } = useAppStore.getState();
-  const { categories, collapsed } = useChannelCategories.getState();
-  const entries: string[][] = [];
-
-  const grouped = new Map<string, string[]>();
-  const ungrouped: string[] = [];
-  for (const r of rooms) {
-    if (r.type !== "channel") continue;
-    const cat = categories[r.id];
-    if (!cat) {
-      ungrouped.push(r.id);
-    } else if (!collapsed[cat]) {
-      const arr = grouped.get(cat);
-      if (arr) arr.push(r.id);
-      else grouped.set(cat, [r.id]);
-    }
-  }
-  for (const [, ids] of [...grouped.entries()].sort((a, b) =>
-    a[0].localeCompare(b[0]),
-  )) {
-    for (const id of ids) entries.push([id]);
-  }
-  for (const id of ungrouped) entries.push([id]);
-
-  const byAgent = new Map<string, string[]>();
-  for (const r of rooms) {
-    if (r.type !== "dm" && r.type !== "group_dm") continue;
-    const agentId = r.brigade_agent_id;
-    if (agentId) {
-      const threads = byAgent.get(agentId);
-      if (threads) {
-        threads.push(r.id);
-      } else {
-        const fresh = [r.id];
-        byAgent.set(agentId, fresh);
-        entries.push(fresh);
-      }
-    } else {
-      entries.push([r.id]);
-    }
-  }
-  return entries;
+  const { categories, people, folders, collapsed } =
+    useChannelCategories.getState();
+  const { searchQuery, expandedPeople } = useSidebarUi.getState();
+  const scope = useFederationStore.getState().activeInstanceId;
+  return flattenSidebarOrder(
+    buildSidebarModel({
+      rooms,
+      searchQuery,
+      scope,
+      categories,
+      people,
+      folders,
+      collapsed,
+      expandedPeople,
+    }),
+  );
 }
 
 function isEditableTarget(t: EventTarget | null): boolean {

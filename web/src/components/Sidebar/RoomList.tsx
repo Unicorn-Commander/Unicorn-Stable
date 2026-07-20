@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   AtSign,
@@ -10,14 +10,19 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Folder,
   FolderPlus,
   Hash,
+  Lock,
   MessageSquare,
   MoreVertical,
+  Pencil,
   Plug,
   Plus,
   Search,
   Sparkles,
+  Trash2,
+  Users,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -35,10 +40,21 @@ import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { identityFor } from "@/lib/identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
+import { useFederationStore } from "@/stores/federationStore";
+import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
   useChannelCategories,
-  distinctCategories,
+  foldersFor,
+  type FolderSection,
 } from "@/stores/categoryStore";
+import {
+  buildSidebarModel,
+  isPrivateChannel,
+  SECTION_KEYS,
+  type PersonEntry,
+  type SidebarGroup,
+  type SidebarRow,
+} from "./sidebarModel";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { NewChatButton } from "./NewChatButton";
@@ -76,7 +92,13 @@ export function RoomList() {
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const [createDmOpen, setCreateDmOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  // Search + per-person expansion live in a store, not here: they change which
+  // rows are on screen, and Alt+↑/↓ walks that same visible order. See
+  // sidebarModel.ts.
+  const searchQuery = useSidebarUi((s) => s.searchQuery);
+  const setSearchQuery = useSidebarUi((s) => s.setSearchQuery);
+  const expandedPeople = useSidebarUi((s) => s.expandedPeople);
+  const togglePersonExpanded = useSidebarUi((s) => s.togglePersonExpanded);
   const [seeding, setSeeding] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
   const queryClient = useQueryClient();
@@ -129,77 +151,138 @@ export function RoomList() {
     }
   }
 
-  const filteredRooms = useMemo(() => {
-    if (!searchQuery.trim()) return rooms;
-    const q = searchQuery.toLowerCase();
-    return rooms.filter(
-      (r) =>
-        r.name.toLowerCase().includes(q) ||
-        r.description.toLowerCase().includes(q),
-    );
-  }, [rooms, searchQuery]);
-
-  const channels = useMemo(
-    () => filteredRooms.filter((r) => r.type === "channel"),
-    [filteredRooms],
+  // Personal folders (client-side; see categoryStore). Folder identity is
+  // (instance, section, name), so everything here is scoped by the active
+  // instance id — one server's folders must never reach another's.
+  const scope = useFederationStore((s) => s.activeInstanceId);
+  const categories = useChannelCategories((s) => s.categories);
+  const peopleByScope = useChannelCategories((s) => s.people);
+  const collapsed = useChannelCategories((s) => s.collapsed);
+  const folderDefs = useChannelCategories((s) => s.folders);
+  const setCategory = useChannelCategories((s) => s.setCategory);
+  const setPeopleCategory = useChannelCategories((s) => s.setPeopleCategory);
+  const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
+  const ensureFolder = useChannelCategories((s) => s.ensureFolder);
+  const renameFolder = useChannelCategories((s) => s.renameFolder);
+  const removeFolder = useChannelCategories((s) => s.removeFolder);
+  const adoptLegacyCategories = useChannelCategories(
+    (s) => s.adoptLegacyCategories,
+  );
+  const adoptLegacyPeopleFolders = useChannelCategories(
+    (s) => s.adoptLegacyPeopleFolders,
   );
 
-  // Personal channel categories (client-side; see categoryStore).
-  const categories = useChannelCategories((s) => s.categories);
-  const collapsed = useChannelCategories((s) => s.collapsed);
-  const setCategory = useChannelCategories((s) => s.setCategory);
-  const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
-  const [menuRoomId, setMenuRoomIdRaw] = useState<string | null>(null);
-  // Inline "New category" input inside the ⋮ menu (null = collapsed to the
+  // THE sidebar structure. RoomList renders it; AppShell flattens the same
+  // model for Alt+↑/↓. There is no second model to keep in sync.
+  const model = useMemo(
+    () =>
+      buildSidebarModel({
+        rooms,
+        searchQuery,
+        scope,
+        categories,
+        people: peopleByScope,
+        folders: folderDefs,
+        collapsed,
+        expandedPeople,
+      }),
+    [
+      rooms,
+      searchQuery,
+      scope,
+      categories,
+      peopleByScope,
+      folderDefs,
+      collapsed,
+      expandedPeople,
+    ],
+  );
+
+  // Attribute channel folders saved before `categories` was per-instance to the
+  // server that actually owns those rooms. Convergent and self-limiting: it
+  // only claims room ids this backend serves, and consumes what it claims.
+  useEffect(() => {
+    if (scope) adoptLegacyCategories(scope, model.roomKinds);
+  }, [scope, model.roomKinds, adoptLegacyCategories]);
+
+  // Rescue people filed by the previous build, which recorded the folder on
+  // every one of the person's ROOM ids. Rooms arrive updated_at DESC, so a
+  // newly created thread became threads[0] and the old read path landed on an
+  // unassigned thread — the person visibly fell out of their folder. The folder
+  // hangs off the PERSON now; this carries the already-saved assignments over
+  // rather than orphaning them. Safe on every room refresh: it consumes the
+  // room-id entries it adopts, so it converges and can never resurrect a
+  // cleared assignment.
+  useEffect(() => {
+    if (!scope || model.allPersonThreads.length === 0) return;
+    adoptLegacyPeopleFolders(scope, model.allPersonThreads);
+  }, [scope, model.allPersonThreads, adoptLegacyPeopleFolders]);
+
+  const channelFolders = useMemo(
+    () => foldersFor(folderDefs, scope, "channels"),
+    [folderDefs, scope],
+  );
+  const peopleFolders = useMemo(
+    () => foldersFor(folderDefs, scope, "people"),
+    [folderDefs, scope],
+  );
+  /** roomId -> folder / personKey -> folder, for the server on screen. */
+  const channelsFiled = useMemo(
+    () => (scope ? categories[scope] : undefined),
+    [categories, scope],
+  );
+  const peopleFiled = useMemo(
+    () => (scope ? peopleByScope[scope] : undefined),
+    [peopleByScope, scope],
+  );
+
+  // Menu + inline-input state. The key is a room id for channels, a person /
+  // agent key for people, and `folder:<section>:<name>` for a folder header, so
+  // exactly one menu is open at a time across all three.
+  const [menuKey, setMenuKeyRaw] = useState<string | null>(null);
+  // Inline "New folder" input inside the ⋮ menu (null = collapsed to the
   // button). Never survives a menu open/close, hence the wrapped setter.
   const [newCatDraft, setNewCatDraft] = useState<string | null>(null);
-  const setMenuRoomId = (id: string | null) => {
-    setMenuRoomIdRaw(id);
+  // Rename-in-place draft and the two-step delete confirm, both scoped to the
+  // folder menu that is currently open.
+  const [renameDraft, setRenameDraft] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const setMenuKey = (key: string | null) => {
+    setMenuKeyRaw(key);
     setNewCatDraft(null);
+    setRenameDraft(null);
+    setConfirmingDelete(false);
   };
+  // Header "new folder" inputs, one per section.
+  const [newFolderFor, setNewFolderFor] = useState<FolderSection | null>(null);
+  const [newFolderDraft, setNewFolderDraft] = useState("");
 
   // mute.ts persists to localStorage outside React — bump on its change event
   // so isMuted() is re-read and muted badges/menu labels stay in sync.
   const [, setMutedVersion] = useState(0);
   useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
-  // Group the visible channels by the user's assigned category; everything else
-  // stays in a flat "ungrouped" list under the section header.
-  const { catGroups, ungrouped } = useMemo(() => {
-    const groups = new Map<string, Room[]>();
-    const ungrouped: Room[] = [];
-    for (const r of channels) {
-      const cat = categories[r.id];
-      if (cat) {
-        const arr = groups.get(cat);
-        if (arr) arr.push(r);
-        else groups.set(cat, [r]);
-      } else {
-        ungrouped.push(r);
-      }
-    }
-    const catGroups = [...groups.entries()].sort((a, b) =>
-      a[0].localeCompare(b[0]),
-    );
-    return { catGroups, ungrouped };
-  }, [channels, categories]);
-
-  // Every category name the user has ever made (for the "move to" menu), even if
-  // its channels are currently filtered out.
-  const knownCategories = useMemo(
-    () => distinctCategories(categories),
-    [categories],
-  );
-
-  function assignCategory(roomId: string, category: string | null) {
-    setCategory(roomId, category);
-    setMenuRoomId(null);
+  function commitHeaderFolder() {
+    const name = newFolderDraft.trim();
+    if (name && newFolderFor && scope) ensureFolder(scope, name, newFolderFor);
+    setNewFolderFor(null);
+    setNewFolderDraft("");
   }
 
-  function commitNewCategory(roomId: string) {
+  function assignCategory(roomIds: string | string[], category: string | null) {
+    setCategory(scope, roomIds, category);
+    setMenuKey(null);
+  }
+
+  function assignPersonCategory(personKey: string, category: string | null) {
+    if (scope) setPeopleCategory(scope, personKey, category);
+    setMenuKey(null);
+  }
+
+  function commitNewCategory(apply: (name: string) => void) {
     const name = (newCatDraft ?? "").trim();
-    if (name) setCategory(roomId, name);
-    setMenuRoomId(null);
+    if (name) apply(name);
+    setMenuKey(null);
   }
 
   function markRoomRead(room: Room) {
@@ -212,16 +295,198 @@ export function RoomList() {
       });
     }
     clearUnread(room.id);
-    setMenuRoomId(null);
+    setMenuKey(null);
+  }
+
+  /** The "Move to folder" block, shared by the channel and people menus.
+   *  `apply` is what actually records the choice — channels file by room id,
+   *  people file by person key — because the menu itself is identical either
+   *  way and only the thing being filed differs. */
+  function renderFolderMenuItems(
+    apply: (category: string | null) => void,
+    currentCat: string | undefined,
+    section: FolderSection,
+  ) {
+    const names = section === "channels" ? channelFolders : peopleFolders;
+    return (
+      <>
+        <p className="mt-0.5 border-t border-line px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Move to folder
+        </p>
+        {names.map((c) => (
+          <button
+            key={c}
+            role="menuitem"
+            onClick={() => apply(c)}
+            className={clsx(
+              "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
+              c === currentCat ? "text-stable-purple-light" : "text-slate-300",
+            )}
+          >
+            <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
+            <span className="truncate">{c}</span>
+          </button>
+        ))}
+        {newCatDraft === null ? (
+          <button
+            role="menuitem"
+            onClick={() => setNewCatDraft("")}
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+          >
+            <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+            New folder…
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-1.5">
+            <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+            <input
+              autoFocus
+              value={newCatDraft}
+              onChange={(e) => setNewCatDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter confirms, Esc collapses back to the button —
+                // stop both so global handlers never see them.
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  commitNewCategory(apply);
+                } else if (e.key === "Escape") {
+                  e.stopPropagation();
+                  setNewCatDraft(null);
+                }
+              }}
+              placeholder="Folder name"
+              aria-label="New folder name"
+              className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
+            />
+          </div>
+        )}
+        {currentCat && (
+          <button
+            role="menuitem"
+            onClick={() => apply(null)}
+            className="focus-ring mt-0.5 flex w-full items-center gap-2 border-t border-line px-3 py-1.5 text-left text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+          >
+            Remove from “{currentCat}”
+          </button>
+        )}
+      </>
+    );
+  }
+
+  /**
+   * The ⋮ trigger. Hover-reveal is a DESKTOP-only affordance: a touch device
+   * has no hover, and an invisible-but-tappable button is not a feature. Below
+   * md it is permanently visible.
+   */
+  function renderMenuTrigger(key: string, label: string, alwaysVisible = false) {
+    const open = menuKey === key;
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setMenuKey(open ? null : key);
+        }}
+        className={clsx(
+          "focus-ring mr-1 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1",
+          open || alwaysVisible
+            ? "opacity-100"
+            : "opacity-70 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+        )}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <MoreVertical className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
+  function renderMenuShell(children: ReactNode) {
+    return (
+      <>
+        <button
+          className="fixed inset-0 z-20 cursor-default"
+          aria-hidden="true"
+          tabIndex={-1}
+          onClick={() => setMenuKey(null)}
+        />
+        <div
+          role="menu"
+          className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
+        >
+          {children}
+        </div>
+      </>
+    );
+  }
+
+  function renderNotifyItems(room: Room) {
+    const level = getNotifyLevel(room.id);
+    return (
+      <>
+        <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Notifications
+        </p>
+        {(
+          [
+            { key: "all", label: "All messages", Icon: Bell },
+            { key: "mentions", label: "Mentions only", Icon: AtSign },
+            { key: "muted", label: "Muted", Icon: BellOff },
+          ] as { key: NotifyLevel; label: string; Icon: typeof Bell }[]
+        ).map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            role="menuitemradio"
+            aria-checked={level === key}
+            onClick={() => {
+              setNotifyLevel(room.id, key);
+              setMenuKey(null);
+            }}
+            className={clsx(
+              "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
+              level === key ? "text-stable-purple-light" : "text-slate-300",
+            )}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            <span className="flex-1">{label}</span>
+            {level === key && (
+              <Check className="h-3.5 w-3.5 shrink-0 text-stable-purple-light" />
+            )}
+          </button>
+        ))}
+        <div className="my-0.5 border-t border-line" />
+        <button
+          role="menuitem"
+          onClick={() => markRoomRead(room)}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <CheckCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Mark as read
+        </button>
+        <button
+          role="menuitem"
+          onClick={() => {
+            setMenuKey(null);
+            void exportRoomToMarkdown(room);
+          }}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Export as Markdown
+        </button>
+      </>
+    );
   }
 
   function renderChannelRow(room: Room) {
     const isActive = activeRoomId === room.id;
     const unread = unreadCounts[room.id] ?? 0;
-    const cat = categories[room.id];
-    const menuOpen = menuRoomId === room.id;
+    const cat = channelsFiled?.[room.id];
+    const menuOpen = menuKey === room.id;
     const muted = isMuted(room.id);
-    const level = getNotifyLevel(room.id);
+    const priv = isPrivateChannel(room);
+    const Icon = priv ? Lock : Hash;
     return (
       <li key={room.id} className="relative">
         <div
@@ -246,11 +511,16 @@ export function RoomList() {
             )}
             aria-current={isActive ? "page" : undefined}
           >
-            <Hash
+            <Icon
               className={clsx(
                 "h-4 w-4 shrink-0",
-                isActive ? "text-stable-cyan" : "text-stable-cyan/70",
+                priv
+                  ? "text-amber-300/70"
+                  : isActive
+                    ? "text-stable-cyan"
+                    : "text-stable-cyan/70",
               )}
+              aria-label={priv ? "Private channel" : "Public channel"}
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between">
@@ -289,195 +559,23 @@ export function RoomList() {
               )}
             </div>
           </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuRoomId(menuOpen ? null : room.id);
-            }}
-            className={clsx(
-              "focus-ring mr-1 shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus:opacity-100",
-              menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-            )}
-            aria-label="Channel options"
-            aria-haspopup="menu"
-          >
-            <MoreVertical className="h-3.5 w-3.5" />
-          </button>
+          {renderMenuTrigger(room.id, `Options for ${room.name}`)}
         </div>
 
-        {menuOpen && (
-          <>
-            <button
-              className="fixed inset-0 z-20 cursor-default"
-              aria-hidden="true"
-              tabIndex={-1}
-              onClick={() => setMenuRoomId(null)}
-            />
-            <div
-              role="menu"
-              className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
-            >
-              <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                Notifications
-              </p>
-              {(
-                [
-                  { key: "all", label: "All messages", Icon: Bell },
-                  { key: "mentions", label: "Mentions only", Icon: AtSign },
-                  { key: "muted", label: "Muted", Icon: BellOff },
-                ] as { key: NotifyLevel; label: string; Icon: typeof Bell }[]
-              ).map(({ key, label, Icon }) => (
-                <button
-                  key={key}
-                  role="menuitemradio"
-                  aria-checked={level === key}
-                  onClick={() => {
-                    setNotifyLevel(room.id, key);
-                    setMenuRoomId(null);
-                  }}
-                  className={clsx(
-                    "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
-                    level === key ? "text-stable-purple-light" : "text-slate-300",
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                  <span className="flex-1">{label}</span>
-                  {level === key && (
-                    <Check className="h-3.5 w-3.5 shrink-0 text-stable-purple-light" />
-                  )}
-                </button>
-              ))}
-              <div className="my-0.5 border-t border-line" />
-              <button
-                role="menuitem"
-                onClick={() => markRoomRead(room)}
-                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-              >
-                <CheckCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                Mark as read
-              </button>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  setMenuRoomId(null);
-                  void exportRoomToMarkdown(room);
-                }}
-                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-              >
-                <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                Export as Markdown
-              </button>
-              <p className="mt-0.5 border-t border-line px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                Move to category
-              </p>
-              {knownCategories.map((c) => (
-                <button
-                  key={c}
-                  role="menuitem"
-                  onClick={() => assignCategory(room.id, c)}
-                  className={clsx(
-                    "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
-                    c === cat ? "text-stable-purple-light" : "text-slate-300",
-                  )}
-                >
-                  <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
-                  <span className="truncate">{c}</span>
-                </button>
-              ))}
-              {newCatDraft === null ? (
-                <button
-                  role="menuitem"
-                  onClick={() => setNewCatDraft("")}
-                  className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-                >
-                  <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
-                  New category…
-                </button>
-              ) : (
-                <div className="flex items-center gap-2 px-3 py-1.5">
-                  <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
-                  <input
-                    autoFocus
-                    value={newCatDraft}
-                    onChange={(e) => setNewCatDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      // Enter confirms, Esc collapses back to the button —
-                      // stop both so global handlers never see them.
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        commitNewCategory(room.id);
-                      } else if (e.key === "Escape") {
-                        e.stopPropagation();
-                        setNewCatDraft(null);
-                      }
-                    }}
-                    placeholder="Category name"
-                    aria-label="New category name"
-                    className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
-                  />
-                </div>
+        {menuOpen &&
+          renderMenuShell(
+            <>
+              {renderNotifyItems(room)}
+              {renderFolderMenuItems(
+                (name) => assignCategory(room.id, name),
+                cat,
+                "channels",
               )}
-              {cat && (
-                <button
-                  role="menuitem"
-                  onClick={() => assignCategory(room.id, null)}
-                  className="focus-ring mt-0.5 flex w-full items-center gap-2 border-t border-line px-3 py-1.5 text-left text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
-                >
-                  Remove from “{cat}”
-                </button>
-              )}
-            </div>
-          </>
-        )}
+            </>,
+          )}
       </li>
     );
   }
-
-  // ONE "Direct messages" list: agent conversations group under their resident
-  // (a collapsible thread-history per agent, ChatGPT-style), human DMs stay
-  // flat, and entries interleave by latest activity. The rooms query is already
-  // ordered most-recent-first by the backend (updated_at DESC), so each group's
-  // threads and the mixed ordering stay newest → oldest for free (a group sits
-  // at its newest thread's position).
-  type DmEntry =
-    | { kind: "agent"; agentId: string; threads: Room[] }
-    | { kind: "human"; room: Room };
-
-  const dmEntries = useMemo<DmEntry[]>(() => {
-    const byAgent = new Map<string, Room[]>();
-    const entries: DmEntry[] = [];
-    for (const room of filteredRooms) {
-      if (room.type !== "dm" && room.type !== "group_dm") continue;
-      const agentId = room.brigade_agent_id;
-      if (agentId) {
-        const threads = byAgent.get(agentId);
-        if (threads) {
-          threads.push(room);
-        } else {
-          const fresh = [room];
-          byAgent.set(agentId, fresh);
-          entries.push({ kind: "agent", agentId, threads: fresh });
-        }
-      } else {
-        entries.push({ kind: "human", room });
-      }
-    }
-    return entries;
-  }, [filteredRooms]);
-
-  // Collapsed by default — one row per resident; the chevron reveals history.
-  // Session-local UI state on purpose (like scroll position).
-  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const toggleAgentExpanded = (agentId: string) =>
-    setExpandedAgents((prev) => {
-      const next = new Set(prev);
-      if (next.has(agentId)) next.delete(agentId);
-      else next.add(agentId);
-      return next;
-    });
 
   function agentDisplayName(agentId: string, threads: Room[]): string {
     const rosterAgent = agents.find((a) => a.id === agentId);
@@ -500,12 +598,6 @@ export function RoomList() {
       return "";
     }
   }
-
-
-  // ---- Unified Direct-messages renderers -----------------------------------
-  // One row per resident. Agents with multiple conversations collapse into a
-  // thread-history group (ChatGPT-style): the row opens the newest thread, the
-  // chevron reveals the history, the hover "+" starts a fresh thread.
 
   function renderThreadRow(room: Room, identColor: string) {
     const isActive = activeRoomId === room.id;
@@ -563,13 +655,23 @@ export function RoomList() {
     );
   }
 
-  function renderAgentGroup(agentId: string, threads: Room[]) {
-    const name = agentDisplayName(agentId, threads);
-    const ident = identityFor(agentId, name);
+  /**
+   * One row per resident/person. Multiple conversations collapse into a thread
+   * history: the row opens the newest thread, the chevron reveals the rest, the
+   * "+" starts a fresh thread (agents only — a human DM is a single room).
+   */
+  function renderPersonEntry(entry: PersonEntry, expanded: boolean) {
+    const isAgent = entry.kind === "agent";
+    const threads = entry.threads;
+    const name = isAgent
+      ? agentDisplayName(entry.agentId, threads)
+      : entry.name;
+    const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
-    const expanded = expandedAgents.has(agentId);
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = threads.reduce((n, r) => n + (r.unread_count ?? 0), 0);
+    const menuOpen = menuKey === entry.key;
+    const cat = peopleFiled?.[entry.key];
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
@@ -580,20 +682,28 @@ export function RoomList() {
     // property of the agent, not of the room, so the fallback is not a
     // degraded guess. An agent in neither lands on "unknown", which renders as
     // a dim ring, not as available.
+    // Humans keep the connected-or-nothing model: `is_online` alone — see
+    // ParticipantStrip; the old global online set was add-only, so OR'ing it in
+    // kept departed peers green. Availability is an agent concept only.
     const agentMember = others.find((p) => p.participant_type === "agent");
-    const rosterAgent = agents.find((a) => a.id === agentId);
-    const badge = agentPresence({
-      isOnline: agentMember?.is_online,
-      availability: agentMember?.availability ?? rosterAgent?.availability,
-      availabilityReason:
-        agentMember?.availability_reason ?? rosterAgent?.availability_reason,
-      name,
-    });
+    const rosterAgent = isAgent
+      ? agents.find((a) => a.id === entry.agentId)
+      : undefined;
+    const badge = isAgent
+      ? agentPresence({
+          isOnline: agentMember?.is_online,
+          availability: agentMember?.availability ?? rosterAgent?.availability,
+          availabilityReason:
+            agentMember?.availability_reason ??
+            rosterAgent?.availability_reason,
+          name,
+        })
+      : humanPresence(others.some((p) => p.is_online));
     return (
-      <li key={`agent-${agentId}`}>
+      <li key={entry.key} className="relative">
         <div
           className={clsx(
-            "group/agent relative flex w-full items-center rounded-lg pr-1 transition-colors",
+            "group relative flex w-full items-center rounded-lg pr-1 transition-colors",
             hasActive && !expanded
               ? "bg-white/[0.06]"
               : "hover:bg-white/[0.04]",
@@ -612,25 +722,31 @@ export function RoomList() {
             title={`Open your latest conversation with ${name}`}
           >
             <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-              <span
-                aria-hidden="true"
-                className="h-1.5 w-1.5 rounded-full"
-                style={{ background: ident.color }}
-              />
-              <span
-                className={clsx(
-                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
-                  badge.dotClass,
-                )}
-                aria-label={badge.label}
-                title={badge.label}
-              />
+              {isAgent ? (
+                <span
+                  aria-hidden="true"
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: ident.color }}
+                />
+              ) : (
+                <MessageSquare className="h-4 w-4 opacity-60" />
+              )}
+              {badge && (
+                <span
+                  className={clsx(
+                    "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+                    badge.dotClass,
+                  )}
+                  aria-label={badge.label}
+                  title={badge.label}
+                />
+              )}
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <span
                   className="truncate text-sm font-medium"
-                  style={{ color: ident.text }}
+                  style={isAgent ? { color: ident.text } : undefined}
                 >
                   {name}
                 </span>
@@ -661,18 +777,21 @@ export function RoomList() {
               )}
             </div>
           </button>
-          <button
-            onClick={() => startAgentChat(agentId, name)}
-            disabled={startingChat}
-            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover/agent:opacity-100 md:focus-visible:opacity-100"
-            aria-label={`Start a new chat with ${name}`}
-            title={`New chat with ${name}`}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
+          {isAgent && (
+            <button
+              onClick={() => startAgentChat(entry.agentId, name)}
+              disabled={startingChat}
+              className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+              aria-label={`Start a new chat with ${name}`}
+              title={`New chat with ${name}`}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {renderMenuTrigger(entry.key, `Options for ${name}`)}
           {threads.length > 1 && (
             <button
-              onClick={() => toggleAgentExpanded(agentId)}
+              onClick={() => togglePersonExpanded(entry.key)}
               className="focus-ring flex items-center gap-0.5 rounded-md p-1 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
               aria-expanded={expanded}
               aria-label={`${expanded ? "Hide" : "Show"} conversation history with ${name} (${threads.length})`}
@@ -688,6 +807,21 @@ export function RoomList() {
             </button>
           )}
         </div>
+
+        {menuOpen &&
+          renderMenuShell(
+            <>
+              {latest && renderNotifyItems(latest)}
+              {/* Filed against the person, so every thread with them — including
+                  ones that do not exist yet — comes along automatically. */}
+              {renderFolderMenuItems(
+                (name) => assignPersonCategory(entry.key, name),
+                cat,
+                "people",
+              )}
+            </>,
+          )}
+
         {expanded && threads.length > 1 && (
           <ul role="list" className="ml-3 border-l border-line pl-1">
             {threads.map((room) => renderThreadRow(room, ident.color))}
@@ -697,27 +831,20 @@ export function RoomList() {
     );
   }
 
-  function renderHumanDm(room: Room) {
+  function renderPrivateGroup(room: Room) {
+    const isActive = activeRoomId === room.id;
+    const menuOpen = menuKey === room.id;
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
-    // Humans keep the connected-or-nothing model: `is_online` alone — see
-    // ParticipantStrip, the old global online set was add-only, so OR'ing it in
-    // kept departed peers green. Availability is an agent concept and does not
-    // apply here.
-    const humanBadge = humanPresence(others.some((p) => p.is_online));
-    const isActive = activeRoomId === room.id;
+    const badge = humanPresence(others.some((p) => p.is_online));
     return (
-      <li key={room.id}>
-        <button
-          onClick={() => openRoom(room.id)}
+      <li key={room.id} className="relative">
+        <div
           className={clsx(
-            "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
-            isActive
-              ? "bg-white/[0.06] text-slate-50"
-              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+            "group relative flex items-center rounded-lg transition-colors",
+            isActive ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
           )}
-          aria-current={isActive ? "page" : undefined}
         >
           {isActive && (
             <span
@@ -725,48 +852,324 @@ export function RoomList() {
               className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
             />
           )}
-          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            <MessageSquare className="h-4 w-4 opacity-60" />
-            {humanBadge && (
-              <span
-                className={clsx(
-                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
-                  humanBadge.dotClass,
-                )}
-                aria-label={humanBadge.label}
-                title={humanBadge.label}
+          <button
+            onClick={() => openRoom(room.id)}
+            className={clsx(
+              "focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+              isActive
+                ? "text-slate-50"
+                : "text-slate-300 hover:text-slate-100",
+            )}
+            aria-current={isActive ? "page" : undefined}
+          >
+            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+              <Users
+                className="h-4 w-4 text-amber-300/70"
+                aria-label="Private group — invite only"
               />
-            )}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-sm font-medium">{room.name}</span>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {room.last_message && (
-                  <span className="text-[10px] tabular-nums text-slate-500">
-                    {formatTimestamp(room.last_message.created_at)}
-                  </span>
-                )}
-                {room.unread_count > 0 && (
-                  <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                    {room.unread_count > 99 ? "99+" : room.unread_count}
-                  </span>
-                )}
+              {badge && (
+                <span
+                  className={clsx(
+                    "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+                    badge.dotClass,
+                  )}
+                  aria-label={badge.label}
+                  title={badge.label}
+                />
+              )}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{room.name}</span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {room.member_count > 0 && (
+                    <span className="text-[10px] tabular-nums text-slate-600">
+                      {room.member_count}
+                    </span>
+                  )}
+                  {room.last_message && (
+                    <span className="text-[10px] tabular-nums text-slate-500">
+                      {formatTimestamp(room.last_message.created_at)}
+                    </span>
+                  )}
+                  {room.unread_count > 0 && (
+                    <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
+                      {room.unread_count > 99 ? "99+" : room.unread_count}
+                    </span>
+                  )}
+                </div>
               </div>
+              {room.last_message && (
+                <p className="truncate text-[11px] text-slate-500">
+                  <span className="font-medium text-slate-500">
+                    {room.last_message.sender_name}:
+                  </span>{" "}
+                  {formatLastMessage(room.last_message.content)}
+                </p>
+              )}
             </div>
-            {room.last_message && (
-              <p className="truncate text-[11px] text-slate-500">
-                <span className="font-medium text-slate-500">
-                  {room.last_message.sender_name}:
-                </span>{" "}
-                {formatLastMessage(room.last_message.content)}
-              </p>
-            )}
-          </div>
-        </button>
+          </button>
+          {renderMenuTrigger(room.id, `Options for ${room.name}`)}
+        </div>
+        {menuOpen && renderMenuShell(renderNotifyItems(room))}
       </li>
     );
   }
+
+  function renderRow(row: SidebarRow): ReactNode {
+    switch (row.kind) {
+      case "channel":
+        return renderChannelRow(row.room);
+      case "group":
+        return renderPrivateGroup(row.room);
+      case "person":
+        return renderPersonEntry(row.entry, row.expanded);
+    }
+  }
+
+  // ---- Section + folder chrome ---------------------------------------------
+
+  function renderSectionHeader(
+    key: string,
+    title: string,
+    hint: string,
+    actions?: ReactNode,
+  ) {
+    const shut = collapsed[key];
+    return (
+      <div className="flex items-center justify-between px-2.5 pb-1">
+        <button
+          onClick={() => toggleCollapsed(key)}
+          className="focus-ring group flex min-w-0 items-center gap-1 rounded-md py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+          aria-expanded={!shut}
+          title={hint}
+        >
+          <ChevronDown
+            className={clsx(
+              "h-3 w-3 shrink-0 transition-transform duration-150",
+              shut && "-rotate-90",
+            )}
+          />
+          <span className="truncate">{title}</span>
+        </button>
+        {actions && <div className="flex items-center gap-1">{actions}</div>}
+      </div>
+    );
+  }
+
+  function renderNewFolderButton(section: FolderSection) {
+    return (
+      <button
+        onClick={() => {
+          setNewFolderFor(section);
+          setNewFolderDraft("");
+        }}
+        className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+        aria-label={`New ${section === "channels" ? "channel" : "people"} folder`}
+        title="New folder"
+      >
+        <FolderPlus className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
+  function renderNewFolderInput(section: FolderSection) {
+    if (newFolderFor !== section) return null;
+    return (
+      <div className="mx-2 mb-1 flex items-center gap-2 rounded-lg border border-line bg-slate-950/60 px-2 py-1">
+        <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+        <input
+          autoFocus
+          value={newFolderDraft}
+          onChange={(e) => setNewFolderDraft(e.target.value)}
+          onBlur={commitHeaderFolder}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              commitHeaderFolder();
+            } else if (e.key === "Escape") {
+              e.stopPropagation();
+              setNewFolderFor(null);
+              setNewFolderDraft("");
+            }
+          }}
+          placeholder="Folder name"
+          aria-label="New folder name"
+          className="w-full min-w-0 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+        />
+      </div>
+    );
+  }
+
+  function commitRename(section: FolderSection, from: string) {
+    const to = (renameDraft ?? "").trim();
+    if (scope && to && to !== from) renameFolder(scope, section, from, to);
+    setMenuKey(null);
+  }
+
+  /**
+   * The folder ⋮ menu: rename in place, or delete.
+   *
+   * Both live behind an explicit, always-visible button rather than a
+   * hover-reveal — this sidebar is a touch surface, and a folder you can only
+   * rename with a mouse is a folder a phone user is stuck with forever.
+   * Deleting asks first, in-menu (a second tap, not a native confirm() a
+   * touch keyboard can hide), and it UNFILES the rows rather than removing
+   * them: a folder is a view over rooms, never a container that owns them.
+   */
+  function renderFolderMenu(section: FolderSection, name: string) {
+    if (renameDraft !== null) {
+      return renderMenuShell(
+        <div className="flex items-center gap-2 px-3 py-1.5">
+          <Pencil className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+          <input
+            autoFocus
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                commitRename(section, name);
+              } else if (e.key === "Escape") {
+                e.stopPropagation();
+                setRenameDraft(null);
+              }
+            }}
+            placeholder="Folder name"
+            aria-label={`Rename folder ${name}`}
+            className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
+          />
+        </div>,
+      );
+    }
+    if (confirmingDelete) {
+      return renderMenuShell(
+        <>
+          <p className="px-3 pb-1 pt-1.5 text-[11px] leading-snug text-slate-400">
+            Delete “{name}”? The{" "}
+            {section === "channels" ? "channels" : "people"} in it stay — they
+            move back to the ungrouped list.
+          </p>
+          <button
+            role="menuitem"
+            onClick={() => {
+              if (scope) removeFolder(scope, section, name);
+              setMenuKey(null);
+            }}
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-rose-300 transition-colors hover:bg-rose-500/10"
+          >
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            Delete folder
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => setConfirmingDelete(false)}
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+          >
+            Cancel
+          </button>
+        </>,
+      );
+    }
+    return renderMenuShell(
+      <>
+        <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Folder
+        </p>
+        <button
+          role="menuitem"
+          onClick={() => setRenameDraft(name)}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <Pencil className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Rename…
+        </button>
+        <button
+          role="menuitem"
+          onClick={() => setConfirmingDelete(true)}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <Trash2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Delete folder…
+        </button>
+      </>,
+    );
+  }
+
+  /** A folder header + its rows. Empty folders still render: the header is
+   *  where rename/delete live, and a folder you cannot see is a folder you
+   *  cannot fix. */
+  function renderFolder(group: SidebarGroup) {
+    const name = group.folder!;
+    const section = group.section!;
+    const key = group.collapseKey!;
+    const menuId = `folder:${section}:${name}`;
+    const menuOpen = menuKey === menuId;
+    return (
+      <div key={key} className="relative mb-0.5">
+        <div className="group flex items-center rounded-md">
+          <button
+            onClick={() => toggleCollapsed(key)}
+            className="focus-ring flex min-w-0 flex-1 items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+            aria-expanded={!group.collapsed}
+          >
+            <ChevronDown
+              className={clsx(
+                "h-3 w-3 shrink-0 transition-transform duration-150",
+                group.collapsed && "-rotate-90",
+              )}
+            />
+            <Folder className="h-3 w-3 shrink-0 opacity-50" aria-hidden="true" />
+            <span className="truncate">{name}</span>
+            <span className="ml-auto tabular-nums text-slate-500">
+              {group.rows.length}
+            </span>
+          </button>
+          {renderMenuTrigger(menuId, `Options for folder ${name}`, true)}
+        </div>
+        {menuOpen && renderFolderMenu(section, name)}
+        {!group.collapsed &&
+          (group.rows.length > 0 ? (
+            <ul role="list" className="ml-1.5 border-l border-line pl-1">
+              {group.rows.map(renderRow)}
+            </ul>
+          ) : (
+            <p className="ml-1.5 border-l border-line py-1 pl-3 text-[11px] italic text-slate-600">
+              Empty — use a row’s ⋮ menu to file something here
+            </p>
+          ))}
+      </div>
+    );
+  }
+
+  function renderSectionBody(section: (typeof model.sections)[number]) {
+    return (
+      <>
+        {section.groups.map((group, i) =>
+          group.folder !== null ? (
+            renderFolder(group)
+          ) : (
+            <ul role="list" key={`ungrouped-${i}`}>
+              {group.rows.map(renderRow)}
+            </ul>
+          ),
+        )}
+      </>
+    );
+  }
+
+  const [channelSection, peopleSection, groupsSection] = model.sections;
+  const channelCount = channelSection.groups.reduce(
+    (n, g) => n + g.rows.length,
+    0,
+  );
+  const peopleCount = peopleSection.groups.reduce(
+    (n, g) => n + g.rows.length,
+    0,
+  );
+  const groupCount = groupsSection.groups.reduce((n, g) => n + g.rows.length, 0);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -862,11 +1265,12 @@ export function RoomList() {
         </button>
 
         <section>
-          <div className="flex items-center justify-between px-2.5 pb-1">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Channels
-            </h3>
-            <div className="flex items-center gap-1">
+          {renderSectionHeader(
+            SECTION_KEYS.channels,
+            "Channels",
+            "Public — anyone on this server can find and join these",
+            <>
+              {renderNewFolderButton("channels")}
               <button
                 onClick={() => setBrowseOpen(true)}
                 className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
@@ -882,101 +1286,92 @@ export function RoomList() {
               >
                 <Plus className="h-3.5 w-3.5" />
               </button>
-            </div>
-          </div>
-
-          {channels.length === 0 && (
-            <div className="px-2.5 py-2">
-              <p className="mb-2 text-xs text-slate-500">No channels yet</p>
-              <button
-                onClick={handleSeedDefaults}
-                disabled={seeding}
-                className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
-              >
-                <Sparkles className="h-3 w-3" />
-                {seeding ? "Creating…" : "Seed business channels"}
-              </button>
-            </div>
+            </>,
           )}
 
-          {/* Category groups (personal, collapsible) then ungrouped channels. */}
-          {catGroups.map(([cat, roomsInCat]) => {
-            const isCollapsed = collapsed[cat];
-            return (
-              <div key={cat} className="mb-0.5">
-                <button
-                  onClick={() => toggleCollapsed(cat)}
-                  className="focus-ring flex w-full items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
-                  aria-expanded={!isCollapsed}
-                >
-                  <ChevronDown
-                    className={clsx(
-                      "h-3 w-3 shrink-0 transition-transform duration-150",
-                      isCollapsed && "-rotate-90",
-                    )}
-                  />
-                  <span className="truncate">{cat}</span>
-                  <span className="ml-auto tabular-nums text-slate-500">
-                    {roomsInCat.length}
-                  </span>
-                </button>
-                {!isCollapsed && (
-                  <ul role="list" className="ml-1.5 border-l border-line pl-1">
-                    {roomsInCat.map((room) => renderChannelRow(room))}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
+          {!channelSection.collapsed && (
+            <>
+              {renderNewFolderInput("channels")}
 
-          <ul role="list">{ungrouped.map((room) => renderChannelRow(room))}</ul>
+              {channelCount === 0 && (
+                <div className="px-2.5 py-2">
+                  <p className="mb-2 text-xs text-slate-500">No channels yet</p>
+                  <button
+                    onClick={handleSeedDefaults}
+                    disabled={seeding}
+                    className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    {seeding ? "Creating…" : "Seed business channels"}
+                  </button>
+                </div>
+              )}
+
+              {renderSectionBody(channelSection)}
+            </>
+          )}
         </section>
 
         <section>
-          <div className="flex items-center justify-between px-2.5 pb-1">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Direct messages
-            </h3>
-            <button
-              onClick={() => setCreateDmOpen(true)}
-              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-              aria-label="New direct message"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          {dmEntries.length === 0 && (
-            <div className="mx-2 mb-1 flex flex-col gap-1">
-              <button
-                onClick={startDefaultChat}
-                disabled={startingChat}
-                className="focus-ring flex w-full flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
-              >
-                <span className="font-medium">No conversations yet</span>
-                <span>
-                  {startingChat
-                    ? "Starting…"
-                    : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
-                </span>
-              </button>
+          {renderSectionHeader(
+            SECTION_KEYS.people,
+            "People & agents",
+            "Private — direct conversations, one row per person you talk to",
+            <>
+              {renderNewFolderButton("people")}
               <button
                 onClick={() => setCreateDmOpen(true)}
-                className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+                aria-label="New direct message"
               >
-                …or message a person
+                <Plus className="h-3.5 w-3.5" />
               </button>
-            </div>
+            </>,
           )}
 
-          <ul role="list">
-            {dmEntries.map((entry) =>
-              entry.kind === "agent"
-                ? renderAgentGroup(entry.agentId, entry.threads)
-                : renderHumanDm(entry.room),
-            )}
-          </ul>
+          {!peopleSection.collapsed && (
+            <>
+              {renderNewFolderInput("people")}
+
+              {peopleCount === 0 && groupCount === 0 && (
+                <div className="mx-2 mb-1 flex flex-col gap-1">
+                  <button
+                    onClick={startDefaultChat}
+                    disabled={startingChat}
+                    className="focus-ring flex w-full flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
+                  >
+                    <span className="font-medium">No conversations yet</span>
+                    <span>
+                      {startingChat
+                        ? "Starting…"
+                        : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setCreateDmOpen(true)}
+                    className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                  >
+                    …or message a person
+                  </button>
+                </div>
+              )}
+
+              {renderSectionBody(peopleSection)}
+            </>
+          )}
         </section>
+
+        {/* Private groups only exist once you are in one — no stray header. */}
+        {groupCount > 0 && (
+          <section>
+            {renderSectionHeader(
+              SECTION_KEYS.groups,
+              "Private groups",
+              "Invite only — these never appear in Browse channels",
+            )}
+            {!groupsSection.collapsed && renderSectionBody(groupsSection)}
+          </section>
+        )}
       </nav>
 
       {createDmOpen && (

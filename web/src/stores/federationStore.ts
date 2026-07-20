@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
+import { useSidebarUi } from "@/stores/sidebarUiStore";
 import { fetchInstanceLogo, fetchInstanceMeta, type InstanceMeta } from "@/lib/instances";
 
 export type InstanceAuthStatus = "pending" | "authenticated" | "unauthenticated" | "error";
@@ -142,12 +143,15 @@ export const useFederationStore = create<FederationState>((set, get) => ({
     useAppStore.getState().resetForServer();
     useCallUiStore.getState().resetForServer();
     // Canvas + Knowledge hold live server-scoped data (artifacts, collections)
-    // that must not linger while connected to a different backend. categoryStore
-    // is deliberately NOT reset: it's persisted and keyed by globally-unique room
-    // UUIDs, so it's inert across servers and wiping it would lose the user's
-    // saved channel categories.
+    // that must not linger while connected to a different backend. sidebarUi is
+    // ephemeral view state whose keys are names, so it resets too. categoryStore
+    // is deliberately NOT reset: every map in it is already bucketed by instance
+    // id (folder identity is (instance, section, name)), so the next server sees
+    // only its own folders — and wiping it would destroy the saved organization
+    // for every server at once.
     useCanvasStore.getState().resetForServer();
     useKnowledgeStore.getState().resetForServer();
+    useSidebarUi.getState().resetForServer();
     setActiveAuthInstance(id);
     // The instance you switch TO is now being viewed → clear its rail badge.
     set((state) => ({ activeInstanceId: id, unreadByInstance: { ...state.unreadByInstance, [id]: 0 } }));
