@@ -8,11 +8,12 @@ import {
   type ReactPortal,
 } from "react";
 import { createPortal } from "react-dom";
-import { getPopoutRoot, openCallPopout } from "./callPopout";
+import { getPopoutRoot, openCallPopoutWithResult } from "./callPopout";
 import type {
   CallPopoutController,
   CallPopoutHandle,
   OpenCallPopoutOptions,
+  PopoutOpenFailure,
 } from "./types";
 
 /**
@@ -55,12 +56,17 @@ export function CallPopoutHost({
  * `open`/`close`, and a pre-bound `Host` that re-renders as the window
  * opens/closes. `open()` opens (or focuses) the pop-out and MUST be called
  * directly from an `onClick` (user gesture) — it opens the window synchronously.
+ *
+ * `open()` returns whether a window is now open, and sets reactive `error` when
+ * it is not. A popup blocker is SILENT at the browser level, so the consumer
+ * MUST render `error` — see VoiceVideoBar's pop-out-blocked banner.
  */
 export function useCallPopout(
   opts?: OpenCallPopoutOptions,
 ): CallPopoutController {
   const [handle, setHandleState] = useState<CallPopoutHandle | null>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const [error, setError] = useState<PopoutOpenFailure | null>(null);
   // Ref mirror so `open`/`close` can read the live handle synchronously without
   // being re-created (keeping them gesture-stable).
   const handleRef = useRef<CallPopoutHandle | null>(null);
@@ -73,15 +79,15 @@ export function useCallPopout(
     setIsOpen(!!h && h.isOpen);
   }, []);
 
-  const open = useCallback(() => {
+  const open = useCallback((): boolean => {
     const cur = handleRef.current;
     if (cur && cur.isOpen) {
       cur.focus();
-      return;
+      return true;
     }
     // Synchronous open — no `await` before this, or the popup is blocked.
     let created: CallPopoutHandle | null = null;
-    created = openCallPopout({
+    const result = openCallPopoutWithResult({
       title: optsRef.current?.title,
       width: optsRef.current?.width,
       height: optsRef.current?.height,
@@ -96,8 +102,15 @@ export function useCallPopout(
         }
       },
     });
+    created = result.handle;
     setHandle(created);
+    // Surface the failure instead of degrading to nothing (the #1 silent-
+    // degradation trap here: `window.open` returning null is invisible).
+    setError(result.failure);
+    return !!created;
   }, [setHandle]);
+
+  const clearError = useCallback(() => setError(null), []);
 
   const close = useCallback(() => {
     handleRef.current?.close();
@@ -121,5 +134,5 @@ export function useCallPopout(
     [handle],
   );
 
-  return { isOpen, open, close, Host };
+  return { isOpen, open, close, error, clearError, Host };
 }
