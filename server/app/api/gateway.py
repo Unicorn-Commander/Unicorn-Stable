@@ -36,7 +36,10 @@ from app.auth.gateway_auth import (
     verify_gateway_key,
 )
 from app.config import Settings, get_settings
-from app.services.agent_status import clear_relay_pending, touch_gateway_agent
+from app.services.agent_status import (
+    clear_relay_pending,
+    touch_gateway_agent as touch_bridge_seen,
+)
 from app.deps import (
     _rate_limit_hit,
     get_db,
@@ -53,7 +56,9 @@ from app.models.participant import (
 )
 from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageCreate, MessageListResponse, MessageResponse
-from app.services.agent_availability import touch_gateway_agent
+from app.services.agent_availability import (
+    touch_gateway_agent as touch_bridge_fresh,
+)
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
@@ -111,7 +116,7 @@ async def authenticate_gateway_caller(
     except GatewayAuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
-    await touch_gateway_agent(redis, principal.agent_id)
+    await touch_bridge_fresh(redis, principal.agent_id)
     return principal
 
 
@@ -291,7 +296,7 @@ async def gateway_post_message(
     # happened. Best-effort: a signalling failure must not fail the post, and
     # the marker's TTL clears it regardless.
     try:
-        await touch_gateway_agent(principal.agent_id)
+        await touch_bridge_seen(principal.agent_id)
         await clear_relay_pending(room_id=room.id, agent_id=principal.agent_id)
     except Exception:
         logger.debug("gateway_relay_clear_failed", exc_info=True)
@@ -322,7 +327,7 @@ async def gateway_get_messages(
     # writes, and the clear only fans out on a real transition, so this stays
     # cheap on a 1-2s poll loop.
     try:
-        await touch_gateway_agent(principal.agent_id)
+        await touch_bridge_seen(principal.agent_id)
         await clear_relay_pending(room_id=room_obj.id, agent_id=principal.agent_id)
     except Exception:
         logger.debug("gateway_relay_clear_failed", exc_info=True)
