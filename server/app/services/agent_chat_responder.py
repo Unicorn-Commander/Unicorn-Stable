@@ -119,6 +119,59 @@ def _format_citation_context(header: str, hits: list[dict[str, Any]]) -> str:
     return "\n".join(lines).strip() if n else ""
 
 
+# How many recent attachment-carrying messages to inspect when deciding whether
+# a room has any shared document at all. Bounded so the check costs the same in
+# a room with ten messages and a room with a hundred thousand.
+_DOC_SCAN_LIMIT = 200
+
+
+async def _room_has_shared_documents(db: Any, room: Room) -> bool | None:
+    """Does this room contain a document that room-scoped RAG would have indexed?
+
+    Answers the only question that licenses a "we searched and found nothing"
+    claim about room-shared documents: was there anything to search? Room RAG is
+    fed exclusively by document attachments posted to the room
+    (``rag_service.index_message_attachments``, scheduled from ``messages.py``),
+    so the presence of such an attachment is the presence of a search surface.
+
+    Attachment content-types are judged with ``rag_service._is_doc_content_type``
+    — the same predicate the indexer uses — so this cannot drift into claiming a
+    surface exists for files RAG silently skips (images, unknown types).
+
+    Returns True / False, or ``None`` when the question could not be answered.
+    ``None`` is deliberately distinct from ``False``: not knowing whether a
+    surface exists is not the same as knowing it does not, and neither one
+    entitles us to describe a search we cannot vouch for.
+    """
+    try:
+        from app.models.message import Message
+        from app.services.rag_service import _is_doc_content_type
+
+        rows = (
+            await db.execute(
+                select(Message.metadata_)
+                .where(Message.room_id == room.id)
+                .where(Message.metadata_.has_key("attachments"))  # noqa: W601
+                .order_by(Message.created_at.desc())
+                .limit(_DOC_SCAN_LIMIT)
+            )
+        ).scalars().all()
+    except Exception:
+        logger.warning("room_shared_documents_probe_failed", exc_info=True)
+        return None
+
+    for meta in rows:
+        attachments = (meta or {}).get("attachments")
+        if not isinstance(attachments, list):
+            continue
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            if _is_doc_content_type(str(att.get("content_type") or "")):
+                return True
+    return False
+
+
 async def _gather_grounding(
     settings: Settings,
     db: Any,
@@ -142,6 +195,11 @@ async def _gather_grounding(
                           the UI must say so.
       ``None``          — the room has no knowledge surface at all; assert
                           nothing rather than implying an absence of sources.
+                          This is the ORDINARY room and the common case, not an
+                          edge case: a disclaimer here would describe a search
+                          that never happened, and a reader who trusts it would
+                          conclude their knowledge base is empty or broken when
+                          neither is true.
 
     The distinction between ``"none"`` and ``"unavailable"`` is the whole
     point: an outage that renders as "no match" lets an agent answer from
@@ -238,11 +296,24 @@ async def _gather_grounding(
     # These carry no knowledge-base locator, so they cite by filename and
     # excerpt without a click-through target — which the UI renders as plain
     # (unlinked) sources rather than pretending they are openable.
-    if getattr(settings, "rag_enabled", False):
+    # ``rag_enabled`` only says the feature is switched on, and it defaults to
+    # True — it is NOT evidence that this room has anything to search. Treating
+    # it as an attempt stamped "we looked and found nothing" onto ordinary
+    # conversation in every room without documents, which is the most common
+    # room in this deployment. Only a room that actually holds a shared
+    # document is a surface we may claim to have searched.
+    rag_enabled = bool(getattr(settings, "rag_enabled", False))
+    has_shared_docs = (
+        await _room_has_shared_documents(db, room) if rag_enabled else False
+    )
+    # ``None`` (could not tell) still retrieves — a database hiccup should not
+    # silently cost the agent context it could have used — but it never counts
+    # as a searched surface, so nothing is claimed on its behalf either way.
+    if rag_enabled and has_shared_docs is not False:
         try:
             from app.services.rag_service import rag_service
 
-            attempted = True
+            attempted = attempted or bool(has_shared_docs)
             hits = await rag_service.retrieve(
                 settings=settings, room_id=str(room.id), query=query
             )
@@ -267,7 +338,9 @@ async def _gather_grounding(
                         }
                     )
         except Exception:
-            broken = True
+            # Only a surface we established exists can be reported as one we
+            # failed to search; otherwise there is nothing to be unavailable.
+            broken = broken or bool(has_shared_docs)
             logger.warning("rag_context_inject_failed", exc_info=True)
 
     # -- Decide what we can honestly claim -----------------------------------
