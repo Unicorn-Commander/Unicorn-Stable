@@ -52,6 +52,16 @@ interface KnowledgeState {
   searching: boolean;
   /** True once a search has run (drives the "no matches" empty state). */
   searchRan: boolean;
+  /**
+   * The retrieval plane (vector index / embeddings) could not be reached on the
+   * last search — the backend answered 503 rather than pretending nothing
+   * matched. Deliberately NOT folded into `searchResults: []`: "we looked and
+   * found nothing" and "we could not look" are different facts, and the panel
+   * must say which one happened.
+   */
+  retrievalUnavailable: boolean;
+  /** Server-supplied explanation for {@link retrievalUnavailable}. */
+  retrievalDetail: string | null;
 
   /** Last error (surfaced as a banner). */
   error: string | null;
@@ -93,6 +103,16 @@ interface KnowledgeState {
   /** Clear the search box + results. */
   clearSearch: () => void;
 
+  /**
+   * Open the panel straight onto a cited source: reveal the collection, then
+   * the document, so a citation on an answer is clickable through to the text
+   * it came from.
+   */
+  revealSource: (
+    collectionId: string,
+    documentId?: string | null,
+  ) => Promise<void>;
+
   /** Attach a collection to the current room, then refresh attachments. */
   attach: (collectionId: string) => Promise<void>;
   /** Detach a collection from the current room, then refresh attachments. */
@@ -127,6 +147,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   searchResults: [],
   searching: false,
   searchRan: false,
+  retrievalUnavailable: false,
+  retrievalDetail: null,
   error: null,
 
   setPanelOpen: (open) => set({ panelOpen: open }),
@@ -144,6 +166,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       searchQuery: "",
       searchResults: [],
       searchRan: false,
+      // Availability is a property of the server, not the room, but it is only
+      // ever learned by searching — so drop the stale claim on a room switch
+      // rather than carrying a warning we can no longer justify.
+      retrievalUnavailable: false,
+      retrievalDetail: null,
       error: null,
     });
     if (roomId) void get().refreshAttached(roomId);
@@ -281,15 +308,44 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const results = await api.searchRoomKnowledge(roomId, q);
       // Ignore a response that resolved after the user switched rooms.
       if (get().roomId !== roomId) return;
-      set({ searchResults: results, searching: false, searchRan: true });
+      set({
+        searchResults: results,
+        searching: false,
+        searchRan: true,
+        retrievalUnavailable: false,
+        retrievalDetail: null,
+      });
     } catch (e) {
       if (get().roomId !== roomId) return;
+      // 503 = the backend could not reach the index. Record it as its own
+      // state so the panel says "search is down", never "no matches".
+      if ((e as { status?: number })?.status === 503) {
+        set({
+          searching: false,
+          searchRan: true,
+          searchResults: [],
+          retrievalUnavailable: true,
+          retrievalDetail: errMsg(e),
+          error: null,
+        });
+        return;
+      }
       set({ searching: false, searchRan: true, error: errMsg(e) });
     }
   },
 
   clearSearch: () =>
     set({ searchQuery: "", searchResults: [], searchRan: false }),
+
+  revealSource: async (collectionId, documentId) => {
+    set({ panelOpen: true });
+    await get().openCollectionById(collectionId);
+    // Only drill into the document if the collection actually opened (it can
+    // fail on a 403/404) — otherwise leave the user on the collection list.
+    if (documentId && get().openCollection?.id === collectionId) {
+      await get().openDocumentById(documentId);
+    }
+  },
 
   attach: async (collectionId) => {
     const roomId = get().roomId;
@@ -332,6 +388,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       searchResults: [],
       searching: false,
       searchRan: false,
+      retrievalUnavailable: false,
+      retrievalDetail: null,
       error: null,
     }),
 }));

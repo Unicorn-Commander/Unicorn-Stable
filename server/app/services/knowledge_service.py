@@ -42,6 +42,20 @@ from app.services.rag_service import _HTTP_TIMEOUT, _sparse_vector, rag_service
 
 logger = structlog.get_logger(__name__)
 
+# Retrieval-plane status. These two are NOT the same statement and must never
+# be rendered to a human as if they were:
+#   RETRIEVAL_OK          — we asked the index and it answered (possibly with
+#                           zero hits: "your knowledge bases have no match").
+#   RETRIEVAL_UNAVAILABLE — we could not ask the index at all (qdrant/Infinity
+#                           unreachable), so we know NOTHING about whether a
+#                           match exists. Callers must surface this, not
+#                           silently degrade it into an empty result set.
+RETRIEVAL_OK = "ok"
+RETRIEVAL_UNAVAILABLE = "unavailable"
+
+# Health probes are user-facing and must not hang a request.
+_PROBE_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+
 
 class KnowledgeService:
     """Stateless async helper (module-level singleton like ``rag_service``)."""
@@ -193,6 +207,56 @@ class KnowledgeService:
 
     # ---- Retrieval (REUSES rag_service embed + rerank; qdrant should-filter) ----
 
+    async def retrieval_health(self, settings: Settings) -> dict[str, Any]:
+        """Probe the two services retrieval depends on.
+
+        Returns ``{available, qdrant, infinity, detail}``. Never raises.
+
+        This exists so a HUMAN can be told the difference between "your
+        knowledge bases returned no match" and "we could not reach the index,
+        so nothing here is grounded". Rendering the second as the first is a
+        lie, and this UI does not tell it.
+        """
+        qdrant_ok = False
+        infinity_ok = False
+        problems: list[str] = []
+
+        try:
+            url = (
+                f"{settings.qdrant_url.rstrip('/')}/collections/"
+                f"{settings.rag_collection}"
+            )
+            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as http:
+                resp = await http.get(url)
+            qdrant_ok = resp.status_code == 200
+            if not qdrant_ok:
+                problems.append(f"vector index returned HTTP {resp.status_code}")
+        except Exception as exc:
+            problems.append(
+                f"vector index unreachable at {settings.qdrant_url} "
+                f"({type(exc).__name__})"
+            )
+
+        try:
+            url = settings.infinity_url.rstrip("/") + "/models"
+            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as http:
+                resp = await http.get(url)
+            infinity_ok = resp.status_code == 200
+            if not infinity_ok:
+                problems.append(f"embedding service returned HTTP {resp.status_code}")
+        except Exception as exc:
+            problems.append(
+                f"embedding service unreachable at {settings.infinity_url} "
+                f"({type(exc).__name__})"
+            )
+
+        return {
+            "available": qdrant_ok and infinity_ok,
+            "qdrant": "ok" if qdrant_ok else "unreachable",
+            "infinity": "ok" if infinity_ok else "unreachable",
+            "detail": "; ".join(problems),
+        }
+
     async def search_knowledge(
         self,
         settings: Settings,
@@ -200,37 +264,76 @@ class KnowledgeService:
         query: str,
         k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Retrieve the most relevant excerpts across one or more collections.
+        """Excerpts only — back-compat wrapper over
+        :meth:`search_knowledge_detailed`.
+
+        Returns ``[]`` both when nothing matched AND when retrieval is down;
+        that ambiguity is exactly why the detailed variant exists. Any caller
+        that shows results to a human should use the detailed one so it can say
+        which of the two happened. Kept for the agent-side callers whose
+        contract is "context or no context".
+        """
+        detailed = await self.search_knowledge_detailed(
+            settings=settings, collection_ids=collection_ids, query=query, k=k
+        )
+        return detailed["results"]
+
+    async def search_knowledge_detailed(
+        self,
+        settings: Settings,
+        collection_ids: list[str],
+        query: str,
+        k: int = 5,
+    ) -> dict[str, Any]:
+        """Retrieve the most relevant excerpts across one or more collections,
+        reporting whether the retrieval plane could be reached at all.
 
         ``rag_service.embed(query)`` -> qdrant search filtered on
         ``collection_id`` IN ``collection_ids`` (a ``should`` / match-any
-        clause) -> ``rag_service._rerank`` -> top ``k`` excerpts as
-        ``[{text, filename, score, collection_id}]``.
+        clause) -> ``rag_service._rerank`` -> top ``k`` excerpts.
 
-        Returns ``[]`` on any error, empty ``collection_ids``, or when nothing
-        is indexed for those collections. Mirrors ``rag_service.retrieve`` but
-        across collections instead of a single room.
+        Returns ``{"status": RETRIEVAL_OK | RETRIEVAL_UNAVAILABLE,
+        "results": [{text, filename, score, collection_id}]}``.
+
+        ``RETRIEVAL_OK`` with an empty list is a real answer ("no match").
+        ``RETRIEVAL_UNAVAILABLE`` means the embedder or the vector index could
+        not be reached, so the empty list carries NO information — callers must
+        say so rather than presenting it as "nothing found". Reranking failure
+        is not unavailability: it degrades to vector order and stays ``ok``.
         """
+        ids = [str(c) for c in (collection_ids or []) if c]
+        q = (query or "").strip()
+        # Nothing asked / nothing attached is a truthful empty answer, not an
+        # outage — no need to touch the network to know that.
+        if not ids or not q:
+            return {"status": RETRIEVAL_OK, "results": []}
+
+        # REUSE rag_service's embedder. A failure here is the embedding service
+        # being down, not an absence of matches.
         try:
-            ids = [str(c) for c in (collection_ids or []) if c]
-            q = (query or "").strip()
-            if not ids or not q:
-                return []
-
-            # REUSE rag_service's embedder.
             q_vectors = await rag_service.embed(settings, [q])
-            if not q_vectors:
-                return []
+        except Exception:
+            logger.warning("kb_search_embed_failed", exc_info=True)
+            return {"status": RETRIEVAL_UNAVAILABLE, "results": []}
+        if not q_vectors:
+            logger.warning("kb_search_embed_empty")
+            return {"status": RETRIEVAL_UNAVAILABLE, "results": []}
 
-            # Over-fetch then rerank for precision (same shape as rag_service:
-            # k_search ~ 4x final, capped). Filter is the only KB-specific bit.
-            k_search = max(20, k * 4)
+        # Over-fetch then rerank for precision (same shape as rag_service:
+        # k_search ~ 4x final, capped). Filter is the only KB-specific bit.
+        k_search = max(20, k * 4)
+        try:
             hits = await self._search_collections(
                 settings, q_vectors[0], _sparse_vector(q), ids, k_search
             )
-            if not hits:
-                return []
+        except Exception:
+            logger.warning("kb_search_query_failed", exc_info=True)
+            return {"status": RETRIEVAL_UNAVAILABLE, "results": []}
 
+        if not hits:
+            return {"status": RETRIEVAL_OK, "results": []}
+
+        try:
             candidates: list[dict[str, Any]] = []
             for h in hits:
                 payload = h.get("payload") or {}
@@ -246,9 +349,10 @@ class KnowledgeService:
                     }
                 )
             if not candidates:
-                return []
+                return {"status": RETRIEVAL_OK, "results": []}
 
             # REUSE rag_service's reranker; fall back to vector order on failure.
+            # Rerank is a precision nicety — losing it is NOT unavailability.
             reranked = await rag_service._rerank(
                 settings, q, [c["text"] for c in candidates]
             )
@@ -266,10 +370,12 @@ class KnowledgeService:
                         ordered.append(c)
                 candidates = ordered or candidates
 
-            return candidates[:k]
+            return {"status": RETRIEVAL_OK, "results": candidates[:k]}
         except Exception:
+            # Shaping the already-fetched hits blew up — we DID reach the index,
+            # but we cannot vouch for the result, so do not claim "no match".
             logger.warning("kb_search_failed", exc_info=True)
-            return []
+            return {"status": RETRIEVAL_UNAVAILABLE, "results": []}
 
     # ---- Human-viewable extracted content (qdrant scroll by document) ----
 
@@ -279,6 +385,21 @@ class KnowledgeService:
         document_id: Any,
         limit: int = 2000,
     ) -> list[dict[str, Any]]:
+        """Chunks only — back-compat wrapper over
+        :meth:`get_document_chunks_detailed`. ``[]`` conflates "nothing indexed"
+        with "index unreachable"; prefer the detailed variant for anything a
+        human reads."""
+        detailed = await self.get_document_chunks_detailed(
+            settings=settings, document_id=document_id, limit=limit
+        )
+        return detailed["chunks"]
+
+    async def get_document_chunks_detailed(
+        self,
+        settings: Settings,
+        document_id: Any,
+        limit: int = 2000,
+    ) -> dict[str, Any]:
         """Fetch every indexed chunk for ONE document, ordered by ``chunk_idx``.
 
         Reads the SAME ``settings.rag_collection`` (``stable_documents``) the
@@ -287,8 +408,10 @@ class KnowledgeService:
         Returns ``[{chunk_idx, text}]`` sorted by chunk order so a human can
         read the document's extracted text exactly as it was chunked/embedded.
 
-        Fail-safe in the rag_service style: any error (network, qdrant) degrades
-        to ``[]`` — viewing content must never raise.
+        Returns ``{"status": RETRIEVAL_OK | RETRIEVAL_UNAVAILABLE, "chunks":
+        [{chunk_idx, text}]}``. Fail-safe in the rag_service style — viewing
+        content never raises — but an unreachable index is reported as such
+        instead of masquerading as an empty document.
         """
         try:
             url = (
@@ -327,10 +450,10 @@ class KnowledgeService:
                     }
                 )
             chunks.sort(key=lambda c: c["chunk_idx"])
-            return chunks
+            return {"status": RETRIEVAL_OK, "chunks": chunks}
         except Exception:
             logger.warning("kb_get_document_chunks_failed", exc_info=True)
-            return []
+            return {"status": RETRIEVAL_UNAVAILABLE, "chunks": []}
 
     async def _search_collections(
         self,
