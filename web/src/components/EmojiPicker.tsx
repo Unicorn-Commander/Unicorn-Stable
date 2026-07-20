@@ -47,7 +47,7 @@ const COLS = 8;
 
 /** Shared panel chrome — used by both the loading state and the loaded picker. */
 const PANEL_CLASS =
-  "glass-heavy flex h-96 w-80 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-2xl shadow-pop animate-slide-up";
+  "glass-heavy flex h-96 max-h-[calc(var(--app-height,100dvh)-7rem)] w-80 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-2xl shadow-pop animate-slide-up";
 
 type SectionId = EmojiGroup | "recent";
 
@@ -165,7 +165,11 @@ function LoadedEmojiPicker({
   const sectionRefs = useRef<Partial<Record<SectionId, HTMLDivElement | null>>>({});
 
   useEffect(() => {
-    searchRef.current?.focus();
+    // Only autofocus where a hardware keyboard is the norm — on touch it
+    // would pop the on-screen keyboard, shrinking the shell and clipping us.
+    if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
+      searchRef.current?.focus();
+    }
   }, []);
 
   /** char → entry, for resolving stored recents back to names. `mod` is

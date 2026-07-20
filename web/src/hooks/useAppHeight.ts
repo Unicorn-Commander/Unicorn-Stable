@@ -30,17 +30,27 @@ export function useAppHeight() {
     }
 
     const apply = () => {
+      // During pinch-zoom vv.height is the visible height DIVIDED by the zoom
+      // factor — writing it would collapse the shell. Skip until zoom settles.
+      if (vv.scale && Math.abs(vv.scale - 1) > 0.01) return;
       root.style.setProperty("--app-height", `${Math.round(vv.height)}px`);
+      // iOS pans the layout viewport to "reveal" a focused input under the
+      // keyboard, leaving the shell scrolled off-screen. Re-anchor it.
+      window.scrollTo(0, 0);
     };
 
     apply();
-    // visualViewport `resize` already fires on rotation, toolbar collapse, and
-    // keyboard show/hide. We deliberately do NOT also bind `orientationchange`:
-    // on iOS it fires BEFORE the viewport settles, so it would read a stale
-    // height — the trailing `resize` is the authoritative signal.
+    // visualViewport `resize` fires on rotation, toolbar collapse, and keyboard
+    // show/hide. We deliberately do NOT also bind `orientationchange`: on iOS
+    // it fires BEFORE the viewport settles, so it would read a stale height —
+    // the trailing `resize` is the authoritative signal. `scroll` is bound too
+    // so the focus-reveal pan is undone; apply() is idempotent and cheap, so
+    // toolbar-collapse churn during scroll is harmless.
     vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
     return () => {
       vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
     };
   }, []);
 }

@@ -146,7 +146,7 @@ export function AgentChatModal({
         animate={{ scale: 1, y: 0, opacity: 1 }}
         exit={{ scale: 0.96, y: 8, opacity: 0 }}
         transition={{ duration: 0.15 }}
-        className="glass-heavy relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-pop"
+        className="glass-heavy relative flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Affiliation legend — the colored left edge (matches roster + chart). */}

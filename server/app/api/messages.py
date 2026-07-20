@@ -1547,11 +1547,17 @@ async def list_saved(
     # on the metadata column (migration 002). The previous ``LIKE '%pid%'``
     # on the cast text was unindexed and prone to substring false positives
     # (one id being a prefix/substring of another).
+    from sqlalchemy import cast as _cast
+    from sqlalchemy.dialects.postgresql import JSONB as _JSONB
+
+    # asyncpg binds a Python str as text/varchar, so a bare containment param
+    # yields `jsonb @> varchar` — an operator that does not exist (500). Cast
+    # the value to JSONB explicitly so Postgres sees `jsonb @> jsonb`.
     containment_param = _json.dumps({"saved_by": [pid]})
     rows = (
         await db.execute(
             _select(_Msg)
-            .where(_Msg.metadata_.op("@>")(containment_param))
+            .where(_Msg.metadata_.op("@>")(_cast(containment_param, _JSONB)))
             .where(_Msg.is_deleted == False)  # noqa: E712
             .order_by(desc(_Msg.created_at))
             .limit(limit)

@@ -29,8 +29,21 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
   });
 
   useEffect(() => {
-    inputRef.current?.focus();
+    // Only autofocus on pointer devices — on touch it pops the keyboard
+    // over an input the user hasn't tapped yet.
+    if (window.matchMedia("(hover: hover)").matches) {
+      inputRef.current?.focus();
+    }
   }, []);
+
+  // Auto-grow the reply textarea like the main composer (capped at 120px).
+  useEffect(() => {
+    const el = inputRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+    }
+  }, [reply]);
 
   // Refresh thread when a new message hits the room and matches our thread_id
   useEffect(() => {
@@ -93,7 +106,7 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
-      className="glass-heavy fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,320px)] flex-col shadow-2xl md:static md:z-auto md:w-80 md:shadow-none"
+      className="glass-heavy absolute inset-y-0 right-0 z-40 flex h-full w-[min(90vw,320px)] flex-col shadow-2xl md:static md:z-auto md:w-80 md:shadow-none"
       aria-label="Thread"
     >
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-line px-3">
@@ -137,7 +150,7 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
                     {parent.sender_name}
                   </span>
                 </p>
-                <p className="mt-0.5 whitespace-pre-wrap text-sm text-slate-300">
+                <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-slate-300">
                   {parent.content}
                 </p>
               </div>
@@ -172,7 +185,7 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-line p-2">
+      <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}

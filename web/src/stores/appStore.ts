@@ -84,6 +84,7 @@ interface AppState {
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
   setOnlineUsers: (userIds: string[]) => void;
+  mergeOnlineUsers: (userIds: string[]) => void;
   addOnlineUser: (userId: string) => void;
   removeOnlineUser: (userId: string) => void;
   setVoiceActive: (active: boolean) => void;
@@ -286,8 +287,17 @@ export const useAppStore = create<AppState>((set) => ({
       for (const m of members) {
         const id = m.participant_id || m.user_id;
         if (!id) continue;
-        if (m.is_online === true) online.add(id);
-        else if (m.is_online === false) online.delete(id);
+        // The /members wire-format carries live presence in `status`
+        // ("online" when the participant is in the room's presence set);
+        // `is_online` is only sent by newer/alt shapes. Honor either.
+        const isOnline =
+          typeof m.is_online === "boolean"
+            ? m.is_online
+            : m.status
+              ? m.status === "online"
+              : undefined;
+        if (isOnline === true) online.add(id);
+        else if (isOnline === false) online.delete(id);
       }
       return {
         participants: { ...state.participants, [roomId]: members },
@@ -337,6 +347,16 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   setOnlineUsers: (userIds) => set({ onlineUsers: userIds }),
+  mergeOnlineUsers: (userIds) =>
+    set((state) => {
+      // Union the room-open presence snapshot into the GLOBAL online set
+      // WITHOUT clobbering peers known-online in other rooms — the sidebar DM
+      // dots read the same set. (setOnlineUsers replaces, which would drop
+      // them.) Removals are handled by live WS deltas + the /members refetch.
+      const merged = new Set(state.onlineUsers);
+      for (const id of userIds) if (id) merged.add(id);
+      return { onlineUsers: Array.from(merged) };
+    }),
   addOnlineUser: (userId) =>
     set((state) => ({
       onlineUsers: state.onlineUsers.includes(userId)

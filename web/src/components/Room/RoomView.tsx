@@ -1,15 +1,14 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
-import { useCallUiStore } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
@@ -18,12 +17,9 @@ import {
   useIsDesktop,
   usePanelResize,
 } from "@/hooks/usePanelResize";
-import { useVoice } from "@/contexts/VoiceProvider";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { ChatPanel } from "./ChatPanel";
+import { CallRoomLayout } from "./CallRoomLayout";
 import { ParticipantStrip } from "./ParticipantStrip";
-import { StageView } from "./StageView";
-import { VoiceVideoBar } from "./VoiceVideoBar";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
@@ -56,13 +52,6 @@ export function RoomView({ roomId }: RoomViewProps) {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const threadMessageId = useAppStore((s) => s.ui.threadMessageId);
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
-  const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
-  const voiceActive = useAppStore((s) => s.voiceActive);
-  // Modular call layout: the per-room view mode + the video/transcript toggles
-  // decide how (and where) the call surface renders.
-  const callViewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
-  const showCallVideo = useCallUiStore((s) => s.showVideo);
-  const showTranscript = useCallUiStore((s) => s.showTranscript);
   // Canvas (co-working artifacts) right-drawer. Open state is global (single
   // active canvas); the toggle + the data-channel both drive it.
   const canvasOpen = useCanvasStore((s) => s.panelOpen);
@@ -84,33 +73,9 @@ export function RoomView({ roomId }: RoomViewProps) {
   useEffect(() => {
     setKnowledgeRoom(roomId);
   }, [roomId, setKnowledgeRoom]);
-  // Shared call state: does anyone in the call have a live camera/screen track?
-  const { localParticipant, remoteParticipants, version } = useVoice();
-  const callHasVideo = useMemo(() => {
-    const localHasVideo =
-      !!localParticipant &&
-      Array.from(localParticipant.trackPublications.values()).some(
-        (t) => t.kind === "video" && t.track,
-      );
-    const remoteHasVideo = remoteParticipants.some((p) =>
-      Array.from(p.trackPublications.values()).some(
-        (t) => t.kind === "video" && t.track,
-      ),
-    );
-    return localHasVideo || remoteHasVideo;
-    // `version` bumps on every track publish/unpublish/mute in the provider.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localParticipant, remoteParticipants, version]);
-
-  // The top call region is a tall "stage" for the video modes (focus/grid) when
-  // video is actually showing, and an auto-height slim bar for compact/audio.
-  // "sidebar" mode renders the call as a narrow right column instead (below),
-  // so the top region collapses there. Transcript adds height in the slim bar.
-  const callRendersVideo =
-    showCallVideo && callHasVideo && callViewMode !== "compact";
-  const callInSidebar = voiceActive && callViewMode === "sidebar";
-  const callInTopRegion = voiceActive && callViewMode !== "sidebar";
-  const callRegionTall = callInTopRegion && callRendersVideo;
+  // The call surface (video grid / audio bar) and its coexistence with chat is
+  // owned entirely by <CallRoomLayout> below — it reads voiceActive + the
+  // per-room view mode itself and resizes chat beside the video.
   const setParticipants = useAppStore((s) => s.setParticipants);
   const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -172,6 +137,21 @@ export function RoomView({ roomId }: RoomViewProps) {
       setParticipants(roomId, members);
     }
   }, [members, roomId, setParticipants]);
+
+  // Seed presence on room open: who is ALREADY online in this room. Live WS
+  // presence deltas only cover changes AFTER we connect, so a peer who was
+  // online before we opened the room would otherwise show offline until they
+  // toggle. Union into the global online set; refetch on the members cadence.
+  const mergeOnlineUsers = useAppStore((s) => s.mergeOnlineUsers);
+  const { data: roomPresence } = useQuery({
+    queryKey: ["room-presence", roomId],
+    queryFn: () => api.getRoomPresence(roomId),
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  useEffect(() => {
+    if (roomPresence) mergeOnlineUsers(roomPresence.online);
+  }, [roomPresence, mergeOnlineUsers]);
 
   // Live member changes (someone joined/left, was removed, role/mute changed)
   // fan out over the room socket so every open client refreshes immediately
@@ -301,7 +281,12 @@ export function RoomView({ roomId }: RoomViewProps) {
             />
           ) : (
             <button
-              onClick={() => setEditingName(true)}
+              onClick={() => {
+                // Desktop-only: on phones a natural tap on the title would
+                // summon an autofocused input + keyboard. Mobile renames via
+                // the ⋮ overflow menu's "Rename channel" entry instead.
+                if (window.matchMedia("(min-width: 768px)").matches) setEditingName(true);
+              }}
               className="truncate font-display text-sm font-semibold text-slate-50 transition-colors hover:text-stable-purple-light focus-ring"
               title="Click to rename"
             >
@@ -394,7 +379,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                       />
                       <div className="absolute right-0 top-full z-50 mt-2 w-80">
                         <BrigadeAgentPicker
-                          roomName={roomDetail?.name ?? roomId}
+                          roomName={roomDetail?.id ?? roomId}
                           defaultOpen
                           onInvited={() => setAgentSwitchOpen(false)}
                         />
@@ -518,15 +503,16 @@ export function RoomView({ roomId }: RoomViewProps) {
                   <Pin className="h-4 w-4" />
                   Pinned messages
                 </button>
-                {/* Canvas is reachable on every viewport (its inline button is
-                    hidden < md); the desktop toolbar button covers >= md. */}
+                {/* Canvas stays in this menu on EVERY viewport (not md:hidden):
+                    the inline toolbar icon is easy to miss, so the labeled
+                    entry doubles as its discoverable path on desktop too. */}
                 <button
                   role="menuitem"
                   onClick={() => {
                     setOverflowOpen(false);
                     toggleCanvas();
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
                 >
                   <LayoutTemplate className="h-4 w-4" />
                   {canvasOpen ? "Hide canvas" : "Open canvas"}
@@ -554,6 +540,19 @@ export function RoomView({ roomId }: RoomViewProps) {
                 >
                   {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                   {muted ? "Unmute channel" : "Mute channel"}
+                </button>
+                {/* Phones: rename lives here (the inline title tap is gated
+                    to desktop pointers so it can't summon the keyboard). */}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setEditingName(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
+                >
+                  <Pencil className="h-4 w-4" />
+                  Rename channel
                 </button>
                 <div className="my-1 h-px bg-white/[0.06] md:hidden" />
                 <button
@@ -609,34 +608,6 @@ export function RoomView({ roomId }: RoomViewProps) {
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {callInTopRegion && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            // Video modes (focus/grid) → a real stage that takes a meaningful
-            // share of the viewport. Compact/audio → height:auto keeps the slim
-            // voice bar small; an open transcript still needs room, so give it a
-            // fixed-ish height even in compact.
-            animate={{
-              height: callRegionTall
-                ? "var(--call-stage-h)"
-                : showTranscript
-                  ? "16rem"
-                  : "auto",
-              opacity: 1,
-            }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className={clsx(
-              "shrink-0 overflow-hidden",
-              callRegionTall && "[--call-stage-h:40vh] md:[--call-stage-h:50vh]",
-            )}
-          >
-            <VoiceVideoBar roomId={roomId} />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <div className="flex min-h-0 flex-1">
         {(participantPanelOpen || pinsOpen || threadMessageId) && (
           <div
@@ -649,28 +620,13 @@ export function RoomView({ roomId }: RoomViewProps) {
             }}
           />
         )}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <AnimatePresence>
-            {stageAgentId && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 300, opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                className="shrink-0 overflow-hidden border-b border-line"
-              >
-                <StageView agentId={stageAgentId} roomId={roomId} />
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <ErrorBoundary label="the chat area">
-            <ChatPanel
-              roomId={roomId}
-              onInviteAgent={() => setInviteOpen(true)}
-            />
-          </ErrorBoundary>
-        </div>
+        {/* The call surface (resizable video grid / audio bar) + chat, composed
+            so chat always coexists BESIDE the video (never an overlay). Owns the
+            agent stage + chat panel; reads the call/view-mode state itself. */}
+        <CallRoomLayout
+          roomId={roomId}
+          onInviteAgent={() => setInviteOpen(true)}
+        />
 
         <AnimatePresence>
           {threadMessageId && (
@@ -720,26 +676,6 @@ export function RoomView({ roomId }: RoomViewProps) {
           </AnimatePresence>
         </ErrorBoundary>
 
-        {/* Sidebar view mode: the call docks into a narrow right column so the
-            main area stays free for chat/canvas (the co-working layout).
-            initial={false}: these two columns can be open on FIRST mount, and
-            the enter fade can freeze at partial opacity when mounted with the
-            room (the long-standing "ghost panel" bleed) — render at full
-            opacity immediately; later user toggles still animate. */}
-        <AnimatePresence initial={false}>
-          {callInSidebar && (
-            <motion.div
-              initial={{ opacity: 0, width: 0 }}
-              animate={{ opacity: 1, width: "auto" }}
-              exit={{ opacity: 0, width: 0 }}
-              transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="fixed inset-y-0 right-0 z-40 flex w-[min(85vw,300px)] shrink-0 flex-col overflow-hidden border-l border-line bg-slate-900/95 shadow-2xl backdrop-blur-xl md:static md:z-auto md:w-72 md:shadow-none"
-            >
-              <VoiceVideoBar roomId={roomId} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         <AnimatePresence initial={false}>
           {participantPanelOpen && (
             <motion.div
@@ -766,7 +702,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               <ErrorBoundary label="the participants panel">
                 <ParticipantStrip roomId={roomId} />
                 <div className="border-t border-line shrink-0">
-                  <BrigadeAgentPicker roomName={roomDetail?.name ?? roomId} />
+                  <BrigadeAgentPicker roomName={roomDetail?.id ?? roomId} />
                 </div>
               </ErrorBoundary>
             </motion.div>

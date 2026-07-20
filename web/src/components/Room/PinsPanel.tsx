@@ -43,7 +43,7 @@ export function PinsPanel({ roomId, onClose }: PinsPanelProps) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
-      className="glass-heavy fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,320px)] flex-col shadow-2xl md:static md:z-auto md:w-80 md:shadow-none"
+      className="glass-heavy absolute inset-y-0 right-0 z-40 flex h-full w-[min(90vw,320px)] flex-col shadow-2xl md:static md:z-auto md:w-80 md:shadow-none"
       aria-label="Pinned messages"
     >
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-line px-3">

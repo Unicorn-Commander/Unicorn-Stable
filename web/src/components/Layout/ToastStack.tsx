@@ -42,7 +42,7 @@ export function ToastStack() {
   }, [toasts, dismissToast]);
 
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-[100] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+    <div className="pointer-events-none fixed right-4 top-[max(1rem,env(safe-area-inset-top))] z-[100] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
       <AnimatePresence initial={false}>
         {toasts.slice(-5).map((t) => {
           const tone = toneFor(t.title);
@@ -85,7 +85,7 @@ export function ToastStack() {
                     e.stopPropagation();
                     dismissToast(t.id);
                   }}
-                  className="shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-slate-200"
+                  className="shrink-0 rounded-md p-2.5 -m-1.5 text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-slate-200"
                 >
                   <X className="h-3.5 w-3.5" />
                 </span>

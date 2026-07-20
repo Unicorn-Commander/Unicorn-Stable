@@ -49,12 +49,22 @@ export function usePresence(roomId: string | null): UsePresenceReturn {
 
     const unsubPresence = ws.on("presence", (data: WsEventPayload) => {
       const event = data as WsPresenceEvent;
-      if (event.is_online) {
-        addOnlineUser(event.user_id);
+      // Resolve the identity the roster matches on (Participant.id). The server
+      // sends it as participant_id (canonical) and mirrors it as user_id —
+      // accept either. Older/alt shapes carry a `status` string instead of the
+      // is_online boolean — accept both so we reconcile regardless of pairing.
+      const id = event.participant_id ?? event.user_id;
+      if (!id) return;
+      const online =
+        typeof event.is_online === "boolean"
+          ? event.is_online
+          : event.status === "online";
+      if (online) {
+        addOnlineUser(id);
       } else {
-        removeOnlineUser(event.user_id);
+        removeOnlineUser(id);
       }
-      updateParticipantOnline(event.user_id, event.is_online);
+      updateParticipantOnline(id, online);
     });
 
     return () => {

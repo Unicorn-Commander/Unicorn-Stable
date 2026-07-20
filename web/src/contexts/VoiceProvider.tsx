@@ -12,6 +12,7 @@ import type {
   RemoteParticipant,
   LocalParticipant,
   RemoteTrack,
+  RemoteAudioTrack,
 } from "livekit-client";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
@@ -37,10 +38,15 @@ import { playCue } from "@/lib/sounds";
  * could start a call (mic prompt + agent dispatch fired) but never see the call
  * or hear the agent. This provider owns ONE Room everyone shares.
  *
- * It also does the two things a browser voice client must do and the old code
+ * It also does the three things a browser voice client must do and the old code
  * never did:
- *   1. attach remote audio tracks to the DOM so you actually HEAR the agent;
- *   2. call room.startAudio() to satisfy the autoplay policy — on mobile the
+ *   1. attach remote *mic* audio tracks to the DOM so you actually HEAR the
+ *      agent/peers (the SDK does NOT auto-play remote audio);
+ *   2. attach remote *screen-share* audio so a shared tab/app is audible —
+ *      routed through a claim-aware sink (see below) so it plays in every view
+ *      mode by default but a visible ScreenShareTile can take ownership for
+ *      per-share mute/volume without doubling the audio;
+ *   3. call room.startAudio() to satisfy the autoplay policy — on mobile the
  *      agent's audio is blocked until a user gesture unblocks it (audioBlocked).
  */
 interface VoiceContextValue {
@@ -65,13 +71,28 @@ interface VoiceContextValue {
   connect: () => Promise<void>;
   disconnect: () => void;
   startAudio: () => Promise<void>;
+  /**
+   * ScreenShareTile ownership seam (see SCREENAUDIO-NOTE.md).
+   *
+   * Remote screen-share AUDIO is audible in every view mode via a hidden global
+   * sink by default — including compact / audio-only, where NO tile is rendered.
+   * When a visible ScreenShareTile mounts its own un-muted <audio> for a share's
+   * audio track it calls claimScreenAudio(track): the provider drops that track
+   * from the global sink so the tile becomes the SOLE owner (one attach → no
+   * doubled/echoed audio; enables per-share mute/volume; the <audio> follows the
+   * tile into a pop-out portal). On unmount the tile calls releaseScreenAudio():
+   * if the track is still live the provider re-attaches it to the global sink so
+   * audio-only listeners keep hearing it. Idempotent per track.sid; render each
+   * share's audio in EXACTLY ONE tile at a time.
+   */
+  claimScreenAudio: (track: RemoteAudioTrack) => void;
+  releaseScreenAudio: (track: RemoteAudioTrack) => void;
 }
 
 const VoiceContext = createContext<VoiceContextValue | null>(null);
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
   const setVoiceActive = useAppStore((s) => s.setVoiceActive);
-  const activeRoomId = useAppStore((s) => s.activeRoomId);
 
   const [room, setRoom] = useState<Room | null>(null);
   const [localParticipant, setLocalParticipant] =
@@ -93,11 +114,103 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // re-chime. Reset when a fresh Room is created in connect().
   const joinCuePlayedRef = useRef(false);
 
+  // Screen-share audio sink bookkeeping. `screenSinkEls` maps a screen-share
+  // audio track's sid → the hidden <audio> element WE created for the global
+  // sink (so we can detach exactly that element when a tile claims the track or
+  // the track goes away). `claimedScreenAudio` is the set of track sids a
+  // ScreenShareTile currently owns — while claimed we keep the track OUT of the
+  // global sink to avoid double/echoed audio. `pendingScreenReattach` holds sids
+  // whose sink re-attach is deferred one microtask (see releaseScreenAudio) so a
+  // same-batch claim (view-mode switch remount) can cancel it → glitch-free.
+  const screenSinkEls = useRef(new Map<string, HTMLMediaElement>());
+  const claimedScreenAudio = useRef(new Set<string>());
+  const pendingScreenReattach = useRef(new Set<string>());
+
   const sync = useCallback((r: Room) => {
     setLocalParticipant(r.localParticipant);
     setRemoteParticipants(Array.from(r.remoteParticipants.values()));
     setVersion((v) => v + 1);
   }, []);
+
+  // Attach a remote screen-share audio track to the hidden global sink so it is
+  // audible in EVERY view mode (incl. compact/audio-only, which render no tile).
+  // No-op if a tile has claimed it or it's already sinked.
+  const attachScreenAudioToSink = useCallback((track: RemoteTrack) => {
+    const sid = track.sid;
+    if (!sid) return;
+    if (claimedScreenAudio.current.has(sid)) return; // a tile owns it
+    if (screenSinkEls.current.has(sid)) return; // already sinked
+    const el = track.attach();
+    el.setAttribute("data-lk-audio-sink", "screen");
+    el.style.display = "none";
+    document.body.appendChild(el);
+    screenSinkEls.current.set(sid, el);
+  }, []);
+
+  // Remove the global-sink element for a screen-share audio track (on claim, or
+  // when the track goes away). Detaches the specific element so the LiveKit
+  // track stops tracking it, then removes it from the DOM.
+  const detachScreenAudioFromSink = useCallback((track: RemoteTrack) => {
+    const sid = track.sid;
+    if (!sid) return;
+    const el = screenSinkEls.current.get(sid);
+    if (el) {
+      track.detach(el);
+      el.remove();
+      screenSinkEls.current.delete(sid);
+    }
+  }, []);
+
+  // Is this screen-share audio track still subscribed in the room? Guards the
+  // re-attach on releaseScreenAudio so we don't resurrect a dead track's sink.
+  const isScreenAudioLive = useCallback((track: RemoteTrack): boolean => {
+    const r = roomRef.current;
+    if (!r) return false;
+    for (const p of r.remoteParticipants.values()) {
+      for (const pub of p.trackPublications.values()) {
+        if (pub.track === track && pub.isSubscribed) return true;
+      }
+    }
+    return false;
+  }, []);
+
+  // --- ScreenShareTile ownership seam (consumed by VoiceVideoBar's tile) ---
+  const claimScreenAudio = useCallback(
+    (track: RemoteAudioTrack) => {
+      const sid = track?.sid;
+      if (!sid) return;
+      // Cancel any deferred sink re-attach from a just-unmounted tile of the
+      // SAME track (view-mode switch remounts the tile in one effect batch:
+      // old.release → new.claim). Winning the race here means the sink is never
+      // touched — the <audio> ownership passes tile→tile with no doubling.
+      pendingScreenReattach.current.delete(sid);
+      claimedScreenAudio.current.add(sid);
+      // Hand ownership to the tile: drop our global-sink element so the track
+      // isn't attached twice (tile <audio> + sink) → no doubled audio.
+      detachScreenAudioFromSink(track);
+    },
+    [detachScreenAudioFromSink],
+  );
+
+  const releaseScreenAudio = useCallback(
+    (track: RemoteAudioTrack) => {
+      const sid = track?.sid;
+      if (!sid) return;
+      claimedScreenAudio.current.delete(sid);
+      // Tile went away. It might be a genuine unmount (switched to
+      // compact/audio-only → resume global playback so listeners still hear it)
+      // OR a remount to a different stage (a new tile is about to claim in this
+      // same effect batch). Defer the sink re-attach one microtask so a
+      // followup claim() can cancel it — otherwise we'd briefly double-attach
+      // (tile <audio> + sink) during the switch.
+      pendingScreenReattach.current.add(sid);
+      queueMicrotask(() => {
+        if (!pendingScreenReattach.current.delete(sid)) return; // claimed → cancelled
+        if (isScreenAudioLive(track)) attachScreenAudioToSink(track);
+      });
+    },
+    [attachScreenAudioToSink, isScreenAudioLive],
+  );
 
   const disconnect = useCallback(() => {
     const r = roomRef.current;
@@ -107,8 +220,24 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // Only a live (connected) room earns the hang-up cue — tearing down a
       // failed/stale room object must stay silent.
       if (r.state === ConnectionState.Connected) playCue("call-leave");
+      // Silence this room's events BEFORE tearing it down. LiveKit emits
+      // Disconnected/ConnectionStateChanged asynchronously (after its internal
+      // close() awaits), so if we immediately start a NEW call (End→Start, or a
+      // call-switch) those late events from the OLD room would run their still-
+      // attached handlers and flip the LIVE call's UI state off — leaving an
+      // invisible, uncontrollable call. We do the teardown manually below, so
+      // the room's own events are redundant here anyway.
+      r.removeAllListeners();
       r.disconnect();
     }
+    // Belt-and-suspenders: drop any lingering screen-audio sink elements +
+    // claims + pending re-attaches. TrackUnsubscribed normally removes these on
+    // disconnect, but a hard teardown must not leak hidden <audio> nodes, stale
+    // claim sids, or a queued microtask that would resurrect a dead sink.
+    for (const el of screenSinkEls.current.values()) el.remove();
+    screenSinkEls.current.clear();
+    claimedScreenAudio.current.clear();
+    pendingScreenReattach.current.clear();
     setRoom(null);
     setLocalParticipant(null);
     setRemoteParticipants([]);
@@ -137,13 +266,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     if (!roomId || connectingRef.current) return;
     const leftover = roomRef.current;
     if (leftover) {
-      // A live room means we're already in a call. But a room object left
-      // behind by a just-ended call must not brick the Start-call button
-      // (the "hang up, immediately call again → click silently ignored"
-      // trap) — clear it and connect fresh.
-      if (leftover.state !== ConnectionState.Disconnected) return;
-      console.warn("voice connect: clearing stale disconnected room");
-      roomRef.current = null;
+      if (leftover.state !== ConnectionState.Disconnected) {
+        // Already in a LIVE call. The call now PERSISTS across navigation, so
+        // being connected no longer means "connect() for the current view" —
+        // it might be a call still running in another room. If it's THIS room's
+        // call, nothing to do. If it's a different room, this connect() is an
+        // explicit call-switch (you can only be in one LiveKit room): tear the
+        // old call down, then fall through to join the new one.
+        if (useCallUiStore.getState().activeCallRoomId === roomId) return;
+        disconnect();
+      } else {
+        // A room object left behind by a just-ended call must not brick the
+        // Start-call button (the "hang up, immediately call again → click
+        // silently ignored" trap) — clear it and connect fresh.
+        console.warn("voice connect: clearing stale disconnected room");
+        roomRef.current = null;
+      }
     }
     connectingRef.current = true;
     setIsConnecting(true);
@@ -195,19 +333,38 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         .on(RoomEvent.TrackMuted, () => sync(r))
         .on(RoomEvent.TrackUnmuted, () => sync(r))
         // The core SDK does NOT auto-play remote audio — attach it ourselves so
-        // the agent is audible. Video is attached by the tiles in VoiceVideoBar.
+        // the agent/peers are audible. Video is attached by the tiles in
+        // VoiceVideoBar. Screen-share audio is a special case (see below).
         .on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
           if (track.kind === Track.Kind.Audio) {
-            const el = track.attach();
-            el.setAttribute("data-lk-audio-sink", "1");
-            el.style.display = "none";
-            document.body.appendChild(el);
+            if (track.source === Track.Source.ScreenShareAudio) {
+              // Route through the claim-aware sink: audible in every view mode
+              // now, but a visible ScreenShareTile can take ownership later
+              // (claimScreenAudio) without doubling the audio.
+              attachScreenAudioToSink(track);
+            } else {
+              // Mic (and any other) remote audio → hidden global sink, always.
+              const el = track.attach();
+              el.setAttribute("data-lk-audio-sink", "1");
+              el.style.display = "none";
+              document.body.appendChild(el);
+            }
           }
           sync(r);
         })
         .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
           if (track.kind === Track.Kind.Audio) {
-            track.detach().forEach((el) => el.remove());
+            if (track.source === Track.Source.ScreenShareAudio) {
+              // Clear any claim, pending re-attach, + our global-sink element for
+              // this track. The owning tile (if any) is unmounting alongside the
+              // vanished share and tears down its own <audio> via its attach-ref
+              // cleanup.
+              claimedScreenAudio.current.delete(track.sid ?? "");
+              pendingScreenReattach.current.delete(track.sid ?? "");
+              detachScreenAudioFromSink(track);
+            } else {
+              track.detach().forEach((el) => el.remove());
+            }
           }
           sync(r);
         })
@@ -327,16 +484,23 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       return;
     }
     connectingRef.current = false;
-  }, [setVoiceActive, sync, startAudio]);
+  }, [
+    setVoiceActive,
+    sync,
+    startAudio,
+    disconnect,
+    attachScreenAudioToSink,
+    detachScreenAudioFromSink,
+  ]);
 
-  // Leaving the room (or switching rooms) ends any live call.
-  const prevRoomIdRef = useRef(activeRoomId);
-  useEffect(() => {
-    if (prevRoomIdRef.current !== activeRoomId) {
-      prevRoomIdRef.current = activeRoomId;
-      if (roomRef.current) disconnect();
-    }
-  }, [activeRoomId, disconnect]);
+  // NOTE: the call intentionally PERSISTS across navigation now. We used to
+  // disconnect whenever `activeRoomId` changed (leaving/switching rooms ended
+  // the call) — that's exactly the "navigating off a room kicks you out of the
+  // call" behavior. The call surface is now keyed off `activeCallRoomId`
+  // (callUiStore), so the full call UI shows only in the call's own room and a
+  // floating CallDock covers every other view; the LiveKit Room stays live
+  // until the user explicitly hangs up (or an explicit call-switch — see
+  // connect() above — or this provider unmounts).
 
   // Tear down on unmount.
   useEffect(() => {
@@ -360,6 +524,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         connect,
         disconnect,
         startAudio,
+        claimScreenAudio,
+        releaseScreenAudio,
       }}
     >
       {children}

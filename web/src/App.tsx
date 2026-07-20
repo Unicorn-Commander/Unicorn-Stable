@@ -8,6 +8,7 @@ import { useFederationStore } from "@/stores/federationStore";
 import { AppShell } from "@/components/Layout/AppShell";
 import { StableMark } from "@/components/StableMark";
 import { VoiceProvider } from "@/contexts/VoiceProvider";
+import { CallDock } from "@/components/Room/CallDock";
 
 function AuthGate({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
@@ -56,7 +57,7 @@ function AuthGate({ children }: { children: ReactNode }) {
 
   if (!authReady) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
+      <div className="flex min-h-dvh w-full items-center justify-center bg-slate-900 p-4">
         <div className="flex flex-col items-center gap-4">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-stable-purple border-t-transparent" />
           <p className="text-sm text-slate-400">
@@ -203,7 +204,7 @@ function AuthGate({ children }: { children: ReactNode }) {
 
     if (authFailed) {
       return (
-        <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
+        <div className="flex min-h-dvh w-full items-center justify-center bg-slate-900 p-4">
           <div className="glass flex max-w-md flex-col items-center gap-4 rounded-2xl p-8 text-center">
             <h1 className="text-xl font-semibold text-slate-50">
               Authentication unavailable
@@ -224,7 +225,7 @@ function AuthGate({ children }: { children: ReactNode }) {
     }
 
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-slate-900">
+      <div className="flex min-h-dvh w-full items-center justify-center bg-slate-900 p-4">
         <div className="glass flex max-w-md flex-col items-center gap-6 rounded-2xl p-8 text-center">
           <div className="flex flex-col items-center gap-3">
             <StableMark className="h-14 w-14 drop-shadow-[0_0_24px_rgba(139,92,246,0.45)]" />
@@ -275,6 +276,11 @@ export function App() {
         {/* Unknown paths fall back home. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      {/* Persistent-call affordance: a live call now survives navigation, so a
+          floating dock (return + mic/camera/leave) rides above every view
+          EXCEPT the call's own room, where the full surface is on screen. It
+          self-gates, so mounting it unconditionally here is safe. */}
+      <CallDock />
       </VoiceProvider>
     </AuthGate>
     </MotionConfig>

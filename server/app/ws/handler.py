@@ -82,6 +82,27 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _presence_payload(participant_id: str, *, online: bool) -> dict[str, Any]:
+    """Canonical presence event for the room socket.
+
+    The web roster resolves a member's online dot on the Participant UUID
+    (RoomMember.participant_id) — the backend never sends the Keycloak id on a
+    member row, so `user_id` on the FE is always undefined and the dot falls
+    back to `participant_id`. We therefore surface the SAME participant id under
+    BOTH keys: `participant_id` (canonical) and `user_id` (what the presence
+    hook reads today). `is_online` is the boolean the client consumes; `status`
+    mirrors the /members wire-format string for any status-shaped consumer.
+    Event name is "presence" to match `ws.on("presence", …)` on the client.
+    """
+    return {
+        "type": "presence",
+        "participant_id": participant_id,
+        "user_id": participant_id,
+        "is_online": online,
+        "status": "online" if online else "offline",
+    }
+
+
 async def _authenticate_ws(
     websocket: WebSocket,
     token: str,
@@ -340,11 +361,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     for rid in room_ids:
         await redis.publish(
             f"room:{rid}",
-            json.dumps({
-                "type": "presence_change",
-                "participant_id": participant_id,
-                "status": "online",
-            }),
+            json.dumps(_presence_payload(participant_id, online=True)),
         )
 
     # Run pub/sub listener and client event handler concurrently
@@ -378,11 +395,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await presence.leave_room_presence(participant_id, rid)
             await redis.publish(
                 f"room:{rid}",
-                json.dumps({
-                    "type": "presence_change",
-                    "participant_id": participant_id,
-                    "status": "offline",
-                }),
+                json.dumps(_presence_payload(participant_id, online=False)),
             )
 
         try:

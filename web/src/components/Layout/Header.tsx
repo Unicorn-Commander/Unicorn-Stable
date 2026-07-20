@@ -23,6 +23,41 @@ import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 
+/** Read `.name` off an unknown thrown value without relying on `instanceof`.
+ * getDisplayMedia rejects with a DOMException, and `DOMException instanceof
+ * Error` is unreliable across engines (the spec doesn't make it inherit Error),
+ * so we duck-type instead — this also survives any wrapper that preserves the
+ * error name. */
+function errorName(err: unknown): string {
+  if (typeof err === "object" && err !== null && "name" in err) {
+    return String((err as { name: unknown }).name);
+  }
+  return "";
+}
+
+function errorMessage(err: unknown): string {
+  if (typeof err === "object" && err !== null && "message" in err) {
+    return String((err as { message: unknown }).message);
+  }
+  return "";
+}
+
+/**
+ * getDisplayMedia rejections that mean "the user chose not to share" (dismissed
+ * the picker) or "there was nothing to share" — NOT a failure worth surfacing or
+ * retrying. Re-prompting after a deliberate cancel would be hostile, so we treat
+ * these as a silent no-op. Everything else is a real error we can try to recover
+ * from (see handleScreenShare's video-only fallback).
+ */
+function isUserDismissedShare(err: unknown): boolean {
+  const name = errorName(err);
+  return (
+    name === "NotAllowedError" ||
+    name === "AbortError" ||
+    name === "NotFoundError"
+  );
+}
+
 // `hideOnMobile` lets AppShell collapse this top bar on phones when a room is
 // active — there the RoomView sub-header (with a hamburger) is the single bar,
 // so a second bar here would just waste vertical space. Desktop always shows it.
@@ -91,8 +126,57 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
   async function handleScreenShare() {
     if (!room) return;
-    const isSharing = room.localParticipant.isScreenShareEnabled;
-    await room.localParticipant.setScreenShareEnabled(!isSharing);
+    const lp = room.localParticipant;
+
+    // Toggle OFF — no capture options; wrap so a stray rejection can't bubble up
+    // as an unhandled promise rejection.
+    if (lp.isScreenShareEnabled) {
+      try {
+        await lp.setScreenShareEnabled(false);
+      } catch (err) {
+        console.error("failed to stop screen share", err);
+      }
+      return;
+    }
+
+    // Toggle ON — request tab/system AUDIO alongside the display video so remote
+    // participants can HEAR the shared tab/app.
+    //   audio: true              → getDisplayMedia({ audio: … }) captures the tab/system audio track
+    //   systemAudio: "include"   → offer whole-system audio as a source (Chromium)
+    //   selfBrowserSurface:"exclude" → don't offer the Stable tab itself (sharing it back into the
+    //                                   call would loop the call's own audio → echo)
+    //
+    // Browser support for screenshare audio is limited (Chrome/Edge tab, or
+    // Chromium system audio; Safari/Firefox capture none; picking a *window*
+    // yields none). In every "no audio available" case getDisplayMedia simply
+    // returns a video-only stream and LiveKit publishes just the screen video —
+    // the share still works. We only need to defend against (a) the user
+    // dismissing the picker and (b) the rare browser that REJECTS the audio
+    // constraints outright, which we recover from by retrying video-only.
+    try {
+      await lp.setScreenShareEnabled(true, {
+        audio: true,
+        systemAudio: "include",
+        selfBrowserSurface: "exclude",
+      });
+    } catch (err) {
+      if (isUserDismissedShare(err)) return; // user closed the picker — no-op
+      console.warn(
+        "screen share with audio failed; retrying without audio",
+        err,
+      );
+      try {
+        await lp.setScreenShareEnabled(true);
+      } catch (err2) {
+        if (isUserDismissedShare(err2)) return;
+        console.error("screen share failed", err2);
+        useAppStore.getState().pushToast({
+          title: "Couldn't share your screen",
+          body:
+            errorMessage(err2) || "Your browser blocked screen sharing.",
+        });
+      }
+    }
   }
 
   function handleCallToggle() {

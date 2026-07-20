@@ -33,6 +33,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
 import { RoomView } from "@/components/Room/RoomView";
+import { IncomingCallBanner } from "@/components/Call/IncomingCallBanner";
 import { HomeDashboard } from "@/components/Home/HomeDashboard";
 import { AgentsPage } from "@/components/Agents/AgentsPage";
 import { BridgePage } from "@/components/Bridge/BridgePage";
@@ -523,7 +524,7 @@ export function AppShell() {
             {/* Mobile-only account footer. On phones the top Header (with the
                 avatar menu) is hidden while a room is open, so account actions
                 live at the foot of the drawer. Desktop keeps the Header menu. */}
-            <div className="shrink-0 border-t border-line p-2 md:hidden">
+            <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:hidden">
               <div className="mb-1 flex items-center gap-2.5 px-2.5 py-2">
                 <span
                   className="inline-flex shrink-0 rounded-full"
@@ -660,6 +661,7 @@ export function AppShell() {
       )}
 
       <ConnectionBanner />
+      <IncomingCallBanner />
       <ToastStack />
     </div>
   );

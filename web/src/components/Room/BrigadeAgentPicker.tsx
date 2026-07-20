@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { api, type BrigadeAgent } from "../../services/api";
 import { identityFor } from "@/lib/identity";
 import { useVoice } from "../../contexts/VoiceProvider";
+import { useCallUiStore } from "@/stores/callUiStore";
 
 interface Props {
   /** The LiveKit room name the user is currently in. */
@@ -44,9 +45,14 @@ export function BrigadeAgentPicker({
   const [inviting, setInviting] = useState<string | null>(null);
   const [invitedIds, setInvitedIds] = useState<Set<string>>(new Set());
   // Only ask the server to dispatch a LiveKit voice worker when a call is
-  // actually live; outside a call the invite just re-binds the room's
-  // resident agent for the text path.
-  const { isConnected: callActive } = useVoice();
+  // actually live IN THE ROOM WE'RE INVITING TO. The call now persists across
+  // navigation, so a global "is any call live" flag would wrongly request a
+  // voice dispatch into a room with no in-progress call (e.g. inviting from a
+  // room you've navigated to while a call runs elsewhere). Outside such a call
+  // the invite just re-binds the room's resident agent for the text path.
+  const { isConnected } = useVoice();
+  const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
+  const callActive = isConnected && activeCallRoomId === roomName;
 
   useEffect(() => {
     let cancelled = false;
