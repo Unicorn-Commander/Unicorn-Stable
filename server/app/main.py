@@ -18,6 +18,8 @@ from app.api.internal_artifacts import router as internal_artifacts_router
 from app.api.brigade import router as brigade_router
 from app.api.health import router as health_router
 from app.api.instance_meta import router as instance_meta_router
+from app.api.participants import router as participants_router
+from app.api.help import router as help_router
 from app.api.internal_knowledge import router as internal_knowledge_router
 from app.api.knowledge import router as knowledge_router
 from app.api.messages import router as messages_router
@@ -239,6 +241,8 @@ def create_app() -> FastAPI:
     # See app/api/instance_meta.py for why a served endpoint beats baking
     # logo/description into the mounted instances.json.
     app.include_router(instance_meta_router, prefix="/api/v1", tags=["Instance"])
+    app.include_router(participants_router, prefix="/api/v1", tags=["Avatars"])
+    app.include_router(help_router, prefix="/api/v1", tags=["Help"])
     app.include_router(uploads_router, prefix="/api/v1", tags=["Uploads"])
     app.include_router(webhooks_router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(push_router, prefix="/api/v1", tags=["Push"])
