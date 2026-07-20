@@ -42,6 +42,7 @@ export function usePresence(roomId: string | null): UsePresenceReturn {
   const typing = useAppStore((s) => (roomId ? (s.typing[roomId] ?? EMPTY_TYPING) : EMPTY_TYPING));
   const addTypingUser = useAppStore((s) => s.addTypingUser);
   const removeTypingUser = useAppStore((s) => s.removeTypingUser);
+  const clearRoomTyping = useAppStore((s) => s.clearRoomTyping);
   const addOnlineUser = useAppStore((s) => s.addOnlineUser);
   const removeOnlineUser = useAppStore((s) => s.removeOnlineUser);
   const updateParticipantOnline = useAppStore((s) => s.updateParticipantOnline);
@@ -164,9 +165,13 @@ export function usePresence(roomId: string | null): UsePresenceReturn {
           removeTypingUser(roomId, id);
         }, ttlMs);
 
-        // addTypingUser replaces any existing row for this user AND clears the
-        // superseded row's timer, so repeated keepalives push the expiry out
-        // rather than leaking a timer per keepalive.
+        // Handing the timer to the store hands over ownership of it. From here
+        // exactly one place cancels it: addTypingUser when this row is
+        // superseded by the next keepalive, removeTypingUser on an explicit
+        // stop or an offline event, clearRoomTyping on room switch / unmount /
+        // disconnect. That is what keeps a continuously-typing person rendered
+        // continuously — each keepalive retires the previous deadline instead
+        // of leaving it armed to fire against a still-typing user.
         addTypingUser(roomId, {
           user_id: id,
           username: event.username || "Someone",
@@ -222,9 +227,7 @@ export function usePresence(roomId: string | null): UsePresenceReturn {
       isAssertingRef.current = false;
       assertedRoomRef.current = null;
       lastSentAt.current = 0;
-      for (const t of useAppStore.getState().typing[roomId] ?? EMPTY_TYPING) {
-        removeTypingUser(roomId, t.user_id);
-      }
+      clearRoomTyping(roomId);
     });
 
     return () => {
@@ -238,10 +241,24 @@ export function usePresence(roomId: string | null): UsePresenceReturn {
     myParticipantId,
     addTypingUser,
     removeTypingUser,
+    clearRoomTyping,
     addOnlineUser,
     removeOnlineUser,
     updateParticipantOnline,
   ]);
+
+  // Inbound teardown, deliberately in its own effect keyed on roomId ALONE.
+  // Every row we rendered for this room owns an armed expiry timer; leaving the
+  // room has to cancel them, or they fire later against a room that is no
+  // longer on screen. It cannot live in the subscription effect above: that one
+  // also re-runs when myParticipantId or currentUser?.id resolves, and clearing
+  // there would wipe live rows out from under someone mid-sentence.
+  useEffect(() => {
+    if (!roomId) return;
+    return () => {
+      clearRoomTyping(roomId);
+    };
+  }, [roomId, clearRoomTyping]);
 
   // Leaving the room (or unmounting the chat entirely) retracts our assertion.
   // Without this, switching rooms mid-word leaves a phantom "…is typing" in the

@@ -109,6 +109,9 @@ interface AppState {
   setDefaultAgentId: (id: string | null) => void;
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
+  /** Drop every typing row for a room and clear its timers. Room switch,
+   * unmount, socket drop. */
+  clearRoomTyping: (roomId: string) => void;
   setAgentActivity: (roomId: string, activity: AgentActivity) => void;
   clearAgentActivity: (roomId: string, agentId: string) => void;
   /** Drop every agent-activity row (all rooms). Used on socket disconnect: if
@@ -374,9 +377,23 @@ export const useAppStore = create<AppState>((set) => ({
   setAgents: (agents) => set({ agents }),
   setDefaultAgentId: (id) => set({ defaultAgentId: id }),
 
+  // Upsert one human's typing row. Replacing by user_id AND clearing the
+  // superseded row's timer keeps exactly one live timer per typist, so a
+  // continuously-typing person's keepalives push the expiry out instead of
+  // stacking timers. Dropping the clearTimeout is not a leak you can shrug at:
+  // the orphaned timer keeps its original deadline and later fires
+  // removeTypingUser against someone who is STILL typing, blinking the row off
+  // mid-sentence until the next keepalive puts it back. Ownership rule, shared
+  // with setAgentActivity below: whoever removes a row from the array clears
+  // that row's timer.
   addTypingUser: (roomId, user) =>
     set((state) => {
       const roomTyping = state.typing[roomId] ?? [];
+      for (const t of roomTyping) {
+        if (t.user_id === user.user_id && t.timeout !== user.timeout) {
+          clearTimeout(t.timeout);
+        }
+      }
       const filtered = roomTyping.filter((t) => t.user_id !== user.user_id);
       return {
         typing: {
@@ -384,6 +401,20 @@ export const useAppStore = create<AppState>((set) => ({
           [roomId]: [...filtered, user],
         },
       };
+    }),
+
+  // Drop every typing row for one room, clearing each row's timer. This is the
+  // teardown for a room switch, an unmount, or a dropped socket: without it the
+  // armed expiry timers outlive the room they belong to and fire into state
+  // nobody is looking at any more.
+  clearRoomTyping: (roomId) =>
+    set((state) => {
+      const roomTyping = state.typing[roomId];
+      if (!roomTyping || roomTyping.length === 0) return state;
+      for (const t of roomTyping) clearTimeout(t.timeout);
+      const next = { ...state.typing };
+      delete next[roomId];
+      return { typing: next };
     }),
 
   removeTypingUser: (roomId, userId) =>
