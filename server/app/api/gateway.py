@@ -36,6 +36,7 @@ from app.auth.gateway_auth import (
     verify_gateway_key,
 )
 from app.config import Settings, get_settings
+from app.services.agent_status import clear_relay_pending, touch_gateway_agent
 from app.deps import (
     _rate_limit_hit,
     get_db,
@@ -270,7 +271,7 @@ async def gateway_post_message(
     if body.via:
         metadata["via"] = body.via
 
-    return await send_message(
+    result = await send_message(
         room_id=room.id,
         body=MessageCreate(
             content=body.content,
@@ -283,6 +284,19 @@ async def gateway_post_message(
         livekit=livekit,
         request=request,
     )
+
+    # The bridge answered: retract any outstanding-relay marker for it. This is
+    # the honest terminal state for a gateway agent — we never claimed it was
+    # "thinking", only that something was undelivered, and delivery just
+    # happened. Best-effort: a signalling failure must not fail the post, and
+    # the marker's TTL clears it regardless.
+    try:
+        await touch_gateway_agent(principal.agent_id)
+        await clear_relay_pending(room_id=room.id, agent_id=principal.agent_id)
+    except Exception:
+        logger.debug("gateway_relay_clear_failed", exc_info=True)
+
+    return result
 
 
 @router.get("/rooms/{room}/messages", response_model=MessageListResponse)
@@ -300,6 +314,19 @@ async def gateway_get_messages(
     await _gateway_rate_limit(principal, redis, bucket="gw_msg_read", fail_open=True)
     room_obj = await _resolve_room(db, room)
     await _enforce_scope(db, principal, room_obj)
+    # Reading IS collection: once the bridge has pulled the room's messages it
+    # is no longer "waiting to relay", so drop the marker here as well as on
+    # post. Two independent clearing paths plus a TTL means the indicator
+    # cannot strand itself on. The touch is what proves this bridge is running
+    # NOW — see agent_status.mark_relay_pending_for_room. Both are plain Redis
+    # writes, and the clear only fans out on a real transition, so this stays
+    # cheap on a 1-2s poll loop.
+    try:
+        await touch_gateway_agent(principal.agent_id)
+        await clear_relay_pending(room_id=room_obj.id, agent_id=principal.agent_id)
+    except Exception:
+        logger.debug("gateway_relay_clear_failed", exc_info=True)
+
     svc = _build_message_service(db, livekit)
     result = await svc.get_messages(room_id=room_obj.id, cursor=cursor, limit=limit)
     messages = [

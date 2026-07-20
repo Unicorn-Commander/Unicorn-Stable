@@ -11,11 +11,12 @@
  */
 
 import type { RoomMember, Agent, Message } from "@/services/api";
-import type { TypingUser } from "@/stores/appStore";
+import type { TypingUser, AgentActivity } from "@/stores/appStore";
 
 export const EMPTY_MEMBERS: RoomMember[] = [];
 export const EMPTY_AGENTS: Agent[] = [];
 export const EMPTY_MESSAGES: Message[] = [];
 export const EMPTY_TYPING: TypingUser[] = [];
+export const EMPTY_AGENT_ACTIVITY: AgentActivity[] = [];
 export const EMPTY_STRINGS: string[] = [];
 export const EMPTY_READ_RECEIPTS: Record<string, string> = {};

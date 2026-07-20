@@ -31,6 +31,7 @@ from app.models.participant import (
     ParticipantType,
 )
 from app.models.room import MemberRole, Room, RoomMember
+from app.services import agent_status
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 
@@ -249,6 +250,56 @@ async def _respond(
         ):
             return
 
+        # Which of the two agent kinds did we just resolve?
+        #
+        # A gateway/bridge agent is an EXTERNAL process that polls the gateway.
+        # Nothing about it runs in here: it has no thinking signal, and this
+        # responder cannot generate on its behalf because Brigade has no
+        # persona under that id. Proceeding would (a) announce "<X> is
+        # thinking…" for a process that is not thinking and was never asked,
+        # and (b) post a "…" placeholder that finalizes to a fabricated
+        # "_(I had trouble reaching Brigade)_" — ATTRIBUTED TO a real person's
+        # Claude Code. Both are lies; the second is the worse one.
+        #
+        # This is the reported bug, in the room it was reported from.
+        # `aaron-shafen-claudes` (a51ac1ce…) has NO `brigade_agent_id` and two
+        # agent members, BOTH pure bridges (Aaron's and Shafen's Claude Code),
+        # each holding an un-revoked key scoped to that room. On "@all" or
+        # "@everyone" the mention router finds no specific name, so
+        # _resolve_agent falls through to the "first agent member" fallback —
+        # and their joined_at values are IDENTICAL, so it picks arbitrarily
+        # between two different people's bridges — then _should_respond says
+        # yes and we announce that whichever one it landed on is thinking.
+        # "@claude-code" reaches the same end by the mention path. Any check
+        # keyed on room metadata answers "not a bridge" here, because there is
+        # no metadata; hence the observable-evidence predicate in agent_status:
+        # an un-revoked gateway key SCOPED TO THIS ROOM. That is deliberately
+        # the structural test, not the liveness one — a bridge that has not
+        # polled in an hour is still a bridge with no Brigade persona behind
+        # it, and gating this on recent activity would quietly re-open the lie
+        # for every dormant bridge. Liveness is required only for the opposite
+        # claim, that a relay is currently outstanding.
+        #
+        # A bridge's honest state is the one the gateway can actually witness:
+        # we leave the relay marker set for this message standing, so the room
+        # reads "Waiting for Stable bridge relay — <that exact agent>" until
+        # the bridge reads or posts, and nothing at all once it has.
+        try:
+            if await agent_status.is_bridge_agent(
+                db=db, room=room, agent_id=brigade_agent_id
+            ):
+                logger.info(
+                    "agent_chat_responder_skipped_bridge_agent",
+                    room_id=str(room.id),
+                    brigade_agent_id=brigade_agent_id,
+                )
+                return
+        except Exception:
+            # A detection failure must not silence a genuine resident agent, so
+            # fall through and answer. is_bridge_agent already swallows its own
+            # errors and returns False; this is belt-and-braces.
+            logger.warning("bridge_agent_check_failed", exc_info=True)
+
         oai_history = await _build_history(
             db=db,
             room_id=room.id,
@@ -337,101 +388,140 @@ async def _respond(
             except Exception:
                 logger.warning("council_hook_failed", exc_info=True)
 
+        # Past the bridge gate, so this agent is genuinely ours to run and the
+        # typing signal below is true. The two states are now disjoint by
+        # construction — only bridges are ever marked relay-pending, and a
+        # bridge never reaches this line — so retracting the marker is pure
+        # belt-and-braces against a marker left by an earlier state of the
+        # world (a key revoked or re-scoped mid-conversation). It deletes
+        # nothing in the normal case and publishes only on a real transition,
+        # so it costs nothing to keep and closes the one way an agent could
+        # otherwise show two contradictory lines at once.
+        try:
+            await agent_status.clear_relay_pending(
+                room_id=room.id, agent_id=brigade_agent_id
+            )
+        except Exception:
+            logger.debug("responder_relay_clear_failed", exc_info=True)
+
         await _send_typing(
             livekit=livekit,
             livekit_room_name=room.livekit_room_name,
             room_id=room.id,
             brigade_agent_id=brigade_agent_id,
             typing=True,
+            agent_label=agent_participant.display_name,
+            participant_id=agent_participant.id,
         )
 
-        svc = MessageService(db=db, livekit=livekit)
-        placeholder = await svc.send_message(
-            room_id=room.id,
-            sender_id=agent_participant.id,
-            content="…",
-            content_type="text",
-            metadata={
-                "agent_id": brigade_agent_id,
-                "source": "agent_chat_responder",
-            },
-        )
-
-        # Deliver the (placeholder) agent reply to the web client over the ws
-        # plane in the exact WsMessageEvent shape. We reuse the REST serializer
-        # so field names match the frontend exactly. Best-effort; lazy import
-        # avoids an import cycle with app.api.messages.
+        # Everything from here to the finally below runs with typing ASSERTED,
+        # so it all has to sit inside a try whose exit path retracts it. Before,
+        # the try started only at the Brigade call, and a failure in between
+        # (placeholder send, ws deliver, history/model setup) left the indicator
+        # stuck on with no matching off-event — capped only by the client's 120s
+        # backstop, which is the same "status lies for two minutes" failure this
+        # change exists to remove.
         try:
-            from app.api.messages import _msg_to_response as _serialize_msg
-
-            await _ws_deliver_to_room(
-                db=db,
+            svc = MessageService(db=db, livekit=livekit)
+            placeholder = await svc.send_message(
                 room_id=room.id,
-                envelope={
-                    "type": "message",
-                    "payload": {
-                        "room_id": str(room.id),
-                        # streaming:true positively marks this as a live reply so
-                        # the client drives the Stop control off message.streaming
-                        # alone (never the "…" content heuristic, which a crashed
-                        # finalize could otherwise strand on a dead message).
-                        "streaming": True,
-                        "message": _serialize_msg(placeholder, 0).model_dump(
-                            mode="json"
-                        ),
-                    },
+                sender_id=agent_participant.id,
+                content="…",
+                content_type="text",
+                metadata={
+                    "agent_id": brigade_agent_id,
+                    "source": "agent_chat_responder",
                 },
             )
-        except Exception:
-            logger.debug("agent_chat_ws_new_message_failed", exc_info=True)
 
-        # Effective LLM override: explicit per-message model wins; otherwise a
-        # per-room override persisted on room metadata (set via the model
-        # switcher / invite). None → Brigade uses the persona's default model.
-        effective_model = model
-        if not effective_model and isinstance(room.metadata_, dict):
-            raw_override = room.metadata_.get("model_override")
-            if isinstance(raw_override, str) and raw_override:
-                effective_model = raw_override
-        if effective_model:
-            # Governed-override audit trail: overridden traffic still runs on
-            # Brigade's key (budgets/attribution hold); this line is the log.
-            logger.info(
-                "model_override_used",
-                room_id=str(room.id),
-                agent=brigade_agent_id,
-                model=effective_model,
-                source="message" if model else "room_metadata",
-            )
+            # Deliver the (placeholder) agent reply to the web client over the ws
+            # plane in the exact WsMessageEvent shape. We reuse the REST serializer
+            # so field names match the frontend exactly. Best-effort; lazy import
+            # avoids an import cycle with app.api.messages.
+            try:
+                from app.api.messages import _msg_to_response as _serialize_msg
 
-        accumulated = ""
-        artifact_meta: dict[str, str] | None = None
-        _last_push = [0.0]
-        _last_stop_check = [0.0]
-        stop_state: dict[str, bool] = {"stopped": False}
-
-        async def _should_stop() -> bool:
-            # Cross-worker stop check, throttled to ~4/s so we don't hit Redis
-            # per token. The user pressed Stop on this exact placeholder reply.
-            now = asyncio.get_running_loop().time()
-            if now - _last_stop_check[0] < 0.25:
-                return False
-            _last_stop_check[0] = now
-            return await _is_stop_requested(placeholder.id)
-
-        async def _on_progress(text: str, is_content: bool) -> None:
-            # Stream the reply (and pre-reply tool progress) into the placeholder
-            # over the ws plane as it arrives, so the user sees live activity
-            # instead of a static "…" for the whole 5-15s. Tool-status updates
-            # always push promptly; content tokens are throttled (~8/s).
-            now = asyncio.get_running_loop().time()
-            if (not is_content) or (now - _last_push[0] >= 0.12):
-                _last_push[0] = now
-                await _stream_patch(
+                await _ws_deliver_to_room(
+                    db=db,
                     room_id=room.id,
-                    message_id=placeholder.id,
-                    content=text,
+                    envelope={
+                        "type": "message",
+                        "payload": {
+                            "room_id": str(room.id),
+                            # streaming:true positively marks this as a live reply so
+                            # the client drives the Stop control off message.streaming
+                            # alone (never the "…" content heuristic, which a crashed
+                            # finalize could otherwise strand on a dead message).
+                            "streaming": True,
+                            "message": _serialize_msg(placeholder, 0).model_dump(
+                                mode="json"
+                            ),
+                        },
+                    },
                 )
+            except Exception:
+                logger.debug("agent_chat_ws_new_message_failed", exc_info=True)
+
+            # Effective LLM override: explicit per-message model wins; otherwise a
+            # per-room override persisted on room metadata (set via the model
+            # switcher / invite). None → Brigade uses the persona's default model.
+            effective_model = model
+            if not effective_model and isinstance(room.metadata_, dict):
+                raw_override = room.metadata_.get("model_override")
+                if isinstance(raw_override, str) and raw_override:
+                    effective_model = raw_override
+            if effective_model:
+                # Governed-override audit trail: overridden traffic still runs on
+                # Brigade's key (budgets/attribution hold); this line is the log.
+                logger.info(
+                    "model_override_used",
+                    room_id=str(room.id),
+                    agent=brigade_agent_id,
+                    model=effective_model,
+                    source="message" if model else "room_metadata",
+                )
+
+            accumulated = ""
+            artifact_meta: dict[str, str] | None = None
+            _last_push = [0.0]
+            _last_stop_check = [0.0]
+            stop_state: dict[str, bool] = {"stopped": False}
+
+            async def _should_stop() -> bool:
+                # Cross-worker stop check, throttled to ~4/s so we don't hit Redis
+                # per token. The user pressed Stop on this exact placeholder reply.
+                now = asyncio.get_running_loop().time()
+                if now - _last_stop_check[0] < 0.25:
+                    return False
+                _last_stop_check[0] = now
+                return await _is_stop_requested(placeholder.id)
+
+            async def _on_progress(text: str, is_content: bool) -> None:
+                # Stream the reply (and pre-reply tool progress) into the placeholder
+                # over the ws plane as it arrives, so the user sees live activity
+                # instead of a static "…" for the whole 5-15s. Tool-status updates
+                # always push promptly; content tokens are throttled (~8/s).
+                now = asyncio.get_running_loop().time()
+                if (not is_content) or (now - _last_push[0] >= 0.12):
+                    _last_push[0] = now
+                    await _stream_patch(
+                        room_id=room.id,
+                        message_id=placeholder.id,
+                        content=text,
+                    )
+
+        except Exception:
+            logger.exception("agent_chat_responder_setup_failed")
+            await _send_typing(
+                livekit=livekit,
+                livekit_room_name=room.livekit_room_name,
+                room_id=room.id,
+                brigade_agent_id=brigade_agent_id,
+                typing=False,
+                agent_label=agent_participant.display_name,
+                participant_id=agent_participant.id,
+            )
+            return
 
         try:
             accumulated, artifact_meta = await _call_brigade(
@@ -466,15 +556,21 @@ async def _respond(
                 final_meta["stopped"] = True
             if not final_meta:
                 final_meta = None
-            await _patch_message(
-                db=db,
-                livekit=livekit,
-                message_id=placeholder.id,
-                content=accumulated,
-                finalize=True,
-                extra_metadata=final_meta,
-            )
-            await _clear_stop(placeholder.id)
+            # Guarded so a finalize failure cannot skip the typing=False below
+            # it: the reply may be lost, but the indicator must not be left
+            # asserting that an agent is still working on it.
+            try:
+                await _patch_message(
+                    db=db,
+                    livekit=livekit,
+                    message_id=placeholder.id,
+                    content=accumulated,
+                    finalize=True,
+                    extra_metadata=final_meta,
+                )
+                await _clear_stop(placeholder.id)
+            except Exception:
+                logger.exception("agent_chat_responder_finalize_failed")
             if artifact_meta:
                 logger.info(
                     "agent_chat_responder_artifact_attached",
@@ -487,6 +583,8 @@ async def _respond(
                 room_id=room.id,
                 brigade_agent_id=brigade_agent_id,
                 typing=False,
+                agent_label=agent_participant.display_name,
+                participant_id=agent_participant.id,
             )
             logger.info(
                 "agent_chat_responder_replied",
@@ -1086,7 +1184,31 @@ async def _send_typing(
     room_id: uuid.UUID,
     brigade_agent_id: str,
     typing: bool,
+    agent_label: str | None = None,
+    participant_id: uuid.UUID | None = None,
 ) -> None:
+    """Announce that this agent really is (or has stopped) generating a reply.
+
+    Fans out on BOTH planes, because the two clients listen in different
+    places: the LiveKit data channel serves in-call clients, while the web chat
+    client listens for agent_typing on its WebSocket. Publishing only to
+    LiveKit — the original behaviour — meant the browser never saw a real
+    signal and fell back to an optimistic local flag that asserted "thinking"
+    on every send whether or not anything was running.
+
+    The ws publish is deliberately NOT gated on livekit_room_name: a
+    text-only room has no LiveKit room, and its chat client still deserves the
+    truth. Both sends are individually wrapped so neither can break the reply,
+    and callers emit the matching typing=False from a finally so the
+    indicator clears on error and on stop as well as on success.
+    """
+    await agent_status.publish_agent_typing(
+        room_id=room_id,
+        brigade_agent_id=brigade_agent_id,
+        typing=typing,
+        agent_label=agent_label,
+        participant_id=participant_id,
+    )
     if not livekit_room_name:
         return
     try:
