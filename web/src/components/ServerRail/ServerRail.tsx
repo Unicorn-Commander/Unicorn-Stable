@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { Plus, LoaderCircle, Search, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import clsx from "clsx";
 import { useFederationStore } from "@/stores/federationStore";
@@ -38,19 +37,11 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
 
   const multi = instances.length > 1;
 
-  // Ctrl/Cmd+K opens the switcher. Registered on the desktop instance only so
-  // the two mounted rails (desktop + mobile) don't double-bind the shortcut.
-  useEffect(() => {
-    if (mobile || !multi) return;
-    function onKey(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        useFederationStore.getState().setSwitcherOpen(true);
-      }
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [mobile, multi]);
+  // No keyboard chord is registered here on purpose. Cmd/Ctrl+K already belongs
+  // to the room quick-switcher (AppShell), and a second document-level listener
+  // on the same chord would open two palettes at once. Servers are reachable
+  // from that one switcher instead — it lists them and carries a
+  // "Browse servers" row that opens this directory. See QuickSwitcher.tsx.
 
   // The rail only earns its space when the user can reach more than one server.
   if (!multi) return null;
@@ -179,7 +170,7 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
 
         <button
           type="button"
-          title="Search servers (⌘K)"
+          title="Search servers"
           aria-label="Search servers"
           onClick={() => setSwitcherOpen(true)}
           className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-line text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"

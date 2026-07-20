@@ -13,7 +13,8 @@ import { ServerLogo } from "./ServerLogo";
  * This is where DESCRIPTIONS actually live. The rail's hover card is a
  * convenience for mouse users; a phone has no hover, so the full description
  * has to be reachable by tap — hence a palette opened from an always-visible
- * Search button (and ⌘K on desktop).
+ * Search button, and from the room quick-switcher (⌘K), which lists
+ * servers inline and offers a "Browse servers" row that opens this.
  *
  * Everything rendered from `meta` is untrusted peer output, already sanitised
  * and length-capped in @/lib/instances and rendered as text nodes. The host is
