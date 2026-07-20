@@ -84,11 +84,18 @@ class PresenceService:
     async def set_typing(self, participant_id: str, room_id: str) -> None:
         """Set a typing indicator with a short TTL."""
         key = f"typing:{room_id}:{participant_id}"
-        await self._redis.set(key, "1", ex=TYPING_TTL)
-        # Also add to the room's typing set
         set_key = f"typing_set:{room_id}"
-        await self._redis.sadd(set_key, participant_id)
-        await self._redis.expire(set_key, TYPING_TTL + 2)
+        # One round-trip, not three. This runs on the keepalive path of every
+        # person typing in every room, so the three separate awaits it replaces
+        # were three network hops per keystroke-window per user.
+        pipe = self._redis.pipeline(transaction=False)
+        pipe.set(key, "1", ex=TYPING_TTL)
+        pipe.sadd(set_key, participant_id)
+        # The membership set outlives the individual key by a couple of seconds
+        # so `get_typing_in_room` still has a row to reconcile and evict rather
+        # than the set vanishing wholesale mid-sweep.
+        pipe.expire(set_key, TYPING_TTL + 2)
+        await pipe.execute()
         logger.debug(
             "typing_set",
             participant_id=participant_id,
@@ -96,11 +103,18 @@ class PresenceService:
         )
 
     async def clear_typing(self, participant_id: str, room_id: str) -> None:
-        """Clear a typing indicator."""
+        """Clear a typing indicator.
+
+        Idempotent and safe to call for a participant who is not typing, which
+        is what lets every clearing path (send, blur, idle timeout, disconnect,
+        error teardown) fire unconditionally without first checking state.
+        """
         key = f"typing:{room_id}:{participant_id}"
-        await self._redis.delete(key)
         set_key = f"typing_set:{room_id}"
-        await self._redis.srem(set_key, participant_id)
+        pipe = self._redis.pipeline(transaction=False)
+        pipe.delete(key)
+        pipe.srem(set_key, participant_id)
+        await pipe.execute()
 
     async def get_typing_in_room(self, room_id: str) -> set[str]:
         """Get the set of currently-typing participant IDs in a room."""

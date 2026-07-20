@@ -32,11 +32,31 @@ export interface WsMessageEvent {
   streaming?: boolean;
 }
 
+/**
+ * A HUMAN is typing. Distinct on purpose from `agent_typing` / `agent_relay`
+ * (see lib/agentStatus.ts): those assert that an agent is genuinely generating
+ * a reply, or that a gateway bridge has an uncollected message. "A person has
+ * their hands on a keyboard" is a third, different fact, and the three must
+ * never be rendered as one state.
+ *
+ * Identity mirrors the presence convention: the server sends the Participant
+ * UUID as `participant_id` and repeats it as `user_id`, because the Keycloak id
+ * never equals the participant UUID and room members resolve on the latter.
+ */
 export interface WsTypingEvent {
   room_id: string;
+  /** Canonical identity (Participant.id). */
+  participant_id?: string;
+  /** Mirror of participant_id — what the typing hook has always read. */
   user_id: string;
   username: string;
+  /** Always "human" from this event; present so an unexpected value can be
+   * filtered rather than trusted. */
+  participant_type?: "human" | "agent";
   is_typing: boolean;
+  /** The server's own key lifetime. The client derives its last-resort local
+   * expiry from this so the two can't drift apart. */
+  ttl_seconds?: number;
 }
 
 export interface WsPresenceEvent {
@@ -257,10 +277,20 @@ class StableWebSocket {
     };
   }
 
-  send(type: string, payload: Record<string, unknown>): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type, payload }));
-    }
+  /**
+   * Fire-and-forget send. Returns whether the frame actually left, which
+   * matters for state that must be RETRACTED later: the typing indicator only
+   * records "I told the room I'm typing" when the frame really went out, so a
+   * send that was dropped on a closed socket can't leave the client believing
+   * it owes a `typing_stop` it never has to send (or, worse, skipping the stop
+   * it does).
+   *
+   * Existing callers ignoring the return value are unaffected.
+   */
+  send(type: string, payload: Record<string, unknown>): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({ type, payload }));
+    return true;
   }
 
   private emit(event: string, data: WsEventPayload): void {

@@ -109,6 +109,9 @@ interface AppState {
   setDefaultAgentId: (id: string | null) => void;
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
+  /** Drop every typing row for a room and clear its timers. Room switch,
+   * unmount, socket drop. */
+  clearRoomTyping: (roomId: string) => void;
   setAgentActivity: (roomId: string, activity: AgentActivity) => void;
   clearAgentActivity: (roomId: string, agentId: string) => void;
   /** Drop every agent-activity row (all rooms). Used on socket disconnect: if
@@ -374,9 +377,23 @@ export const useAppStore = create<AppState>((set) => ({
   setAgents: (agents) => set({ agents }),
   setDefaultAgentId: (id) => set({ defaultAgentId: id }),
 
+  // Upsert one human's typing row. Replacing by user_id AND clearing the
+  // superseded row's timer keeps exactly one live timer per typist, so a
+  // continuously-typing person's keepalives push the expiry out instead of
+  // stacking timers. Dropping the clearTimeout is not a leak you can shrug at:
+  // the orphaned timer keeps its original deadline and later fires
+  // removeTypingUser against someone who is STILL typing, blinking the row off
+  // mid-sentence until the next keepalive puts it back. Ownership rule, shared
+  // with setAgentActivity below: whoever removes a row from the array clears
+  // that row's timer.
   addTypingUser: (roomId, user) =>
     set((state) => {
       const roomTyping = state.typing[roomId] ?? [];
+      for (const t of roomTyping) {
+        if (t.user_id === user.user_id && t.timeout !== user.timeout) {
+          clearTimeout(t.timeout);
+        }
+      }
       const filtered = roomTyping.filter((t) => t.user_id !== user.user_id);
       return {
         typing: {
@@ -386,19 +403,47 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
+  // Drop every typing row for one room, clearing each row's timer. This is the
+  // teardown for a room switch, an unmount, or a dropped socket: without it the
+  // armed expiry timers outlive the room they belong to and fire into state
+  // nobody is looking at any more.
+  clearRoomTyping: (roomId) =>
+    set((state) => {
+      const roomTyping = state.typing[roomId];
+      if (!roomTyping || roomTyping.length === 0) return state;
+      for (const t of roomTyping) clearTimeout(t.timeout);
+      const next = { ...state.typing };
+      delete next[roomId];
+      return { typing: next };
+    }),
+
+  // Drop one human's typing row. Every exit returns state UNTOUCHED unless a
+  // row actually went away: the consumer selector is
+  // `s.typing[roomId] ?? EMPTY_TYPING` (hooks/usePresence.ts), so writing a
+  // freshly-minted `[]` for a room that had no entry — the common case, since
+  // an expiry timer and an explicit typing:false routinely race and the loser
+  // finds nothing to remove — hands that selector a new array identity every
+  // time and re-renders the whole room for a no-op. Letting the key stay
+  // ABSENT is what keeps EMPTY_TYPING's stable identity worth having, which
+  // is the same discipline clearRoomTyping was careful to observe.
   removeTypingUser: (roomId, userId) =>
     set((state) => {
-      const roomTyping = state.typing[roomId] ?? [];
+      const roomTyping = state.typing[roomId];
+      if (!roomTyping || roomTyping.length === 0) return state;
       const user = roomTyping.find((t) => t.user_id === userId);
-      if (user) {
-        clearTimeout(user.timeout);
+      // Not here — nothing to clear, nothing to write.
+      if (!user) return state;
+      clearTimeout(user.timeout);
+      const remaining = roomTyping.filter((t) => t.user_id !== userId);
+      const next = { ...state.typing };
+      if (remaining.length === 0) {
+        // Last typist left: delete the key rather than parking an empty array,
+        // so the selector falls through to the shared EMPTY_TYPING constant.
+        delete next[roomId];
+      } else {
+        next[roomId] = remaining;
       }
-      return {
-        typing: {
-          ...state.typing,
-          [roomId]: roomTyping.filter((t) => t.user_id !== userId),
-        },
-      };
+      return { typing: next };
     }),
 
   // Upsert one agent's activity row. Replacing by agent_id (and clearing the

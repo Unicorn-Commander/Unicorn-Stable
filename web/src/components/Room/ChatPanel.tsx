@@ -26,6 +26,12 @@ const START = 100_000;
 /** How long after YOUR send we keep the missed-reply resync poll armed. */
 const RESYNC_WINDOW_MS = 60_000;
 
+/** Floor between mark_read assertions for one room. "How far I have read" is
+ *  a coarse fact — asserting it more than once every few seconds buys nothing
+ *  and costs a DB write plus a read_receipt frame to every member of the
+ *  room. Trailing-edge, so the newest message is never left unmarked. */
+const MARK_READ_THROTTLE_MS = 3_000;
+
 /** "Perry is thinking…" / "Perry and Quill are thinking…" / "3 agents are
  * thinking…". Names the agents while the list stays readable. */
 function describeAgents(rows: AgentActivity[]): string {
@@ -35,6 +41,24 @@ function describeAgents(rows: AgentActivity[]): string {
   if (names.length === 3)
     return `${names[0]}, ${names[1]} and ${names[2]} are thinking…`;
   return `${names[0]}, ${names[1]} and ${names.length - 2} more are thinking…`;
+}
+
+/**
+ * "Jordan is typing…" / "Jordan and Jason are typing…" / "Several people are
+ * typing…". PEOPLE, deliberately — this line is only ever fed by the human
+ * `typing` event, and reads a few pixels above the separate agent lines below,
+ * which say "thinking" and name agents. Keeping the two vocabularies apart is
+ * what stops the room from having to guess which kind of thing is busy.
+ *
+ * Three-and-up collapses to "Several people" rather than a count: past two
+ * names the exact number is noise, and a number that ticks 3→4→3 as keepalives
+ * lapse draws the eye to a fact nobody needs. One vague-but-stable line beats a
+ * precise flickering one.
+ */
+function describeTypists(names: string[]): string {
+  if (names.length === 1) return `${names[0]} is typing…`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
+  return "Several people are typing…";
 }
 
 /** Bridge agents get an honest delivery statement, never a fake liveness one. */
@@ -81,7 +105,8 @@ interface ChatPanelProps {
 export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const { messages, hasMore, loading, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
     useChat(roomId);
-  const { typingUsers, sendTypingIndicator } = usePresence(roomId);
+  const { typingUsers, sendTypingIndicator, clearTypingIndicator } =
+    usePresence(roomId);
   const currentUser = useAppStore((s) => s.currentUser);
   const [editFocusId, setEditFocusId] = useState<string | null>(null);
   const [editTick, setEditTick] = useState(0);
@@ -257,16 +282,6 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     if (anchor) setUnreadAnchorId(anchor.id);
   }, [roomId, loading, messages, currentUser?.id]);
 
-  // Send mark_read for the latest message whenever (a) the room becomes
-  // active, (b) a new message arrives while we're at bottom + visible.
-  useEffect(() => {
-    if (messages.length === 0) return;
-    if (document.visibilityState !== "visible") return;
-    const last = messages[messages.length - 1];
-    if (!last) return;
-    ws.send("mark_read", { room_id: roomId, message_id: last.id });
-  }, [roomId, messages.length]);
-
   // Virtuoso owns scrolling — its handle drives all programmatic scrolls
   // (jump-to-latest, scroll-on-send, scroll-to-message).
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -280,6 +295,62 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const prevLastMessageIdRef = useRef<string | null>(null);
   // Which room we've already force-pinned to newest after its first render.
   const didInitialPinRef = useRef<string | null>(null);
+
+  // Send mark_read for the newest message whenever (a) the room becomes
+  // active, (b) a new message arrives while we're at bottom + visible.
+  //
+  // Keyed on the newest message's ID, NOT `messages.length`. `loadMore`
+  // PREPENDS older history, which moves the length without changing what the
+  // newest read message is — so a length key re-fired this on every
+  // pagination page, re-asserting a fact that had not changed. It also now
+  // honours `isAtBottomRef`, which the comment above always claimed but the
+  // code never checked, and throttles per room: a burst of arrivals is
+  // exactly when the room's sockets are busiest, and each mark_read costs one
+  // DB write plus a read_receipt frame to EVERY member.
+  //
+  // NOTE: mark_read is currently inert server-side — the handler reads
+  // `room_id` off the top level while the client sends it under `payload`.
+  // That is deliberate and documented in the branch summary; this tightening
+  // exists so the surface is not pathological on the day it is switched on.
+  const lastMarkedRef = useRef<{ roomId: string; id: string; at: number } | null>(
+    null,
+  );
+  const newestMessageId =
+    messages.length > 0 ? messages[messages.length - 1]!.id : null;
+  useEffect(() => {
+    if (!newestMessageId) return;
+    if (document.visibilityState !== "visible") return;
+    if (!isAtBottomRef.current) return;
+
+    const prev = lastMarkedRef.current;
+    // Already asserted for this exact message — nothing has changed.
+    if (prev && prev.roomId === roomId && prev.id === newestMessageId) return;
+
+    const send = () => {
+      lastMarkedRef.current = {
+        roomId,
+        id: newestMessageId,
+        at: Date.now(),
+      };
+      ws.send("mark_read", { room_id: roomId, message_id: newestMessageId });
+    };
+
+    // A room switch is a fresh subject: never make the user wait out the
+    // previous room's throttle window for it.
+    const sameRoom = prev?.roomId === roomId;
+    const since = sameRoom ? Date.now() - prev!.at : Infinity;
+    if (since >= MARK_READ_THROTTLE_MS) {
+      send();
+      return;
+    }
+
+    // Inside the window: defer to the TRAILING edge rather than dropping, so
+    // the newest message is always eventually marked read. If a newer message
+    // lands first this effect re-runs and the cleanup cancels this timer —
+    // which is the intended coalescing, not a lost update.
+    const timer = setTimeout(send, MARK_READ_THROTTLE_MS - since);
+    return () => clearTimeout(timer);
+  }, [roomId, newestMessageId]);
 
   // Prepend anchor for Virtuoso: decremented by exactly the number of older
   // messages prepended on each loadMore so the viewport doesn't jump.
@@ -459,6 +530,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     attachments?: { url: string; filename: string; content_type: string; size: number }[],
     extraMetadata?: Record<string, unknown>,
   ) {
+    // Sending is the end of typing. Retract BEFORE the message goes out so the
+    // stop cannot land after the message it belongs to — a room that shows
+    // "Jordan is typing…" underneath a message Jordan just posted is the stuck
+    // indicator in its most obvious form.
+    clearTypingIndicator();
     sendMessage(content, threadId, attachments, extraMetadata);
     // Arm the missed-reply resync poll, but only where a reply can actually be
     // missed. This says nothing about whether an agent is working — it only
@@ -711,12 +787,16 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         <div className="shrink-0 px-4 py-1.5 md:px-8">
           <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-1">
             {typingUsers.length > 0 && (
-              <p className="animate-pulse-soft text-xs text-slate-500">
-                {typingUsers.length === 1
-                  ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
-                  : typingUsers.length === 2
-                    ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
-                    : `${typingUsers.length} people are typing...`}
+              // aria-live="polite" so a screen reader hears it without being
+              // interrupted mid-message; the region is only mounted while
+              // someone is actually typing, so it announces transitions rather
+              // than re-reading a persistent label.
+              <p
+                className="animate-pulse-soft text-xs text-slate-500"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {describeTypists(typingUsers.map((u) => u.username || "Someone"))}
               </p>
             )}
             {thinkingAgents.length > 0 && (
@@ -749,16 +829,38 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         </div>
       )}
 
-      <MessageInput
-        roomId={roomId}
-        onSend={handleSend}
-        onTyping={sendTypingIndicator}
-        onEditLast={triggerEditLast}
-        disabledReason={
-          iAmMuted ? "You've been muted in this channel by a moderator." : undefined
-        }
-        placeholder={composerPlaceholder}
-      />
+      {/* Blur clears typing.
+          React's onBlur is really focusout, so it fires for the textarea (and
+          every button) inside MessageInput and bubbles to here — which lets the
+          composer own its own focus without this needing to reach into it.
+          `relatedTarget` is the element receiving focus: if that is still
+          inside the composer (tabbing textarea → send button, opening the emoji
+          picker) you have not stopped typing, so only a focus move OUT of the
+          subtree retracts. relatedTarget is null when focus leaves the document
+          entirely — clicked another window, dismissed the mobile keyboard —
+          which counts as leaving. */}
+      <div
+        // The wrapper becomes the flex item MessageInput's root used to be, so
+        // it repeats that root's `shrink-0`. Without it the composer is
+        // allowed to compress under a long message list.
+        className="shrink-0"
+        onBlur={(e) => {
+          if (!e.relatedTarget || !e.currentTarget.contains(e.relatedTarget)) {
+            clearTypingIndicator();
+          }
+        }}
+      >
+        <MessageInput
+          roomId={roomId}
+          onSend={handleSend}
+          onTyping={sendTypingIndicator}
+          onEditLast={triggerEditLast}
+          disabledReason={
+            iAmMuted ? "You've been muted in this channel by a moderator." : undefined
+          }
+          placeholder={composerPlaceholder}
+        />
+      </div>
     </div>
   );
 }
