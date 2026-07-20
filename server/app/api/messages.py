@@ -222,6 +222,29 @@ async def send_message(
     # answered rate_limit_rpm times this minute, we skip auto-replying — the
     # user's message still posts; the agent just stays quiet until the window
     # rolls over. This protects the (paid) Brigade backend from a chatty room.
+    #
+    # The relay-pending mark below runs BEFORE this scheduling call, and that
+    # ordering is deliberate. Both signals upsert the same per-agent row on the
+    # client, so whichever lands second wins. If the responder's task were
+    # created first, its typing=True could be published while the mark was
+    # still awaiting its DB query, and the relay mark would then clobber a TRUE
+    # "thinking" with a false "waiting for relay" for the whole generation.
+    # Awaiting the mark first makes the ordering deterministic; the responder
+    # additionally retracts the marker for whichever agent it actually resolved
+    # (see agent_chat_responder), which is the part room metadata cannot know
+    # because _resolve_agent also routes by @-mention and by a legacy fallback.
+    try:
+        # request=None marks the internal voice-transcript path, which
+        # deliberately does not trigger agent activity — honour that here too.
+        if request is not None and user.get("participant_type") != "agent" and not str(
+            user.get("sub") or ""
+        ).startswith("brigade:"):
+            from app.services.agent_status import mark_relay_pending_for_room
+
+            await mark_relay_pending_for_room(db=db, room_id=room_id)
+    except Exception:
+        logger.warning("relay_pending_mark_failed", exc_info=True)
+
     try:
         if request is not None:
             settings_now = get_settings()
@@ -243,24 +266,6 @@ async def send_message(
                 )
     except Exception:
         logger.warning("agent_chat_responder_schedule_failed", exc_info=True)
-
-    # Bridge/gateway agents have no "thinking" signal to report — they are
-    # external processes that poll. Rather than invent one, record the only
-    # thing we can actually observe: this human message is sitting in the room
-    # UNCOLLECTED by them. The marker is retracted the moment the bridge reads
-    # or posts (app/api/gateway.py) and expires on its own otherwise. Skipped
-    # for agent-authored messages so agents cannot flag each other in a loop.
-    try:
-        # request=None marks the internal voice-transcript path, which
-        # deliberately does not trigger agent activity — honour that here too.
-        if request is not None and user.get("participant_type") != "agent" and not str(
-            user.get("sub") or ""
-        ).startswith("brigade:"):
-            from app.services.agent_status import mark_relay_pending_for_room
-
-            await mark_relay_pending_for_room(db=db, room_id=room_id)
-    except Exception:
-        logger.warning("relay_pending_mark_failed", exc_info=True)
 
     # Document RAG indexing. If the message carries document attachments,
     # index them (extract → chunk → embed → qdrant, scoped to the room) in a
@@ -1118,12 +1123,36 @@ async def post_agent_typing(
     # Republish on the ws plane too — the web chat client listens for
     # agent_typing there, not on the LiveKit data channel. Without this the
     # in-call clients saw the signal and the browser saw nothing.
+    #
+    # Carry the agent's real display_name: this is the in-call voice path, and
+    # without a label the chat panel would title-case the raw brigade id
+    # ("perry-spector" → "Perry Spector", or worse for an id that isn't a name)
+    # and show that to everyone in the room for the duration of the call.
     from app.services import agent_status as _agent_status
+
+    from app.models.participant import Participant as _Participant
+
+    agent_label: str | None = None
+    agent_p = None
+    try:
+        agent_p = (
+            await db.execute(
+                _select(_Participant).where(
+                    _Participant.keycloak_sub == f"brigade:{body.brigade_agent_id}"
+                )
+            )
+        ).scalar_one_or_none()
+        if agent_p is not None:
+            agent_label = agent_p.display_name
+    except Exception:
+        logger.debug("agent_typing_label_lookup_failed", exc_info=True)
 
     await _agent_status.publish_agent_typing(
         room_id=room.id,
         brigade_agent_id=body.brigade_agent_id,
         typing=body.typing,
+        agent_label=agent_label,
+        participant_id=agent_p.id if agent_p is not None else None,
     )
 
     try:

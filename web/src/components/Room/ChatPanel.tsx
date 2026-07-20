@@ -162,11 +162,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   );
 
   // Safety net for a MISSED reply, not a claim about agent activity: for a
-  // bounded window after YOU send, poll a merge-refetch so the answer appears
-  // even if its live WS event was dropped (e.g. the socket wasn't yet
-  // subscribed to a brand-new room). Previously this rode on the optimistic
-  // flag; it now triggers off the send itself, which is the event that actually
-  // warrants a resync, and it stops on its own.
+  // bounded window after YOU send INTO A ROOM THAT CONTAINS AN AGENT, poll a
+  // merge-refetch so the answer appears even if its live WS event was dropped
+  // (e.g. the socket wasn't yet subscribed to a brand-new room).
+  //
+  // The membership gate and the "stop as soon as the reply lands" termination
+  // are load control, and are deliberately kept from the old implementation.
+  // A human-only room has no reply to miss, so arming there would buy nothing
+  // and cost a full getMessages refetch every 5s per active chatter.
+  const roomHasAgent = participants.some((p) => p.participant_type === "agent");
   const [resyncUntil, setResyncUntil] = useState<number | null>(null);
   useEffect(() => {
     if (resyncUntil === null) return;
@@ -183,6 +187,22 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     }, 5_000);
     return () => window.clearInterval(id);
   }, [resyncUntil, resync]);
+
+  // Terminate the window early on success: the reply we were covering for has
+  // arrived, so keep polling no longer. (`armedAt` is derived rather than
+  // stored so there is exactly one piece of state to reason about.)
+  useEffect(() => {
+    if (resyncUntil === null) return;
+    const armedAt = resyncUntil - RESYNC_WINDOW_MS;
+    const last = messages[messages.length - 1];
+    if (
+      last &&
+      last.sender_type === "agent" &&
+      new Date(last.created_at).getTime() >= armedAt - 1_000
+    ) {
+      setResyncUntil(null);
+    }
+  }, [resyncUntil, messages]);
 
   // Slack-style "New messages" divider: snapshot the last-read point ONCE per
   // room open — before the mark_read effect below tells the server we've read
@@ -440,9 +460,10 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     extraMetadata?: Record<string, unknown>,
   ) {
     sendMessage(content, threadId, attachments, extraMetadata);
-    // Arm the missed-reply resync poll. This says nothing about whether an
-    // agent is working — it only covers a dropped WS event on our own send.
-    setResyncUntil(Date.now() + RESYNC_WINDOW_MS);
+    // Arm the missed-reply resync poll, but only where a reply can actually be
+    // missed. This says nothing about whether an agent is working — it only
+    // covers a dropped WS event on our own send.
+    if (roomHasAgent) setResyncUntil(Date.now() + RESYNC_WINDOW_MS);
     requestAnimationFrame(() =>
       virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth", align: "end" }),
     );

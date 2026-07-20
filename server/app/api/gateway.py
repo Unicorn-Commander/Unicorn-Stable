@@ -36,7 +36,7 @@ from app.auth.gateway_auth import (
     verify_gateway_key,
 )
 from app.config import Settings, get_settings
-from app.services.agent_status import clear_relay_pending
+from app.services.agent_status import clear_relay_pending, touch_gateway_agent
 from app.deps import (
     _rate_limit_hit,
     get_db,
@@ -275,6 +275,7 @@ async def gateway_post_message(
     # happened. Best-effort: a signalling failure must not fail the post, and
     # the marker's TTL clears it regardless.
     try:
+        await touch_gateway_agent(principal.agent_id)
         await clear_relay_pending(room_id=room.id, agent_id=principal.agent_id)
     except Exception:
         logger.debug("gateway_relay_clear_failed", exc_info=True)
@@ -300,8 +301,12 @@ async def gateway_get_messages(
     # Reading IS collection: once the bridge has pulled the room's messages it
     # is no longer "waiting to relay", so drop the marker here as well as on
     # post. Two independent clearing paths plus a TTL means the indicator
-    # cannot strand itself on.
+    # cannot strand itself on. The touch is what proves this bridge is running
+    # NOW — see agent_status.mark_relay_pending_for_room. Both are plain Redis
+    # writes, and the clear only fans out on a real transition, so this stays
+    # cheap on a 1-2s poll loop.
     try:
+        await touch_gateway_agent(principal.agent_id)
         await clear_relay_pending(room_id=room_obj.id, agent_id=principal.agent_id)
     except Exception:
         logger.debug("gateway_relay_clear_failed", exc_info=True)

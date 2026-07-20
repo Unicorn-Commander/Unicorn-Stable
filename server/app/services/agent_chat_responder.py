@@ -338,6 +338,21 @@ async def _respond(
             except Exception:
                 logger.warning("council_hook_failed", exc_info=True)
 
+        # Retract any outstanding-relay marker for THIS agent before asserting
+        # that it is thinking — the two states contradict each other, and only
+        # this call site knows which agent actually got the message. send_message
+        # can exclude the room's declared `brigade_agent_id`, but _resolve_agent
+        # also routes by @-mention (multi-agent rooms) and by the legacy
+        # no-metadata fallback, and in those rooms the responder is NOT the
+        # excluded one, so it would otherwise be marked as awaiting a relay while
+        # it was in fact generating.
+        try:
+            await agent_status.clear_relay_pending(
+                room_id=room.id, agent_id=brigade_agent_id
+            )
+        except Exception:
+            logger.debug("responder_relay_clear_failed", exc_info=True)
+
         await _send_typing(
             livekit=livekit,
             livekit_room_name=room.livekit_room_name,
@@ -348,93 +363,114 @@ async def _respond(
             participant_id=agent_participant.id,
         )
 
-        svc = MessageService(db=db, livekit=livekit)
-        placeholder = await svc.send_message(
-            room_id=room.id,
-            sender_id=agent_participant.id,
-            content="…",
-            content_type="text",
-            metadata={
-                "agent_id": brigade_agent_id,
-                "source": "agent_chat_responder",
-            },
-        )
-
-        # Deliver the (placeholder) agent reply to the web client over the ws
-        # plane in the exact WsMessageEvent shape. We reuse the REST serializer
-        # so field names match the frontend exactly. Best-effort; lazy import
-        # avoids an import cycle with app.api.messages.
+        # Everything from here to the finally below runs with typing ASSERTED,
+        # so it all has to sit inside a try whose exit path retracts it. Before,
+        # the try started only at the Brigade call, and a failure in between
+        # (placeholder send, ws deliver, history/model setup) left the indicator
+        # stuck on with no matching off-event — capped only by the client's 120s
+        # backstop, which is the same "status lies for two minutes" failure this
+        # change exists to remove.
         try:
-            from app.api.messages import _msg_to_response as _serialize_msg
-
-            await _ws_deliver_to_room(
-                db=db,
+            svc = MessageService(db=db, livekit=livekit)
+            placeholder = await svc.send_message(
                 room_id=room.id,
-                envelope={
-                    "type": "message",
-                    "payload": {
-                        "room_id": str(room.id),
-                        # streaming:true positively marks this as a live reply so
-                        # the client drives the Stop control off message.streaming
-                        # alone (never the "…" content heuristic, which a crashed
-                        # finalize could otherwise strand on a dead message).
-                        "streaming": True,
-                        "message": _serialize_msg(placeholder, 0).model_dump(
-                            mode="json"
-                        ),
-                    },
+                sender_id=agent_participant.id,
+                content="…",
+                content_type="text",
+                metadata={
+                    "agent_id": brigade_agent_id,
+                    "source": "agent_chat_responder",
                 },
             )
-        except Exception:
-            logger.debug("agent_chat_ws_new_message_failed", exc_info=True)
 
-        # Effective LLM override: explicit per-message model wins; otherwise a
-        # per-room override persisted on room metadata (set via the model
-        # switcher / invite). None → Brigade uses the persona's default model.
-        effective_model = model
-        if not effective_model and isinstance(room.metadata_, dict):
-            raw_override = room.metadata_.get("model_override")
-            if isinstance(raw_override, str) and raw_override:
-                effective_model = raw_override
-        if effective_model:
-            # Governed-override audit trail: overridden traffic still runs on
-            # Brigade's key (budgets/attribution hold); this line is the log.
-            logger.info(
-                "model_override_used",
-                room_id=str(room.id),
-                agent=brigade_agent_id,
-                model=effective_model,
-                source="message" if model else "room_metadata",
-            )
+            # Deliver the (placeholder) agent reply to the web client over the ws
+            # plane in the exact WsMessageEvent shape. We reuse the REST serializer
+            # so field names match the frontend exactly. Best-effort; lazy import
+            # avoids an import cycle with app.api.messages.
+            try:
+                from app.api.messages import _msg_to_response as _serialize_msg
 
-        accumulated = ""
-        artifact_meta: dict[str, str] | None = None
-        _last_push = [0.0]
-        _last_stop_check = [0.0]
-        stop_state: dict[str, bool] = {"stopped": False}
-
-        async def _should_stop() -> bool:
-            # Cross-worker stop check, throttled to ~4/s so we don't hit Redis
-            # per token. The user pressed Stop on this exact placeholder reply.
-            now = asyncio.get_running_loop().time()
-            if now - _last_stop_check[0] < 0.25:
-                return False
-            _last_stop_check[0] = now
-            return await _is_stop_requested(placeholder.id)
-
-        async def _on_progress(text: str, is_content: bool) -> None:
-            # Stream the reply (and pre-reply tool progress) into the placeholder
-            # over the ws plane as it arrives, so the user sees live activity
-            # instead of a static "…" for the whole 5-15s. Tool-status updates
-            # always push promptly; content tokens are throttled (~8/s).
-            now = asyncio.get_running_loop().time()
-            if (not is_content) or (now - _last_push[0] >= 0.12):
-                _last_push[0] = now
-                await _stream_patch(
+                await _ws_deliver_to_room(
+                    db=db,
                     room_id=room.id,
-                    message_id=placeholder.id,
-                    content=text,
+                    envelope={
+                        "type": "message",
+                        "payload": {
+                            "room_id": str(room.id),
+                            # streaming:true positively marks this as a live reply so
+                            # the client drives the Stop control off message.streaming
+                            # alone (never the "…" content heuristic, which a crashed
+                            # finalize could otherwise strand on a dead message).
+                            "streaming": True,
+                            "message": _serialize_msg(placeholder, 0).model_dump(
+                                mode="json"
+                            ),
+                        },
+                    },
                 )
+            except Exception:
+                logger.debug("agent_chat_ws_new_message_failed", exc_info=True)
+
+            # Effective LLM override: explicit per-message model wins; otherwise a
+            # per-room override persisted on room metadata (set via the model
+            # switcher / invite). None → Brigade uses the persona's default model.
+            effective_model = model
+            if not effective_model and isinstance(room.metadata_, dict):
+                raw_override = room.metadata_.get("model_override")
+                if isinstance(raw_override, str) and raw_override:
+                    effective_model = raw_override
+            if effective_model:
+                # Governed-override audit trail: overridden traffic still runs on
+                # Brigade's key (budgets/attribution hold); this line is the log.
+                logger.info(
+                    "model_override_used",
+                    room_id=str(room.id),
+                    agent=brigade_agent_id,
+                    model=effective_model,
+                    source="message" if model else "room_metadata",
+                )
+
+            accumulated = ""
+            artifact_meta: dict[str, str] | None = None
+            _last_push = [0.0]
+            _last_stop_check = [0.0]
+            stop_state: dict[str, bool] = {"stopped": False}
+
+            async def _should_stop() -> bool:
+                # Cross-worker stop check, throttled to ~4/s so we don't hit Redis
+                # per token. The user pressed Stop on this exact placeholder reply.
+                now = asyncio.get_running_loop().time()
+                if now - _last_stop_check[0] < 0.25:
+                    return False
+                _last_stop_check[0] = now
+                return await _is_stop_requested(placeholder.id)
+
+            async def _on_progress(text: str, is_content: bool) -> None:
+                # Stream the reply (and pre-reply tool progress) into the placeholder
+                # over the ws plane as it arrives, so the user sees live activity
+                # instead of a static "…" for the whole 5-15s. Tool-status updates
+                # always push promptly; content tokens are throttled (~8/s).
+                now = asyncio.get_running_loop().time()
+                if (not is_content) or (now - _last_push[0] >= 0.12):
+                    _last_push[0] = now
+                    await _stream_patch(
+                        room_id=room.id,
+                        message_id=placeholder.id,
+                        content=text,
+                    )
+
+        except Exception:
+            logger.exception("agent_chat_responder_setup_failed")
+            await _send_typing(
+                livekit=livekit,
+                livekit_room_name=room.livekit_room_name,
+                room_id=room.id,
+                brigade_agent_id=brigade_agent_id,
+                typing=False,
+                agent_label=agent_participant.display_name,
+                participant_id=agent_participant.id,
+            )
+            return
 
         try:
             accumulated, artifact_meta = await _call_brigade(
@@ -469,15 +505,21 @@ async def _respond(
                 final_meta["stopped"] = True
             if not final_meta:
                 final_meta = None
-            await _patch_message(
-                db=db,
-                livekit=livekit,
-                message_id=placeholder.id,
-                content=accumulated,
-                finalize=True,
-                extra_metadata=final_meta,
-            )
-            await _clear_stop(placeholder.id)
+            # Guarded so a finalize failure cannot skip the typing=False below
+            # it: the reply may be lost, but the indicator must not be left
+            # asserting that an agent is still working on it.
+            try:
+                await _patch_message(
+                    db=db,
+                    livekit=livekit,
+                    message_id=placeholder.id,
+                    content=accumulated,
+                    finalize=True,
+                    extra_metadata=final_meta,
+                )
+                await _clear_stop(placeholder.id)
+            except Exception:
+                logger.exception("agent_chat_responder_finalize_failed")
             if artifact_meta:
                 logger.info(
                     "agent_chat_responder_artifact_attached",

@@ -44,9 +44,20 @@ _pub_redis: Any = None
 # collects the message must not leave the room asserting "waiting" forever.
 RELAY_TTL_SECONDS = 300
 
+# How long a gateway call keeps its agent counting as a CURRENTLY-CONNECTED
+# bridge. Generous relative to real bridge poll intervals (MCP wait_for_reply /
+# send_and_wait poll every 1-2s), so a live bridge always stays inside the
+# window, while a bridge that has been down for a quarter of an hour stops
+# being described as "about to relay".
+GATEWAY_SEEN_TTL_SECONDS = 900
+
 
 def _relay_key(room_id: uuid.UUID | str, agent_id: str) -> str:
     return f"stable:relaypending:{room_id}:{agent_id}"
+
+
+def _seen_key(agent_id: str) -> str:
+    return f"stable:gwseen:{agent_id}"
 
 
 def _get_pub_redis() -> Any:
@@ -132,19 +143,45 @@ async def mark_relay_pending(
     )
 
 
+async def touch_gateway_agent(agent_id: str) -> None:
+    """Record that a bridge for ``agent_id`` just talked to the gateway.
+
+    This is what makes the "bridge agent" predicate mean something. Possession
+    of an un-revoked :class:`AgentGatewayKey` is a SETUP fact that never
+    expires — a key minted once and forgotten would otherwise mark its agent as
+    a live bridge forever. A recent gateway call is evidence that a process is
+    actually running right now, which is the thing the indicator claims.
+    """
+    try:
+        await _get_pub_redis().set(
+            _seen_key(agent_id), b"1", ex=GATEWAY_SEEN_TTL_SECONDS
+        )
+    except Exception:
+        logger.debug("gateway_seen_touch_failed", exc_info=True)
+
+
 async def clear_relay_pending(
     *, room_id: uuid.UUID | str, agent_id: str
 ) -> None:
     """Retract the outstanding-relay marker — the bridge read or posted.
 
-    Publishes unconditionally (not only when the Redis key existed): a clear is
-    always safe, and publishing regardless means a marker set on another worker
-    whose key already expired still gets retracted on the client.
+    Publishes ONLY on a real state transition, i.e. when the DELETE actually
+    removed a key. Gateway reads are a polling loop (there is no long-poll
+    endpoint; the MCP ``wait_for_reply``/``send_and_wait`` helpers spin at
+    1-2s), and this runs on every read, so an unconditional publish would emit
+    a pub/sub event per poll that ``ws/handler`` then fans out to every browser
+    in the room. The redundant "already clear" publishes bought nothing: the
+    only case they covered was a marker whose Redis key had already expired,
+    and the client expires its own copy off the same TTL anyway.
     """
+    removed = 0
     try:
-        await _get_pub_redis().delete(_relay_key(room_id, agent_id))
+        removed = int(await _get_pub_redis().delete(_relay_key(room_id, agent_id)) or 0)
     except Exception:
         logger.debug("relay_pending_clear_failed", exc_info=True)
+        return
+    if not removed:
+        return
     await _publish(
         room_id,
         {
@@ -162,14 +199,28 @@ async def mark_relay_pending_for_room(
     room_id: uuid.UUID,
     exclude_agent_ids: set[str] | None = None,
 ) -> None:
-    """Mark every BRIDGE agent in ``room_id`` as having an uncollected message.
+    """Mark every CURRENTLY-CONNECTED bridge agent in ``room_id`` as having an
+    uncollected message.
 
-    A bridge agent is an agent participant of the room whose derived
-    ``brigade:<agent_id>`` identity has a live (un-revoked) gateway key — i.e.
-    something outside Stable really does relay for it. Agents in
-    ``exclude_agent_ids`` (normally the room's Brigade resident, which emits a
-    REAL typing signal) are skipped so a single agent never shows two
-    contradictory states at once.
+    Three conditions must ALL hold before we say anything about an agent, and
+    each one is load-bearing:
+
+    1. It is an agent participant of the room with a ``brigade:<id>`` identity.
+    2. It holds an un-revoked :class:`AgentGatewayKey` **whose allowed_rooms
+       covers THIS room** (``["*"]``, the livekit room name, or the room name),
+       matching :func:`app.api.gateway._enforce_scope`. A key scoped to room A
+       says nothing about room B, and must not mark the agent there.
+    3. A bridge for that agent has actually called the gateway within
+       ``GATEWAY_SEEN_TTL_SECONDS``. Key existence alone is a setup fact that
+       never expires; a key minted once and forgotten would otherwise assert
+       "waiting for relay" in every room, on every message, forever — exactly
+       the permanently-on, indistinguishable-from-hung indicator this change
+       exists to eliminate. Recent USE is the closest thing to liveness the
+       gateway's polling protocol gives us, and we claim no more than that.
+
+    Agents in ``exclude_agent_ids`` — the resolved Brigade responder for this
+    message, which emits a REAL typing signal — are skipped so one agent never
+    shows two contradictory states at once.
 
     Callers that authenticate to the gateway with a uchub JWT rather than a
     minted key have no key row and so are not marked. That is deliberate: the
@@ -183,13 +234,18 @@ async def mark_relay_pending_for_room(
 
     excluded = set(exclude_agent_ids or set())
     try:
-        # Always exclude the room's Brigade resident even if the caller did not
-        # name it: that agent emits a real typing signal, and showing it as
-        # "waiting on a relay" at the same time would contradict the truth.
         room = (
             await db.execute(select(Room).where(Room.id == room_id))
         ).scalar_one_or_none()
-        if room is not None and isinstance(room.metadata_, dict):
+        if room is None:
+            return
+        # Belt-and-braces exclusion of the room's declared Brigade resident.
+        # This is NOT sufficient on its own — `_resolve_agent` also routes by
+        # @-mention in multi-agent rooms and by a no-metadata legacy fallback,
+        # so the actual responder is passed in via `exclude_agent_ids` — but in
+        # the common metadata-routed room it costs nothing and holds even if a
+        # caller forgets.
+        if isinstance(room.metadata_, dict):
             resident = room.metadata_.get("brigade_agent_id")
             if isinstance(resident, str) and resident:
                 excluded.add(resident)
@@ -218,16 +274,38 @@ async def mark_relay_pending_for_room(
         if not by_agent_id:
             return
 
-        live = (
+        rows = (
             await db.execute(
-                select(AgentGatewayKey.agent_id).where(
+                select(AgentGatewayKey.agent_id, AgentGatewayKey.allowed_rooms).where(
                     AgentGatewayKey.agent_id.in_(list(by_agent_id)),
                     AgentGatewayKey.revoked_at.is_(None),
                 )
             )
-        ).scalars().all()
+        ).all()
 
-        for agent_id in set(live):
+        # Same scoping rule the gateway itself enforces on every request
+        # (app/api/gateway.py::_enforce_scope): a key that cannot be used
+        # against this room is not evidence of a bridge for this room.
+        scoped: set[str] = set()
+        for agent_id, allowed_rooms in rows:
+            allowed = allowed_rooms if isinstance(allowed_rooms, list) else []
+            if "*" in allowed or room.livekit_room_name in allowed or room.name in allowed:
+                scoped.add(agent_id)
+        if not scoped:
+            return
+
+        # Liveness gate: only agents whose bridge has actually hit the gateway
+        # recently. Without this the predicate is "a key was minted once",
+        # which would light the indicator in rooms whose bridge is long dead.
+        ordered = sorted(scoped)
+        try:
+            seen = await _get_pub_redis().mget([_seen_key(a) for a in ordered])
+        except Exception:
+            logger.debug("gateway_seen_lookup_failed", exc_info=True)
+            return
+        connected = {a for a, v in zip(ordered, seen) if v is not None}
+
+        for agent_id in connected:
             p = by_agent_id[agent_id]
             await mark_relay_pending(
                 room_id=room_id,
@@ -240,9 +318,11 @@ async def mark_relay_pending_for_room(
 
 
 __all__ = [
+    "GATEWAY_SEEN_TTL_SECONDS",
     "RELAY_TTL_SECONDS",
     "clear_relay_pending",
     "mark_relay_pending",
+    "touch_gateway_agent",
     "mark_relay_pending_for_room",
     "publish_agent_typing",
 ]
