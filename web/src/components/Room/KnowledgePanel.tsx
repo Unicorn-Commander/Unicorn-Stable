@@ -448,6 +448,8 @@ function SearchSection({
   results,
   searching,
   ran,
+  unavailable,
+  unavailableDetail,
   collectionsById,
   onChange,
   onRun,
@@ -457,6 +459,8 @@ function SearchSection({
   results: KnowledgeSearchHit[];
   searching: boolean;
   ran: boolean;
+  unavailable: boolean;
+  unavailableDetail: string | null;
   collectionsById: Map<string, Collection>;
   onChange: (v: string) => void;
   onRun: () => void;
@@ -498,7 +502,29 @@ function SearchSection({
         </p>
       )}
 
-      {!searching && ran && results.length === 0 && (
+      {/* Retrieval down: we never reached the index, so "no matches" would be
+          a claim we cannot make. Say what actually happened instead. */}
+      {!searching && unavailable && (
+        <div
+          role="status"
+          className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-200"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            <strong className="font-semibold">
+              Knowledge search is unavailable.
+            </strong>{" "}
+            {unavailableDetail ||
+              "The search index could not be reached, so we cannot tell you whether your knowledge bases contain a match."}{" "}
+            Answers in this room are{" "}
+            <strong className="font-semibold">not grounded</strong> in your
+            knowledge bases right now.
+          </span>
+        </div>
+      )}
+
+      {/* A real miss — the index answered, and it had nothing. */}
+      {!searching && !unavailable && ran && results.length === 0 && (
         <p className="px-1 pt-3 text-center text-xs text-slate-500">
           No matches in the attached knowledge bases.
         </p>
@@ -560,6 +586,8 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
     searchResults,
     searching,
     searchRan,
+    retrievalUnavailable,
+    retrievalDetail,
     error,
     refreshCollections,
     refreshAttached,
@@ -760,16 +788,29 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
             results={searchResults}
             searching={searching}
             ran={searchRan}
+            unavailable={retrievalUnavailable}
+            unavailableDetail={retrievalDetail}
             collectionsById={collectionsById}
             onChange={setSearchQuery}
             onRun={() => void runSearch(searchQuery)}
             onClear={clearSearch}
           />
           {/* Context line: what attaching does. */}
-          <p className="shrink-0 border-b border-line bg-white/[0.02] px-3 py-2 text-[11px] text-slate-500">
-            Attached knowledge bases are searched by this room's agent. Open one
-            to upload & read documents.
-          </p>
+          {/* Don't repeat the "the agent searches these" promise while
+              retrieval is down — right now it doesn't. */}
+          {retrievalUnavailable ? (
+            <p className="shrink-0 border-b border-line bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/80">
+              Retrieval is down, so attached knowledge bases are{" "}
+              <strong className="font-semibold">not</strong> being searched by
+              this room&apos;s agent. You can still upload &amp; read documents;
+              they become searchable once the index is reachable again.
+            </p>
+          ) : (
+            <p className="shrink-0 border-b border-line bg-white/[0.02] px-3 py-2 text-[11px] text-slate-500">
+              Attached knowledge bases are searched by this room&apos;s agent.
+              Open one to upload &amp; read documents.
+            </p>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto">
             <CollectionList
               collections={collections}

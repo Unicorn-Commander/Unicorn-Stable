@@ -60,11 +60,23 @@ from app.security.upload_guard import (
     is_dangerous_content_type,
     sniff_is_markup,
 )
-from app.services.knowledge_service import knowledge_service
+from app.services.knowledge_service import (
+    RETRIEVAL_UNAVAILABLE,
+    knowledge_service,
+)
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+# Shown whenever the retrieval plane could not be reached. Deliberately states
+# what is NOT known: an unreachable index tells us nothing about whether a match
+# exists, so we must not report it as "no matches".
+UNAVAILABLE_DETAIL = (
+    "Knowledge retrieval is unavailable \u2014 the search index could not be "
+    "reached, so we cannot tell you whether your knowledge bases contain a "
+    "match. Answers in this room are NOT grounded in them right now."
+)
 
 # Same per-file cap + allowed types as app/api/uploads.py (document subset).
 MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -140,6 +152,19 @@ class KnowledgeSearchHit(BaseModel):
 
 class KnowledgeSearchResponse(BaseModel):
     results: list[KnowledgeSearchHit]
+
+
+class RetrievalHealthResponse(BaseModel):
+    """Whether knowledge retrieval can run at all.
+
+    Lets a client state the honest thing up front — "search is down" — instead
+    of running a query and mislabelling the resulting silence as "no matches".
+    """
+
+    available: bool
+    qdrant: str
+    infinity: str
+    detail: str
 
 
 def _collection_to_response(c: KnowledgeCollection) -> CollectionResponse:
@@ -265,6 +290,26 @@ async def create_collection(
     await db.commit()
     await db.refresh(collection)
     return _collection_to_response(collection)
+
+
+@router.get("/knowledge/health", response_model=RetrievalHealthResponse)
+async def knowledge_health(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> RetrievalHealthResponse:
+    """Report whether knowledge retrieval can run (vector index + embeddings).
+
+    Cheap, authenticated, and never raises — a client can call this before or
+    alongside a search so it can tell the user "search is down" instead of
+    quietly rendering an ungrounded answer as though it were sourced.
+    """
+    health = await knowledge_service.retrieval_health(settings)
+    return RetrievalHealthResponse(
+        available=bool(health.get("available")),
+        qdrant=str(health.get("qdrant") or "unknown"),
+        infinity=str(health.get("infinity") or "unknown"),
+        detail=str(health.get("detail") or ""),
+    )
 
 
 @router.get("/knowledge/collections", response_model=list[CollectionResponse])
@@ -539,8 +584,10 @@ async def get_document_content(
     into (and embedded from) are fetched from the SAME qdrant collection the
     room agent searches, so what a user reads here is exactly what the agent
     retrieves over. Scoped like the neighbouring document routes — the document
-    must belong to the addressed collection (404 otherwise). Content-fetch is
-    fail-safe (``chunks: []`` when nothing is indexed, e.g. a ``failed`` doc).
+    must belong to the addressed collection (404 otherwise). ``chunks: []`` means
+    nothing is indexed (e.g. a ``failed`` or still-``indexing`` doc). If the
+    document is ``ready`` but the index cannot be reached, this returns **503**
+    rather than showing a ready document as empty.
     """
     await _authz_collection(db, collection_id, user, settings)
     document = await db.get(KnowledgeDocument, document_id)
@@ -549,9 +596,17 @@ async def get_document_content(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         )
 
-    chunks = await knowledge_service.get_document_chunks(
+    content = await knowledge_service.get_document_chunks_detailed(
         settings=settings, document_id=document_id
     )
+    if content["status"] == RETRIEVAL_UNAVAILABLE and document.status == "ready":
+        # The document IS indexed, so empty chunks would misrepresent it as
+        # blank. Say the reader is unavailable instead.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=UNAVAILABLE_DETAIL,
+        )
+    chunks = content["chunks"]
     return DocumentContentResponse(
         document_id=document.id,
         filename=document.filename,
@@ -669,12 +724,16 @@ async def search_room_knowledge(
     """Run — as a human — the SAME KB search the room's agent runs.
 
     Retrieves the top excerpts across every Knowledge Base attached to the room,
-    using the identical ``knowledge_service.search_knowledge`` retrieval the
-    agent uses via ``internal_knowledge`` (embed -> hybrid qdrant search over the
-    room's ``collection_id``s -> rerank). Only the auth differs: a room member's
+    using the identical ``knowledge_service`` retrieval the agent uses via
+    ``internal_knowledge`` (embed -> hybrid qdrant search over the room's
+    ``collection_id``s -> rerank). Only the auth differs: a room member's
     Keycloak token here vs. the shared LiveKit secret there, so results a human
-    sees match what the agent would surface. A room with no attached KBs (or any
-    internal failure) returns ``{"results": []}`` — never an error.
+    sees match what the agent would surface.
+
+    A room with no attached KBs, or a genuine miss, returns ``{"results": []}``.
+    An unreachable retrieval plane returns **503** — NOT an empty result set.
+    Those are different facts and the UI renders them differently: "nothing
+    matched" vs "we could not look".
     """
     collection_ids = (
         await db.execute(
@@ -687,12 +746,28 @@ async def search_room_knowledge(
     if not collection_ids:
         return KnowledgeSearchResponse(results=[])
 
-    hits = await knowledge_service.search_knowledge(
+    search = await knowledge_service.search_knowledge_detailed(
         settings=settings,
         collection_ids=collection_ids,
         query=body.query,
         k=body.k,
     )
+    if search["status"] == RETRIEVAL_UNAVAILABLE:
+        # An empty result set here would be a lie: we never reached the index,
+        # so "no matches" is a claim we cannot make. Fail loudly instead.
+        health = await knowledge_service.retrieval_health(settings)
+        logger.warning(
+            "kb_search_unavailable",
+            room_id=str(room_id),
+            qdrant=health.get("qdrant"),
+            infinity=health.get("infinity"),
+            detail=health.get("detail"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=UNAVAILABLE_DETAIL,
+        )
+    hits = search["results"]
     results = [
         KnowledgeSearchHit(
             text=h.get("text") or "",

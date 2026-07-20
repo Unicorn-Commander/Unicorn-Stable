@@ -18,6 +18,8 @@ import {
   Quote,
   Bookmark,
   LayoutPanelLeft,
+  Library,
+  FileText,
   RefreshCw,
   Square,
   CheckSquare,
@@ -29,6 +31,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type ApiError, type Message, type ProjectOpsProject } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 
@@ -46,6 +49,61 @@ function projectOpsMeta(message: Message) {
       task_url?: string;
     };
   } | undefined)?.projectops_task;
+}
+
+/**
+ * One knowledge-base excerpt an answer was grounded in. The backend stamps
+ * these on an agent message as `metadata.citations` when it injects retrieved
+ * context, alongside `metadata.grounding` describing the retrieval outcome.
+ */
+interface MessageCitation {
+  filename: string;
+  text?: string | null;
+  score?: number | null;
+  collection_id?: string | null;
+  collection_name?: string | null;
+  document_id?: string | null;
+  chunk_idx?: number | null;
+}
+
+/** What retrieval actually did for this answer. */
+type Grounding = "knowledge" | "none" | "unavailable";
+
+/**
+ * Reads an agent message's grounding record.
+ *
+ * Three outcomes must stay distinguishable, because collapsing them is how a UI
+ * ends up lying about whether an answer is sourced:
+ *   `knowledge`   — retrieval ran and returned the excerpts in `citations`.
+ *   `none`        — retrieval ran and found nothing; the answer is unsourced.
+ *   `unavailable` — retrieval could not run; we do not know if sources exist.
+ *
+ * `null` means the message carries no grounding record at all (it predates the
+ * metadata, or the room has no knowledge bases), so we assert nothing and
+ * render nothing — silence is honest; a green "grounded" badge would not be.
+ */
+function groundingMeta(message: Message): {
+  citations: MessageCitation[];
+  grounding: Grounding | null;
+} {
+  const meta = message.metadata as
+    | { citations?: unknown; grounding?: unknown }
+    | undefined;
+  const raw = Array.isArray(meta?.citations) ? meta.citations : [];
+  const citations = raw.filter(
+    (c): c is MessageCitation =>
+      !!c &&
+      typeof c === "object" &&
+      typeof (c as MessageCitation).filename === "string",
+  );
+  const g = meta?.grounding;
+  const grounding: Grounding | null =
+    g === "knowledge" || g === "none" || g === "unavailable" ? g : null;
+  // Citations present without an explicit marker still mean "grounded".
+  return {
+    citations,
+    grounding: grounding ?? (citations.length ? "knowledge" : null),
+  };
 }
 
 /**
@@ -71,6 +129,126 @@ function delegationMeta(
   const d = meta?.delegated_from;
   if (!d) return null;
   return { name: d.name || d.agent_id || "orchestrator", emoji: d.emoji };
+}
+
+/**
+ * "Sources" under an agent answer — the excerpts it was actually grounded in,
+ * each clickable through to the document text it came from.
+ *
+ * Never claims more than it knows: an answer retrieval could not run for says
+ * so, and one that genuinely matched nothing says that, instead of quietly
+ * looking identical to a sourced answer.
+ */
+function SourcesBlock({
+  citations,
+  grounding,
+}: {
+  citations: MessageCitation[];
+  grounding: Grounding | null;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (grounding === "unavailable") {
+    return (
+      <div
+        role="note"
+        className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-200"
+      >
+        <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+        <span>
+          Knowledge retrieval was unavailable for this answer — it is{" "}
+          <strong className="font-semibold">not grounded</strong> in this
+          room&apos;s knowledge bases.
+        </span>
+      </div>
+    );
+  }
+
+  if (citations.length === 0) {
+    if (grounding === "none") {
+      return (
+        <p className="mt-2 text-[11px] text-slate-500">
+          No knowledge-base match — answered without sources.
+        </p>
+      );
+    }
+    return null;
+  }
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="focus-ring inline-flex items-center gap-1 rounded-md bg-stable-cyan/10 px-1.5 py-0.5 text-[10px] font-medium text-stable-cyan transition-colors hover:bg-stable-cyan/20"
+      >
+        <Library className="h-3 w-3" />
+        {citations.length === 1 ? "1 source" : `${citations.length} sources`}
+        <ChevronDown
+          className={clsx("h-3 w-3 transition-transform", open && "rotate-180")}
+        />
+      </button>
+
+      {open && (
+        <ol className="mt-1.5 flex flex-col gap-1.5">
+          {citations.map((c, i) => {
+            const pct =
+              typeof c.score === "number"
+                ? Math.round(Math.max(0, Math.min(1, c.score)) * 100)
+                : null;
+            // Only a citation that knows where it lives can be opened.
+            const collectionId = c.collection_id;
+            return (
+              <li
+                key={`${c.document_id ?? c.filename}-${c.chunk_idx ?? i}`}
+                className="rounded-lg border border-line bg-surface-1/80 p-2"
+              >
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  {collectionId ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void useKnowledgeStore
+                          .getState()
+                          .revealSource(collectionId, c.document_id)
+                      }
+                      className="focus-ring flex min-w-0 items-center gap-1 rounded text-[11px] text-stable-cyan transition-colors hover:text-stable-cyan-light"
+                    >
+                      <FileText className="h-3 w-3 shrink-0" />
+                      <span className="truncate underline underline-offset-2">
+                        {c.filename}
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="flex min-w-0 items-center gap-1 text-[11px] text-slate-400">
+                      <FileText className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{c.filename}</span>
+                    </span>
+                  )}
+                  {pct !== null && (
+                    <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
+                      {pct}% match
+                    </span>
+                  )}
+                </div>
+                {c.text && (
+                  <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-slate-300">
+                    {c.text}
+                  </p>
+                )}
+                {c.collection_name && (
+                  <span className="mt-1 block text-[10px] text-slate-500">
+                    {c.collection_name}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
+  );
 }
 
 function defaultTaskTitle(content: string) {
@@ -998,6 +1176,7 @@ export function MessageBubble({
   const [lightbox, setLightbox] = useState<{ url: string; filename: string } | null>(null);
   const promoted = projectOpsMeta(message);
   const artifact = artifactMeta(message);
+  const { citations, grounding } = groundingMeta(message);
   const delegated = delegationMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
@@ -1959,6 +2138,11 @@ export function MessageBubble({
                 <LayoutPanelLeft className="h-3 w-3" />
                 {artifact.artifactTitle ? `Open "${artifact.artifactTitle}" in canvas` : "Open in canvas"}
               </button>
+            )}
+            {/* What this answer was actually grounded in (agent replies only,
+                and never while the reply is still streaming). */}
+            {isAgent && !isGenerating && (
+              <SourcesBlock citations={citations} grounding={grounding} />
             )}
             {Array.isArray(
               (message.metadata as { attachments?: unknown[] } | undefined)
