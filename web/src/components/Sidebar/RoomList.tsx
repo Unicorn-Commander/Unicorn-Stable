@@ -16,10 +16,12 @@ import {
   Lock,
   MessageSquare,
   MoreVertical,
+  Pencil,
   Plug,
   Plus,
   Search,
   Sparkles,
+  Trash2,
   Users,
 } from "lucide-react";
 import clsx from "clsx";
@@ -39,55 +41,24 @@ import { identityFor } from "@/lib/identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
   useChannelCategories,
   foldersFor,
-  collapseKey,
   type FolderSection,
 } from "@/stores/categoryStore";
+import {
+  buildSidebarModel,
+  isPrivateChannel,
+  SECTION_KEYS,
+  type PersonEntry,
+  type SidebarGroup,
+  type SidebarRow,
+} from "./sidebarModel";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { NewChatButton } from "./NewChatButton";
 import { resolveDefaultAgent } from "./newChat";
-
-/**
- * Channels are discoverable and self-joinable by anyone on the instance (see
- * GET /rooms/browse) — they are the PUBLIC surface. DMs and group DMs are never
- * browsable, so they are the private one. `is_private` is read defensively: the
- * backend has no per-channel privacy column today, and the day it grows one the
- * sidebar honours it without another change here.
- */
-function isPrivateChannel(room: Room): boolean {
-  return (room as { is_private?: boolean }).is_private === true;
-}
-
-/**
- * Which person row a room belongs to, or null if it is not a person at all
- * (channels, and human multi-party rooms, which get their own section).
- *
- * This is the identity a people-folder is filed against, so it is deliberately
- * the ONLY definition of it — the sidebar grouping and the folder lookup read
- * the same function and cannot drift into disagreeing about who someone is.
- *
- * Note it is a NAME, not a server-unique id, which is why categoryStore keeps
- * people assignments bucketed per instance instead of globally.
- */
-function personKeyOf(room: Room): string | null {
-  if (room.type !== "dm" && room.type !== "group_dm") return null;
-  if (room.brigade_agent_id) return `agent:${room.brigade_agent_id}`;
-  if (room.type === "group_dm") return null;
-  // The /rooms payload carries no member rows, so the counterpart display name
-  // is the only handle we have on "who this is" — and it is exactly what the
-  // row already shows.
-  return `person:${room.name}`;
-}
-
-/** Section-level collapse keys. Distinct from folder keys by construction. */
-const SECTION_KEYS = {
-  channels: "section:channels",
-  people: "section:people",
-  groups: "section:groups",
-} as const;
 
 export function RoomList() {
   const navigate = useNavigate();
@@ -121,7 +92,13 @@ export function RoomList() {
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const [createDmOpen, setCreateDmOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  // Search + per-person expansion live in a store, not here: they change which
+  // rows are on screen, and Alt+↑/↓ walks that same visible order. See
+  // sidebarModel.ts.
+  const searchQuery = useSidebarUi((s) => s.searchQuery);
+  const setSearchQuery = useSidebarUi((s) => s.setSearchQuery);
+  const expandedPeople = useSidebarUi((s) => s.expandedPeople);
+  const togglePersonExpanded = useSidebarUi((s) => s.togglePersonExpanded);
   const [seeding, setSeeding] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
   const queryClient = useQueryClient();
@@ -174,28 +151,11 @@ export function RoomList() {
     }
   }
 
-  const filteredRooms = useMemo(() => {
-    if (!searchQuery.trim()) return rooms;
-    const q = searchQuery.toLowerCase();
-    return rooms.filter(
-      (r) =>
-        r.name.toLowerCase().includes(q) ||
-        r.description.toLowerCase().includes(q),
-    );
-  }, [rooms, searchQuery]);
-
-  const channels = useMemo(
-    () => filteredRooms.filter((r) => r.type === "channel"),
-    [filteredRooms],
-  );
-
-  // Personal folders (client-side; see categoryStore). The folder LIST is
-  // per-instance — one server's folders must never show up in another's
-  // sidebar — so everything here is scoped by the active instance id.
+  // Personal folders (client-side; see categoryStore). Folder identity is
+  // (instance, section, name), so everything here is scoped by the active
+  // instance id — one server's folders must never reach another's.
   const scope = useFederationStore((s) => s.activeInstanceId);
   const categories = useChannelCategories((s) => s.categories);
-  // People are filed BY PERSON, per instance — see categoryStore. A person key
-  // is a name, not a server-unique room id, so this map must stay scoped.
   const peopleByScope = useChannelCategories((s) => s.people);
   const collapsed = useChannelCategories((s) => s.collapsed);
   const folderDefs = useChannelCategories((s) => s.folders);
@@ -203,16 +163,60 @@ export function RoomList() {
   const setPeopleCategory = useChannelCategories((s) => s.setPeopleCategory);
   const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
   const ensureFolder = useChannelCategories((s) => s.ensureFolder);
-  const adoptLegacyFolders = useChannelCategories((s) => s.adoptLegacyFolders);
+  const renameFolder = useChannelCategories((s) => s.renameFolder);
+  const removeFolder = useChannelCategories((s) => s.removeFolder);
+  const adoptLegacyCategories = useChannelCategories(
+    (s) => s.adoptLegacyCategories,
+  );
   const adoptLegacyPeopleFolders = useChannelCategories(
     (s) => s.adoptLegacyPeopleFolders,
   );
 
-  // Rescue folders saved before the per-instance folder list existed, once the
-  // sidebar knows which server it is looking at. Idempotent + self-disarming.
+  // THE sidebar structure. RoomList renders it; AppShell flattens the same
+  // model for Alt+↑/↓. There is no second model to keep in sync.
+  const model = useMemo(
+    () =>
+      buildSidebarModel({
+        rooms,
+        searchQuery,
+        scope,
+        categories,
+        people: peopleByScope,
+        folders: folderDefs,
+        collapsed,
+        expandedPeople,
+      }),
+    [
+      rooms,
+      searchQuery,
+      scope,
+      categories,
+      peopleByScope,
+      folderDefs,
+      collapsed,
+      expandedPeople,
+    ],
+  );
+
+  // Attribute channel folders saved before `categories` was per-instance to the
+  // server that actually owns those rooms. Convergent and self-limiting: it
+  // only claims room ids this backend serves, and consumes what it claims.
   useEffect(() => {
-    if (scope) adoptLegacyFolders(scope);
-  }, [scope, adoptLegacyFolders]);
+    if (scope) adoptLegacyCategories(scope, model.roomKinds);
+  }, [scope, model.roomKinds, adoptLegacyCategories]);
+
+  // Rescue people filed by the previous build, which recorded the folder on
+  // every one of the person's ROOM ids. Rooms arrive updated_at DESC, so a
+  // newly created thread became threads[0] and the old read path landed on an
+  // unassigned thread — the person visibly fell out of their folder. The folder
+  // hangs off the PERSON now; this carries the already-saved assignments over
+  // rather than orphaning them. Safe on every room refresh: it consumes the
+  // room-id entries it adopts, so it converges and can never resurrect a
+  // cleared assignment.
+  useEffect(() => {
+    if (!scope || model.allPersonThreads.length === 0) return;
+    adoptLegacyPeopleFolders(scope, model.allPersonThreads);
+  }, [scope, model.allPersonThreads, adoptLegacyPeopleFolders]);
 
   const channelFolders = useMemo(
     () => foldersFor(folderDefs, scope, "channels"),
@@ -222,21 +226,32 @@ export function RoomList() {
     () => foldersFor(folderDefs, scope, "people"),
     [folderDefs, scope],
   );
-  /** personKey -> folder, for the server currently on screen. */
+  /** roomId -> folder / personKey -> folder, for the server on screen. */
+  const channelsFiled = useMemo(
+    () => (scope ? categories[scope] : undefined),
+    [categories, scope],
+  );
   const peopleFiled = useMemo(
     () => (scope ? peopleByScope[scope] : undefined),
     [peopleByScope, scope],
   );
 
-  // Menu + inline-input state. The key is a room id for channels and a person /
-  // agent key for the people list, so one menu is open at a time across both.
+  // Menu + inline-input state. The key is a room id for channels, a person /
+  // agent key for people, and `folder:<section>:<name>` for a folder header, so
+  // exactly one menu is open at a time across all three.
   const [menuKey, setMenuKeyRaw] = useState<string | null>(null);
   // Inline "New folder" input inside the ⋮ menu (null = collapsed to the
   // button). Never survives a menu open/close, hence the wrapped setter.
   const [newCatDraft, setNewCatDraft] = useState<string | null>(null);
+  // Rename-in-place draft and the two-step delete confirm, both scoped to the
+  // folder menu that is currently open.
+  const [renameDraft, setRenameDraft] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const setMenuKey = (key: string | null) => {
     setMenuKeyRaw(key);
     setNewCatDraft(null);
+    setRenameDraft(null);
+    setConfirmingDelete(false);
   };
   // Header "new folder" inputs, one per section.
   const [newFolderFor, setNewFolderFor] = useState<FolderSection | null>(null);
@@ -254,52 +269,8 @@ export function RoomList() {
     setNewFolderDraft("");
   }
 
-  /**
-   * Bucket rows into the instance's folders. Only folders that actually hold a
-   * visible row come back — an empty folder (nothing filed, or everything
-   * filtered out by search) must NOT leave a stray header behind. It stays
-   * reachable in every "Move to folder" menu, which is where an empty folder is
-   * useful.
-   */
-  function bucket<T>(
-    items: T[],
-    folderNames: string[],
-    folderOf: (item: T) => string | undefined,
-  ): { groups: [string, T[]][]; ungrouped: T[] } {
-    const known = new Set(folderNames);
-    const byFolder = new Map<string, T[]>();
-    const ungrouped: T[] = [];
-    for (const item of items) {
-      const name = folderOf(item);
-      // A name we do not know on THIS instance means the assignment belongs to
-      // another server (room ids are unique, so this is belt-and-braces) — the
-      // row falls back to ungrouped rather than conjuring a folder.
-      if (name && known.has(name)) {
-        const arr = byFolder.get(name);
-        if (arr) arr.push(item);
-        else byFolder.set(name, [item]);
-      } else {
-        ungrouped.push(item);
-      }
-    }
-    const groups = folderNames
-      .filter((name) => (byFolder.get(name)?.length ?? 0) > 0)
-      .map((name) => [name, byFolder.get(name)!] as [string, T[]]);
-    return { groups, ungrouped };
-  }
-
-  const channelBuckets = useMemo(
-    () => bucket(channels, channelFolders, (r) => categories[r.id]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [channels, channelFolders, categories],
-  );
-
-  function assignCategory(
-    roomIds: string | string[],
-    category: string | null,
-    section: FolderSection,
-  ) {
-    setCategory(roomIds, category, { scope: scope ?? undefined, section });
+  function assignCategory(roomIds: string | string[], category: string | null) {
+    setCategory(scope, roomIds, category);
     setMenuKey(null);
   }
 
@@ -408,7 +379,7 @@ export function RoomList() {
    * has no hover, and an invisible-but-tappable button is not a feature. Below
    * md it is permanently visible.
    */
-  function renderMenuTrigger(key: string, label: string) {
+  function renderMenuTrigger(key: string, label: string, alwaysVisible = false) {
     const open = menuKey === key;
     return (
       <button
@@ -418,7 +389,7 @@ export function RoomList() {
         }}
         className={clsx(
           "focus-ring mr-1 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1",
-          open
+          open || alwaysVisible
             ? "opacity-100"
             : "opacity-70 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
         )}
@@ -511,7 +482,7 @@ export function RoomList() {
   function renderChannelRow(room: Room) {
     const isActive = activeRoomId === room.id;
     const unread = unreadCounts[room.id] ?? 0;
-    const cat = categories[room.id];
+    const cat = channelsFiled?.[room.id];
     const menuOpen = menuKey === room.id;
     const muted = isMuted(room.id);
     const priv = isPrivateChannel(room);
@@ -596,7 +567,7 @@ export function RoomList() {
             <>
               {renderNotifyItems(room)}
               {renderFolderMenuItems(
-                (name) => assignCategory(room.id, name, "channels"),
+                (name) => assignCategory(room.id, name),
                 cat,
                 "channels",
               )}
@@ -605,119 +576,6 @@ export function RoomList() {
       </li>
     );
   }
-
-  // ---- People + private groups ----------------------------------------------
-  // "Who you talk to", not "every room you are in". Agent conversations group
-  // under their resident (ChatGPT-style thread history) and human DMs group
-  // under the person, so someone you have several threads with is ONE row you
-  // can expand — and one thing you can file into a folder. Private group rooms
-  // are a different privacy class and get their own section below.
-  //
-  // The rooms query is already ordered most-recent-first by the backend
-  // (updated_at DESC), so each group's threads and the mixed ordering stay
-  // newest → oldest for free (a group sits at its newest thread's position).
-  type PersonEntry =
-    | { kind: "agent"; key: string; agentId: string; threads: Room[] }
-    | { kind: "person"; key: string; name: string; threads: Room[] };
-
-  const { peopleEntries, privateGroups } = useMemo(() => {
-    const byKey = new Map<string, PersonEntry>();
-    const peopleEntries: PersonEntry[] = [];
-    const privateGroups: Room[] = [];
-    for (const room of filteredRooms) {
-      if (room.type !== "dm" && room.type !== "group_dm") continue;
-      const agentId = room.brigade_agent_id;
-      if (agentId) {
-        const key = personKeyOf(room)!;
-        const existing = byKey.get(key);
-        if (existing) {
-          existing.threads.push(room);
-        } else {
-          const entry: PersonEntry = {
-            kind: "agent",
-            key,
-            agentId,
-            threads: [room],
-          };
-          byKey.set(key, entry);
-          peopleEntries.push(entry);
-        }
-      } else if (room.type === "group_dm") {
-        // A human multi-party room: private, invite-only, and not a "person".
-        privateGroups.push(room);
-      } else {
-        // 1:1 with a human. The room list carries no member rows (the /rooms
-        // payload has no members), so the counterpart's display name IS the
-        // grouping key — which is exactly what the row already shows.
-        const key = personKeyOf(room)!;
-        const existing = byKey.get(key);
-        if (existing) {
-          existing.threads.push(room);
-        } else {
-          const entry: PersonEntry = {
-            kind: "person",
-            key,
-            name: room.name,
-            threads: [room],
-          };
-          byKey.set(key, entry);
-          peopleEntries.push(entry);
-        }
-      }
-    }
-    return { peopleEntries, privateGroups };
-  }, [filteredRooms]);
-
-  // Every person on this server and all of their rooms.
-  //
-  // Deliberately built from the UNFILTERED room list: its only consumer is the
-  // one-way migration below, which must never see just whatever the search box
-  // happens to be showing.
-  const allPersonThreads = useMemo(() => {
-    const byKey = new Map<string, string[]>();
-    for (const room of rooms) {
-      const key = personKeyOf(room);
-      if (!key) continue;
-      const ids = byKey.get(key);
-      if (ids) ids.push(room.id);
-      else byKey.set(key, [room.id]);
-    }
-    return [...byKey.entries()].map(([key, roomIds]) => ({ key, roomIds }));
-  }, [rooms]);
-
-  // Rescue people filed by the previous build, which recorded the folder on
-  // every one of the person’s ROOM ids. Rooms arrive updated_at DESC, so a
-  // newly created thread became threads[0] and the old read path —
-  // categories[threads[0].id] — landed on an unassigned thread and the person
-  // visibly fell out of their folder. The folder hangs off the PERSON now; this
-  // carries the already-saved assignments over rather than orphaning them.
-  // Safe to run on every room refresh: it consumes the room-id entries it
-  // adopts, so it converges and can never resurrect a cleared assignment.
-  useEffect(() => {
-    if (!scope || allPersonThreads.length === 0) return;
-    adoptLegacyPeopleFolders(scope, allPersonThreads);
-  }, [scope, allPersonThreads, adoptLegacyPeopleFolders]);
-
-  // Keyed by the person, so thread order and newly arriving threads cannot
-  // move anyone. Empty folders still yield no group — bucket() drops them.
-  const peopleBuckets = useMemo(
-    () => bucket(peopleEntries, peopleFolders, (e) => peopleFiled?.[e.key]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [peopleEntries, peopleFolders, peopleFiled],
-  );
-
-  // Collapsed by default — one row per person; the chevron reveals history.
-  // Session-local UI state on purpose (like scroll position).
-  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const toggleExpanded = (key: string) =>
-    setExpandedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
 
   function agentDisplayName(agentId: string, threads: Room[]): string {
     const rosterAgent = agents.find((a) => a.id === agentId);
@@ -802,7 +660,7 @@ export function RoomList() {
    * history: the row opens the newest thread, the chevron reveals the rest, the
    * "+" starts a fresh thread (agents only — a human DM is a single room).
    */
-  function renderPersonEntry(entry: PersonEntry) {
+  function renderPersonEntry(entry: PersonEntry, expanded: boolean) {
     const isAgent = entry.kind === "agent";
     const threads = entry.threads;
     const name = isAgent
@@ -810,7 +668,6 @@ export function RoomList() {
       : entry.name;
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
-    const expanded = expandedKeys.has(entry.key);
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = threads.reduce((n, r) => n + (r.unread_count ?? 0), 0);
     const menuOpen = menuKey === entry.key;
@@ -934,7 +791,7 @@ export function RoomList() {
           {renderMenuTrigger(entry.key, `Options for ${name}`)}
           {threads.length > 1 && (
             <button
-              onClick={() => toggleExpanded(entry.key)}
+              onClick={() => togglePersonExpanded(entry.key)}
               className="focus-ring flex items-center gap-0.5 rounded-md p-1 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
               aria-expanded={expanded}
               aria-label={`${expanded ? "Hide" : "Show"} conversation history with ${name} (${threads.length})`}
@@ -1059,6 +916,17 @@ export function RoomList() {
     );
   }
 
+  function renderRow(row: SidebarRow): ReactNode {
+    switch (row.kind) {
+      case "channel":
+        return renderChannelRow(row.room);
+      case "group":
+        return renderPrivateGroup(row.room);
+      case "person":
+        return renderPersonEntry(row.entry, row.expanded);
+    }
+  }
+
   // ---- Section + folder chrome ---------------------------------------------
 
   function renderSectionHeader(
@@ -1134,46 +1002,174 @@ export function RoomList() {
     );
   }
 
-  /** A folder header + its rows. Callers only pass NON-EMPTY folders. */
-  function renderFolder<T>(
-    name: string,
-    section: FolderSection,
-    items: T[],
-    renderItem: (item: T) => ReactNode,
-  ) {
-    const key = collapseKey(name, section);
-    const shut = collapsed[key];
-    return (
-      <div key={key} className="mb-0.5">
-        <button
-          onClick={() => toggleCollapsed(key)}
-          className="focus-ring flex w-full items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
-          aria-expanded={!shut}
-        >
-          <ChevronDown
-            className={clsx(
-              "h-3 w-3 shrink-0 transition-transform duration-150",
-              shut && "-rotate-90",
-            )}
+  function commitRename(section: FolderSection, from: string) {
+    const to = (renameDraft ?? "").trim();
+    if (scope && to && to !== from) renameFolder(scope, section, from, to);
+    setMenuKey(null);
+  }
+
+  /**
+   * The folder ⋮ menu: rename in place, or delete.
+   *
+   * Both live behind an explicit, always-visible button rather than a
+   * hover-reveal — this sidebar is a touch surface, and a folder you can only
+   * rename with a mouse is a folder a phone user is stuck with forever.
+   * Deleting asks first, in-menu (a second tap, not a native confirm() a
+   * touch keyboard can hide), and it UNFILES the rows rather than removing
+   * them: a folder is a view over rooms, never a container that owns them.
+   */
+  function renderFolderMenu(section: FolderSection, name: string) {
+    if (renameDraft !== null) {
+      return renderMenuShell(
+        <div className="flex items-center gap-2 px-3 py-1.5">
+          <Pencil className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+          <input
+            autoFocus
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                commitRename(section, name);
+              } else if (e.key === "Escape") {
+                e.stopPropagation();
+                setRenameDraft(null);
+              }
+            }}
+            placeholder="Folder name"
+            aria-label={`Rename folder ${name}`}
+            className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
           />
-          <Folder className="h-3 w-3 shrink-0 opacity-50" aria-hidden="true" />
-          <span className="truncate">{name}</span>
-          <span className="ml-auto tabular-nums text-slate-500">
-            {items.length}
-          </span>
+        </div>,
+      );
+    }
+    if (confirmingDelete) {
+      return renderMenuShell(
+        <>
+          <p className="px-3 pb-1 pt-1.5 text-[11px] leading-snug text-slate-400">
+            Delete “{name}”? The{" "}
+            {section === "channels" ? "channels" : "people"} in it stay — they
+            move back to the ungrouped list.
+          </p>
+          <button
+            role="menuitem"
+            onClick={() => {
+              if (scope) removeFolder(scope, section, name);
+              setMenuKey(null);
+            }}
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-rose-300 transition-colors hover:bg-rose-500/10"
+          >
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            Delete folder
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => setConfirmingDelete(false)}
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+          >
+            Cancel
+          </button>
+        </>,
+      );
+    }
+    return renderMenuShell(
+      <>
+        <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Folder
+        </p>
+        <button
+          role="menuitem"
+          onClick={() => setRenameDraft(name)}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <Pencil className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Rename…
         </button>
-        {!shut && (
-          <ul role="list" className="ml-1.5 border-l border-line pl-1">
-            {items.map(renderItem)}
-          </ul>
-        )}
+        <button
+          role="menuitem"
+          onClick={() => setConfirmingDelete(true)}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <Trash2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Delete folder…
+        </button>
+      </>,
+    );
+  }
+
+  /** A folder header + its rows. Empty folders still render: the header is
+   *  where rename/delete live, and a folder you cannot see is a folder you
+   *  cannot fix. */
+  function renderFolder(group: SidebarGroup) {
+    const name = group.folder!;
+    const section = group.section!;
+    const key = group.collapseKey!;
+    const menuId = `folder:${section}:${name}`;
+    const menuOpen = menuKey === menuId;
+    return (
+      <div key={key} className="relative mb-0.5">
+        <div className="group flex items-center rounded-md">
+          <button
+            onClick={() => toggleCollapsed(key)}
+            className="focus-ring flex min-w-0 flex-1 items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+            aria-expanded={!group.collapsed}
+          >
+            <ChevronDown
+              className={clsx(
+                "h-3 w-3 shrink-0 transition-transform duration-150",
+                group.collapsed && "-rotate-90",
+              )}
+            />
+            <Folder className="h-3 w-3 shrink-0 opacity-50" aria-hidden="true" />
+            <span className="truncate">{name}</span>
+            <span className="ml-auto tabular-nums text-slate-500">
+              {group.rows.length}
+            </span>
+          </button>
+          {renderMenuTrigger(menuId, `Options for folder ${name}`, true)}
+        </div>
+        {menuOpen && renderFolderMenu(section, name)}
+        {!group.collapsed &&
+          (group.rows.length > 0 ? (
+            <ul role="list" className="ml-1.5 border-l border-line pl-1">
+              {group.rows.map(renderRow)}
+            </ul>
+          ) : (
+            <p className="ml-1.5 border-l border-line py-1 pl-3 text-[11px] italic text-slate-600">
+              Empty — use a row’s ⋮ menu to file something here
+            </p>
+          ))}
       </div>
     );
   }
 
-  const channelsShut = collapsed[SECTION_KEYS.channels];
-  const peopleShut = collapsed[SECTION_KEYS.people];
-  const groupsShut = collapsed[SECTION_KEYS.groups];
+  function renderSectionBody(section: (typeof model.sections)[number]) {
+    return (
+      <>
+        {section.groups.map((group, i) =>
+          group.folder !== null ? (
+            renderFolder(group)
+          ) : (
+            <ul role="list" key={`ungrouped-${i}`}>
+              {group.rows.map(renderRow)}
+            </ul>
+          ),
+        )}
+      </>
+    );
+  }
+
+  const [channelSection, peopleSection, groupsSection] = model.sections;
+  const channelCount = channelSection.groups.reduce(
+    (n, g) => n + g.rows.length,
+    0,
+  );
+  const peopleCount = peopleSection.groups.reduce(
+    (n, g) => n + g.rows.length,
+    0,
+  );
+  const groupCount = groupsSection.groups.reduce((n, g) => n + g.rows.length, 0);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -1293,11 +1289,11 @@ export function RoomList() {
             </>,
           )}
 
-          {!channelsShut && (
+          {!channelSection.collapsed && (
             <>
               {renderNewFolderInput("channels")}
 
-              {channels.length === 0 && (
+              {channelCount === 0 && (
                 <div className="px-2.5 py-2">
                   <p className="mb-2 text-xs text-slate-500">No channels yet</p>
                   <button
@@ -1311,15 +1307,7 @@ export function RoomList() {
                 </div>
               )}
 
-              {/* Folders (only those with a visible channel), then the rest. */}
-              {channelBuckets.groups.map(([name, roomsInFolder]) =>
-                renderFolder(name, "channels", roomsInFolder, (room) =>
-                  renderChannelRow(room),
-                ),
-              )}
-              <ul role="list">
-                {channelBuckets.ungrouped.map((room) => renderChannelRow(room))}
-              </ul>
+              {renderSectionBody(channelSection)}
             </>
           )}
         </section>
@@ -1341,11 +1329,11 @@ export function RoomList() {
             </>,
           )}
 
-          {!peopleShut && (
+          {!peopleSection.collapsed && (
             <>
               {renderNewFolderInput("people")}
 
-              {peopleEntries.length === 0 && privateGroups.length === 0 && (
+              {peopleCount === 0 && groupCount === 0 && (
                 <div className="mx-2 mb-1 flex flex-col gap-1">
                   <button
                     onClick={startDefaultChat}
@@ -1368,33 +1356,20 @@ export function RoomList() {
                 </div>
               )}
 
-              {peopleBuckets.groups.map(([name, entries]) =>
-                renderFolder(name, "people", entries, (entry) =>
-                  renderPersonEntry(entry),
-                ),
-              )}
-              <ul role="list">
-                {peopleBuckets.ungrouped.map((entry) =>
-                  renderPersonEntry(entry),
-                )}
-              </ul>
+              {renderSectionBody(peopleSection)}
             </>
           )}
         </section>
 
         {/* Private groups only exist once you are in one — no stray header. */}
-        {privateGroups.length > 0 && (
+        {groupCount > 0 && (
           <section>
             {renderSectionHeader(
               SECTION_KEYS.groups,
               "Private groups",
               "Invite only — these never appear in Browse channels",
             )}
-            {!groupsShut && (
-              <ul role="list">
-                {privateGroups.map((room) => renderPrivateGroup(room))}
-              </ul>
-            )}
+            {!groupsSection.collapsed && renderSectionBody(groupsSection)}
           </section>
         )}
       </nav>
