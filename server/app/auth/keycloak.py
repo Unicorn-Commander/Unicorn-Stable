@@ -146,15 +146,16 @@ def extract_user_identity(claims: dict[str, Any]) -> dict[str, Any]:
     is_agent = "agent-service" in roles or claims.get("azp", "").endswith("-agent")
     participant_type = "agent" if is_agent else "human"
 
-    # Avatar precedence: explicit picture claim → Gravatar derived from email
+    # Avatar comes from the Keycloak `picture` claim, or nowhere. There is
+    # deliberately NO Gravatar fallback. The old one built a gravatar.com URL
+    # with `d=404`, which is a server-side EXISTENCE PROBE, not an image
+    # source: dropped into <img src> it renders a BROKEN IMAGE for every user
+    # without a Gravatar account. Verified 2026-07-20 -- 3 of 3 stamped rows
+    # returned HTTP 404. It also leaked each user's email MD5 to a third party
+    # on every avatar render, which is why the newer avatar spine rejected
+    # Gravatar outright (see the note in api/participants.py).
+    # A null avatar is correct: the UI already falls back to initials.
     avatar_url: str | None = claims.get("picture") or None
-    if not avatar_url:
-        email = (claims.get("email") or "").strip().lower()
-        if email:
-            import hashlib
-
-            digest = hashlib.md5(email.encode("utf-8")).hexdigest()  # noqa: S324
-            avatar_url = f"https://www.gravatar.com/avatar/{digest}?d=404&s=128"
 
     return {
         "sub": claims["sub"],
