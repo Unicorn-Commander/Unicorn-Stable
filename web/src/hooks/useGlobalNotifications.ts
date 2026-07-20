@@ -14,6 +14,18 @@ import { playCue } from "@/lib/sounds";
 import { ensurePushSubscription } from "@/lib/webpush";
 
 /**
+ * Hard ceilings for a server-asserted agent state held locally.
+ *
+ * These are BACKSTOPS, not the mechanism: the state is meant to be cleared by
+ * an explicit event from the server. If that event is lost, these bound how
+ * long a stale claim can survive. A generating reply that has produced nothing
+ * for two minutes is not worth asserting; an uncollected bridge message is
+ * capped at the server's own marker TTL.
+ */
+const AGENT_THINKING_MAX_MS = 120_000;
+const AGENT_RELAY_MAX_MS = 300_000;
+
+/**
  * Does this message @-mention the current user? Matches @here / @channel
  * (broad) or @<username> (word-boundary, case-insensitive). Used to gate
  * pings for rooms set to the "mentions only" notification level.
@@ -225,31 +237,92 @@ export function useGlobalNotifications() {
       });
     });
 
+    // A GENUINE agent-working signal, emitted by the backend around the actual
+    // Brigade call (services/agent_chat_responder.py). It is recorded per agent
+    // in its own store slice — not smuggled into the human `typing` list — so
+    // the UI can name exactly which agent is working, and an agent is never
+    // conflated with a person who is typing.
     const unsubAgentTyping = ws.on("agent_typing", (data: WsEventPayload) => {
       const e = data as unknown as {
         room_id: string;
         brigade_agent_id: string;
         typing: boolean;
+        agent_label?: string | null;
+        participant_id?: string | null;
       };
       if (!e?.room_id || !e?.brigade_agent_id) return;
-      const display = e.brigade_agent_id
-        .replace(/-/g, " ")
-        .replace(/\b\w/g, (c) => c.toUpperCase());
-      const fakeUser = `agent:${e.brigade_agent_id}`;
       const store = useAppStore.getState();
-      if (e.typing) {
-        // Use the existing typing system. timeout is required by TypingUser.
-        const timeout = setTimeout(() => {
-          useAppStore.getState().removeTypingUser(e.room_id, fakeUser);
-        }, 60_000);
-        store.addTypingUser(e.room_id, {
-          user_id: fakeUser,
-          username: display,
-          timeout,
-        });
-      } else {
-        store.removeTypingUser(e.room_id, fakeUser);
+      if (!e.typing) {
+        store.clearAgentActivity(e.room_id, e.brigade_agent_id);
+        return;
       }
+      // Prefer the server-supplied display name; fall back to prettifying the
+      // agent id so an older backend still names someone rather than nobody.
+      const label =
+        e.agent_label ||
+        e.brigade_agent_id
+          .replace(/-/g, " ")
+          .replace(/\b\w/g, (c) => c.toUpperCase());
+      // Client-side backstop: if the matching typing=false is never delivered
+      // (worker crash, dropped frame) this row expires on its own.
+      const timeout = setTimeout(() => {
+        useAppStore.getState().clearAgentActivity(e.room_id, e.brigade_agent_id);
+      }, AGENT_THINKING_MAX_MS);
+      store.setAgentActivity(e.room_id, {
+        agent_id: e.brigade_agent_id,
+        label,
+        kind: "thinking",
+        participant_id: e.participant_id ?? null,
+        since: Date.now(),
+        timeout,
+      });
+    });
+
+    // Gateway/bridge agents have no thinking signal — they are external
+    // processes that poll. The backend therefore reports the only observable
+    // fact: a message is sitting UNCOLLECTED by that bridge. Cleared as soon as
+    // the bridge reads or posts, and expired locally if that event is missed.
+    const unsubAgentRelay = ws.on("agent_relay", (data: WsEventPayload) => {
+      const e = data as unknown as {
+        room_id: string;
+        agent_id: string;
+        pending: boolean;
+        agent_label?: string | null;
+        participant_id?: string | null;
+        ttl_seconds?: number | null;
+      };
+      if (!e?.room_id || !e?.agent_id) return;
+      const store = useAppStore.getState();
+      if (!e.pending) {
+        store.clearAgentActivity(e.room_id, e.agent_id);
+        return;
+      }
+      const label =
+        e.agent_label ||
+        e.agent_id.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      // Mirror the server's TTL locally so both sides expire together.
+      const ttlMs = Math.min(
+        Math.max((e.ttl_seconds ?? 300) * 1000, 10_000),
+        AGENT_RELAY_MAX_MS,
+      );
+      const timeout = setTimeout(() => {
+        useAppStore.getState().clearAgentActivity(e.room_id, e.agent_id);
+      }, ttlMs);
+      store.setAgentActivity(e.room_id, {
+        agent_id: e.agent_id,
+        label,
+        kind: "relay",
+        participant_id: e.participant_id ?? null,
+        since: Date.now(),
+        timeout,
+      });
+    });
+
+    // If the socket drops we can no longer hear the clearing events, so every
+    // asserted agent state becomes unverifiable. Drop them all rather than keep
+    // claiming work is happening across a gap we cannot see.
+    const unsubAgentStatusReset = ws.on("disconnected", () => {
+      useAppStore.getState().clearAllAgentActivity();
     });
 
     const unsubReaction = ws.on(
@@ -280,6 +353,8 @@ export function useGlobalNotifications() {
       unsubRead();
       unsubMsgUpdate();
       unsubAgentTyping();
+      unsubAgentRelay();
+      unsubAgentStatusReset();
     };
   }, [
     currentUser?.id,

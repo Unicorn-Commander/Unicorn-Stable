@@ -10,13 +10,42 @@ import { ws } from "@/services/websocket";
 import { Avatar } from "@/components/Avatar";
 import { StableMark } from "@/components/StableMark";
 import { identityFor } from "@/lib/identity";
-import { EMPTY_MEMBERS, EMPTY_READ_RECEIPTS } from "@/stores/selectors";
+import {
+  EMPTY_AGENT_ACTIVITY,
+  EMPTY_MEMBERS,
+  EMPTY_READ_RECEIPTS,
+} from "@/stores/selectors";
+import type { AgentActivity } from "@/stores/appStore";
 import { MessageBubble } from "./MessageBubble";
 
 // Virtuoso prepend anchoring base: firstItemIndex starts here and DECREMENTS by
 // the number of older messages prepended by loadMore, so the viewport stays
 // visually anchored automatically (replaces manual scrollHeight bookkeeping).
 const START = 100_000;
+
+/** How long after YOUR send we keep the missed-reply resync poll armed. */
+const RESYNC_WINDOW_MS = 60_000;
+
+/** "Perry is thinking…" / "Perry and Quill are thinking…" / "3 agents are
+ * thinking…". Names the agents while the list stays readable. */
+function describeAgents(rows: AgentActivity[]): string {
+  const names = rows.map((r) => r.label);
+  if (names.length === 1) return `${names[0]} is thinking…`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are thinking…`;
+  if (names.length === 3)
+    return `${names[0]}, ${names[1]} and ${names[2]} are thinking…`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more are thinking…`;
+}
+
+/** Bridge agents get an honest delivery statement, never a fake liveness one. */
+function describeRelay(rows: AgentActivity[]): string {
+  const names = rows.map((r) => r.label);
+  if (names.length === 1)
+    return `Waiting for Stable bridge relay — ${names[0]}`;
+  if (names.length === 2)
+    return `Waiting for Stable bridge relay — ${names[0]} and ${names[1]}`;
+  return `Waiting for Stable bridge relay — ${names[0]} and ${names.length - 1} more`;
+}
 
 function sameDay(a: Date, b: Date): boolean {
   return (
@@ -89,52 +118,71 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // (the server also blocks the post; this just avoids a dead-end 403).
   const iAmMuted = participants.find((p) => p.is_self)?.is_muted === true;
 
-  // Optimistic "agent is working" feedback. The moment you send into a room
-  // with an agent, show a "thinking…" line immediately rather than waiting on
-  // the backend's agent_typing event (which can lag or be missed). It hands off
-  // to the real typing/streaming display and clears once the agent's reply
-  // lands (a new agent message) or after a safety timeout.
-  const agentMembers = participants.filter((p) => p.participant_type === "agent");
-  const [awaitingAgentSince, setAwaitingAgentSince] = useState<number | null>(null);
-  const agentLabel =
-    agentMembers.length === 1
-      ? agentMembers[0]?.display_name ?? "The agent"
-      : "An agent";
-  // Identity hue for the "thinking…" dot — single-agent rooms wear their
-  // resident's color; multi-agent rooms fall back to the first resident's.
-  const firstAgent = agentMembers[0];
-  const thinkingIdent = identityFor(
-    firstAgent?.participant_id || firstAgent?.user_id || firstAgent?.display_name,
-    firstAgent?.display_name,
+  // Agent status is REPORTED, never assumed.
+  //
+  // This used to be an optimistic local flag: sending into any room that merely
+  // CONTAINED an agent asserted "<agent> is thinking…" for up to 150 seconds,
+  // regardless of whether anything was running. Mere membership is not activity,
+  // so that indicator was wrong far more often than it was right.
+  //
+  // Now it is driven entirely by server events (see useGlobalNotifications):
+  //   • "thinking" — the backend emitted agent_typing around a real Brigade
+  //     call, so an agent genuinely is generating a reply.
+  //   • "relay"    — a gateway/bridge agent, which has no thinking signal at
+  //     all, has an uncollected message. We say exactly that and nothing more.
+  // Rows are keyed per agent, so the line names whoever is actually working.
+  const agentActivity = useAppStore(
+    (s) => s.agentActivity[roomId] ?? EMPTY_AGENT_ACTIVITY,
+  );
+  const thinkingAgents = useMemo(
+    () => agentActivity.filter((a) => a.kind === "thinking"),
+    [agentActivity],
+  );
+  const relayAgents = useMemo(
+    () => agentActivity.filter((a) => a.kind === "relay"),
+    [agentActivity],
   );
 
+  // Identity hue for the status dot — the agent actually being reported on,
+  // not an arbitrary room member.
+  const leadAgent = thinkingAgents[0] ?? relayAgents[0];
+  const leadMember = leadAgent
+    ? participants.find(
+        (p) =>
+          (leadAgent.participant_id && p.participant_id === leadAgent.participant_id) ||
+          p.display_name === leadAgent.label,
+      )
+    : undefined;
+  const thinkingIdent = identityFor(
+    leadAgent?.participant_id ||
+      leadMember?.participant_id ||
+      leadMember?.user_id ||
+      leadAgent?.agent_id,
+    leadAgent?.label ?? leadMember?.display_name,
+  );
+
+  // Safety net for a MISSED reply, not a claim about agent activity: for a
+  // bounded window after YOU send, poll a merge-refetch so the answer appears
+  // even if its live WS event was dropped (e.g. the socket wasn't yet
+  // subscribed to a brand-new room). Previously this rode on the optimistic
+  // flag; it now triggers off the send itself, which is the event that actually
+  // warrants a resync, and it stops on its own.
+  const [resyncUntil, setResyncUntil] = useState<number | null>(null);
   useEffect(() => {
-    if (awaitingAgentSince === null) return;
-    const last = messages[messages.length - 1];
-    if (
-      last &&
-      last.sender_type === "agent" &&
-      new Date(last.created_at).getTime() >= awaitingAgentSince - 1000
-    ) {
-      setAwaitingAgentSince(null);
+    if (resyncUntil === null) return;
+    if (Date.now() >= resyncUntil) {
+      setResyncUntil(null);
       return;
     }
-    const t = window.setTimeout(() => setAwaitingAgentSince(null), 150_000);
-    return () => window.clearTimeout(t);
-  }, [awaitingAgentSince, messages]);
-
-  // Safety net: while we're waiting on an agent reply, poll a merge-refetch
-  // every few seconds so the answer shows up even if its live WS event was
-  // missed (e.g. the socket wasn't yet subscribed to a brand-new room). The
-  // effect above clears `awaitingAgentSince` — and this poll — as soon as the
-  // reply lands.
-  useEffect(() => {
-    if (awaitingAgentSince === null) return;
     const id = window.setInterval(() => {
+      if (Date.now() >= resyncUntil) {
+        setResyncUntil(null);
+        return;
+      }
       void resync();
     }, 5_000);
     return () => window.clearInterval(id);
-  }, [awaitingAgentSince, resync]);
+  }, [resyncUntil, resync]);
 
   // Slack-style "New messages" divider: snapshot the last-read point ONCE per
   // room open — before the mark_read effect below tells the server we've read
@@ -392,7 +440,9 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     extraMetadata?: Record<string, unknown>,
   ) {
     sendMessage(content, threadId, attachments, extraMetadata);
-    if (agentMembers.length > 0) setAwaitingAgentSince(Date.now());
+    // Arm the missed-reply resync poll. This says nothing about whether an
+    // agent is working — it only covers a dropped WS event on our own send.
+    setResyncUntil(Date.now() + RESYNC_WINDOW_MS);
     requestAnimationFrame(() =>
       virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth", align: "end" }),
     );
@@ -636,10 +686,10 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         )}
       </div>
 
-      {(typingUsers.length > 0 || awaitingAgentSince !== null) && (
+      {(typingUsers.length > 0 || agentActivity.length > 0) && (
         <div className="shrink-0 px-4 py-1.5 md:px-8">
-          <div className="mx-auto flex w-full max-w-[52rem] items-center gap-2">
-            {typingUsers.length > 0 ? (
+          <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-1">
+            {typingUsers.length > 0 && (
               <p className="animate-pulse-soft text-xs text-slate-500">
                 {typingUsers.length === 1
                   ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
@@ -647,17 +697,32 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                     ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
                     : `${typingUsers.length} people are typing...`}
               </p>
-            ) : (
-              <>
+            )}
+            {thinkingAgents.length > 0 && (
+              <div className="flex items-center gap-2">
                 <span
                   aria-hidden="true"
                   className="h-1.5 w-1.5 shrink-0 animate-pulse-soft rounded-full"
                   style={{ background: thinkingIdent.color }}
                 />
                 <p className="animate-shimmer text-xs font-medium">
-                  {agentLabel} is thinking…
+                  {describeAgents(thinkingAgents)}
                 </p>
-              </>
+              </div>
+            )}
+            {relayAgents.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className="h-1.5 w-1.5 shrink-0 animate-pulse-soft rounded-full bg-slate-500"
+                />
+                {/* Deliberately NOT "thinking": a bridge agent gives us no
+                    liveness signal, so we report the delivery fact we can
+                    actually observe. */}
+                <p className="text-xs font-medium text-slate-400">
+                  {describeRelay(relayAgents)}
+                </p>
+              </div>
             )}
           </div>
         </div>

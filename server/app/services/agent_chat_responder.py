@@ -31,6 +31,7 @@ from app.models.participant import (
     ParticipantType,
 )
 from app.models.room import MemberRole, Room, RoomMember
+from app.services import agent_status
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 
@@ -343,6 +344,8 @@ async def _respond(
             room_id=room.id,
             brigade_agent_id=brigade_agent_id,
             typing=True,
+            agent_label=agent_participant.display_name,
+            participant_id=agent_participant.id,
         )
 
         svc = MessageService(db=db, livekit=livekit)
@@ -487,6 +490,8 @@ async def _respond(
                 room_id=room.id,
                 brigade_agent_id=brigade_agent_id,
                 typing=False,
+                agent_label=agent_participant.display_name,
+                participant_id=agent_participant.id,
             )
             logger.info(
                 "agent_chat_responder_replied",
@@ -1086,7 +1091,31 @@ async def _send_typing(
     room_id: uuid.UUID,
     brigade_agent_id: str,
     typing: bool,
+    agent_label: str | None = None,
+    participant_id: uuid.UUID | None = None,
 ) -> None:
+    """Announce that this agent really is (or has stopped) generating a reply.
+
+    Fans out on BOTH planes, because the two clients listen in different
+    places: the LiveKit data channel serves in-call clients, while the web chat
+    client listens for agent_typing on its WebSocket. Publishing only to
+    LiveKit — the original behaviour — meant the browser never saw a real
+    signal and fell back to an optimistic local flag that asserted "thinking"
+    on every send whether or not anything was running.
+
+    The ws publish is deliberately NOT gated on livekit_room_name: a
+    text-only room has no LiveKit room, and its chat client still deserves the
+    truth. Both sends are individually wrapped so neither can break the reply,
+    and callers emit the matching typing=False from a finally so the
+    indicator clears on error and on stop as well as on success.
+    """
+    await agent_status.publish_agent_typing(
+        room_id=room_id,
+        brigade_agent_id=brigade_agent_id,
+        typing=typing,
+        agent_label=agent_label,
+        participant_id=participant_id,
+    )
     if not livekit_room_name:
         return
     try:

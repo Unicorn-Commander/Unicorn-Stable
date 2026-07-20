@@ -7,6 +7,30 @@ export interface TypingUser {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * A REAL, server-asserted agent state — never an optimistic guess.
+ *
+ * `kind: "thinking"` comes from the backend's agent_typing event, emitted
+ * around the actual Brigade call, so it is true only while something is
+ * genuinely running. `kind: "relay"` is for gateway/bridge agents, which have
+ * no thinking signal at all; it asserts only that a message is sitting
+ * uncollected by that bridge, and is retracted on delivery.
+ *
+ * Keyed per agent so the UI can NAME whoever is actually working. Every entry
+ * carries its own `timeout` as a client-side backstop: if the clearing event
+ * is lost (worker crash, dropped socket) the row expires by itself rather than
+ * asserting activity forever — the failure this whole state exists to prevent.
+ */
+export interface AgentActivity {
+  agent_id: string;
+  label: string;
+  kind: "thinking" | "relay";
+  /** Participant UUID when known — drives the identity hue. */
+  participant_id?: string | null;
+  since: number;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 interface RoomMessages {
   items: Message[];
   nextCursor: string | null;
@@ -56,6 +80,8 @@ interface AppState {
   // callers fall back to the built-in default agent.
   defaultAgentId: string | null;
   typing: Record<string, TypingUser[]>;
+  /** Per-room, per-agent genuine activity. See AgentActivity. */
+  agentActivity: Record<string, AgentActivity[]>;
   onlineUsers: string[];
   unreadCounts: Record<string, number>;
   // Per-room: { participant_id → last_read_at iso }
@@ -83,6 +109,11 @@ interface AppState {
   setDefaultAgentId: (id: string | null) => void;
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
+  setAgentActivity: (roomId: string, activity: AgentActivity) => void;
+  clearAgentActivity: (roomId: string, agentId: string) => void;
+  /** Drop every agent-activity row (all rooms). Used on socket disconnect: if
+   * we cannot hear the clearing event we must not keep asserting the state. */
+  clearAllAgentActivity: () => void;
   setOnlineUsers: (userIds: string[]) => void;
   mergeOnlineUsers: (userIds: string[]) => void;
   addOnlineUser: (userId: string) => void;
@@ -123,6 +154,7 @@ export const useAppStore = create<AppState>((set) => ({
   agents: [],
   defaultAgentId: null,
   typing: {},
+  agentActivity: {},
   onlineUsers: [],
   unreadCounts: {},
   readReceipts: {},
@@ -346,6 +378,54 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
+  // Upsert one agent's activity row. Replacing by agent_id (and clearing the
+  // superseded row's timer) keeps exactly one state per agent, so a thinking
+  // signal arriving for an agent that had a relay marker cleanly supersedes it
+  // instead of showing two contradictory lines.
+  setAgentActivity: (roomId, activity) =>
+    set((state) => {
+      const rows = state.agentActivity[roomId] ?? [];
+      for (const r of rows) {
+        if (r.agent_id === activity.agent_id) clearTimeout(r.timeout);
+      }
+      return {
+        agentActivity: {
+          ...state.agentActivity,
+          [roomId]: [
+            ...rows.filter((r) => r.agent_id !== activity.agent_id),
+            activity,
+          ],
+        },
+      };
+    }),
+
+  clearAgentActivity: (roomId, agentId) =>
+    set((state) => {
+      const rows = state.agentActivity[roomId];
+      if (!rows || rows.length === 0) return {};
+      const next = rows.filter((r) => {
+        if (r.agent_id !== agentId) return true;
+        clearTimeout(r.timeout);
+        return false;
+      });
+      if (next.length === rows.length) return {};
+      return {
+        agentActivity: { ...state.agentActivity, [roomId]: next },
+      };
+    }),
+
+  clearAllAgentActivity: () =>
+    set((state) => {
+      let any = false;
+      for (const rows of Object.values(state.agentActivity)) {
+        for (const r of rows) {
+          clearTimeout(r.timeout);
+          any = true;
+        }
+      }
+      return any ? { agentActivity: {} } : {};
+    }),
+
   setOnlineUsers: (userIds) => set({ onlineUsers: userIds }),
   mergeOnlineUsers: (userIds) =>
     set((state) => {
@@ -379,6 +459,9 @@ export const useAppStore = create<AppState>((set) => ({
       for (const users of Object.values(state.typing)) {
         for (const u of users) clearTimeout(u.timeout);
       }
+      for (const rows of Object.values(state.agentActivity)) {
+        for (const r of rows) clearTimeout(r.timeout);
+      }
       return {
         rooms: [],
         activeRoomId: null,
@@ -387,6 +470,7 @@ export const useAppStore = create<AppState>((set) => ({
         agents: [],
         defaultAgentId: null,
         typing: {},
+        agentActivity: {},
         onlineUsers: [],
         unreadCounts: {},
         readReceipts: {},

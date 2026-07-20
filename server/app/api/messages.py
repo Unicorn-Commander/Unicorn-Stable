@@ -244,6 +244,24 @@ async def send_message(
     except Exception:
         logger.warning("agent_chat_responder_schedule_failed", exc_info=True)
 
+    # Bridge/gateway agents have no "thinking" signal to report — they are
+    # external processes that poll. Rather than invent one, record the only
+    # thing we can actually observe: this human message is sitting in the room
+    # UNCOLLECTED by them. The marker is retracted the moment the bridge reads
+    # or posts (app/api/gateway.py) and expires on its own otherwise. Skipped
+    # for agent-authored messages so agents cannot flag each other in a loop.
+    try:
+        # request=None marks the internal voice-transcript path, which
+        # deliberately does not trigger agent activity — honour that here too.
+        if request is not None and user.get("participant_type") != "agent" and not str(
+            user.get("sub") or ""
+        ).startswith("brigade:"):
+            from app.services.agent_status import mark_relay_pending_for_room
+
+            await mark_relay_pending_for_room(db=db, room_id=room_id)
+    except Exception:
+        logger.warning("relay_pending_mark_failed", exc_info=True)
+
     # Document RAG indexing. If the message carries document attachments,
     # index them (extract → chunk → embed → qdrant, scoped to the room) in a
     # fire-and-forget task so the room's agent can later answer FROM the docs.
@@ -1096,6 +1114,17 @@ async def post_agent_typing(
     ).scalar_one_or_none()
     if room is None:
         return None
+
+    # Republish on the ws plane too — the web chat client listens for
+    # agent_typing there, not on the LiveKit data channel. Without this the
+    # in-call clients saw the signal and the browser saw nothing.
+    from app.services import agent_status as _agent_status
+
+    await _agent_status.publish_agent_typing(
+        room_id=room.id,
+        brigade_agent_id=body.brigade_agent_id,
+        typing=body.typing,
+    )
 
     try:
         await livekit.send_data(
