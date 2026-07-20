@@ -148,8 +148,8 @@ def _typing_payload(
     }
 
 
-def _typing_event_body(data: dict[str, Any]) -> dict[str, Any]:
-    """Read a TYPING event's fields whether they are flat or under `payload`.
+def _event_body(data: dict[str, Any]) -> dict[str, Any]:
+    """Read a client event's fields whether they are flat or under `payload`.
 
     `services/websocket.ts` sends `{type, payload:{…}}`; this handler has
     always read `room_id` from the TOP level. Those two never met, which is
@@ -157,16 +157,28 @@ def _typing_event_body(data: dict[str, Any]) -> dict[str, Any]:
     shapes fixes it without requiring the browser and the backend to deploy in
     lockstep — during a rollout each end will see the other's framing.
 
-    DELIBERATELY SCOPED TO TYPING. `mark_read` is broken in exactly the same
-    way and this unwrapping would fix it too — but that fix is not free and it
-    is not this branch's to make. `mark_read` is the SOLE writer of
-    RoomMember.last_read_at anywhere in the server, and room_service.py treats
-    NULL as "everything unread", so un-breaking it silently collapses every
-    unread badge in the product, once, irreversibly, for every user. That is a
-    product decision with a real blast radius, not a side effect of shipping
-    typing indicators. It is written up in the branch summary so it can be
-    made on purpose. Until then `mark_read` stays exactly as inert as it has
-    always been, and this branch changes only what its title claims.
+    NOW ALSO APPLIED TO `mark_read`, on purpose. `mark_read` was broken in
+    exactly this way since it was written: the client has always sent
+    `{type:"mark_read", payload:{room_id, message_id}}` and the handler read
+    `data["room_id"]`, so the `room_id in room_ids` guard was never true and
+    the branch behind it never ran. It is the SOLE writer of
+    RoomMember.last_read_at anywhere in the server (198/198 room_members rows
+    in production have last_read_at NULL, which is the fingerprint), and
+    room_service.py treats NULL as "everything in the room is unread". So
+    switching it on has a real, intended one-time effect: badges that have
+    been counting every message a room ever held start counting only what
+    arrived since the reader last had the room open. That is the correct
+    number, not a regression — but it is visible, it happens to every user at
+    once, and it is why this was held back rather than fixed in passing. Two
+    downstream surfaces come alive with it, both already written and both
+    previously unreachable: the "New messages" divider (ChatPanel reads
+    readReceipts[room][self], fed by the read_receipt frame this branch
+    finally publishes) and the "Seen by" row.
+
+    Backfilling last_read_at is deliberately NOT done here. Stamping "now" on
+    198 rows would declare every unread message read for every user, silently
+    and irreversibly; letting the first genuine mark_read set the true value
+    loses nothing and asserts only what actually happened.
     """
     payload = data.get("payload")
     if isinstance(payload, dict):
@@ -409,14 +421,15 @@ async def _handle_client_events(
                 continue
 
             # `type` is top-level in BOTH framings, so it is read before any
-            # unwrapping. Only the typing branch below reads from an unwrapped
-            # body; every other event keeps reading `data` exactly as it did
-            # before this branch — see `_typing_event_body` for why that
-            # restraint is deliberate rather than an oversight.
+            # unwrapping. The typing and mark_read branches below read from an
+            # unwrapped body (`_event_body` accepts flat AND `payload`-wrapped
+            # frames, so a browser on either build works across a deploy);
+            # every other event still reads `data` directly because no client
+            # has ever wrapped those.
             event_type = data.get("type")
 
             if event_type in ("typing_start", "typing_stop", "typing"):
-                body = _typing_event_body(data)
+                body = _event_body(data)
                 # Tolerate the flag-shaped variant (`{type:"typing",
                 # is_typing:bool}`) alongside the two explicit verbs, so an
                 # older client build keeps working across a deploy.
@@ -463,8 +476,15 @@ async def _handle_client_events(
                 )
 
             elif event_type == "mark_read":
-                room_id = data.get("room_id")
-                message_id = data.get("message_id")
+                # Unwrap first: the web client sends these under `payload`
+                # (services/websocket.ts `send()` frames every event as
+                # `{type, payload}`), and reading `data["room_id"]` here is
+                # exactly why read tracking never once executed. `_event_body`
+                # returns `data` untouched when there is no `payload` key, so
+                # a hand-rolled or older flat-framing client still works.
+                body = _event_body(data)
+                room_id = body.get("room_id")
+                message_id = body.get("message_id")
                 # Guard like typing_*: only act on a room the caller belongs to,
                 # else a stranger could spoof read-receipts into any room by id.
                 if room_id and room_id in room_ids:

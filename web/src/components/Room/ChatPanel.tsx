@@ -308,10 +308,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // exactly when the room's sockets are busiest, and each mark_read costs one
   // DB write plus a read_receipt frame to EVERY member.
   //
-  // NOTE: mark_read is currently inert server-side — the handler reads
-  // `room_id` off the top level while the client sends it under `payload`.
-  // That is deliberate and documented in the branch summary; this tightening
-  // exists so the surface is not pathological on the day it is switched on.
+  // This is now LIVE server-side: ws/handler.py unwraps `payload` for
+  // mark_read (`_event_body`), so each of these frames advances the sender's
+  // RoomMember.last_read_at and fans a `read_receipt` out to the room. Which
+  // is exactly why the throttling above matters — it is a real DB write plus
+  // a frame to every member, not a no-op any more.
   const lastMarkedRef = useRef<{ roomId: string; id: string; at: number } | null>(
     null,
   );

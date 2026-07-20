@@ -75,6 +75,15 @@ export function RoomList() {
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
+  // THE single source of truth for a room's badge, everywhere in this file.
+  // `unreadCounts` is the live map: setRooms seeds it from the backend's
+  // cold-load `unread_count` the first time a room is seen, WS arrivals
+  // increment it, clearUnread zeroes it. `room.unread_count` is only that
+  // cold-load snapshot and is NEVER cleared by opening a room — rows that read
+  // it directly (the DM/person and private-group rows) showed a badge that
+  // clearUnread could not touch, so it sat there until the next refetch.
+  const unreadFor = (room: Room) => unreadCounts[room.id] ?? room.unread_count ?? 0;
+
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
   const openRoom = (id: string) => {
@@ -481,7 +490,7 @@ export function RoomList() {
 
   function renderChannelRow(room: Room) {
     const isActive = activeRoomId === room.id;
-    const unread = unreadCounts[room.id] ?? 0;
+    const unread = unreadFor(room);
     const cat = channelsFiled?.[room.id];
     const menuOpen = menuKey === room.id;
     const muted = isMuted(room.id);
@@ -601,6 +610,7 @@ export function RoomList() {
 
   function renderThreadRow(room: Room, identColor: string) {
     const isActive = activeRoomId === room.id;
+    const unread = unreadFor(room);
     return (
       <li key={room.id}>
         <button
@@ -642,9 +652,9 @@ export function RoomList() {
                     {formatTimestamp(room.last_message.created_at)}
                   </span>
                 )}
-                {room.unread_count > 0 && (
+                {unread > 0 && (
                   <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                    {room.unread_count > 99 ? "99+" : room.unread_count}
+                    {unread > 99 ? "99+" : unread}
                   </span>
                 )}
               </div>
@@ -669,7 +679,7 @@ export function RoomList() {
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
     const hasActive = threads.some((r) => r.id === activeRoomId);
-    const unreadTotal = threads.reduce((n, r) => n + (r.unread_count ?? 0), 0);
+    const unreadTotal = threads.reduce((n, r) => n + unreadFor(r), 0);
     const menuOpen = menuKey === entry.key;
     const cat = peopleFiled?.[entry.key];
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
@@ -833,6 +843,7 @@ export function RoomList() {
 
   function renderPrivateGroup(room: Room) {
     const isActive = activeRoomId === room.id;
+    const unread = unreadFor(room);
     const menuOpen = menuKey === room.id;
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
@@ -892,9 +903,9 @@ export function RoomList() {
                       {formatTimestamp(room.last_message.created_at)}
                     </span>
                   )}
-                  {room.unread_count > 0 && (
+                  {unread > 0 && (
                     <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                      {room.unread_count > 99 ? "99+" : room.unread_count}
+                      {unread > 99 ? "99+" : unread}
                     </span>
                   )}
                 </div>
