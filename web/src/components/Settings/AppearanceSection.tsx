@@ -8,12 +8,21 @@
  * This component does NOT own palette boot-up. Binding the store to the
  * signed-in user happens in AppShell, because a preference that only loads
  * when you open the settings modal has not actually been restored.
+ *
+ * It also renders AvatarSection ("Your picture") ahead of the appearance
+ * controls. That is a wiring compromise, not a claim that a profile picture is
+ * an appearance setting: SettingsModal owns the section list and was being
+ * edited concurrently, and a settings pane the user cannot reach is not a
+ * shipped feature. Moving `<AvatarSection />` up into SettingsModal (likely as
+ * its own "Profile" block above Appearance) is a two-line change and should
+ * happen — see the handoff notes.
  */
 import { useState } from "react";
 import { Check, Monitor, Moon, Palette, Sun } from "lucide-react";
 import { applyTheme, getStoredTheme, resolveTheme, type ThemeChoice } from "@/lib/theme";
 import { PALETTES, useThemeStore, type PaletteId } from "@/stores/themeStore";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { AvatarSection } from "@/components/Settings/AvatarSection";
 
 export function AppearanceSection() {
   const [mode, setMode] = useState<ThemeChoice>(getStoredTheme);
@@ -25,6 +34,8 @@ export function AppearanceSection() {
   const resolved = resolveTheme(mode);
 
   return (
+    <>
+    <AvatarSection />
     <section className="mb-5">
       <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         <Sun className="h-3 w-3" /> Appearance
@@ -105,6 +116,7 @@ export function AppearanceSection() {
         </ul>
       </div>
     </section>
+    </>
   );
 }
 

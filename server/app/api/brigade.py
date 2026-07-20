@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -35,8 +37,10 @@ class BrigadeRosterAgent(BaseModel):
     Sourced from Brigade's native ``/agents`` endpoint (the source of truth),
     flattened to the shape the Stable frontend's ``Agent`` type expects plus the
     extra org-chart fields (rank, title, domain, tools). ``emoji`` carries
-    Brigade's single-glyph avatar; ``avatar_url`` passes through Brigade's
-    ``avatarUrl`` image URL (null for agents that haven't set one).
+    Brigade's single-glyph avatar; ``avatar_url`` is the resolved image URL
+    (see _resolve_agent_avatar), null for agents that have no registered image
+    — which today is all of them, so ``emoji`` is the tier that actually
+    renders.
     """
 
     id: str
@@ -86,6 +90,89 @@ class InviteAgentResponse(BaseModel):
     dispatched: bool
     dispatch_id: str | None = None
     reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# AGENT AVATAR RESOLUTION
+#
+# Brigade is the canonical registry for agent identity, exactly as for rank and
+# title. Stable resolves, in order:
+#
+#   1. the registered image  (Brigade `avatarUrl`)
+#   2. the `/avatars/<id>.webp` convention, IF a base URL is configured
+#   3. the EMOJI GLYPH       (Brigade `avatar` — a single character)
+#   4. initials on the identity colour (client-side; see lib/avatar.ts)
+#
+# STATE OF THE WORLD, verified 2026-07-20 against the Brigade that Stable
+# actually reads (BRIGADE_BASE_URL=https://brigade.magicunicorn.dev, DB
+# `brigade_db`): tier 1 does not exist — that database has no `avatar_url`
+# column at all, only `avatar varchar(50)` holding an emoji, so `avatarUrl` is
+# null for all 17 agents. Tier 2 does not exist either: both
+# `/avatars/<id>.webp` and `/api/v1/avatars/<id>.webp` return 404. A DIFFERENT
+# database (`brigade_prod`) does have the column, with 0 of 6 rows populated.
+#
+# So today tier 3 is the only agent avatar that exists, and it was being thrown
+# away — the roster carried `emoji` but every agent render site fell through to
+# a generic Bot icon. Tiers 1 and 2 are implemented and inert, ready for the
+# day Brigade actually serves them; tier 2 stays OFF unless
+# BRIGADE_AVATAR_BASE_URL is set, because emitting a URL we know 404s would
+# replace a working emoji with a broken image.
+# ---------------------------------------------------------------------------
+
+# Hosts we are willing to point an <img> at. An agent avatar URL comes from
+# Brigade's database, which is not a trust boundary Stable controls, and it
+# renders in every connected client — an arbitrary host would make every
+# viewer's IP and user agent visible to whoever set that row. Same-origin
+# (relative) paths are always fine.
+_AVATAR_HOST_SUFFIXES = (
+    "magicunicorn.dev",
+    "magicunicorn.tech",
+    "unicorncommander.ai",
+)
+
+
+def _safe_avatar_url(raw: Any) -> str | None:
+    """Accept a relative path or an https URL on one of our own hosts; else None.
+
+    Returning None is not a failure — it just drops to the next tier, which is
+    the emoji, which is what actually exists.
+    """
+    if not isinstance(raw, str):
+        return None
+    url = raw.strip()
+    if not url:
+        return None
+    if url.startswith("/") and not url.startswith("//"):
+        return url  # same-origin
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    host = parsed.hostname.lower()
+    if any(host == s or host.endswith("." + s) for s in _AVATAR_HOST_SUFFIXES):
+        return url
+    logger.debug("agent_avatar_url_rejected", url=url, host=host)
+    return None
+
+
+def _convention_avatar_url(agent_id: str) -> str | None:
+    """Tier 2: the ``<base>/<id>.webp`` convention, only if configured.
+
+    Off by default and deliberately so — see the note above; Brigade does not
+    serve this yet. Set BRIGADE_AVATAR_BASE_URL once it does.
+    """
+    base = (os.environ.get("BRIGADE_AVATAR_BASE_URL") or "").strip().rstrip("/")
+    if not base or not agent_id:
+        return None
+    return _safe_avatar_url(f"{base}/{agent_id}.webp")
+
+
+def _resolve_agent_avatar(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (avatar_url, emoji) for one Brigade roster record."""
+    agent_id = str(item.get("id") or "")
+    url = _safe_avatar_url(item.get("avatarUrl")) or _convention_avatar_url(agent_id)
+    raw_emoji = item.get("avatar")
+    emoji = raw_emoji.strip()[:8] if isinstance(raw_emoji, str) and raw_emoji.strip() else None
+    return url, emoji
 
 
 async def _fetch_brigade_agents() -> list[BrigadeAgent]:
@@ -199,6 +286,7 @@ async def _fetch_brigade_roster(redis: Redis) -> list[BrigadeRosterAgent]:
                 or m.startswith(("claude", "gpt", "gemini"))
                 else "employee"
             )
+        avatar_url, emoji = _resolve_agent_avatar(it)
         availability, availability_reason = classify(
             gateway_fresh=str(it["id"]) in fresh,
             # We are inside a successful roster read, so Brigade is known-good
@@ -214,8 +302,8 @@ async def _fetch_brigade_roster(redis: Redis) -> list[BrigadeRosterAgent]:
                 name=name,
                 display_name=it.get("displayName") or it.get("name") or it["id"],
                 description=it.get("bio") or it.get("title") or "",
-                avatar_url=it.get("avatarUrl") or None,
-                emoji=(it.get("avatar") or None),
+                avatar_url=avatar_url,
+                emoji=emoji,
                 status=ui_status,
                 capabilities=[str(c) for c in caps] if isinstance(caps, list) else [],
                 model=it.get("model") or "",
@@ -328,6 +416,36 @@ async def list_models(
     return [ChatModel(**m) for m in _SWITCHER_MODELS]
 
 
+async def _fetch_brigade_agent_record(agent_id: str) -> dict[str, Any] | None:
+    """Fetch ONE agent's raw record from Brigade's native ``/agents``.
+
+    Separate from _fetch_brigade_roster because that one needs Redis (for
+    gateway-freshness) and returns the response model; this is used on the
+    invite path, where all we want is identity. Never raises — a None result
+    just means "no avatar for now".
+    """
+    settings = get_settings()
+    if not settings.brigade_api_key or not agent_id:
+        return None
+    url = _brigade_native_base() + "/agents"
+    headers = {"Authorization": f"Bearer {settings.brigade_api_key}"}
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0)
+        ) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+    except (httpx.HTTPError, ValueError):
+        logger.warning("brigade_agent_record_fetch_failed", agent_id=agent_id)
+        return None
+    items = body.get("agents", []) if isinstance(body, dict) else (body or [])
+    for it in items:
+        if isinstance(it, dict) and str(it.get("id")) == agent_id:
+            return it
+    return None
+
+
 async def _ensure_agent_member(
     db: AsyncSession,
     room_id_or_lk: str,
@@ -372,8 +490,21 @@ async def _ensure_agent_member(
     agent_p = (
         await db.execute(_select(_P).where(_P.keycloak_sub == pseudo_sub))
     ).scalar_one_or_none()
+
+    # Pull the agent's identity from Brigade (the canonical registry) so the
+    # Participant row carries an avatar. Without this, agent MESSAGES render
+    # blank: message_service serialises `sender.avatar_url` off this row, and
+    # every agent row in the live database has it null. Best-effort — Brigade
+    # being down must not block binding an agent to a room.
+    record = await _fetch_brigade_agent_record(brigade_agent_id)
+    avatar_url, emoji = _resolve_agent_avatar(record) if record else (None, None)
+
     if agent_p is None:
         display = brigade_agent_id.replace("-", " ").title()
+        if record:
+            display = (
+                record.get("displayName") or record.get("name") or display
+            )
         agent_p = _P(
             keycloak_sub=pseudo_sub,
             username=pseudo_username,
@@ -381,7 +512,19 @@ async def _ensure_agent_member(
             participant_type=_PT.AGENT,
             status=_PS.ONLINE,
         )
+        agent_p.avatar_url = avatar_url
+        agent_p.set_avatar_emoji(emoji)
         db.add(agent_p)
+        await db.commit()
+        await db.refresh(agent_p)
+    elif record and (
+        avatar_url != agent_p.keycloak_avatar_url or emoji != agent_p.avatar_emoji
+    ):
+        # Backfill/refresh rows created before agents had avatars. Assigning
+        # through `avatar_url` writes the mirror tier, never an override, so an
+        # agent picture set locally (if we ever add that) would still win.
+        agent_p.avatar_url = avatar_url
+        agent_p.set_avatar_emoji(emoji)
         await db.commit()
         await db.refresh(agent_p)
 
