@@ -13,8 +13,16 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Stable — Unicorn Commander</title>
     <script>
-      // Pre-paint theme stamp — no dark flash for light-mode users. Reads the
-      // same key as lib/theme.ts, which owns the runtime + system listener.
+      // Pre-paint theme stamp — no dark flash for light-mode users, and no
+      // flash of the DEFAULT palette for anyone who picked another one. Both
+      // axes have to be stamped here: data-theme (light/dark) and data-palette
+      // (which of the five colour sets). Stamping only one still flashes.
+      //
+      // Reads the same keys as lib/theme.ts and stores/themeStore.ts, which own
+      // the runtime, the system listener and the per-user scoping. The palette
+      // key read here is the device-level "last chosen" hint — the per-user
+      // value is authoritative and re-stamped by AppShell as soon as identity
+      // resolves, which is the same trade lib/theme already makes.
       (function () {
         try {
           var c = localStorage.getItem("stable.theme.v1") || "system";
@@ -28,6 +36,14 @@
           var m = document.querySelector('meta[name="theme-color"]');
           if (m) m.setAttribute("content", r === "light" ? "#ffffff" : "#0b0b15");
         } catch (e) {}
+        try {
+          var valid = ["aurora", "prism", "ember", "grove", "beacon"];
+          var p = localStorage.getItem("stable.palette.v1");
+          document.documentElement.dataset.palette =
+            valid.indexOf(p) === -1 ? "aurora" : p;
+        } catch (e) {
+          document.documentElement.dataset.palette = "aurora";
+        }
       })();
     </script>
   </head>

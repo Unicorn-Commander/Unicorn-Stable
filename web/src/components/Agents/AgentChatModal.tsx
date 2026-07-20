@@ -11,11 +11,11 @@ import {
   agentIdentity,
   TIER_META,
   tierOf,
-  statusDot,
   prettyDomain,
   toolCostInfo,
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
+import { StatusDot } from "./StatusDot";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -177,11 +177,9 @@ export function AgentChatModal({
               ) : (
                 <Bot className="h-6 w-6" />
               )}
-              <span
-                className={clsx(
-                  "absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full border-2 border-slate-900",
-                  statusDot(focusAgent.status),
-                )}
+              <StatusDot
+                status={focusAgent.status}
+                className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 border-2 border-slate-900"
               />
             </span>
             <div className="min-w-0 flex-1">

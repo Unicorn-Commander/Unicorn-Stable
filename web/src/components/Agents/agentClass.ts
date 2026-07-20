@@ -20,16 +20,34 @@ export const STATUS_LABEL: Record<Agent["status"], string> = {
   offline: "Offline",
 };
 
+/**
+ * Background class for an agent's status dot.
+ *
+ * These map to the `--color-status-*` tokens, NOT to raw Tailwind greys, for
+ * two reasons that both bit us:
+ *
+ *  1. The old values were the text ramp (`bg-slate-400` / `bg-slate-600`).
+ *     Retuning that ramp for text legibility silently dragged idle and offline
+ *     together until they were 1.54:1 apart — two different states rendering as
+ *     the same dot. State colour must not share a scale with something tuned
+ *     for a different purpose.
+ *  2. `bg-emerald-400` / `bg-amber-400` are fixed palette values that do not
+ *     flip with the theme, so in light mode they sat at roughly 1.9:1 on white.
+ *
+ * The tokens are held to a separation contract by check-contrast.mjs — see
+ * STATE_GROUPS there. Prefer the <StatusDot> component over calling this
+ * directly; it adds the accessible name these dots otherwise lack.
+ */
 export function statusDot(status: Agent["status"]): string {
   switch (status) {
     case "working":
-      return "bg-amber-400";
+      return "bg-status-working";
     case "active":
-      return "bg-emerald-400";
+      return "bg-status-active";
     case "idle":
-      return "bg-slate-400";
+      return "bg-status-idle";
     default:
-      return "bg-slate-600";
+      return "bg-status-offline";
   }
 }
 

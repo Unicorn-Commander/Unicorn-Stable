@@ -20,6 +20,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
 import { Avatar } from "@/components/Avatar";
+import { Tooltip } from "@/components/ui";
 import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 
@@ -202,17 +203,19 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
       )}
     >
       <div className="flex items-center gap-3">
-        <button
-          onClick={toggleSidebar}
-          className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
-          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-        >
-          {sidebarOpen ? (
-            <PanelLeftClose className="h-5 w-5" />
-          ) : (
-            <PanelLeftOpen className="h-5 w-5" />
-          )}
-        </button>
+        <Tooltip content={sidebarOpen ? "Close sidebar" : "Open sidebar"} placement="bottom">
+          <button
+            onClick={toggleSidebar}
+            className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
+            aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+          >
+            {sidebarOpen ? (
+              <PanelLeftClose className="h-5 w-5" />
+            ) : (
+              <PanelLeftOpen className="h-5 w-5" />
+            )}
+          </button>
+        </Tooltip>
 
         {activeRoom && (
           // The room identity also lives in the RoomView sub-header (with topic
@@ -306,40 +309,48 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
             <span className="hidden md:contents">
               <div className="mx-1 h-5 w-px bg-line-strong" />
 
-              <button
-                onClick={toggleParticipantPanel}
-                className={clsx(
-                  "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                  participantPanelOpen
-                    ? "bg-white/[0.08] text-slate-100"
-                    : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
-                )}
-                aria-label="Toggle participant panel"
+              <Tooltip
+                content={participantPanelOpen ? "Hide participants" : "Show participants"}
+                placement="bottom"
               >
-                <Users className="h-4 w-4" />
-              </button>
+                <button
+                  onClick={toggleParticipantPanel}
+                  className={clsx(
+                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
+                    participantPanelOpen
+                      ? "bg-white/[0.08] text-slate-100"
+                      : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
+                  )}
+                  aria-label="Toggle participant panel"
+                >
+                  <Users className="h-4 w-4" />
+                </button>
+              </Tooltip>
             </span>
           </>
         )}
 
         {/* On phones these fold into the avatar menu (below) to save space. */}
         <span className="hidden md:contents">
-          <button
-            onClick={() => setSavedOpen(true)}
-            className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
-            aria-label="Saved messages"
-            title="Saved messages"
-          >
-            <Bookmark className="h-4 w-4" />
-          </button>
+          <Tooltip content="Saved messages" placement="bottom">
+            <button
+              onClick={() => setSavedOpen(true)}
+              className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
+              aria-label="Saved messages"
+            >
+              <Bookmark className="h-4 w-4" />
+            </button>
+          </Tooltip>
 
-          <button
-            onClick={toggleSettings}
-            className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
-            aria-label="Settings"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
+          <Tooltip content="Settings" placement="bottom">
+            <button
+              onClick={toggleSettings}
+              className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
+              aria-label="Settings"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+          </Tooltip>
         </span>
 
         {/* Account menu — desktop only; on phones account lives in the sidebar

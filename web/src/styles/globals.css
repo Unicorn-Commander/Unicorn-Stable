@@ -29,10 +29,17 @@
   --color-slate-850: #131322;
   --color-slate-800: #191929;
   --color-slate-700: #313150;
-  --color-slate-600: #56567a;
-  --color-slate-500: #7c7da0;
-  --color-slate-400: #a7a9c8;
-  --color-slate-300: #cdcee0;
+  /* Muted trio lifted AGAIN (2026-07-20). The previous pass fixed 400 against
+     surface-1; these still failed against the *raised* surfaces they actually
+     appear on — `hover:bg-surface-3`, `bg-slate-800` chips, tooltips. Measured
+     before: 600 = 2.11:1, 500 = 3.72:1 on surface-3, and 600 carries real text
+     ("No one online", "(optional)", italic empty-states). Now every one of them
+     clears 4.5:1 on the worst surface it can land on. Verified by
+     src/styles/check-contrast.mjs — do not lower these without re-running it. */
+  --color-slate-600: #9697b6;
+  --color-slate-500: #a8a9c8;
+  --color-slate-400: #bcbdd6;
+  --color-slate-300: #d2d3e3;
   --color-slate-200: #e4e5f0;
   --color-slate-100: #eff0f8;
   --color-slate-50: #f8f8fd;
@@ -48,6 +55,62 @@
      the eye parses left-rail / conversation / right-rail without hard color. */
   --color-tint-nav: rgba(139, 92, 246, 0.1);
   --color-tint-agents: rgba(34, 211, 238, 0.085);
+  /* Remaining sections — same idea, extended so every region of the app has an
+     identity rather than only the two rails. See the SECTION UTILITIES block. */
+  --color-tint-conv: rgba(148, 152, 196, 0.03);
+  --color-tint-composer: rgba(52, 211, 153, 0.07);
+  --color-tint-call: rgba(251, 113, 133, 0.08);
+  --color-tint-canvas: rgba(251, 191, 36, 0.07);
+
+  /* -- Section edges -------------------------------------------------------
+     The solid hue a section uses for its boundary line / active marker. These
+     are *non-text* UI colour: held at >=3:1 against their own surface so the
+     boundary is perceivable, per WCAG 1.4.11. */
+  --color-edge-nav: #8b5cf6;
+  /* The conversation's own edge is deliberately neutral (it is the section you
+     are *in*, so it should not compete) — but still >=3:1 on surface-3. */
+  --color-edge-conv: #737698;
+  --color-edge-agents: #22d3ee;
+  --color-edge-composer: #34d399;
+  --color-edge-call: #fb7185;
+  --color-edge-canvas: #fbbf24;
+
+  /* -- Item types ----------------------------------------------------------
+     What KIND of thing a row is, independent of which section it sits in — the
+     other half of Aaron's ask ("different items so it's easy to distinguish").
+     Used as dot/pill/icon colour on list rows. Text-legible on surface-0..3. */
+  --color-item-channel: #a78bfa;
+  --color-item-dm: #67e8f9;
+  --color-item-group: #6ee7b7;
+  --color-item-agent: #fcd34d;
+  --color-item-mention: #fda4af;
+  --color-item-unread: #c4b5fd;
+  --color-item-system: #a7a9c8;
+
+  /* -- Agent/member STATUS ------------------------------------------------
+     A status dot renders as colour with no adjacent text at 6-12px, so it is
+     the *only* carrier of "is this agent available". That makes these tokens
+     load-bearing in a way the item hues above are not, and it gives them a
+     stricter contract than "clears the floor against the background":
+
+       1. Each is >=3:1 against every surface (WCAG 1.4.11, non-text UI).
+       2. Any two of them are SEPARATED from each other - 3:1 luminance where
+          they share a hue family, or a CIEDE2000 distance that survives
+          protan/deutan/tritan simulation where hue carries the difference.
+
+     Rule 2 is the one that is easy to lose: tuning each token against the
+     background alone can walk two states onto the same colour and still pass,
+     which is exactly how idle and offline collapsed to 1.54:1 once. Both rules
+     are enforced mechanically by check-contrast.mjs (STATE_GROUPS) - change a
+     value and run it.
+
+     idle/offline are neutral by design (no state to name), so luminance is the
+     only channel available to them and they take the full 3:1 gap. */
+  --color-status-active: #34d399;
+  --color-status-working: #f59e0b;
+  --color-status-idle: #e4e5ef;
+  --color-status-offline: #787994;
+
   /* Hairlines strengthened so section boundaries are legible (were 0.1/0.2). */
   --color-line: rgba(154, 158, 202, 0.16);
   --color-line-strong: rgba(160, 164, 208, 0.3);
@@ -89,13 +152,17 @@
 :root[data-theme="light"] {
   /* -- Brand anchors — kept; the two that double as on-white *text* (link +
      cyan accent) are darkened for AA contrast. Solid fills stay vivid. ----- */
-  --color-stable-purple: #7c3aed;
-  --color-stable-cyan: #0891b2;
-  --color-stable-purple-light: #7c3aed;
-  --color-stable-cyan-light: #0e7490;
-  --color-stable-mint: #059669;
-  --color-stable-gold: #d97706;
-  --color-stable-coral: #e11d48;
+  /* Accents darkened to clear AA as *text* on every light surface up to
+     slate-800. The old values (cyan 2.88:1, mint 2.95:1, gold 2.49:1) were
+     vivid but unreadable on a raised chip. Solid fills still read as brand
+     colour; these are the values the eye lands on when they carry words. */
+  --color-stable-purple: #6d28d9;
+  --color-stable-cyan: #066f88;
+  --color-stable-purple-light: #6d28d9;
+  --color-stable-cyan-light: #0a5a6e;
+  --color-stable-mint: #047452;
+  --color-stable-gold: #995404;
+  --color-stable-coral: #b8183b;
 
   /* -- Neutral ramp — luminance-inverted violet-cast greys. 950 = lightest
      (bg use), 50 = near-black (text use); muted 400/500 kept dark enough for
@@ -105,10 +172,13 @@
   --color-slate-850: #e9ebf3;
   --color-slate-800: #e1e3ee;
   --color-slate-700: #c7cad9;
-  --color-slate-600: #989bb2;
-  --color-slate-500: #6b6d86;
-  --color-slate-400: #565873;
-  --color-slate-300: #41435a;
+  /* Same fix on the light side — 600 was 2.14:1 on a slate-800 chip. Darkened
+     and re-spaced so the ramp stays monotonic (600 lightest of the muted trio,
+     300 darkest) while every step clears AA. */
+  --color-slate-600: #5c6079;
+  --color-slate-500: #4c4e64;
+  --color-slate-400: #3d3f52;
+  --color-slate-300: #313344;
   --color-slate-200: #2c2e40;
   --color-slate-100: #1b1c29;
   --color-slate-50: #0f1018;
@@ -120,6 +190,37 @@
   --color-surface-3: #e5e7f0;
   --color-tint-nav: rgba(124, 58, 237, 0.05);
   --color-tint-agents: rgba(8, 145, 178, 0.05);
+  --color-tint-conv: rgba(15, 18, 40, 0.015);
+  --color-tint-composer: rgba(5, 150, 105, 0.05);
+  --color-tint-call: rgba(225, 29, 72, 0.05);
+  --color-tint-canvas: rgba(217, 119, 6, 0.05);
+
+  /* Section edges + item hues darkened for the white page — these double as
+     small text/icon colour, so they are held to AA (>=4.5:1) on surface-1. */
+  --color-edge-nav: #6d28d9;
+  --color-edge-conv: #71748a;
+  --color-edge-agents: #0c6379;
+  --color-edge-composer: #046b4d;
+  --color-edge-call: #be123c;
+  --color-edge-canvas: #8f4207;
+
+  --color-item-channel: #6d28d9;
+  --color-item-dm: #0c6379;
+  --color-item-group: #046b4d;
+  --color-item-agent: #8a5406;
+  --color-item-mention: #be123c;
+  --color-item-unread: #5b21b6;
+  --color-item-system: #565873;
+
+  /* Status dots for the white page. Same two-part contract as the dark set
+     (see @theme): >=3:1 on every surface, AND separated from each other. The
+     polarity inverts with the page - on dark, "present" is the bright end and
+     offline is dim; on light, "present" is the dark end and offline is the
+     pale one nearest the paper. */
+  --color-status-active: #0d8f66;
+  --color-status-working: #734505;
+  --color-status-idle: #2e2f42;
+  --color-status-offline: #7d7e98;
   /* Dark ink at raised alpha so section boundaries actually read on white. */
   --color-line: rgba(15, 18, 40, 0.12);
   --color-line-strong: rgba(15, 18, 40, 0.22);
@@ -170,6 +271,476 @@
 }
 :root[data-theme="light"] *::-webkit-scrollbar-thumb:hover {
   background-color: rgba(15, 18, 40, 0.42);
+}
+
+/* ============================================================================
+   PALETTES — the second theme axis
+   ----------------------------------------------------------------------------
+   `data-theme` (light|dark) and `data-palette` are ORTHOGONAL. lib/theme.ts owns
+   data-theme; stores/themeStore.ts owns data-palette. A palette re-declares the
+   same token NAMES, so every existing bg-surface-N / text-slate-N / border-line
+   class in the app repaints — that is why there are no unstyled islands: the
+   sidebar, composer, panels and call UI all already consume these vars.
+
+   SPECIFICITY CONTRACT (load-bearing — read before editing):
+     :root                                      = 0,1,0   @theme defaults (dark)
+     :root[data-theme="light"]                  = 0,2,0   light base
+     :root[data-palette="p"]                    = 0,2,0   palette DARK values
+     :root[data-theme="light"][data-palette="p"]= 0,3,0   palette LIGHT values
+   The palette-dark block ties with the light base on specificity and comes
+   LATER in this file, so it would win in light mode. The 0,3,0 palette-light
+   block is what stops that. CONSEQUENCE: every token a palette sets in its dark
+   block MUST also be set in its light block, or light mode leaks dark values.
+   `scripts/check-theme-contrast.mjs` enforces this — run it after any edit.
+
+   "aurora" is the default and deliberately has NO block: it IS the @theme /
+   light-base pair above.
+   ========================================================================== */
+
+/* -- PRISM — maximum section differentiation ------------------------------
+   Neutral deep-slate surfaces on purpose: they stay out of the way so the six
+   section tints (indigo / cyan / neutral / green / pink / amber) read loudly.
+   This is the palette for Aaron's "easy to distinguish" complaint. */
+:root[data-palette="prism"] {
+  --color-surface-0: #0b0d12;
+  --color-surface-1: #151821;
+  --color-surface-2: #1f2430;
+  --color-surface-3: #2a3040;
+  --color-line: rgba(160, 175, 205, 0.18);
+  --color-line-strong: rgba(165, 180, 210, 0.34);
+
+  --color-stable-purple: #8b5cf6;
+  --color-stable-purple-light: #a78bfa;
+  --color-stable-cyan: #22d3ee;
+  --color-stable-cyan-light: #67e8f9;
+  --color-stable-mint: #34d399;
+  --color-stable-gold: #fbbf24;
+  --color-stable-coral: #fb7185;
+
+  --color-stable-glass: rgba(21, 24, 33, 0.6);
+  --color-stable-glass-border: rgba(160, 175, 205, 0.14);
+  --color-stable-glass-hover: rgba(31, 36, 48, 0.78);
+
+  --color-tint-nav: rgba(129, 140, 248, 0.16);
+  --color-tint-agents: rgba(34, 211, 238, 0.14);
+  --color-tint-conv: rgba(148, 163, 184, 0.04);
+  --color-tint-composer: rgba(52, 211, 153, 0.13);
+  --color-tint-call: rgba(244, 114, 182, 0.14);
+  --color-tint-canvas: rgba(251, 191, 36, 0.12);
+
+  --color-edge-nav: #818cf8;
+  --color-edge-conv: #8b93aa;
+  --color-edge-agents: #22d3ee;
+  --color-edge-composer: #34d399;
+  --color-edge-call: #f472b6;
+  --color-edge-canvas: #fbbf24;
+
+  --color-item-channel: #a5b4fc;
+  --color-item-dm: #67e8f9;
+  --color-item-group: #6ee7b7;
+  --color-item-agent: #fcd34d;
+  --color-item-mention: #f9a8d4;
+  --color-item-unread: #c7d2fe;
+  --color-item-system: #aab3cc;
+
+  --shadow-glow-iris: 0 0 24px rgba(129, 140, 248, 0.35);
+  --shadow-glow-aqua: 0 0 24px rgba(34, 211, 238, 0.3);
+  --shadow-glow-mint: 0 0 24px rgba(52, 211, 153, 0.3);
+}
+
+:root[data-theme="light"][data-palette="prism"] {
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f5f7fb;
+  --color-surface-2: #eceff6;
+  --color-surface-3: #e2e6f0;
+  --color-line: rgba(20, 25, 45, 0.13);
+  --color-line-strong: rgba(20, 25, 45, 0.24);
+
+  --color-stable-purple: #6d28d9;
+  --color-stable-purple-light: #6d28d9;
+  --color-stable-cyan: #0c6379;
+  --color-stable-cyan-light: #155e75;
+  --color-stable-mint: #046b4d;
+  --color-stable-gold: #8f4207;
+  --color-stable-coral: #be123c;
+
+  --color-stable-glass: rgba(255, 255, 255, 0.75);
+  --color-stable-glass-border: rgba(20, 25, 45, 0.1);
+  --color-stable-glass-hover: rgba(255, 255, 255, 0.92);
+
+  --color-tint-nav: rgba(79, 70, 229, 0.07);
+  --color-tint-agents: rgba(14, 116, 144, 0.07);
+  --color-tint-conv: rgba(20, 25, 45, 0.015);
+  --color-tint-composer: rgba(4, 120, 87, 0.07);
+  --color-tint-call: rgba(219, 39, 119, 0.06);
+  --color-tint-canvas: rgba(180, 83, 9, 0.06);
+
+  --color-edge-nav: #4f46e5;
+  --color-edge-conv: #666a80;
+  --color-edge-agents: #0c6379;
+  --color-edge-composer: #046b4d;
+  --color-edge-call: #db2777;
+  --color-edge-canvas: #8f4207;
+
+  --color-item-channel: #4338ca;
+  --color-item-dm: #0c6379;
+  --color-item-group: #046b4d;
+  --color-item-agent: #8a5406;
+  --color-item-mention: #be185d;
+  --color-item-unread: #453cd4;
+  --color-item-system: #565873;
+
+  --shadow-glow-iris: 0 0 24px rgba(79, 70, 229, 0.22);
+  --shadow-glow-aqua: 0 0 24px rgba(14, 116, 144, 0.2);
+  --shadow-glow-mint: 0 0 24px rgba(4, 120, 87, 0.2);
+}
+
+/* -- EMBER — warm. Primary accent goes orange; a single cool complement
+   (sky) keeps the agents rail separable from the nav rail. ---------------- */
+:root[data-palette="ember"] {
+  --color-surface-0: #100b0a;
+  --color-surface-1: #1b1413;
+  --color-surface-2: #261d1a;
+  --color-surface-3: #332723;
+  --color-line: rgba(214, 180, 160, 0.17);
+  --color-line-strong: rgba(220, 186, 166, 0.32);
+
+  --color-stable-purple: #f97316;
+  --color-stable-purple-light: #fdba74;
+  --color-stable-cyan: #38bdf8;
+  --color-stable-cyan-light: #7dd3fc;
+  --color-stable-mint: #4ade80;
+  --color-stable-gold: #fbbf24;
+  --color-stable-coral: #fb7185;
+
+  --color-stable-glass: rgba(27, 20, 19, 0.58);
+  --color-stable-glass-border: rgba(214, 180, 160, 0.13);
+  --color-stable-glass-hover: rgba(38, 29, 26, 0.76);
+
+  --color-tint-nav: rgba(249, 115, 22, 0.12);
+  --color-tint-agents: rgba(56, 189, 248, 0.1);
+  --color-tint-conv: rgba(214, 180, 160, 0.03);
+  --color-tint-composer: rgba(74, 222, 128, 0.09);
+  --color-tint-call: rgba(251, 113, 133, 0.11);
+  --color-tint-canvas: rgba(251, 191, 36, 0.1);
+
+  --color-edge-nav: #f97316;
+  --color-edge-conv: #a08d83;
+  --color-edge-agents: #38bdf8;
+  --color-edge-composer: #4ade80;
+  --color-edge-call: #fb7185;
+  --color-edge-canvas: #fbbf24;
+
+  --color-item-channel: #fdba74;
+  --color-item-dm: #7dd3fc;
+  --color-item-group: #86efac;
+  --color-item-agent: #fcd34d;
+  --color-item-mention: #fda4af;
+  --color-item-unread: #fed7aa;
+  --color-item-system: #bfaca4;
+
+  --shadow-glow-iris: 0 0 24px rgba(249, 115, 22, 0.32);
+  --shadow-glow-aqua: 0 0 24px rgba(56, 189, 248, 0.28);
+  --shadow-glow-mint: 0 0 24px rgba(74, 222, 128, 0.28);
+}
+
+:root[data-theme="light"][data-palette="ember"] {
+  --color-surface-0: #fffdfb;
+  --color-surface-1: #faf4ef;
+  --color-surface-2: #f4ebe3;
+  --color-surface-3: #ece0d5;
+  --color-line: rgba(70, 40, 25, 0.15);
+  --color-line-strong: rgba(70, 40, 25, 0.27);
+
+  --color-stable-purple: #a5350a;
+  --color-stable-purple-light: #a5350a;
+  --color-stable-cyan: #03567f;
+  --color-stable-cyan-light: #075985;
+  --color-stable-mint: #046b4d;
+  --color-stable-gold: #8f4207;
+  --color-stable-coral: #be123c;
+
+  --color-stable-glass: rgba(255, 253, 251, 0.78);
+  --color-stable-glass-border: rgba(70, 40, 25, 0.11);
+  --color-stable-glass-hover: rgba(255, 255, 255, 0.93);
+
+  --color-tint-nav: rgba(194, 65, 12, 0.06);
+  --color-tint-agents: rgba(3, 105, 161, 0.06);
+  --color-tint-conv: rgba(70, 40, 25, 0.015);
+  --color-tint-composer: rgba(4, 120, 87, 0.06);
+  --color-tint-call: rgba(190, 18, 60, 0.055);
+  --color-tint-canvas: rgba(180, 83, 9, 0.06);
+
+  --color-edge-nav: #a5350a;
+  --color-edge-conv: #7d6b5d;
+  --color-edge-agents: #03567f;
+  --color-edge-composer: #046b4d;
+  --color-edge-call: #be123c;
+  --color-edge-canvas: #8f4207;
+
+  --color-item-channel: #a5350a;
+  --color-item-dm: #03567f;
+  --color-item-group: #046b4d;
+  --color-item-agent: #8a5406;
+  --color-item-mention: #be123c;
+  --color-item-unread: #9a3412;
+  --color-item-system: #645446;
+
+  --shadow-glow-iris: 0 0 24px rgba(194, 65, 12, 0.22);
+  --shadow-glow-aqua: 0 0 24px rgba(3, 105, 161, 0.2);
+  --shadow-glow-mint: 0 0 24px rgba(4, 120, 87, 0.2);
+}
+
+/* -- GROVE — green/teal. Low-glare for long sessions; warm hues are reserved
+   for the things that should interrupt you (agent, mention, canvas). ------ */
+:root[data-palette="grove"] {
+  --color-surface-0: #080f0c;
+  --color-surface-1: #101a16;
+  --color-surface-2: #17241f;
+  --color-surface-3: #1f3029;
+  --color-line: rgba(160, 200, 180, 0.17);
+  --color-line-strong: rgba(165, 205, 185, 0.32);
+
+  --color-stable-purple: #10b981;
+  --color-stable-purple-light: #6ee7b7;
+  --color-stable-cyan: #2dd4bf;
+  --color-stable-cyan-light: #5eead4;
+  --color-stable-mint: #a3e635;
+  --color-stable-gold: #fbbf24;
+  --color-stable-coral: #fb7185;
+
+  --color-stable-glass: rgba(16, 26, 22, 0.58);
+  --color-stable-glass-border: rgba(160, 200, 180, 0.13);
+  --color-stable-glass-hover: rgba(23, 36, 31, 0.76);
+
+  --color-tint-nav: rgba(16, 185, 129, 0.11);
+  --color-tint-agents: rgba(45, 212, 191, 0.1);
+  --color-tint-conv: rgba(160, 200, 180, 0.03);
+  --color-tint-composer: rgba(163, 230, 53, 0.09);
+  --color-tint-call: rgba(251, 113, 133, 0.1);
+  --color-tint-canvas: rgba(251, 191, 36, 0.09);
+
+  --color-edge-nav: #10b981;
+  --color-edge-conv: #7f9a8e;
+  --color-edge-agents: #2dd4bf;
+  --color-edge-composer: #a3e635;
+  --color-edge-call: #fb7185;
+  --color-edge-canvas: #fbbf24;
+
+  --color-item-channel: #6ee7b7;
+  --color-item-dm: #5eead4;
+  --color-item-group: #bef264;
+  --color-item-agent: #fcd34d;
+  --color-item-mention: #fda4af;
+  --color-item-unread: #a7f3d0;
+  --color-item-system: #a3b8ac;
+
+  --shadow-glow-iris: 0 0 24px rgba(16, 185, 129, 0.32);
+  --shadow-glow-aqua: 0 0 24px rgba(45, 212, 191, 0.28);
+  --shadow-glow-mint: 0 0 24px rgba(163, 230, 53, 0.26);
+}
+
+:root[data-theme="light"][data-palette="grove"] {
+  --color-surface-0: #fbfefc;
+  --color-surface-1: #f2f8f4;
+  --color-surface-2: #e8f1ec;
+  --color-surface-3: #dbe9e0;
+  --color-line: rgba(10, 45, 30, 0.15);
+  --color-line-strong: rgba(10, 45, 30, 0.27);
+
+  --color-stable-purple: #046b4d;
+  --color-stable-purple-light: #046b4d;
+  --color-stable-cyan: #0d6862;
+  --color-stable-cyan-light: #115e59;
+  --color-stable-mint: #457010;
+  --color-stable-gold: #8f4207;
+  --color-stable-coral: #be123c;
+
+  --color-stable-glass: rgba(251, 254, 252, 0.78);
+  --color-stable-glass-border: rgba(10, 45, 30, 0.11);
+  --color-stable-glass-hover: rgba(255, 255, 255, 0.93);
+
+  --color-tint-nav: rgba(4, 120, 87, 0.06);
+  --color-tint-agents: rgba(15, 118, 110, 0.06);
+  --color-tint-conv: rgba(10, 45, 30, 0.015);
+  --color-tint-composer: rgba(77, 124, 15, 0.06);
+  --color-tint-call: rgba(190, 18, 60, 0.055);
+  --color-tint-canvas: rgba(180, 83, 9, 0.06);
+
+  --color-edge-nav: #046b4d;
+  --color-edge-conv: #647a6e;
+  --color-edge-agents: #0d6862;
+  --color-edge-composer: #457010;
+  --color-edge-call: #be123c;
+  --color-edge-canvas: #8f4207;
+
+  --color-item-channel: #046b4d;
+  --color-item-dm: #0d6862;
+  --color-item-group: #457010;
+  --color-item-agent: #8a5406;
+  --color-item-mention: #be123c;
+  --color-item-unread: #065f46;
+  --color-item-system: #4d5d54;
+
+  --shadow-glow-iris: 0 0 24px rgba(4, 120, 87, 0.22);
+  --shadow-glow-aqua: 0 0 24px rgba(15, 118, 110, 0.2);
+  --shadow-glow-mint: 0 0 24px rgba(77, 124, 15, 0.2);
+}
+
+/* -- BEACON — accessibility-first. Pure-black/pure-white extremes and a
+   lifted neutral ramp so every pair clears AAA (7:1) for body text, not just
+   AA. This is the only palette that re-declares the slate ramp. ----------- */
+:root[data-palette="beacon"] {
+  --color-slate-950: #000000;
+  --color-slate-900: #0a0a0c;
+  --color-slate-850: #101014;
+  --color-slate-800: #16161a;
+  --color-slate-700: #35353d;
+  --color-slate-600: #8b8b99;
+  --color-slate-500: #a2a2b0;
+  --color-slate-400: #c6c6d0;
+  --color-slate-300: #dedee6;
+  --color-slate-200: #ededf2;
+  --color-slate-100: #f7f7fa;
+  --color-slate-50: #ffffff;
+
+  --color-surface-0: #000000;
+  --color-surface-1: #0d0d0f;
+  --color-surface-2: #16161a;
+  --color-surface-3: #202026;
+  --color-line: rgba(255, 255, 255, 0.26);
+  --color-line-strong: rgba(255, 255, 255, 0.48);
+
+  --color-stable-purple: #b39dff;
+  --color-stable-purple-light: #cbbcff;
+  --color-stable-cyan: #5ee7ff;
+  --color-stable-cyan-light: #9bf1ff;
+  --color-stable-mint: #6ee7b7;
+  --color-stable-gold: #fcd34d;
+  --color-stable-coral: #fda4af;
+
+  --color-stable-glass: rgba(13, 13, 15, 0.8);
+  --color-stable-glass-border: rgba(255, 255, 255, 0.24);
+  --color-stable-glass-hover: rgba(22, 22, 26, 0.9);
+
+  --color-tint-nav: rgba(179, 157, 255, 0.14);
+  --color-tint-agents: rgba(94, 231, 255, 0.12);
+  --color-tint-conv: rgba(255, 255, 255, 0.02);
+  --color-tint-composer: rgba(110, 231, 183, 0.11);
+  --color-tint-call: rgba(253, 164, 175, 0.12);
+  --color-tint-canvas: rgba(252, 211, 77, 0.11);
+
+  --color-edge-nav: #b39dff;
+  --color-edge-conv: #9a9aa8;
+  --color-edge-agents: #5ee7ff;
+  --color-edge-composer: #6ee7b7;
+  --color-edge-call: #fda4af;
+  --color-edge-canvas: #fcd34d;
+
+  --color-item-channel: #cbbcff;
+  --color-item-dm: #9bf1ff;
+  --color-item-group: #a7f3d0;
+  --color-item-agent: #fde68a;
+  --color-item-mention: #fecdd3;
+  --color-item-unread: #ddd6fe;
+  --color-item-system: #c6c6d0;
+
+  --shadow-glow-iris: 0 0 24px rgba(179, 157, 255, 0.4);
+  --shadow-glow-aqua: 0 0 24px rgba(94, 231, 255, 0.35);
+  --shadow-glow-mint: 0 0 24px rgba(110, 231, 183, 0.35);
+}
+
+:root[data-theme="light"][data-palette="beacon"] {
+  --color-slate-950: #ffffff;
+  --color-slate-900: #fafafa;
+  --color-slate-850: #f4f4f6;
+  --color-slate-800: #ededf0;
+  --color-slate-700: #c8c8d0;
+  --color-slate-600: #62626c;
+  --color-slate-500: #4a4a55;
+  --color-slate-400: #35353d;
+  --color-slate-300: #26262c;
+  --color-slate-200: #18181c;
+  --color-slate-100: #0d0d10;
+  --color-slate-50: #000000;
+
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f7f7f9;
+  --color-surface-2: #eeeef2;
+  --color-surface-3: #e3e3e9;
+  --color-line: rgba(0, 0, 0, 0.28);
+  --color-line-strong: rgba(0, 0, 0, 0.5);
+
+  --color-stable-purple: #5b21b6;
+  --color-stable-purple-light: #5b21b6;
+  --color-stable-cyan: #155e75;
+  --color-stable-cyan-light: #164e63;
+  --color-stable-mint: #065f46;
+  --color-stable-gold: #854d0e;
+  --color-stable-coral: #9f1239;
+
+  --color-stable-glass: rgba(255, 255, 255, 0.85);
+  --color-stable-glass-border: rgba(0, 0, 0, 0.22);
+  --color-stable-glass-hover: rgba(255, 255, 255, 0.96);
+
+  --color-tint-nav: rgba(91, 33, 182, 0.06);
+  --color-tint-agents: rgba(21, 94, 117, 0.06);
+  --color-tint-conv: rgba(0, 0, 0, 0.015);
+  --color-tint-composer: rgba(6, 95, 70, 0.06);
+  --color-tint-call: rgba(159, 18, 57, 0.055);
+  --color-tint-canvas: rgba(133, 77, 14, 0.06);
+
+  --color-edge-nav: #5b21b6;
+  --color-edge-conv: #5f5f6b;
+  --color-edge-agents: #155e75;
+  --color-edge-composer: #065f46;
+  --color-edge-call: #9f1239;
+  --color-edge-canvas: #854d0e;
+
+  --color-item-channel: #5b21b6;
+  --color-item-dm: #155e75;
+  --color-item-group: #065f46;
+  --color-item-agent: #854d0e;
+  --color-item-mention: #9f1239;
+  --color-item-unread: #4c1d95;
+  --color-item-system: #3f3f46;
+
+  --shadow-glow-iris: 0 0 24px rgba(91, 33, 182, 0.25);
+  --shadow-glow-aqua: 0 0 24px rgba(21, 94, 117, 0.22);
+  --shadow-glow-mint: 0 0 24px rgba(6, 95, 70, 0.22);
+}
+
+/* Beacon deliberately drops the decorative aurora wash — it lowers the
+   effective contrast of everything layered over it, which is the one thing
+   this palette exists to avoid. */
+:root[data-palette="beacon"] body::before {
+  display: none;
+}
+
+/* glass-heavy hard-codes an rgba in its @utility (it cannot flip via a var),
+   so each dark palette restates it to match its own surface. */
+:root[data-palette="prism"] .glass-heavy {
+  background: rgba(11, 13, 18, 0.84);
+}
+:root[data-palette="ember"] .glass-heavy {
+  background: rgba(16, 11, 10, 0.84);
+}
+:root[data-palette="grove"] .glass-heavy {
+  background: rgba(8, 15, 12, 0.84);
+}
+:root[data-palette="beacon"] .glass-heavy {
+  background: rgba(0, 0, 0, 0.92);
+}
+/* Light wins over the palette-dark rules above on specificity (0,3,0 vs 0,2,0)
+   for every palette, including the ones with no light glass-heavy of their own,
+   because the existing :root[data-theme="light"] .glass-heavy rule is 0,2,1 and
+   ties are broken by source order — so it is restated here, last. */
+:root[data-theme="light"] .glass-heavy,
+:root[data-theme="light"][data-palette="prism"] .glass-heavy,
+:root[data-theme="light"][data-palette="ember"] .glass-heavy,
+:root[data-theme="light"][data-palette="grove"] .glass-heavy,
+:root[data-theme="light"][data-palette="beacon"] .glass-heavy {
+  background: rgba(255, 255, 255, 0.88);
 }
 
 @layer base {
@@ -341,6 +912,115 @@
     var(--color-tint-agents),
     var(--color-tint-agents)
   );
+}
+/* The remaining four regions, same mechanism. Adding one of these to a panel
+   is all it takes for that panel to join the section-identity system. */
+@utility section-conv {
+  background-image: linear-gradient(
+    var(--color-tint-conv),
+    var(--color-tint-conv)
+  );
+}
+@utility section-composer {
+  background-image: linear-gradient(
+    var(--color-tint-composer),
+    var(--color-tint-composer)
+  );
+}
+@utility section-call {
+  background-image: linear-gradient(
+    var(--color-tint-call),
+    var(--color-tint-call)
+  );
+}
+@utility section-canvas {
+  background-image: linear-gradient(
+    var(--color-tint-canvas),
+    var(--color-tint-canvas)
+  );
+}
+
+/* Section edge markers — an inset hairline in the section's identity hue.
+   Deliberately `box-shadow: inset` rather than a ::before: arbitrary pseudo
+   variants have been silently dropped by this build before, and an inset
+   shadow needs no pseudo-element, no z-index and no layout box. Safe to stack
+   with an existing `border-*` (the shadow sits inside the border). */
+@utility edge-nav {
+  box-shadow: inset 2px 0 0 0 var(--color-edge-nav);
+}
+@utility edge-agents {
+  box-shadow: inset -2px 0 0 0 var(--color-edge-agents);
+}
+@utility edge-composer {
+  box-shadow: inset 0 2px 0 0 var(--color-edge-composer);
+}
+@utility edge-call {
+  box-shadow: inset 0 2px 0 0 var(--color-edge-call);
+}
+@utility edge-canvas {
+  box-shadow: inset 0 2px 0 0 var(--color-edge-canvas);
+}
+/* Row-level marker for list items (a channel/DM/agent row): a short bar in the
+   item's own hue. Pair with `text-item-*` / `bg-item-*`, which Tailwind derives
+   automatically from the --color-item-* tokens. */
+@utility item-bar {
+  box-shadow: inset 3px 0 0 0 currentColor;
+}
+
+/* ----------------------------------------------------------------------------
+   TOOLTIP — presentation only. Positioning is computed in JS (components/ui/
+   Tooltip.tsx) because collision flipping needs live rects.
+   `pointer-events: none` is load-bearing: the bubble is rendered in a portal
+   over the page, and it must never eat a click or a hover meant for the app
+   underneath. It also means the tooltip can never take focus, which is how the
+   primitive guarantees it does not trap focus.
+   -------------------------------------------------------------------------- */
+@utility tooltip-surface {
+  position: fixed;
+  z-index: 90;
+  pointer-events: none;
+  max-width: 18rem;
+  width: max-content;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-surface-3);
+  color: var(--color-slate-100);
+  padding: 0.375rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  box-shadow: var(--shadow-pop);
+  animation: tooltipIn 0.12s ease-out;
+}
+
+/* Keyboard-shortcut chip inside a tooltip. */
+@utility tooltip-kbd {
+  display: inline-block;
+  margin-left: 0.375rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-surface-1);
+  padding: 0 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6875rem;
+  line-height: 1.05rem;
+  color: var(--color-slate-300);
+}
+
+@keyframes tooltipIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip-surface {
+    animation: none;
+  }
 }
 
 /* Keyboard-focus ring for any interactive element. */

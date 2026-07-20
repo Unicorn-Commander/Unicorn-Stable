@@ -10,6 +10,7 @@ import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { useThemeStore } from "@/stores/themeStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -135,6 +136,14 @@ export function AppShell() {
   const savedOpen = useAppStore((s) => s.ui.savedOpen);
   const setSavedOpen = useAppStore((s) => s.setSavedOpen);
   const currentUser = useAppStore((s) => s.currentUser);
+  // Palette is stored per user, so it can only be resolved once we know who is
+  // signed in. Doing this here rather than in the settings modal matters: if it
+  // lived in the modal, your saved palette would not appear until you opened
+  // Settings, which is not "saved" in any sense a user would accept.
+  const scopePalette = useThemeStore((s) => s.scopeToUser);
+  useEffect(() => {
+    scopePalette(currentUser?.id ?? null);
+  }, [currentUser?.id, scopePalette]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);

@@ -22,6 +22,7 @@ import { Avatar } from "@/components/Avatar";
 import { useAppStore } from "@/stores/appStore";
 import { resolveDefaultAgent } from "@/components/Sidebar/newChat";
 import { AgentChatModal } from "@/components/Agents/AgentChatModal";
+import { StatusDot } from "@/components/Agents/StatusDot";
 
 // Standing always-on video rooms (mirrors the backend CONFERENCE_ROOMS list).
 // Entering one create-or-gets it and joins, then drops you into the room where
@@ -681,11 +682,9 @@ function AgentsRail({
                       ) : (
                         <Bot className="h-4 w-4" />
                       )}
-                      <span
-                        className={clsx(
-                          "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900",
-                          statusDot(a.status),
-                        )}
+                      <StatusDot
+                        status={a.status}
+                        className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 border-2 border-slate-900"
                       />
                     </span>
                     <span className="min-w-0 flex-1">
@@ -728,19 +727,6 @@ function AgentsRail({
       </button>
     </aside>
   );
-}
-
-function statusDot(status: Agent["status"]): string {
-  switch (status) {
-    case "working":
-      return "bg-amber-400";
-    case "active":
-      return "animate-live bg-stable-mint";
-    case "idle":
-      return "bg-slate-400";
-    default:
-      return "bg-slate-600";
-  }
 }
 
 function EmptyFeed({

@@ -7,11 +7,11 @@ import {
   agentIdentity,
   TIER_META,
   tierOf,
-  statusDot,
   STATUS_LABEL,
   toolCostInfo,
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
+import { StatusDot } from "./StatusDot";
 
 /** The flat card grid (kept under "List"). Click a card to open the chat popup. */
 export function AgentList({
@@ -73,11 +73,9 @@ export function AgentList({
                   ) : (
                     <Bot className="h-5 w-5" />
                   )}
-                  <span
-                    className={clsx(
-                      "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-surface-1",
-                      statusDot(agent.status),
-                    )}
+                  <StatusDot
+                    status={agent.status}
+                    className="absolute -bottom-0.5 -right-0.5 h-3 w-3 border-2 border-surface-1"
                   />
                 </span>
                 <div className="min-w-0 flex-1">
@@ -99,8 +97,10 @@ export function AgentList({
                     <p className="truncate text-[11px] text-slate-400">{subtitle}</p>
                   )}
                   <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
-                    <span
-                      className={clsx("h-1.5 w-1.5 rounded-full", statusDot(agent.status))}
+                    <StatusDot
+                      status={agent.status}
+                      className="h-1.5 w-1.5"
+                      labelled={false}
                     />
                     {STATUS_LABEL[agent.status]}
                     {agent.rank && (

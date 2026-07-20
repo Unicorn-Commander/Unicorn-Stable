@@ -10,6 +10,7 @@ import "@fontsource-variable/space-grotesk";
 import "./styles/globals.css";
 import "highlight.js/styles/github-dark.css";
 import { applyTheme, getStoredTheme, initSystemThemeWatcher } from "./lib/theme";
+import { initPalette } from "./stores/themeStore";
 
 // Dev-only: expose window.__stableSeedTranscript()/__stableInjectTranscript()
 // behind the ?devtranscript flag so the live-transcript panel is testable
@@ -23,6 +24,14 @@ installDevTranscriptGlobals();
 // owns the watcher. Persist=false — we're only reflecting the stored choice.
 applyTheme(getStoredTheme(), false);
 initSystemThemeWatcher();
+
+// Palette is the second theme axis (data-palette). Called explicitly rather
+// than relying on themeStore's module side effect: an import that exists only
+// to run a side effect is exactly the kind of thing a bundler or a later
+// refactor drops, and if it never runs, data-palette is never stamped and no
+// palette can apply at all. index.html stamps this pre-paint too; this is the
+// runtime re-apply, and AppShell re-scopes it once the user is known.
+initPalette();
 
 const queryClient = new QueryClient({
   defaultOptions: {
