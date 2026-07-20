@@ -108,6 +108,7 @@ services:
   # Stable Backend — FastAPI: auth, rooms, messages, tokens, WebSocket
   # ==========================================================================
   backend:
+    image: unicorn-stable-backend:ring-20260718  # ring overlay 20260718 (pinned; do not rebuild from git)
     build:
       context: ./server
       dockerfile: Dockerfile
@@ -136,6 +137,7 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
       - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
+      - GATEWAY_ENABLED=${GATEWAY_ENABLED:-true}
       - UPLOAD_URL_SECRET=${UPLOAD_URL_SECRET:-}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-uchub}
