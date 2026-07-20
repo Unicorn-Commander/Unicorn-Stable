@@ -4,8 +4,9 @@ Mirrors ``app/api/messages.py``: ``APIRouter`` mounted under ``/api/v1``,
 Keycloak auth via ``get_current_user``, room-scoped authz via
 ``require_room_member`` / ``ensure_room_member`` (room membership is the live
 access boundary — tenancy/RLS is not enforced in the deployed schema), and
-realtime fan-out over the LiveKit data channel (same pattern MessageService
-uses) so other clients re-render the canvas live.
+realtime fan-out on BOTH the room WebSocket (Redis ``room:{id}``, the plane
+that works when nobody is in a call) and the LiveKit data channel (in-call
+clients), so other clients re-render the canvas live.
 
 Write verbs map to the framework-agnostic service:
     POST   /rooms/{room_id}/artifacts                 create
@@ -153,18 +154,88 @@ def _raise_http(err: ArtifactError) -> None:
     )
 
 
-async def _broadcast(
+_pub_redis = None
+
+
+def _get_pub_redis():
+    """Lazily-created Redis client for cross-worker ws fan-out via pub/sub.
+
+    Same client/pattern as ``app/api/messages.py._get_pub_redis`` — the ws
+    ConnectionManager is an in-process singleton, so under ``uvicorn --workers N``
+    only a publish to Redis ``room:{id}`` (which every worker's ws handler
+    subscribes to) reaches a client regardless of which worker holds its socket.
+    """
+    global _pub_redis
+    if _pub_redis is None:
+        from redis.asyncio import Redis
+
+        from app.config import get_settings
+
+        _pub_redis = Redis.from_url(get_settings().redis_url, decode_responses=False)
+    return _pub_redis
+
+
+def artifact_event_payload(artifact: Artifact, event: str, **extra: Any) -> dict[str, Any]:
+    """The canonical artifact-event body, carried identically on BOTH planes.
+
+    Emits the discriminator under two keys on purpose:
+      * ``event`` — what the web client actually decodes. ``decodeRoomData``
+        (web/src/lib/roomDataProtocol.ts) matches artifact packets on ``event``,
+        so a payload carrying only ``type`` was silently dropped as malformed —
+        i.e. the LiveKit path never delivered an artifact event to anyone.
+      * ``type``  — the ws envelope discriminator (websocket.ts emits on
+        ``parsed.type``) and the historical key, kept so nothing that already
+        keys off it regresses.
+    """
+    return {
+        "type": event,
+        "event": event,
+        "room_id": str(artifact.room_id),
+        "artifact_id": str(artifact.id),
+        "current_version_id": str(artifact.current_version_id)
+        if artifact.current_version_id
+        else None,
+        **extra,
+    }
+
+
+async def broadcast_artifact_event(
     livekit: LiveKitService, db: AsyncSession, artifact: Artifact, event: str, **extra: Any
 ) -> None:
-    """Fan an artifact event out over the room's LiveKit data channel.
+    """Fan an artifact event out on BOTH realtime planes.
 
-    Best-effort, exactly like MessageService — a broadcast failure never fails
-    the request.
+    1. Redis ``room:{id}`` → the always-on room WebSocket. This is the plane that
+       matters: a member who is merely *in* the room (not joined to a call) has
+       no LiveKit connection at all, so before this the only way an artifact ever
+       appeared was a reload or a room switch (``canvasStore.setRoom`` →
+       ``refreshArtifacts``).
+    2. The room's LiveKit data channel — unchanged, and deliberately NOT removed.
+       It is the in-call path and shares its receive handler with transcript and
+       ui_command packets, which the live call UI depends on.
+
+    Each plane is independently best-effort: a failure on one must not skip the
+    other, and neither may ever fail the request.
     """
+    import json as _json
+
     from sqlalchemy import select as _select
 
     from app.models.room import Room as _Room
 
+    payload = artifact_event_payload(artifact, event, **extra)
+
+    # Plane 1: room WebSocket (works with or without a call in progress).
+    try:
+        await _get_pub_redis().publish(
+            f"room:{artifact.room_id}",
+            _json.dumps({"type": event, "payload": payload}),
+        )
+    except Exception:
+        logger.warning(
+            "artifact_ws_broadcast_failed", broadcast_event=event, exc_info=True
+        )
+
+    # Plane 2: LiveKit data channel (in-call clients).
     try:
         lk_name = (
             await db.execute(
@@ -173,20 +244,14 @@ async def _broadcast(
         ).scalar_one_or_none()
         if not lk_name:
             return
-        await livekit.send_data(
-            room_name=lk_name,
-            data={
-                "type": event,
-                "room_id": str(artifact.room_id),
-                "artifact_id": str(artifact.id),
-                "current_version_id": str(artifact.current_version_id)
-                if artifact.current_version_id
-                else None,
-                **extra,
-            },
-        )
+        await livekit.send_data(room_name=lk_name, data=payload)
     except Exception:
         logger.debug("artifact_broadcast_failed", broadcast_event=event, exc_info=True)
+
+
+# Historical name kept so existing call sites (here and in internal_artifacts)
+# read unchanged.
+_broadcast = broadcast_artifact_event
 
 
 # ---------------------------------------------------------------------------

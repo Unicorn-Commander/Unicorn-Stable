@@ -15,10 +15,13 @@ import type { ArtifactEventMessage } from "@/lib/roomDataProtocol";
  *      `viewIndex` cursor so the user can page back through versions (read-only
  *      preview) without losing their place at HEAD.
  *   3. The room's artifact LIST (for the switcher).
- *   4. Live updates: {@link handleArtifactEvent} is called from the
- *      VoiceProvider data handler (outside React) when the backend broadcasts an
- *      artifact_created / artifact_updated event — it re-fetches the open
- *      artifact and refreshes the list, cheaply no-op'ing when nothing's open.
+ *   4. Live updates: {@link handleArtifactEvent} is called from the room
+ *      WebSocket subscription AND the VoiceProvider data handler (both outside
+ *      React) when the backend broadcasts an artifact_created /
+ *      artifact_updated event — it re-fetches the open artifact and refreshes
+ *      the list, cheaply no-op'ing when nothing's open.
+ *   5. `unseen`: the attention-dot counter for events that landed while the
+ *      drawer was shut.
  *
  * The `roomId` the canvas is scoped to is tracked so a stale data-channel event
  * (or a late fetch resolving after the user switched rooms) can be ignored.
@@ -27,6 +30,13 @@ import type { ArtifactEventMessage } from "@/lib/roomDataProtocol";
 interface CanvasState {
   /** Right-drawer / full-screen canvas visible. */
   panelOpen: boolean;
+  /**
+   * Artifact events that arrived while the panel was CLOSED, since the user
+   * last looked. Drives the attention dot on the Canvas toggle — we never
+   * auto-open the panel over someone's conversation, so a dot is the only
+   * thing that tells them a doc/diagram just landed.
+   */
+  unseen: number;
   /** Room the canvas is currently scoped to (mirrors the active room). */
   roomId: string | null;
 
@@ -93,6 +103,7 @@ function errMsg(e: unknown): string {
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
   panelOpen: false,
+  unseen: 0,
   roomId: null,
   artifacts: [],
   artifactsLoading: false,
@@ -102,8 +113,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   loading: false,
   error: null,
 
-  setPanelOpen: (open) => set({ panelOpen: open }),
-  togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
+  // Opening the panel IS seeing it, so both setters clear the dot on open.
+  setPanelOpen: (open) => set(open ? { panelOpen: true, unseen: 0 } : { panelOpen: false }),
+  togglePanel: () =>
+    set((s) => (s.panelOpen ? { panelOpen: false } : { panelOpen: true, unseen: 0 })),
 
   setRoom: (roomId) => {
     const prev = get().roomId;
@@ -116,6 +129,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       versions: [],
       viewIndex: -1,
       error: null,
+      // The dot counts *live* arrivals in the room you're looking at; carrying
+      // another room's count across a switch would be a lie.
+      unseen: 0,
     });
     if (roomId) void get().refreshArtifacts(roomId);
   },
@@ -134,7 +150,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   openArtifactById: async (artifactId) => {
-    set({ loading: true, error: null, panelOpen: true });
+    set({ loading: true, error: null, panelOpen: true, unseen: 0 });
     try {
       const [artifact, versions] = await Promise.all([
         api.getArtifact(artifactId),
@@ -206,6 +222,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   resetForServer: () =>
     set({
       panelOpen: false,
+      unseen: 0,
       roomId: null,
       artifacts: [],
       artifactsLoading: false,
@@ -218,8 +235,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 }));
 
 /**
- * React to a broadcast artifact event from the room data channel. Called from
- * the VoiceProvider's DataReceived handler (outside React, via getState()).
+ * React to a broadcast artifact event. Called (outside React, via getState())
+ * from BOTH realtime planes:
+ *   - the room WebSocket subscription in RoomView — the plane that works when
+ *     the user is simply in the room and not joined to a call, which is the
+ *     common case and was previously not covered at all; and
+ *   - the VoiceProvider's LiveKit DataReceived handler, for in-call clients.
+ *
+ * Both planes fire for the same event, so this must be idempotent — it is:
+ * every branch is a re-fetch of current server state, and a duplicate just
+ * costs one extra GET.
  *
  * Cheap when nothing relevant is open: it only re-fetches the OPEN artifact when
  * the event targets it, and refreshes the room list when the event is for the
@@ -239,5 +264,12 @@ export function handleArtifactEvent(msg: ArtifactEventMessage): void {
   // No-op cost is one list GET; only when the canvas has a room context.
   if (store.roomId) {
     void store.refreshArtifacts(store.roomId);
+  }
+
+  // Draw the eye to a closed drawer. Deliberately NOT an auto-open: barging the
+  // canvas over an active conversation is worse than a missed doc. If the panel
+  // is already open the user is looking at it, so there is nothing to flag.
+  if (!store.panelOpen) {
+    useCanvasStore.setState((s) => ({ unseen: s.unseen + 1 }));
   }
 }

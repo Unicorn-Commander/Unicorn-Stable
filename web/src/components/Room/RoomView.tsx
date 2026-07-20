@@ -9,7 +9,8 @@ import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { handleArtifactEvent, useCanvasStore } from "@/stores/canvasStore";
+import { coerceArtifactEvent } from "@/lib/roomDataProtocol";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import {
@@ -57,6 +58,13 @@ export function RoomView({ roomId }: RoomViewProps) {
   const canvasOpen = useCanvasStore((s) => s.panelOpen);
   const toggleCanvas = useCanvasStore((s) => s.togglePanel);
   const setCanvasRoom = useCanvasStore((s) => s.setRoom);
+  // Attention state for the Canvas toggle. `canvasCount` makes an existing
+  // artifact discoverable at all (nothing else in the header hints the room has
+  // one); `canvasUnseen` marks the ones that landed live while the drawer was
+  // shut, so an arrival is visibly different from "there is stuff in here".
+  const canvasCount = useCanvasStore((s) => s.artifacts.length);
+  const canvasUnseen = useCanvasStore((s) => s.unseen);
+  const canvasDot = !canvasOpen && (canvasCount > 0 || canvasUnseen > 0);
   // Keep the canvas store scoped to the active room even while the panel is
   // closed, so a live artifact event (or reopening the panel) always targets
   // the right room. RoomView remounts per room (keyed in AppShell), so this
@@ -164,6 +172,33 @@ export function RoomView({ roomId }: RoomViewProps) {
       qc.invalidateQueries({ queryKey: ["room-members", roomId] });
     });
   }, [roomId, qc]);
+
+  // Live artifact (canvas) events over the ROOM SOCKET.
+  //
+  // This is the delivery path that actually covers the normal case. The backend
+  // also fans these out on the LiveKit data channel (VoiceProvider), but that
+  // only reaches clients joined to a CALL — so an artifact created while you
+  // were just sitting in the room produced no client event whatsoever, and the
+  // canvas only caught up on a reload or a room switch (setRoom →
+  // refreshArtifacts). The two planes are additive and handleArtifactEvent is
+  // idempotent, so a client in a call simply gets the event twice.
+  useEffect(() => {
+    if (!roomId) return;
+    const onArtifact = (data: unknown) => {
+      const msg = coerceArtifactEvent(data);
+      // Foreign-room events are dropped again inside handleArtifactEvent, but
+      // this socket is subscribed to every room the user belongs to, so filter
+      // here too rather than churn the store for another room's traffic.
+      if (!msg || msg.room_id !== roomId) return;
+      handleArtifactEvent(msg);
+    };
+    const offCreated = ws.on("artifact_created", onArtifact);
+    const offUpdated = ws.on("artifact_updated", onArtifact);
+    return () => {
+      offCreated();
+      offUpdated();
+    };
+  }, [roomId]);
 
   // If the members fetch comes back 403, my membership is gone (I was removed
   // or the room was archived) — eject to home rather than sit on a dead room.
@@ -410,12 +445,33 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
             <button
               onClick={toggleCanvas}
-              className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${canvasOpen ? "bg-stable-purple/20 text-stable-purple-light" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
-              aria-label="Toggle canvas"
+              className={`relative rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${canvasOpen ? "bg-stable-purple/20 text-stable-purple-light" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
+              aria-label={
+                canvasUnseen > 0
+                  ? `Toggle canvas — ${canvasUnseen} new`
+                  : canvasCount > 0
+                    ? `Toggle canvas — ${canvasCount} artifact${canvasCount === 1 ? "" : "s"}`
+                    : "Toggle canvas"
+              }
               aria-pressed={canvasOpen}
-              title="Canvas — co-working docs, code & diagrams"
+              title={
+                canvasCount > 0
+                  ? `Canvas — ${canvasCount} artifact${canvasCount === 1 ? "" : "s"} in this room`
+                  : "Canvas — co-working docs, code & diagrams"
+              }
             >
               <LayoutTemplate className="h-4 w-4" />
+              {canvasDot && (
+                <span
+                  aria-hidden="true"
+                  className={clsx(
+                    "pointer-events-none absolute right-1 top-1 h-2 w-2 rounded-full ring-2 ring-slate-900 md:right-0.5 md:top-0.5",
+                    canvasUnseen > 0
+                      ? "animate-pulse bg-stable-purple-light"
+                      : "bg-slate-500",
+                  )}
+                />
+              )}
             </button>
             <button
               onClick={toggleKnowledge}
@@ -516,6 +572,11 @@ export function RoomView({ roomId }: RoomViewProps) {
                 >
                   <LayoutTemplate className="h-4 w-4" />
                   {canvasOpen ? "Hide canvas" : "Open canvas"}
+                  {canvasDot && (
+                    <span className="ml-auto rounded-full bg-stable-purple/20 px-1.5 py-0.5 text-[10px] text-stable-purple-light">
+                      {canvasUnseen > 0 ? `${canvasUnseen} new` : canvasCount}
+                    </span>
+                  )}
                 </button>
                 {/* Knowledge is reachable on every viewport (its inline button is
                     hidden < md); the desktop toolbar button covers >= md. */}

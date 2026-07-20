@@ -164,10 +164,12 @@ function ArtifactList({
   artifacts,
   loading,
   onOpen,
+  onCreate,
 }: {
   artifacts: ArtifactResponse[];
   loading: boolean;
   onOpen: (id: string) => void;
+  onCreate: () => void;
 }) {
   if (loading && artifacts.length === 0) {
     return (
@@ -175,10 +177,31 @@ function ArtifactList({
     );
   }
   if (artifacts.length === 0) {
+    // This is what you see in a room nobody has made an artifact in yet — the
+    // single most-hit state, and previously one grey sentence that read like a
+    // loading failure. It has to say plainly that the panel is working, the
+    // room is simply empty, and here is the way out of that.
     return (
-      <p className="px-3 py-6 text-center text-xs text-slate-500">
-        No artifacts yet. Create one to start co-working — docs, code, diagrams.
-      </p>
+      <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
+        <div className="rounded-full bg-slate-800/80 p-3">
+          <FileText className="h-5 w-5 text-slate-500" />
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-slate-300">No artifacts yet</p>
+          <p className="text-xs leading-relaxed text-slate-500">
+            The canvas is where docs, code, diagrams and sheets live for this
+            room. Create one, or ask the agent to — anything it makes shows up
+            here.
+          </p>
+        </div>
+        <button
+          onClick={onCreate}
+          className="flex items-center gap-1.5 rounded-md bg-stable-purple px-3 py-1.5 text-xs font-medium text-white hover:bg-stable-purple-light"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New artifact
+        </button>
+      </div>
     );
   }
   return (
@@ -424,6 +447,7 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
               setShowNew(false);
               void openArtifactById(id);
             }}
+            onCreate={() => setShowNew(true)}
           />
         </div>
       ) : (
