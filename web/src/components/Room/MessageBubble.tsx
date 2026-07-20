@@ -525,7 +525,7 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
         </span>
         <button
           onClick={copy}
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-slate-400 opacity-0 transition hover:bg-white/[0.06] hover:text-slate-100 focus:opacity-100 focus-ring group-hover/code:opacity-100"
+          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-slate-400 transition hover:bg-white/[0.06] hover:text-slate-100 focus:opacity-100 focus-ring md:opacity-0 md:group-hover/code:opacity-100"
           aria-label="Copy code"
         >
           {copied ? (

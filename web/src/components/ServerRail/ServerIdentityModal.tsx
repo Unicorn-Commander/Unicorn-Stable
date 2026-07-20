@@ -150,9 +150,9 @@ export function ServerIdentityModal() {
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={{ duration: 0.15 }}
-        className="glass-heavy max-h-[85vh] w-full max-w-md overflow-y-auto rounded-2xl shadow-pop"
+        className="glass-heavy flex max-h-[85dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl shadow-pop"
       >
-        <div className="flex items-center justify-between border-b border-line px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-line px-6 py-4">
           <h2 className="font-display text-lg font-semibold text-slate-50">This server</h2>
           <button
             type="button"
@@ -164,7 +164,7 @@ export function ServerIdentityModal() {
           </button>
         </div>
 
-        <form onSubmit={saveText} className="flex flex-col gap-5 px-6 py-5">
+        <form onSubmit={saveText} className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-5">
           <div className="flex items-center gap-4">
             <ServerLogo instance={instance} size="lg" active />
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">

@@ -132,7 +132,7 @@ function MemberMenu({
     <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="rounded-md p-1 text-slate-500 opacity-0 transition-opacity hover:bg-white/[0.08] hover:text-slate-100 focus-ring focus:opacity-100 group-hover:opacity-100"
+        className="rounded-md p-1.5 text-slate-500 transition-opacity hover:bg-white/[0.08] hover:text-slate-100 focus-ring focus:opacity-100 md:p-1 md:opacity-0 md:group-hover:opacity-100"
         aria-label={`Manage ${member.display_name}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -406,7 +406,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                   </div>
                   <button
                     onClick={() => removeAgent(m)}
-                    className="hidden shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 focus-ring group-hover:block"
+                    className="block shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 focus-ring md:hidden md:p-1 md:group-hover:block"
                     aria-label={`Remove ${m.display_name}`}
                     title="Remove from channel"
                   >

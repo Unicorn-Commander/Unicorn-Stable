@@ -4,6 +4,7 @@ import { Search, X, Plus, Pencil } from "lucide-react";
 import clsx from "clsx";
 import { useFederationStore } from "@/stores/federationStore";
 import { displayName, instanceHost } from "@/lib/instances";
+import { useIsDesktop } from "@/hooks/usePanelResize";
 import { isServerAdmin } from "./admin";
 import { ServerLogo } from "./ServerLogo";
 
@@ -34,9 +35,12 @@ export function ServerSwitcher() {
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
 
+  // Autofocus only where a focus does not summon a keyboard. On a phone the
+  // keyboard would open on mount and eat the results list below the card.
+  const isDesktop = useIsDesktop();
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (isDesktop) inputRef.current?.focus();
+  }, [isDesktop]);
 
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -93,7 +97,7 @@ export function ServerSwitcher() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[10vh] backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[12dvh] backdrop-blur-sm"
       onClick={(event) => {
         if (event.target === event.currentTarget) setSwitcherOpen(false);
       }}
@@ -106,7 +110,7 @@ export function ServerSwitcher() {
         initial={{ scale: 0.97, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={{ duration: 0.15 }}
-        className="glass-heavy flex max-h-[70vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-pop"
+        className="glass-heavy flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-pop"
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <Search className="h-4 w-4 shrink-0 text-slate-500" />
