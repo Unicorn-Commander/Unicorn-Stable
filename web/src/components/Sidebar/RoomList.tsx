@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   AtSign,
@@ -10,14 +10,17 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Folder,
   FolderPlus,
   Hash,
+  Lock,
   MessageSquare,
   MoreVertical,
   Plug,
   Plus,
   Search,
   Sparkles,
+  Users,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -35,14 +38,35 @@ import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { identityFor } from "@/lib/identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
+import { useFederationStore } from "@/stores/federationStore";
 import {
   useChannelCategories,
-  distinctCategories,
+  foldersFor,
+  collapseKey,
+  type FolderSection,
 } from "@/stores/categoryStore";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { NewChatButton } from "./NewChatButton";
 import { resolveDefaultAgent } from "./newChat";
+
+/**
+ * Channels are discoverable and self-joinable by anyone on the instance (see
+ * GET /rooms/browse) — they are the PUBLIC surface. DMs and group DMs are never
+ * browsable, so they are the private one. `is_private` is read defensively: the
+ * backend has no per-channel privacy column today, and the day it grows one the
+ * sidebar honours it without another change here.
+ */
+function isPrivateChannel(room: Room): boolean {
+  return (room as { is_private?: boolean }).is_private === true;
+}
+
+/** Section-level collapse keys. Distinct from folder keys by construction. */
+const SECTION_KEYS = {
+  channels: "section:channels",
+  people: "section:people",
+  groups: "section:groups",
+} as const;
 
 export function RoomList() {
   const navigate = useNavigate();
@@ -144,62 +168,112 @@ export function RoomList() {
     [filteredRooms],
   );
 
-  // Personal channel categories (client-side; see categoryStore).
+  // Personal folders (client-side; see categoryStore). The folder LIST is
+  // per-instance — one server's folders must never show up in another's
+  // sidebar — so everything here is scoped by the active instance id.
+  const scope = useFederationStore((s) => s.activeInstanceId);
   const categories = useChannelCategories((s) => s.categories);
   const collapsed = useChannelCategories((s) => s.collapsed);
+  const folderDefs = useChannelCategories((s) => s.folders);
   const setCategory = useChannelCategories((s) => s.setCategory);
   const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
-  const [menuRoomId, setMenuRoomIdRaw] = useState<string | null>(null);
-  // Inline "New category" input inside the ⋮ menu (null = collapsed to the
+  const ensureFolder = useChannelCategories((s) => s.ensureFolder);
+  const adoptLegacyFolders = useChannelCategories((s) => s.adoptLegacyFolders);
+
+  // Rescue folders saved before the per-instance folder list existed, once the
+  // sidebar knows which server it is looking at. Idempotent + self-disarming.
+  useEffect(() => {
+    if (scope) adoptLegacyFolders(scope);
+  }, [scope, adoptLegacyFolders]);
+
+  const channelFolders = useMemo(
+    () => foldersFor(folderDefs, scope, "channels"),
+    [folderDefs, scope],
+  );
+  const peopleFolders = useMemo(
+    () => foldersFor(folderDefs, scope, "people"),
+    [folderDefs, scope],
+  );
+
+  // Menu + inline-input state. The key is a room id for channels and a person /
+  // agent key for the people list, so one menu is open at a time across both.
+  const [menuKey, setMenuKeyRaw] = useState<string | null>(null);
+  // Inline "New folder" input inside the ⋮ menu (null = collapsed to the
   // button). Never survives a menu open/close, hence the wrapped setter.
   const [newCatDraft, setNewCatDraft] = useState<string | null>(null);
-  const setMenuRoomId = (id: string | null) => {
-    setMenuRoomIdRaw(id);
+  const setMenuKey = (key: string | null) => {
+    setMenuKeyRaw(key);
     setNewCatDraft(null);
   };
+  // Header "new folder" inputs, one per section.
+  const [newFolderFor, setNewFolderFor] = useState<FolderSection | null>(null);
+  const [newFolderDraft, setNewFolderDraft] = useState("");
 
   // mute.ts persists to localStorage outside React — bump on its change event
   // so isMuted() is re-read and muted badges/menu labels stay in sync.
   const [, setMutedVersion] = useState(0);
   useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
-  // Group the visible channels by the user's assigned category; everything else
-  // stays in a flat "ungrouped" list under the section header.
-  const { catGroups, ungrouped } = useMemo(() => {
-    const groups = new Map<string, Room[]>();
-    const ungrouped: Room[] = [];
-    for (const r of channels) {
-      const cat = categories[r.id];
-      if (cat) {
-        const arr = groups.get(cat);
-        if (arr) arr.push(r);
-        else groups.set(cat, [r]);
-      } else {
-        ungrouped.push(r);
-      }
-    }
-    const catGroups = [...groups.entries()].sort((a, b) =>
-      a[0].localeCompare(b[0]),
-    );
-    return { catGroups, ungrouped };
-  }, [channels, categories]);
-
-  // Every category name the user has ever made (for the "move to" menu), even if
-  // its channels are currently filtered out.
-  const knownCategories = useMemo(
-    () => distinctCategories(categories),
-    [categories],
-  );
-
-  function assignCategory(roomId: string, category: string | null) {
-    setCategory(roomId, category);
-    setMenuRoomId(null);
+  function commitHeaderFolder() {
+    const name = newFolderDraft.trim();
+    if (name && newFolderFor && scope) ensureFolder(scope, name, newFolderFor);
+    setNewFolderFor(null);
+    setNewFolderDraft("");
   }
 
-  function commitNewCategory(roomId: string) {
+  /**
+   * Bucket rows into the instance's folders. Only folders that actually hold a
+   * visible row come back — an empty folder (nothing filed, or everything
+   * filtered out by search) must NOT leave a stray header behind. It stays
+   * reachable in every "Move to folder" menu, which is where an empty folder is
+   * useful.
+   */
+  function bucket<T>(
+    items: T[],
+    folderNames: string[],
+    folderOf: (item: T) => string | undefined,
+  ): { groups: [string, T[]][]; ungrouped: T[] } {
+    const known = new Set(folderNames);
+    const byFolder = new Map<string, T[]>();
+    const ungrouped: T[] = [];
+    for (const item of items) {
+      const name = folderOf(item);
+      // A name we do not know on THIS instance means the assignment belongs to
+      // another server (room ids are unique, so this is belt-and-braces) — the
+      // row falls back to ungrouped rather than conjuring a folder.
+      if (name && known.has(name)) {
+        const arr = byFolder.get(name);
+        if (arr) arr.push(item);
+        else byFolder.set(name, [item]);
+      } else {
+        ungrouped.push(item);
+      }
+    }
+    const groups = folderNames
+      .filter((name) => (byFolder.get(name)?.length ?? 0) > 0)
+      .map((name) => [name, byFolder.get(name)!] as [string, T[]]);
+    return { groups, ungrouped };
+  }
+
+  const channelBuckets = useMemo(
+    () => bucket(channels, channelFolders, (r) => categories[r.id]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [channels, channelFolders, categories],
+  );
+
+  function assignCategory(
+    roomIds: string | string[],
+    category: string | null,
+    section: FolderSection,
+  ) {
+    setCategory(roomIds, category, { scope: scope ?? undefined, section });
+    setMenuKey(null);
+  }
+
+  function commitNewCategory(roomIds: string | string[], section: FolderSection) {
     const name = (newCatDraft ?? "").trim();
-    if (name) setCategory(roomId, name);
-    setMenuRoomId(null);
+    if (name) setCategory(roomIds, name, { scope: scope ?? undefined, section });
+    setMenuKey(null);
   }
 
   function markRoomRead(room: Room) {
@@ -212,16 +286,195 @@ export function RoomList() {
       });
     }
     clearUnread(room.id);
-    setMenuRoomId(null);
+    setMenuKey(null);
+  }
+
+  /** The "Move to folder" block, shared by the channel and people menus. */
+  function renderFolderMenuItems(
+    roomIds: string | string[],
+    currentCat: string | undefined,
+    section: FolderSection,
+  ) {
+    const names = section === "channels" ? channelFolders : peopleFolders;
+    return (
+      <>
+        <p className="mt-0.5 border-t border-line px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Move to folder
+        </p>
+        {names.map((c) => (
+          <button
+            key={c}
+            role="menuitem"
+            onClick={() => assignCategory(roomIds, c, section)}
+            className={clsx(
+              "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
+              c === currentCat ? "text-stable-purple-light" : "text-slate-300",
+            )}
+          >
+            <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
+            <span className="truncate">{c}</span>
+          </button>
+        ))}
+        {newCatDraft === null ? (
+          <button
+            role="menuitem"
+            onClick={() => setNewCatDraft("")}
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+          >
+            <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+            New folder…
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-1.5">
+            <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+            <input
+              autoFocus
+              value={newCatDraft}
+              onChange={(e) => setNewCatDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter confirms, Esc collapses back to the button —
+                // stop both so global handlers never see them.
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  commitNewCategory(roomIds, section);
+                } else if (e.key === "Escape") {
+                  e.stopPropagation();
+                  setNewCatDraft(null);
+                }
+              }}
+              placeholder="Folder name"
+              aria-label="New folder name"
+              className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
+            />
+          </div>
+        )}
+        {currentCat && (
+          <button
+            role="menuitem"
+            onClick={() => assignCategory(roomIds, null, section)}
+            className="focus-ring mt-0.5 flex w-full items-center gap-2 border-t border-line px-3 py-1.5 text-left text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+          >
+            Remove from “{currentCat}”
+          </button>
+        )}
+      </>
+    );
+  }
+
+  /**
+   * The ⋮ trigger. Hover-reveal is a DESKTOP-only affordance: a touch device
+   * has no hover, and an invisible-but-tappable button is not a feature. Below
+   * md it is permanently visible.
+   */
+  function renderMenuTrigger(key: string, label: string) {
+    const open = menuKey === key;
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setMenuKey(open ? null : key);
+        }}
+        className={clsx(
+          "focus-ring mr-1 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1",
+          open
+            ? "opacity-100"
+            : "opacity-70 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+        )}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <MoreVertical className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
+  function renderMenuShell(children: ReactNode) {
+    return (
+      <>
+        <button
+          className="fixed inset-0 z-20 cursor-default"
+          aria-hidden="true"
+          tabIndex={-1}
+          onClick={() => setMenuKey(null)}
+        />
+        <div
+          role="menu"
+          className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
+        >
+          {children}
+        </div>
+      </>
+    );
+  }
+
+  function renderNotifyItems(room: Room) {
+    const level = getNotifyLevel(room.id);
+    return (
+      <>
+        <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Notifications
+        </p>
+        {(
+          [
+            { key: "all", label: "All messages", Icon: Bell },
+            { key: "mentions", label: "Mentions only", Icon: AtSign },
+            { key: "muted", label: "Muted", Icon: BellOff },
+          ] as { key: NotifyLevel; label: string; Icon: typeof Bell }[]
+        ).map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            role="menuitemradio"
+            aria-checked={level === key}
+            onClick={() => {
+              setNotifyLevel(room.id, key);
+              setMenuKey(null);
+            }}
+            className={clsx(
+              "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
+              level === key ? "text-stable-purple-light" : "text-slate-300",
+            )}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            <span className="flex-1">{label}</span>
+            {level === key && (
+              <Check className="h-3.5 w-3.5 shrink-0 text-stable-purple-light" />
+            )}
+          </button>
+        ))}
+        <div className="my-0.5 border-t border-line" />
+        <button
+          role="menuitem"
+          onClick={() => markRoomRead(room)}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <CheckCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Mark as read
+        </button>
+        <button
+          role="menuitem"
+          onClick={() => {
+            setMenuKey(null);
+            void exportRoomToMarkdown(room);
+          }}
+          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+        >
+          <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Export as Markdown
+        </button>
+      </>
+    );
   }
 
   function renderChannelRow(room: Room) {
     const isActive = activeRoomId === room.id;
     const unread = unreadCounts[room.id] ?? 0;
     const cat = categories[room.id];
-    const menuOpen = menuRoomId === room.id;
+    const menuOpen = menuKey === room.id;
     const muted = isMuted(room.id);
-    const level = getNotifyLevel(room.id);
+    const priv = isPrivateChannel(room);
+    const Icon = priv ? Lock : Hash;
     return (
       <li key={room.id} className="relative">
         <div
@@ -246,11 +499,16 @@ export function RoomList() {
             )}
             aria-current={isActive ? "page" : undefined}
           >
-            <Hash
+            <Icon
               className={clsx(
                 "h-4 w-4 shrink-0",
-                isActive ? "text-stable-cyan" : "text-stable-cyan/70",
+                priv
+                  ? "text-amber-300/70"
+                  : isActive
+                    ? "text-stable-cyan"
+                    : "text-stable-cyan/70",
               )}
+              aria-label={priv ? "Private channel" : "Public channel"}
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between">
@@ -289,193 +547,103 @@ export function RoomList() {
               )}
             </div>
           </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuRoomId(menuOpen ? null : room.id);
-            }}
-            className={clsx(
-              "focus-ring mr-1 shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus:opacity-100",
-              menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-            )}
-            aria-label="Channel options"
-            aria-haspopup="menu"
-          >
-            <MoreVertical className="h-3.5 w-3.5" />
-          </button>
+          {renderMenuTrigger(room.id, `Options for ${room.name}`)}
         </div>
 
-        {menuOpen && (
-          <>
-            <button
-              className="fixed inset-0 z-20 cursor-default"
-              aria-hidden="true"
-              tabIndex={-1}
-              onClick={() => setMenuRoomId(null)}
-            />
-            <div
-              role="menu"
-              className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-48 overflow-hidden rounded-xl py-1 shadow-pop"
-            >
-              <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                Notifications
-              </p>
-              {(
-                [
-                  { key: "all", label: "All messages", Icon: Bell },
-                  { key: "mentions", label: "Mentions only", Icon: AtSign },
-                  { key: "muted", label: "Muted", Icon: BellOff },
-                ] as { key: NotifyLevel; label: string; Icon: typeof Bell }[]
-              ).map(({ key, label, Icon }) => (
-                <button
-                  key={key}
-                  role="menuitemradio"
-                  aria-checked={level === key}
-                  onClick={() => {
-                    setNotifyLevel(room.id, key);
-                    setMenuRoomId(null);
-                  }}
-                  className={clsx(
-                    "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
-                    level === key ? "text-stable-purple-light" : "text-slate-300",
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                  <span className="flex-1">{label}</span>
-                  {level === key && (
-                    <Check className="h-3.5 w-3.5 shrink-0 text-stable-purple-light" />
-                  )}
-                </button>
-              ))}
-              <div className="my-0.5 border-t border-line" />
-              <button
-                role="menuitem"
-                onClick={() => markRoomRead(room)}
-                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-              >
-                <CheckCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                Mark as read
-              </button>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  setMenuRoomId(null);
-                  void exportRoomToMarkdown(room);
-                }}
-                className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-              >
-                <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                Export as Markdown
-              </button>
-              <p className="mt-0.5 border-t border-line px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                Move to category
-              </p>
-              {knownCategories.map((c) => (
-                <button
-                  key={c}
-                  role="menuitem"
-                  onClick={() => assignCategory(room.id, c)}
-                  className={clsx(
-                    "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
-                    c === cat ? "text-stable-purple-light" : "text-slate-300",
-                  )}
-                >
-                  <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
-                  <span className="truncate">{c}</span>
-                </button>
-              ))}
-              {newCatDraft === null ? (
-                <button
-                  role="menuitem"
-                  onClick={() => setNewCatDraft("")}
-                  className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-                >
-                  <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
-                  New category…
-                </button>
-              ) : (
-                <div className="flex items-center gap-2 px-3 py-1.5">
-                  <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
-                  <input
-                    autoFocus
-                    value={newCatDraft}
-                    onChange={(e) => setNewCatDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      // Enter confirms, Esc collapses back to the button —
-                      // stop both so global handlers never see them.
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        commitNewCategory(room.id);
-                      } else if (e.key === "Escape") {
-                        e.stopPropagation();
-                        setNewCatDraft(null);
-                      }
-                    }}
-                    placeholder="Category name"
-                    aria-label="New category name"
-                    className="w-full min-w-0 rounded-md border border-line bg-slate-950/60 px-2 py-1 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60"
-                  />
-                </div>
-              )}
-              {cat && (
-                <button
-                  role="menuitem"
-                  onClick={() => assignCategory(room.id, null)}
-                  className="focus-ring mt-0.5 flex w-full items-center gap-2 border-t border-line px-3 py-1.5 text-left text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
-                >
-                  Remove from “{cat}”
-                </button>
-              )}
-            </div>
-          </>
-        )}
+        {menuOpen &&
+          renderMenuShell(
+            <>
+              {renderNotifyItems(room)}
+              {renderFolderMenuItems(room.id, cat, "channels")}
+            </>,
+          )}
       </li>
     );
   }
 
-  // ONE "Direct messages" list: agent conversations group under their resident
-  // (a collapsible thread-history per agent, ChatGPT-style), human DMs stay
-  // flat, and entries interleave by latest activity. The rooms query is already
-  // ordered most-recent-first by the backend (updated_at DESC), so each group's
-  // threads and the mixed ordering stay newest → oldest for free (a group sits
-  // at its newest thread's position).
-  type DmEntry =
-    | { kind: "agent"; agentId: string; threads: Room[] }
-    | { kind: "human"; room: Room };
+  // ---- People + private groups ----------------------------------------------
+  // "Who you talk to", not "every room you are in". Agent conversations group
+  // under their resident (ChatGPT-style thread history) and human DMs group
+  // under the person, so someone you have several threads with is ONE row you
+  // can expand — and one thing you can file into a folder. Private group rooms
+  // are a different privacy class and get their own section below.
+  //
+  // The rooms query is already ordered most-recent-first by the backend
+  // (updated_at DESC), so each group's threads and the mixed ordering stay
+  // newest → oldest for free (a group sits at its newest thread's position).
+  type PersonEntry =
+    | { kind: "agent"; key: string; agentId: string; threads: Room[] }
+    | { kind: "person"; key: string; name: string; threads: Room[] };
 
-  const dmEntries = useMemo<DmEntry[]>(() => {
-    const byAgent = new Map<string, Room[]>();
-    const entries: DmEntry[] = [];
+  const { peopleEntries, privateGroups } = useMemo(() => {
+    const byKey = new Map<string, PersonEntry>();
+    const peopleEntries: PersonEntry[] = [];
+    const privateGroups: Room[] = [];
     for (const room of filteredRooms) {
       if (room.type !== "dm" && room.type !== "group_dm") continue;
       const agentId = room.brigade_agent_id;
       if (agentId) {
-        const threads = byAgent.get(agentId);
-        if (threads) {
-          threads.push(room);
+        const key = `agent:${agentId}`;
+        const existing = byKey.get(key);
+        if (existing) {
+          existing.threads.push(room);
         } else {
-          const fresh = [room];
-          byAgent.set(agentId, fresh);
-          entries.push({ kind: "agent", agentId, threads: fresh });
+          const entry: PersonEntry = {
+            kind: "agent",
+            key,
+            agentId,
+            threads: [room],
+          };
+          byKey.set(key, entry);
+          peopleEntries.push(entry);
         }
+      } else if (room.type === "group_dm") {
+        // A human multi-party room: private, invite-only, and not a "person".
+        privateGroups.push(room);
       } else {
-        entries.push({ kind: "human", room });
+        // 1:1 with a human. The room list carries no member rows (the /rooms
+        // payload has no members), so the counterpart's display name IS the
+        // grouping key — which is exactly what the row already shows.
+        const key = `person:${room.name}`;
+        const existing = byKey.get(key);
+        if (existing) {
+          existing.threads.push(room);
+        } else {
+          const entry: PersonEntry = {
+            kind: "person",
+            key,
+            name: room.name,
+            threads: [room],
+          };
+          byKey.set(key, entry);
+          peopleEntries.push(entry);
+        }
       }
     }
-    return entries;
+    return { peopleEntries, privateGroups };
   }, [filteredRooms]);
 
-  // Collapsed by default — one row per resident; the chevron reveals history.
+  const peopleBuckets = useMemo(
+    () =>
+      bucket(
+        peopleEntries,
+        peopleFolders,
+        (e) => categories[e.threads[0]?.id ?? ""],
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [peopleEntries, peopleFolders, categories],
+  );
+
+  // Collapsed by default — one row per person; the chevron reveals history.
   // Session-local UI state on purpose (like scroll position).
-  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
     () => new Set(),
   );
-  const toggleAgentExpanded = (agentId: string) =>
-    setExpandedAgents((prev) => {
+  const toggleExpanded = (key: string) =>
+    setExpandedKeys((prev) => {
       const next = new Set(prev);
-      if (next.has(agentId)) next.delete(agentId);
-      else next.add(agentId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
@@ -500,12 +668,6 @@ export function RoomList() {
       return "";
     }
   }
-
-
-  // ---- Unified Direct-messages renderers -----------------------------------
-  // One row per resident. Agents with multiple conversations collapse into a
-  // thread-history group (ChatGPT-style): the row opens the newest thread, the
-  // chevron reveals the history, the hover "+" starts a fresh thread.
 
   function renderThreadRow(room: Room, identColor: string) {
     const isActive = activeRoomId === room.id;
@@ -563,13 +725,24 @@ export function RoomList() {
     );
   }
 
-  function renderAgentGroup(agentId: string, threads: Room[]) {
-    const name = agentDisplayName(agentId, threads);
-    const ident = identityFor(agentId, name);
+  /**
+   * One row per resident/person. Multiple conversations collapse into a thread
+   * history: the row opens the newest thread, the chevron reveals the rest, the
+   * "+" starts a fresh thread (agents only — a human DM is a single room).
+   */
+  function renderPersonEntry(entry: PersonEntry) {
+    const isAgent = entry.kind === "agent";
+    const threads = entry.threads;
+    const name = isAgent
+      ? agentDisplayName(entry.agentId, threads)
+      : entry.name;
+    const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
-    const expanded = expandedAgents.has(agentId);
+    const expanded = expandedKeys.has(entry.key);
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = threads.reduce((n, r) => n + (r.unread_count ?? 0), 0);
+    const menuOpen = menuKey === entry.key;
+    const cat = categories[latest?.id ?? ""];
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
@@ -580,20 +753,28 @@ export function RoomList() {
     // property of the agent, not of the room, so the fallback is not a
     // degraded guess. An agent in neither lands on "unknown", which renders as
     // a dim ring, not as available.
+    // Humans keep the connected-or-nothing model: `is_online` alone — see
+    // ParticipantStrip; the old global online set was add-only, so OR'ing it in
+    // kept departed peers green. Availability is an agent concept only.
     const agentMember = others.find((p) => p.participant_type === "agent");
-    const rosterAgent = agents.find((a) => a.id === agentId);
-    const badge = agentPresence({
-      isOnline: agentMember?.is_online,
-      availability: agentMember?.availability ?? rosterAgent?.availability,
-      availabilityReason:
-        agentMember?.availability_reason ?? rosterAgent?.availability_reason,
-      name,
-    });
+    const rosterAgent = isAgent
+      ? agents.find((a) => a.id === entry.agentId)
+      : undefined;
+    const badge = isAgent
+      ? agentPresence({
+          isOnline: agentMember?.is_online,
+          availability: agentMember?.availability ?? rosterAgent?.availability,
+          availabilityReason:
+            agentMember?.availability_reason ??
+            rosterAgent?.availability_reason,
+          name,
+        })
+      : humanPresence(others.some((p) => p.is_online));
     return (
-      <li key={`agent-${agentId}`}>
+      <li key={entry.key} className="relative">
         <div
           className={clsx(
-            "group/agent relative flex w-full items-center rounded-lg pr-1 transition-colors",
+            "group relative flex w-full items-center rounded-lg pr-1 transition-colors",
             hasActive && !expanded
               ? "bg-white/[0.06]"
               : "hover:bg-white/[0.04]",
@@ -612,25 +793,31 @@ export function RoomList() {
             title={`Open your latest conversation with ${name}`}
           >
             <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-              <span
-                aria-hidden="true"
-                className="h-1.5 w-1.5 rounded-full"
-                style={{ background: ident.color }}
-              />
-              <span
-                className={clsx(
-                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
-                  badge.dotClass,
-                )}
-                aria-label={badge.label}
-                title={badge.label}
-              />
+              {isAgent ? (
+                <span
+                  aria-hidden="true"
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: ident.color }}
+                />
+              ) : (
+                <MessageSquare className="h-4 w-4 opacity-60" />
+              )}
+              {badge && (
+                <span
+                  className={clsx(
+                    "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+                    badge.dotClass,
+                  )}
+                  aria-label={badge.label}
+                  title={badge.label}
+                />
+              )}
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <span
                   className="truncate text-sm font-medium"
-                  style={{ color: ident.text }}
+                  style={isAgent ? { color: ident.text } : undefined}
                 >
                   {name}
                 </span>
@@ -661,18 +848,21 @@ export function RoomList() {
               )}
             </div>
           </button>
-          <button
-            onClick={() => startAgentChat(agentId, name)}
-            disabled={startingChat}
-            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover/agent:opacity-100 md:focus-visible:opacity-100"
-            aria-label={`Start a new chat with ${name}`}
-            title={`New chat with ${name}`}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
+          {isAgent && (
+            <button
+              onClick={() => startAgentChat(entry.agentId, name)}
+              disabled={startingChat}
+              className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+              aria-label={`Start a new chat with ${name}`}
+              title={`New chat with ${name}`}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {renderMenuTrigger(entry.key, `Options for ${name}`)}
           {threads.length > 1 && (
             <button
-              onClick={() => toggleAgentExpanded(agentId)}
+              onClick={() => toggleExpanded(entry.key)}
               className="focus-ring flex items-center gap-0.5 rounded-md p-1 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
               aria-expanded={expanded}
               aria-label={`${expanded ? "Hide" : "Show"} conversation history with ${name} (${threads.length})`}
@@ -688,6 +878,21 @@ export function RoomList() {
             </button>
           )}
         </div>
+
+        {menuOpen &&
+          renderMenuShell(
+            <>
+              {latest && renderNotifyItems(latest)}
+              {/* Filing a person files EVERY thread with them, so the group
+                  cannot be split across two folders by opening an old one. */}
+              {renderFolderMenuItems(
+                threads.map((r) => r.id),
+                cat,
+                "people",
+              )}
+            </>,
+          )}
+
         {expanded && threads.length > 1 && (
           <ul role="list" className="ml-3 border-l border-line pl-1">
             {threads.map((room) => renderThreadRow(room, ident.color))}
@@ -697,27 +902,20 @@ export function RoomList() {
     );
   }
 
-  function renderHumanDm(room: Room) {
+  function renderPrivateGroup(room: Room) {
+    const isActive = activeRoomId === room.id;
+    const menuOpen = menuKey === room.id;
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
-    // Humans keep the connected-or-nothing model: `is_online` alone — see
-    // ParticipantStrip, the old global online set was add-only, so OR'ing it in
-    // kept departed peers green. Availability is an agent concept and does not
-    // apply here.
-    const humanBadge = humanPresence(others.some((p) => p.is_online));
-    const isActive = activeRoomId === room.id;
+    const badge = humanPresence(others.some((p) => p.is_online));
     return (
-      <li key={room.id}>
-        <button
-          onClick={() => openRoom(room.id)}
+      <li key={room.id} className="relative">
+        <div
           className={clsx(
-            "focus-ring relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
-            isActive
-              ? "bg-white/[0.06] text-slate-50"
-              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+            "group relative flex items-center rounded-lg transition-colors",
+            isActive ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
           )}
-          aria-current={isActive ? "page" : undefined}
         >
           {isActive && (
             <span
@@ -725,48 +923,185 @@ export function RoomList() {
               className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
             />
           )}
-          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            <MessageSquare className="h-4 w-4 opacity-60" />
-            {humanBadge && (
-              <span
-                className={clsx(
-                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
-                  humanBadge.dotClass,
-                )}
-                aria-label={humanBadge.label}
-                title={humanBadge.label}
+          <button
+            onClick={() => openRoom(room.id)}
+            className={clsx(
+              "focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+              isActive
+                ? "text-slate-50"
+                : "text-slate-300 hover:text-slate-100",
+            )}
+            aria-current={isActive ? "page" : undefined}
+          >
+            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+              <Users
+                className="h-4 w-4 text-amber-300/70"
+                aria-label="Private group — invite only"
               />
-            )}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-sm font-medium">{room.name}</span>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {room.last_message && (
-                  <span className="text-[10px] tabular-nums text-slate-500">
-                    {formatTimestamp(room.last_message.created_at)}
-                  </span>
-                )}
-                {room.unread_count > 0 && (
-                  <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                    {room.unread_count > 99 ? "99+" : room.unread_count}
-                  </span>
-                )}
+              {badge && (
+                <span
+                  className={clsx(
+                    "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+                    badge.dotClass,
+                  )}
+                  aria-label={badge.label}
+                  title={badge.label}
+                />
+              )}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{room.name}</span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {room.member_count > 0 && (
+                    <span className="text-[10px] tabular-nums text-slate-600">
+                      {room.member_count}
+                    </span>
+                  )}
+                  {room.last_message && (
+                    <span className="text-[10px] tabular-nums text-slate-500">
+                      {formatTimestamp(room.last_message.created_at)}
+                    </span>
+                  )}
+                  {room.unread_count > 0 && (
+                    <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
+                      {room.unread_count > 99 ? "99+" : room.unread_count}
+                    </span>
+                  )}
+                </div>
               </div>
+              {room.last_message && (
+                <p className="truncate text-[11px] text-slate-500">
+                  <span className="font-medium text-slate-500">
+                    {room.last_message.sender_name}:
+                  </span>{" "}
+                  {formatLastMessage(room.last_message.content)}
+                </p>
+              )}
             </div>
-            {room.last_message && (
-              <p className="truncate text-[11px] text-slate-500">
-                <span className="font-medium text-slate-500">
-                  {room.last_message.sender_name}:
-                </span>{" "}
-                {formatLastMessage(room.last_message.content)}
-              </p>
-            )}
-          </div>
-        </button>
+          </button>
+          {renderMenuTrigger(room.id, `Options for ${room.name}`)}
+        </div>
+        {menuOpen && renderMenuShell(renderNotifyItems(room))}
       </li>
     );
   }
+
+  // ---- Section + folder chrome ---------------------------------------------
+
+  function renderSectionHeader(
+    key: string,
+    title: string,
+    hint: string,
+    actions?: ReactNode,
+  ) {
+    const shut = collapsed[key];
+    return (
+      <div className="flex items-center justify-between px-2.5 pb-1">
+        <button
+          onClick={() => toggleCollapsed(key)}
+          className="focus-ring group flex min-w-0 items-center gap-1 rounded-md py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+          aria-expanded={!shut}
+          title={hint}
+        >
+          <ChevronDown
+            className={clsx(
+              "h-3 w-3 shrink-0 transition-transform duration-150",
+              shut && "-rotate-90",
+            )}
+          />
+          <span className="truncate">{title}</span>
+        </button>
+        {actions && <div className="flex items-center gap-1">{actions}</div>}
+      </div>
+    );
+  }
+
+  function renderNewFolderButton(section: FolderSection) {
+    return (
+      <button
+        onClick={() => {
+          setNewFolderFor(section);
+          setNewFolderDraft("");
+        }}
+        className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+        aria-label={`New ${section === "channels" ? "channel" : "people"} folder`}
+        title="New folder"
+      >
+        <FolderPlus className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
+  function renderNewFolderInput(section: FolderSection) {
+    if (newFolderFor !== section) return null;
+    return (
+      <div className="mx-2 mb-1 flex items-center gap-2 rounded-lg border border-line bg-slate-950/60 px-2 py-1">
+        <FolderPlus className="h-3.5 w-3.5 shrink-0 text-stable-purple-light/80" />
+        <input
+          autoFocus
+          value={newFolderDraft}
+          onChange={(e) => setNewFolderDraft(e.target.value)}
+          onBlur={commitHeaderFolder}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              commitHeaderFolder();
+            } else if (e.key === "Escape") {
+              e.stopPropagation();
+              setNewFolderFor(null);
+              setNewFolderDraft("");
+            }
+          }}
+          placeholder="Folder name"
+          aria-label="New folder name"
+          className="w-full min-w-0 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+        />
+      </div>
+    );
+  }
+
+  /** A folder header + its rows. Callers only pass NON-EMPTY folders. */
+  function renderFolder<T>(
+    name: string,
+    section: FolderSection,
+    items: T[],
+    renderItem: (item: T) => ReactNode,
+  ) {
+    const key = collapseKey(name, section);
+    const shut = collapsed[key];
+    return (
+      <div key={key} className="mb-0.5">
+        <button
+          onClick={() => toggleCollapsed(key)}
+          className="focus-ring flex w-full items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+          aria-expanded={!shut}
+        >
+          <ChevronDown
+            className={clsx(
+              "h-3 w-3 shrink-0 transition-transform duration-150",
+              shut && "-rotate-90",
+            )}
+          />
+          <Folder className="h-3 w-3 shrink-0 opacity-50" aria-hidden="true" />
+          <span className="truncate">{name}</span>
+          <span className="ml-auto tabular-nums text-slate-500">
+            {items.length}
+          </span>
+        </button>
+        {!shut && (
+          <ul role="list" className="ml-1.5 border-l border-line pl-1">
+            {items.map(renderItem)}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
+  const channelsShut = collapsed[SECTION_KEYS.channels];
+  const peopleShut = collapsed[SECTION_KEYS.people];
+  const groupsShut = collapsed[SECTION_KEYS.groups];
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -862,11 +1197,12 @@ export function RoomList() {
         </button>
 
         <section>
-          <div className="flex items-center justify-between px-2.5 pb-1">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Channels
-            </h3>
-            <div className="flex items-center gap-1">
+          {renderSectionHeader(
+            SECTION_KEYS.channels,
+            "Channels",
+            "Public — anyone on this server can find and join these",
+            <>
+              {renderNewFolderButton("channels")}
               <button
                 onClick={() => setBrowseOpen(true)}
                 className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
@@ -882,101 +1218,113 @@ export function RoomList() {
               >
                 <Plus className="h-3.5 w-3.5" />
               </button>
-            </div>
-          </div>
-
-          {channels.length === 0 && (
-            <div className="px-2.5 py-2">
-              <p className="mb-2 text-xs text-slate-500">No channels yet</p>
-              <button
-                onClick={handleSeedDefaults}
-                disabled={seeding}
-                className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
-              >
-                <Sparkles className="h-3 w-3" />
-                {seeding ? "Creating…" : "Seed business channels"}
-              </button>
-            </div>
+            </>,
           )}
 
-          {/* Category groups (personal, collapsible) then ungrouped channels. */}
-          {catGroups.map(([cat, roomsInCat]) => {
-            const isCollapsed = collapsed[cat];
-            return (
-              <div key={cat} className="mb-0.5">
-                <button
-                  onClick={() => toggleCollapsed(cat)}
-                  className="focus-ring flex w-full items-center gap-1 rounded-md px-2.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
-                  aria-expanded={!isCollapsed}
-                >
-                  <ChevronDown
-                    className={clsx(
-                      "h-3 w-3 shrink-0 transition-transform duration-150",
-                      isCollapsed && "-rotate-90",
-                    )}
-                  />
-                  <span className="truncate">{cat}</span>
-                  <span className="ml-auto tabular-nums text-slate-500">
-                    {roomsInCat.length}
-                  </span>
-                </button>
-                {!isCollapsed && (
-                  <ul role="list" className="ml-1.5 border-l border-line pl-1">
-                    {roomsInCat.map((room) => renderChannelRow(room))}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
+          {!channelsShut && (
+            <>
+              {renderNewFolderInput("channels")}
 
-          <ul role="list">{ungrouped.map((room) => renderChannelRow(room))}</ul>
+              {channels.length === 0 && (
+                <div className="px-2.5 py-2">
+                  <p className="mb-2 text-xs text-slate-500">No channels yet</p>
+                  <button
+                    onClick={handleSeedDefaults}
+                    disabled={seeding}
+                    className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    {seeding ? "Creating…" : "Seed business channels"}
+                  </button>
+                </div>
+              )}
+
+              {/* Folders (only those with a visible channel), then the rest. */}
+              {channelBuckets.groups.map(([name, roomsInFolder]) =>
+                renderFolder(name, "channels", roomsInFolder, (room) =>
+                  renderChannelRow(room),
+                ),
+              )}
+              <ul role="list">
+                {channelBuckets.ungrouped.map((room) => renderChannelRow(room))}
+              </ul>
+            </>
+          )}
         </section>
 
         <section>
-          <div className="flex items-center justify-between px-2.5 pb-1">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Direct messages
-            </h3>
-            <button
-              onClick={() => setCreateDmOpen(true)}
-              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-              aria-label="New direct message"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          {dmEntries.length === 0 && (
-            <div className="mx-2 mb-1 flex flex-col gap-1">
-              <button
-                onClick={startDefaultChat}
-                disabled={startingChat}
-                className="focus-ring flex w-full flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
-              >
-                <span className="font-medium">No conversations yet</span>
-                <span>
-                  {startingChat
-                    ? "Starting…"
-                    : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
-                </span>
-              </button>
+          {renderSectionHeader(
+            SECTION_KEYS.people,
+            "People & agents",
+            "Private — direct conversations, one row per person you talk to",
+            <>
+              {renderNewFolderButton("people")}
               <button
                 onClick={() => setCreateDmOpen(true)}
-                className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+                aria-label="New direct message"
               >
-                …or message a person
+                <Plus className="h-3.5 w-3.5" />
               </button>
-            </div>
+            </>,
           )}
 
-          <ul role="list">
-            {dmEntries.map((entry) =>
-              entry.kind === "agent"
-                ? renderAgentGroup(entry.agentId, entry.threads)
-                : renderHumanDm(entry.room),
-            )}
-          </ul>
+          {!peopleShut && (
+            <>
+              {renderNewFolderInput("people")}
+
+              {peopleEntries.length === 0 && privateGroups.length === 0 && (
+                <div className="mx-2 mb-1 flex flex-col gap-1">
+                  <button
+                    onClick={startDefaultChat}
+                    disabled={startingChat}
+                    className="focus-ring flex w-full flex-col items-start gap-0.5 rounded-lg border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:border-stable-purple/50 hover:bg-white/[0.04] hover:text-slate-300 disabled:opacity-50"
+                  >
+                    <span className="font-medium">No conversations yet</span>
+                    <span>
+                      {startingChat
+                        ? "Starting…"
+                        : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setCreateDmOpen(true)}
+                    className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                  >
+                    …or message a person
+                  </button>
+                </div>
+              )}
+
+              {peopleBuckets.groups.map(([name, entries]) =>
+                renderFolder(name, "people", entries, (entry) =>
+                  renderPersonEntry(entry),
+                ),
+              )}
+              <ul role="list">
+                {peopleBuckets.ungrouped.map((entry) =>
+                  renderPersonEntry(entry),
+                )}
+              </ul>
+            </>
+          )}
         </section>
+
+        {/* Private groups only exist once you are in one — no stray header. */}
+        {privateGroups.length > 0 && (
+          <section>
+            {renderSectionHeader(
+              SECTION_KEYS.groups,
+              "Private groups",
+              "Invite only — these never appear in Browse channels",
+            )}
+            {!groupsShut && (
+              <ul role="list">
+                {privateGroups.map((room) => renderPrivateGroup(room))}
+              </ul>
+            )}
+          </section>
+        )}
       </nav>
 
       {createDmOpen && (
