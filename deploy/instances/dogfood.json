@@ -1,0 +1,26 @@
+[
+  {
+    "id": "flagship",
+    "name": "Commander",
+    "icon": "S",
+    "webOrigin": "https://stable.unicorncommander.ai",
+    "apiBaseUrl": "https://stable.unicorncommander.ai",
+    "keycloak": {
+      "url": "https://auth.unicorncommander.ai",
+      "realm": "uchub",
+      "clientId": "stable-web"
+    }
+  },
+  {
+    "id": "dogfood",
+    "name": "Magic Unicorn",
+    "icon": "M",
+    "webOrigin": "https://stable.magicunicorn.dev",
+    "apiBaseUrl": "https://stable.magicunicorn.dev",
+    "keycloak": {
+      "url": "https://auth.unicorncommander.ai",
+      "realm": "uchub",
+      "clientId": "stable-web"
+    }
+  }
+]

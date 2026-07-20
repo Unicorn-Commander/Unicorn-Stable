@@ -115,6 +115,16 @@ python3 "$HERE/render_compose.py" \
   "$SLUG" "$SLUG.$DOMAIN_BASE" "$SLUG-livekit.$DOMAIN_BASE" "$SLUG-turn.$DOMAIN_BASE" \
   "$LK_API" "$LK_TCP" "$LK_UDP"
 
+# --- 4b) seed this org's federation server-rail list -----------------------
+# The web service mounts $ORG_DIR/instances.json over the image's baked list.
+# If the file is missing Docker silently creates a DIRECTORY at that path and
+# nginx 404s the rail instead of serving it, so create it now. `[]` is the
+# correct single-instance default; edit it to federate this org with others.
+if [[ ! -f "$ORG_DIR/instances.json" ]]; then
+  echo '[]' > "$ORG_DIR/instances.json"
+  echo "  ✓ seeded $ORG_DIR/instances.json (single-instance default)"
+fi
+
 # --- 5) render per-org livekit.yaml (own key/secret + redis password) ------
 LK_YAML_SRC="$ROOT/server/livekit.yaml.example"
 [[ -f "$LK_YAML_SRC" ]] || LK_YAML_SRC="$ROOT/server/livekit.yaml"

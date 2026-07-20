@@ -95,9 +95,22 @@ docker compose -p "$PROJECT" ps
 
 code="$(curl -s -o /dev/null -w '%{http_code}' "$EXTERNAL_URL" || echo 000)"
 echo "  🌐 external ${EXTERNAL_URL} -> HTTP ${code}"
-if [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]]; then
-  echo "✅ deploy OK (sha=$GIT_SHA). Rollback with: docker tag ${IMG[$1]}:rollback-${STAMP} ${IMG[$1]}:latest && docker compose -p $PROJECT up -d --no-deps --force-recreate $1"
-else
+if ! [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]]; then
   echo "❌ external check failed (HTTP $code) — investigate; rollback tags are ${STAMP}." >&2
   exit 1
 fi
+
+# 5) verify the federation server rail — HTTP 200 is NOT enough.
+# The web image bakes an empty instances.json; the real list is a bind mount.
+# Lose the mount and nginx still returns 200 while serving `[]`, so the rail
+# goes dark with every other check green. Assert the ARTIFACT.
+for svc in "$@"; do
+  if [[ "$svc" == "web" ]]; then
+    python3 "$ROOT/scripts/check_server_rail.py" "$PROJECT" "$EXTERNAL_URL" || {
+      echo "❌ server rail check failed — rollback tags are ${STAMP}." >&2
+      exit 1
+    }
+  fi
+done
+
+echo "✅ deploy OK (sha=$GIT_SHA). Rollback with: docker tag ${IMG[$1]}:rollback-${STAMP} ${IMG[$1]}:latest && docker compose -p $PROJECT up -d --no-deps --force-recreate $1"

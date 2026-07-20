@@ -19,10 +19,65 @@ Usage: render_compose.py <base_compose> <out_compose> <slug> <domain> \
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 
 import yaml
+
+
+def _split_mount(m):
+    """Split ``host:container[:mode]`` without tripping on ``${VAR:-default}``.
+
+    The base compose writes the rail mount as
+    ``${STABLE_INSTANCES_FILE:-./web/public/instances.json}:/...:ro`` — a naive
+    ``split(":")`` would cut inside the ``:-`` default and produce a garbage
+    host path, so track ``${...}`` nesting and only split at depth 0.
+    """
+    depth = 0
+    i = 0
+    while i < len(m):
+        if m.startswith("${", i):
+            depth += 1
+            i += 2
+            continue
+        ch = m[i]
+        if ch == "}" and depth:
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            return m[:i], m[i + 1:]
+        i += 1
+    return m, ""
+
+
+def _rewrite_web_mounts(svc, base_dir, out_dir):
+    """Point the web service's host binds at paths that exist for THIS org.
+
+    Two silent-failure modes are closed here:
+
+    * the rendered compose lives in ``deploy/per-org/instances/<slug>/``, so a
+      path written relative to the BASE compose (``./web/public/favicon.svg``)
+      resolves against the ORG directory instead — Docker then creates an empty
+      directory at the missing source and nginx serves nothing;
+    * the base rail mount is an env-var default aimed at the dogfood stack.
+      Left as-is, a per-org deploy either inherits dogfood's federation list or
+      mounts nothing. Each org gets its OWN ``instances.json`` (seeded by
+      provision-org.sh) so its rail is independently editable.
+    """
+    if not isinstance(svc, dict) or not isinstance(svc.get("volumes"), list):
+        return
+    fixed = []
+    for m in svc["volumes"]:
+        if not isinstance(m, str):
+            fixed.append(m)
+            continue
+        host, rest = _split_mount(m)
+        if rest.startswith("/usr/share/nginx/html/instances.json"):
+            host = os.path.join(out_dir, "instances.json")
+        elif host.startswith("./") or host.startswith("../"):
+            host = os.path.normpath(os.path.join(base_dir, host))
+        fixed.append(f"{host}:{rest}" if rest else host)
+    svc["volumes"] = fixed
 
 
 def _rewrite_labels(labels, slug, dom, lkdom, turndom):
@@ -113,6 +168,13 @@ def main() -> int:
                 fixed.append(m)
             svc["volumes"] = fixed
     c["volumes"] = newvols
+
+    # web host binds: absolutise repo assets + give this org its own rail list
+    _rewrite_web_mounts(
+        svcs.get("web"),
+        os.path.dirname(os.path.abspath(base)),
+        os.path.dirname(os.path.abspath(out)),
+    )
 
     with open(out, "w") as f:
         yaml.safe_dump(c, f, sort_keys=False, default_flow_style=False)

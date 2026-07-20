@@ -274,6 +274,15 @@ services:
       # Survive image rebuilds — these public assets are not bundled by Vite,
       # they live alongside the dist output in /usr/share/nginx/html.
       - ./web/public/favicon.svg:/usr/share/nginx/html/favicon.svg:ro
+      # Federation server rail. The web image BAKES `[]` (the correct
+      # single-instance default), so a deploy that federates must mount its own
+      # list over it. This mount belongs HERE and not in an out-of-tree
+      # `-f` override: `docker compose up` / scripts/deploy.sh pass no extra
+      # -f, so an override-only mount is silently dropped on the next deploy —
+      # nginx then serves the baked `[]`, the ServerRail renders empty, and
+      # nothing errors. Point STABLE_INSTANCES_FILE at this deploy's list;
+      # the default is the baked-equivalent empty list.
+      - ${STABLE_INSTANCES_FILE:-./web/public/instances.json}:/usr/share/nginx/html/instances.json:ro
     networks:
       - stable-net
       - web
