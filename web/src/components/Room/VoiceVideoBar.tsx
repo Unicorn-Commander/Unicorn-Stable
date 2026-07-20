@@ -373,7 +373,7 @@ function ParticipantTile({
       )}
 
       {/* Hover control cluster (top-right): pin · fullscreen · PiP · hide. */}
-      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
         {onTogglePin && (
           <TileControlButton
             icon={isPinned ? PinOff : Pin}
@@ -516,7 +516,7 @@ function ScreenShareTile({
       </div>
 
       {/* Hover controls: mute (if audio) · fullscreen · PiP. */}
-      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
         {hasAudio && onToggleMuted && (
           <TileControlButton
             icon={muted ? VolumeX : Volume2}
