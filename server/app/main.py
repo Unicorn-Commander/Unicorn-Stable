@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -163,6 +164,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.jwks_task = jwks_task
 
+    # Recover Knowledge-Base documents stranded mid-index by a previous restart.
+    #
+    # KB indexing runs as an in-process ``asyncio`` task, so a process death
+    # between "row created as indexing" and "status written" leaves the row in
+    # ``indexing`` with nothing alive that will ever finish it -- the UI shows a
+    # spinner forever. Nothing used to look for those rows on the way back up.
+    # This is that look. It is scheduled (not awaited) so a slow re-index can
+    # never delay or block startup, and the sweep only touches rows older than
+    # its age threshold, so it cannot fight a task running in THIS process.
+    kb_recovery_task = None
+    try:
+        from app.services.knowledge_service import knowledge_service
+
+        kb_recovery_task = asyncio.create_task(
+            knowledge_service.requeue_stranded_documents(
+                settings=settings, session_factory=session_factory
+            )
+        )
+        logger.info("kb_stranded_recovery_scheduled")
+    except Exception:
+        logger.warning("kb_stranded_recovery_schedule_failed", exc_info=True)
+    app.state.kb_recovery_task = kb_recovery_task
+
     logger.info("application_startup_complete", environment=settings.environment)
 
     yield
@@ -172,6 +196,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if jwks_task and not jwks_task.done():
         jwks_task.cancel()
+
+    if kb_recovery_task and not kb_recovery_task.done():
+        kb_recovery_task.cancel()
 
     await lk_api.aclose()
     await redis.aclose()

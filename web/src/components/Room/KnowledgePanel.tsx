@@ -14,8 +14,10 @@ import {
   Link2,
   Link2Off,
   RefreshCw,
+  RotateCcw,
   Search,
   ChevronRight,
+  Trash2,
 } from "lucide-react";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
@@ -25,6 +27,7 @@ import {
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import type {
   Collection,
+  CollectionUsage,
   DocumentContent,
   KbDocument,
   KbDocumentStatus,
@@ -117,6 +120,270 @@ function NewCollectionForm({
   );
 }
 
+/**
+ * Modal shell for the two IRREVERSIBLE actions in this panel. Deliberately a
+ * blocking dialog rather than an inline "click twice" affordance: deleting a
+ * document destroys its vectors, and deleting a knowledge base destroys every
+ * document in it. Neither is undoable and neither is worth risking on a
+ * mis-click, so both require a deliberate confirmation the user has to read.
+ */
+function ConfirmDialog({
+  title,
+  children,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  busy,
+  disabled,
+}: {
+  title: string;
+  children: React.ReactNode;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy?: boolean;
+  disabled?: boolean;
+}) {
+  // Esc cancels. Registered in the capture phase so it lands here and does not
+  // also close the whole panel behind the dialog.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onCancel();
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div className="w-full max-w-[340px] rounded-2xl border border-rose-500/25 bg-surface-1 p-4 shadow-2xl">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-rose-500/15 text-rose-300">
+            <AlertTriangle className="h-4 w-4" />
+          </span>
+          <h3 className="font-display text-sm font-semibold text-slate-100">
+            {title}
+          </h3>
+        </div>
+        <div className="mb-3 space-y-2 text-xs leading-relaxed text-slate-400">
+          {children}
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="focus-ring rounded-lg px-2.5 py-1.5 text-xs text-slate-300 transition-colors hover:bg-white/[0.06] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy || disabled}
+            className="focus-ring flex items-center gap-1.5 rounded-lg bg-rose-500/90 px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Delete-a-knowledge-base confirmation.
+ *
+ * Fetches the KB's USAGE first and refuses to be a blind "are you sure?": if
+ * rooms are still attached, it names them and requires a separate acknowledge
+ * checkbox, because deleting silently strips knowledge those rooms' agents are
+ * currently answering from. Rooms the caller cannot see are counted, not named.
+ */
+function DeleteCollectionDialog({
+  collection,
+  onCancel,
+  onDeleted,
+}: {
+  collection: Collection;
+  onCancel: () => void;
+  onDeleted: () => void;
+}) {
+  const fetchCollectionUsage = useKnowledgeStore(
+    (s) => s.fetchCollectionUsage,
+  );
+  const deleteCollection = useKnowledgeStore((s) => s.deleteCollection);
+  const [usage, setUsage] = useState<CollectionUsage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [ack, setAck] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [conflict, setConflict] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const u = await fetchCollectionUsage(collection.id);
+      if (!alive) return;
+      setUsage(u);
+      setLoading(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [collection.id, fetchCollectionUsage]);
+
+  const attachedCount = usage?.room_count ?? 0;
+  // Only block on the acknowledgement once we KNOW rooms depend on it. While
+  // usage is still loading we keep the button disabled rather than letting a
+  // user confirm a deletion whose blast radius has not been shown to them.
+  const needsAck = attachedCount > 0;
+
+  async function confirm() {
+    setBusy(true);
+    setConflict(null);
+    // `force` mirrors what the user was actually shown and acknowledged.
+    const res = await deleteCollection(collection.id, needsAck);
+    setBusy(false);
+    if (res.ok) {
+      onDeleted();
+      return;
+    }
+    if (res.needsForce) {
+      // Race: a room attached this KB between the usage fetch and the delete.
+      // Show the server's message (it names the rooms) and make them re-confirm.
+      setConflict(res.error ?? "This knowledge base is still in use.");
+      setUsage((u) =>
+        u ? { ...u, room_count: Math.max(1, u.room_count) } : u,
+      );
+      setAck(false);
+      return;
+    }
+    onCancel();
+  }
+
+  return (
+    <ConfirmDialog
+      title="Delete knowledge base?"
+      confirmLabel="Delete permanently"
+      onConfirm={confirm}
+      onCancel={onCancel}
+      busy={busy}
+      disabled={loading || (needsAck && !ack)}
+    >
+      <p>
+        <strong className="font-semibold text-slate-200">
+          {collection.name}
+        </strong>{" "}
+        and{" "}
+        {loading
+          ? "its documents"
+          : `its ${usage?.document_count ?? 0} document${
+              usage?.document_count === 1 ? "" : "s"
+            }`}{" "}
+        will be permanently deleted, along with all of their indexed text. This
+        cannot be undone.
+      </p>
+
+      {conflict && (
+        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
+          {conflict}
+        </p>
+      )}
+
+      {loading ? (
+        <p className="flex items-center gap-1.5 text-slate-500">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Checking what depends on it…
+        </p>
+      ) : (
+        attachedCount > 0 && (
+          <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-2 text-amber-100/90">
+            <p className="mb-1 font-semibold">
+              {attachedCount} room{attachedCount === 1 ? "" : "s"} still
+              use{attachedCount === 1 ? "s" : ""} this knowledge base:
+            </p>
+            <ul className="mb-1.5 list-disc pl-4">
+              {usage?.rooms.map((r) => (
+                <li key={r.id} className="truncate">
+                  {r.display_name}
+                </li>
+              ))}
+              {(usage?.hidden_room_count ?? 0) > 0 && (
+                <li className="text-amber-200/70">
+                  {usage?.hidden_room_count} other room
+                  {usage?.hidden_room_count === 1 ? "" : "s"} you cannot see
+                </li>
+              )}
+            </ul>
+            <p>
+              Their agents will no longer be able to answer from these
+              documents.
+            </p>
+            <label className="mt-2 flex cursor-pointer items-start gap-2 text-amber-100">
+              <input
+                type="checkbox"
+                checked={ack}
+                onChange={(e) => setAck(e.target.checked)}
+                className="mt-0.5 accent-rose-500"
+              />
+              <span>
+                I understand {attachedCount === 1 ? "this room" : "these rooms"}{" "}
+                will lose this knowledge base.
+              </span>
+            </label>
+          </div>
+        )
+      )}
+    </ConfirmDialog>
+  );
+}
+
+/** Delete-a-document confirmation. */
+function DeleteDocumentDialog({
+  document,
+  onCancel,
+  onDeleted,
+}: {
+  document: KbDocument;
+  onCancel: () => void;
+  onDeleted: () => void;
+}) {
+  const deleteDocument = useKnowledgeStore((s) => s.deleteDocument);
+  const [busy, setBusy] = useState(false);
+
+  async function confirm() {
+    setBusy(true);
+    const ok = await deleteDocument(document.id);
+    setBusy(false);
+    if (ok) onDeleted();
+    else onCancel();
+  }
+
+  return (
+    <ConfirmDialog
+      title="Delete document?"
+      confirmLabel="Delete permanently"
+      onConfirm={confirm}
+      onCancel={onCancel}
+      busy={busy}
+    >
+      <p>
+        <strong className="font-semibold text-slate-200">
+          {document.filename}
+        </strong>{" "}
+        will be permanently deleted, and its text removed from search so agents
+        can no longer retrieve it. This cannot be undone.
+      </p>
+    </ConfirmDialog>
+  );
+}
+
 /** A small status chip for a document's indexing state. */
 function StatusChip({ status }: { status: KbDocumentStatus }) {
   if (status === "ready") {
@@ -154,6 +421,7 @@ function CollectionList({
   busyId,
   onOpen,
   onToggleAttach,
+  onDelete,
 }: {
   collections: Collection[];
   attachedIds: Set<string>;
@@ -161,6 +429,7 @@ function CollectionList({
   busyId: string | null;
   onOpen: (id: string) => void;
   onToggleAttach: (id: string, attached: boolean) => void;
+  onDelete: (c: Collection) => void;
 }) {
   if (loading && collections.length === 0) {
     return (
@@ -237,6 +506,14 @@ function CollectionList({
               )}
               {attached ? "Attached" : "Attach"}
             </button>
+            <button
+              onClick={() => onDelete(c)}
+              className="focus-ring shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-rose-500/15 hover:text-rose-300"
+              aria-label={`Delete knowledge base ${c.name}`}
+              title="Delete this knowledge base"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
           </li>
         );
       })}
@@ -252,6 +529,9 @@ function CollectionDetail({
   onUpload,
   onRefresh,
   onOpenDocument,
+  onDeleteDocument,
+  onRetryDocument,
+  retryingId,
 }: {
   documents: KbDocument[];
   loading: boolean;
@@ -259,6 +539,9 @@ function CollectionDetail({
   onUpload: (files: FileList) => void;
   onRefresh: () => void;
   onOpenDocument: (documentId: string) => void;
+  onDeleteDocument: (d: KbDocument) => void;
+  onRetryDocument: (d: KbDocument) => void;
+  retryingId: string | null;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const indexingCount = documents.filter((d) => d.status === "indexing").length;
@@ -305,16 +588,25 @@ function CollectionDetail({
         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
           Documents{documents.length > 0 ? ` (${documents.length})` : ""}
         </span>
-        {/* Indexing is async — offer a manual refresh to poll status. */}
-        {(indexingCount > 0 || documents.length > 0) && (
-          <button
-            onClick={onRefresh}
-            className="focus-ring flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
-            title="Refresh indexing status"
-          >
-            <RefreshCw className="h-3 w-3" />
-            Refresh
-          </button>
+        {/* Indexing is async. The store polls while anything is `indexing`,
+            so say so — a spinner with no stated mechanism is exactly what made
+            this look permanently stuck. Manual refresh stays for the rest. */}
+        {indexingCount > 0 ? (
+          <span className="flex items-center gap-1 text-[11px] text-amber-300/80">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Indexing {indexingCount} — updating automatically…
+          </span>
+        ) : (
+          documents.length > 0 && (
+            <button
+              onClick={onRefresh}
+              className="focus-ring flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+              title="Refresh indexing status"
+            >
+              <RefreshCw className="h-3 w-3" />
+              Refresh
+            </button>
+          )
         )}
       </div>
 
@@ -373,6 +665,29 @@ function CollectionDetail({
                   </span>
                 )}
                 <StatusChip status={d.status} />
+                {d.status === "failed" && (
+                  <button
+                    onClick={() => onRetryDocument(d)}
+                    disabled={retryingId === d.id}
+                    className="focus-ring shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-cyan disabled:opacity-50"
+                    aria-label={`Retry indexing ${d.filename}`}
+                    title="Indexing failed — try again"
+                  >
+                    {retryingId === d.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={() => onDeleteDocument(d)}
+                  className="focus-ring shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-rose-500/15 hover:text-rose-300"
+                  aria-label={`Delete ${d.filename}`}
+                  title="Delete this document"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </li>
             );
           })}
@@ -409,7 +724,8 @@ function DocumentContentView({
         </p>
         <p className="max-w-[30ch] text-xs text-slate-500">
           Nothing was indexed for this document — it may still be indexing, or
-          extraction found no readable text.
+          extraction found no readable text. If it is marked Failed, use the
+          retry button in the document list.
         </p>
       </div>
     );
@@ -533,20 +849,45 @@ function SearchSection({
       {!searching && results.length > 0 && (
         <ul className="mt-2.5 flex flex-col gap-1.5">
           {results.map((r, i) => {
-            const collection = r.collection_id
-              ? collectionsById.get(r.collection_id)
+            const collectionId = r.collection_id;
+            const collection = collectionId
+              ? collectionsById.get(collectionId)
               : undefined;
             const pct = Math.round(Math.max(0, Math.min(1, r.score)) * 100);
             return (
               <li
-                key={`${r.collection_id ?? "x"}-${i}`}
+                key={`${r.collection_id ?? "x"}-${r.document_id ?? r.filename}-${
+                  r.chunk_idx ?? i
+                }`}
                 className="rounded-xl border border-line bg-surface-1/80 p-2.5"
               >
                 <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-1 text-[11px] text-slate-400">
-                    <FileText className="h-3 w-3 shrink-0" />
-                    <span className="truncate">{r.filename}</span>
-                  </span>
+                  {/* Only a hit that knows where it lives can be opened; the
+                      rest stay plain text rather than a link to nowhere. Same
+                      rule, same handler, as the chat citations rendered by
+                      SourcesBlock in MessageBubble. */}
+                  {collectionId ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void useKnowledgeStore
+                          .getState()
+                          .revealSource(collectionId, r.document_id)
+                      }
+                      title={`Open ${r.filename}`}
+                      className="focus-ring flex min-w-0 items-center gap-1 rounded text-[11px] text-stable-cyan transition-colors hover:text-stable-cyan-light"
+                    >
+                      <FileText className="h-3 w-3 shrink-0" />
+                      <span className="truncate underline underline-offset-2">
+                        {r.filename}
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="flex min-w-0 items-center gap-1 text-[11px] text-slate-400">
+                      <FileText className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{r.filename}</span>
+                    </span>
+                  )}
                   <span
                     className="shrink-0 text-[10px] tabular-nums text-slate-500"
                     title="Relevance"
@@ -602,12 +943,20 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
     clearSearch,
     attach,
     detach,
+    stopDocumentPolling,
+    reindexDocument,
   } = useKnowledgeStore();
 
   const [showNew, setShowNew] = useState(false);
   const [uploading, setUploading] = useState(false);
   // Which collection row is mid attach/detach (for its spinner).
   const [attachBusyId, setAttachBusyId] = useState<string | null>(null);
+  // Which destructive action is awaiting confirmation (null = none open).
+  const [confirmDeleteCollection, setConfirmDeleteCollection] =
+    useState<Collection | null>(null);
+  const [confirmDeleteDocument, setConfirmDeleteDocument] =
+    useState<KbDocument | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   // Desktop drag-to-resize (persisted). Mobile stays a full-screen takeover,
   // so the inline width is gated to md+ where the panel is a docked column.
   const isDesktop = useIsDesktop();
@@ -625,6 +974,10 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
     void refreshCollections();
     void refreshAttached(roomId);
   }, [roomId, refreshCollections, refreshAttached]);
+
+  // Stop the indexing poll when the panel unmounts — the store owns the timer,
+  // but nothing else would ever clear it once the panel is gone.
+  useEffect(() => stopDocumentPolling, [stopDocumentPolling]);
 
   // Esc closes the panel (mirrors the other right-drawers).
   useEffect(() => {
@@ -652,6 +1005,15 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
       else await attach(id);
     } finally {
       setAttachBusyId(null);
+    }
+  }
+
+  async function handleRetry(d: KbDocument) {
+    setRetryingId(d.id);
+    try {
+      await reindexDocument(d.id);
+    } finally {
+      setRetryingId(null);
     }
   }
 
@@ -779,6 +1141,9 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
           onUpload={handleUpload}
           onRefresh={() => void refreshDocuments()}
           onOpenDocument={(id) => void openDocumentById(id)}
+          onDeleteDocument={setConfirmDeleteDocument}
+          onRetryDocument={(d) => void handleRetry(d)}
+          retryingId={retryingId}
         />
       ) : (
         <>
@@ -822,9 +1187,26 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
                 void openCollectionById(id);
               }}
               onToggleAttach={handleToggleAttach}
+              onDelete={setConfirmDeleteCollection}
             />
           </div>
         </>
+      )}
+
+      {/* Destructive-action confirmations (rendered last so they overlay). */}
+      {confirmDeleteCollection && (
+        <DeleteCollectionDialog
+          collection={confirmDeleteCollection}
+          onCancel={() => setConfirmDeleteCollection(null)}
+          onDeleted={() => setConfirmDeleteCollection(null)}
+        />
+      )}
+      {confirmDeleteDocument && (
+        <DeleteDocumentDialog
+          document={confirmDeleteDocument}
+          onCancel={() => setConfirmDeleteDocument(null)}
+          onDeleted={() => setConfirmDeleteDocument(null)}
+        />
       )}
     </motion.aside>
   );

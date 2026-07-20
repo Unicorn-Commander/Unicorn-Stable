@@ -68,7 +68,39 @@ export interface KnowledgeSearchHit {
   text: string;
   filename: string;
   score: number;
+  /**
+   * The locator. `collection_id` + `document_id` are what make a hit
+   * clickable through to its source document (see `knowledgeStore.revealSource`
+   * and the chat-citation path in `MessageBubble`). Null when retrieval could
+   * not attribute the excerpt — such a hit renders as plain text, never as a
+   * link that goes nowhere.
+   */
   collection_id: string | null;
+  document_id: string | null;
+  chunk_idx: number | null;
+}
+
+/**
+ * A room that would lose a knowledge base if it were deleted. Only rooms the
+ * caller is a member of are named; the rest are counted in
+ * {@link CollectionUsage.hidden_room_count}.
+ */
+export interface UsageRoom {
+  id: string;
+  display_name: string;
+}
+
+/**
+ * What deleting a collection would take with it. Fetched when the user opens
+ * the delete confirmation so the dialog can state WHAT breaks rather than
+ * asking for a blind "are you sure?".
+ */
+export interface CollectionUsage {
+  collection_id: string;
+  document_count: number;
+  room_count: number;
+  rooms: UsageRoom[];
+  hidden_room_count: number;
 }
 
 /* ----------------------------- request bodies ---------------------------- */

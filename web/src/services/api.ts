@@ -8,6 +8,7 @@ import type {
 } from "@/types/artifact";
 import type {
   Collection,
+  CollectionUsage,
   CreateCollectionRequest,
   DocumentContent,
   KbDocument,
@@ -1139,6 +1140,67 @@ class StableApiClient {
     return this.request<KbDocument[]>(
       "GET",
       `/api/v1/knowledge/collections/${collectionId}/documents`,
+    );
+  }
+
+  /**
+   * Delete a document, its indexed vectors, and its stored file. Irreversible.
+   *
+   * The server purges the vectors FIRST and refuses (503) if it cannot confirm
+   * they are gone — so a rejection here means nothing was deleted and retrying
+   * is safe, never that the row vanished while its text stayed searchable.
+   */
+  async deleteKbDocument(
+    collectionId: string,
+    documentId: string,
+  ): Promise<void> {
+    return this.request<void>(
+      "DELETE",
+      `/api/v1/knowledge/collections/${collectionId}/documents/${documentId}`,
+    );
+  }
+
+  /**
+   * Re-run indexing for a document that ended up `failed` or stranded in
+   * `indexing`. Returns the document back in `indexing`.
+   */
+  async reindexKbDocument(
+    collectionId: string,
+    documentId: string,
+  ): Promise<KbDocument> {
+    return this.request<KbDocument>(
+      "POST",
+      `/api/v1/knowledge/collections/${collectionId}/documents/${documentId}/reindex`,
+    );
+  }
+
+  /**
+   * What deleting this collection would break — the rooms still using it and
+   * how many documents go with it. Read-only; call it before confirming.
+   */
+  async getCollectionUsage(collectionId: string): Promise<CollectionUsage> {
+    return this.request<CollectionUsage>(
+      "GET",
+      `/api/v1/knowledge/collections/${collectionId}/usage`,
+    );
+  }
+
+  /**
+   * Delete a collection, every document in it, and all of their vectors.
+   * Irreversible.
+   *
+   * Without `force` the server returns 409 when rooms are still using the
+   * collection, with a message naming them — surface that instead of retrying
+   * blindly. Pass `force` only after the user has been shown what breaks.
+   */
+  async deleteCollection(
+    collectionId: string,
+    force = false,
+  ): Promise<void> {
+    const qs = force ? "?force=true" : "";
+    return this.request<void>(
+      "DELETE",
+      `/api/v1/knowledge/collections/${collectionId}${qs}`,
     );
   }
 

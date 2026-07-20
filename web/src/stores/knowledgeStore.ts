@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api } from "@/services/api";
 import type {
   Collection,
+  CollectionUsage,
   DocumentContent,
   KbDocument,
   KnowledgeSearchHit,
@@ -91,6 +92,47 @@ interface KnowledgeState {
   /** Upload a file into the open collection, then refresh its documents. */
   uploadDocument: (file: File) => Promise<boolean>;
 
+  /**
+   * Start polling the open collection's documents while any of them is still
+   * `indexing`, and stop automatically once none is. Idempotent — calling it
+   * again while a poll is live is a no-op.
+   *
+   * WHY POLL rather than push over the existing WebSocket: indexing runs in a
+   * detached backend task, and the failure this fixes is the backend DYING
+   * mid-index. A push that is never emitted (because the process that owed it
+   * is gone) leaves the UI on a spinner forever — exactly the bug. A poll asks
+   * the DB, which is the actual source of truth, so it converges no matter how
+   * the indexing task ended: completed, crashed, or killed. The backend's
+   * startup sweep repairs the row, and the next poll tick simply observes the
+   * repair. It is also self-limiting: it only runs while a document is
+   * `indexing` and stops on its own.
+   */
+  startDocumentPolling: () => void;
+  /** Stop the indexing poll (on unmount / closing the collection). */
+  stopDocumentPolling: () => void;
+
+  /**
+   * Delete a document, its vectors and its file. IRREVERSIBLE — the caller is
+   * responsible for having confirmed with the user. Returns true on success.
+   */
+  deleteDocument: (documentId: string) => Promise<boolean>;
+  /** Re-run indexing for a `failed` / stranded document. */
+  reindexDocument: (documentId: string) => Promise<boolean>;
+
+  /** What deleting a collection would break (for the confirm dialog). */
+  fetchCollectionUsage: (
+    collectionId: string,
+  ) => Promise<CollectionUsage | null>;
+  /**
+   * Delete a collection and everything in it. IRREVERSIBLE. Without `force`
+   * the server refuses (409) while rooms still use it; the rejection message
+   * names them and is returned so the dialog can show it.
+   */
+  deleteCollection: (
+    collectionId: string,
+    force?: boolean,
+  ) => Promise<{ ok: boolean; error?: string; needsForce?: boolean }>;
+
   /** Open a document's extracted-chunk reader (within the open collection). */
   openDocumentById: (documentId: string) => Promise<void>;
   /** Close the document reader (back to the document list). */
@@ -121,6 +163,22 @@ interface KnowledgeState {
   /** Clear all server-scoped knowledge state on a federated server switch. */
   resetForServer: () => void;
 }
+
+/**
+ * Handle for the indexing-status poll. Module-scoped (not store state) so
+ * changing it never triggers a React re-render — the poll is plumbing, not
+ * something the UI renders.
+ */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+/** How often to re-read document status while something is indexing. */
+const POLL_INTERVAL_MS = 2500;
+/**
+ * Stop polling after this long even if a document is still `indexing`. Bounds
+ * the request cost against a genuinely stuck row (and the backend's startup
+ * sweep, not the browser, is what repairs those). The user can still hit
+ * Refresh.
+ */
+const POLL_MAX_MS = 10 * 60 * 1000;
 
 function errMsg(e: unknown): string {
   const apiErr = e as { detail?: string | null; message?: string };
@@ -226,18 +284,25 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         documents,
         documentsLoading: false,
       });
+      // A document can already be mid-index when the panel opens (another tab,
+      // or a task still running from before this page loaded).
+      if (documents.some((d) => d.status === "indexing")) {
+        get().startDocumentPolling();
+      }
     } catch (e) {
       set({ documentsLoading: false, error: errMsg(e) });
     }
   },
 
-  closeCollection: () =>
+  closeCollection: () => {
+    get().stopDocumentPolling();
     set({
       openCollection: null,
       documents: [],
       openDocument: null,
       error: null,
-    }),
+    });
+  },
 
   refreshDocuments: async () => {
     const open = get().openCollection;
@@ -261,10 +326,112 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     try {
       await api.uploadKbDocument(open.id, file);
       await get().refreshDocuments();
+      // The new row is `indexing`; poll until it lands so the user never has
+      // to guess whether a spinner is alive.
+      get().startDocumentPolling();
       return true;
     } catch (e) {
       set({ error: errMsg(e) });
       return false;
+    }
+  },
+
+  startDocumentPolling: () => {
+    if (pollTimer !== null) return;
+    const startedAt = Date.now();
+    pollTimer = setInterval(() => {
+      const s = get();
+      // Nothing open, or nothing in flight -> the poll has done its job.
+      const stillIndexing = s.documents.some((d) => d.status === "indexing");
+      if (!s.openCollection || !stillIndexing) {
+        get().stopDocumentPolling();
+        return;
+      }
+      if (Date.now() - startedAt > POLL_MAX_MS) {
+        get().stopDocumentPolling();
+        return;
+      }
+      void s.refreshDocuments();
+    }, POLL_INTERVAL_MS);
+  },
+
+  stopDocumentPolling: () => {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  },
+
+  deleteDocument: async (documentId) => {
+    const open = get().openCollection;
+    if (!open) return false;
+    set({ error: null });
+    try {
+      await api.deleteKbDocument(open.id, documentId);
+      // Close the reader if the user just deleted the document they were
+      // reading, otherwise it would keep showing text that no longer exists.
+      if (get().openDocument?.document_id === documentId) {
+        set({ openDocument: null });
+      }
+      await get().refreshDocuments();
+      return true;
+    } catch (e) {
+      set({ error: errMsg(e) });
+      return false;
+    }
+  },
+
+  reindexDocument: async (documentId) => {
+    const open = get().openCollection;
+    if (!open) return false;
+    set({ error: null });
+    try {
+      await api.reindexKbDocument(open.id, documentId);
+      await get().refreshDocuments();
+      // The document is back in `indexing`; watch it land.
+      get().startDocumentPolling();
+      return true;
+    } catch (e) {
+      set({ error: errMsg(e) });
+      return false;
+    }
+  },
+
+  fetchCollectionUsage: async (collectionId) => {
+    try {
+      return await api.getCollectionUsage(collectionId);
+    } catch (e) {
+      set({ error: errMsg(e) });
+      return null;
+    }
+  },
+
+  deleteCollection: async (collectionId, force = false) => {
+    set({ error: null });
+    try {
+      await api.deleteCollection(collectionId, force);
+      // Drop it from every list it appears in before re-fetching, so the row
+      // cannot linger if a refresh fails.
+      set((s) => ({
+        collections: s.collections.filter((c) => c.id !== collectionId),
+        attached: s.attached.filter((c) => c.id !== collectionId),
+        ...(s.openCollection?.id === collectionId
+          ? { openCollection: null, documents: [], openDocument: null }
+          : {}),
+      }));
+      get().stopDocumentPolling();
+      await get().refreshCollections();
+      const roomId = get().roomId;
+      if (roomId) await get().refreshAttached(roomId);
+      return { ok: true };
+    } catch (e) {
+      const status = (e as { status?: number })?.status;
+      const message = errMsg(e);
+      // 409 = "rooms still depend on this". NOT a store-level error banner:
+      // the dialog shows it inline and offers to proceed anyway.
+      if (status === 409) return { ok: false, error: message, needsForce: true };
+      set({ error: message });
+      return { ok: false, error: message };
     }
   },
 
@@ -371,7 +538,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     }
   },
 
-  resetForServer: () =>
+  resetForServer: () => {
+    get().stopDocumentPolling();
     set({
       panelOpen: false,
       roomId: null,
@@ -391,5 +559,6 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       retrievalUnavailable: false,
       retrievalDetail: null,
       error: null,
-    }),
+    });
+  },
 }));

@@ -27,16 +27,23 @@ search degrades to ``[]`` on any error. KB retrieval must never break a reply.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 import structlog
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models.knowledge import KnowledgeCollection, KnowledgeDocument
+from app.models.knowledge import (
+    KnowledgeCollection,
+    KnowledgeDocument,
+    RoomKnowledge,
+)
 from app.services import doc_extract
 from app.services.rag_service import _HTTP_TIMEOUT, _sparse_vector, rag_service
 
@@ -83,6 +90,25 @@ class KnowledgeService:
 
     # ---- Indexing (REUSES rag_service extract/chunk/embed/upsert) --------
 
+    # --- Indexing retry policy -------------------------------------------
+    #
+    # Indexing depends on two SEPARATE network services that restart
+    # independently of this app: Infinity (embeddings) and qdrant (the vector
+    # index). A single blip used to permanently strand a document in
+    # ``indexing`` because the work was fire-and-forget with no retry. We now
+    # distinguish two failure classes and treat them differently:
+    #
+    #   TRANSIENT  — an exception escaping extract/embed/upsert (service down,
+    #                connection reset, 5xx). Retried with backoff; only marked
+    #                ``failed`` once the attempts are exhausted.
+    #   PERMANENT  — the file is gone from disk, or extraction produced no
+    #                text/chunks. Retrying cannot change the outcome, so the
+    #                document is marked ``failed`` on the FIRST attempt rather
+    #                than burning the embedding queue two more times.
+    INDEX_MAX_ATTEMPTS = 3
+    # Seconds to wait before attempt 2 and attempt 3 respectively.
+    INDEX_RETRY_BACKOFF_S = (3.0, 12.0)
+
     async def index_kb_document(
         self,
         settings: Settings,
@@ -92,8 +118,10 @@ class KnowledgeService:
         stored_name: str,
         filename: str,
         content_type: str,
+        max_attempts: int | None = None,
     ) -> int:
-        """Extract -> chunk -> embed -> upsert one document into a collection.
+        """Extract -> chunk -> embed -> upsert one document into a collection,
+        retrying transient failures.
 
         Parallel to ``rag_service.index_document``'s room path: identical
         extract (``doc_extract``) + embed (``rag_service.embed``) + qdrant
@@ -103,93 +131,169 @@ class KnowledgeService:
 
         Updates the ``KnowledgeDocument`` row's ``status`` (-> ready/failed) and
         ``chunk_count``, commits, and returns the chunk count. Fire-and-forget
-        safe: swallows + logs every error and marks the doc ``failed``.
+        safe: never raises, and the row NEVER stays in ``indexing`` after this
+        returns — it lands on ``ready`` or ``failed`` either way, which is what
+        makes the status a client can poll actually terminal.
         """
-        n = 0
-        try:
-            # Safety net: same qdrant collection rag_service uses.
-            await rag_service.ensure_collection(settings)
-
-            path = os.path.join(settings.upload_dir, stored_name)
-            if not os.path.isfile(path):
-                logger.warning(
-                    "kb_index_file_missing", stored_name=stored_name, path=path
-                )
-                return await self._mark(db, document_id, "failed", 0)
-
-            text = doc_extract.extract_text(path, content_type, filename)
-            if not text or not text.strip():
-                logger.info(
-                    "kb_index_no_text",
+        attempts = int(max_attempts or self.INDEX_MAX_ATTEMPTS)
+        for attempt in range(1, attempts + 1):
+            try:
+                outcome, n = await self._index_once(
+                    settings=settings,
+                    collection_id=collection_id,
+                    document_id=document_id,
                     stored_name=stored_name,
                     filename=filename,
                     content_type=content_type,
                 )
-                # Nothing extractable (e.g. scanned image) — not an error, but
-                # there is no searchable content, so it's not "ready".
-                return await self._mark(db, document_id, "failed", 0)
-
-            chunks = doc_extract.chunk_text(text)
-            if not chunks:
-                return await self._mark(db, document_id, "failed", 0)
-
-            # Contextual retrieval: ground each chunk in its document, then
-            # REUSE rag_service's Infinity embedder (batched <=16).
-            summary = await rag_service._doc_summary(settings, text)
-            embed_texts = rag_service._contextualize(chunks, filename, summary)
-            vectors = await rag_service.embed(settings, embed_texts)
-            if len(vectors) != len(chunks):
+            except Exception:
+                # Transient by assumption: something in the network path blew
+                # up. Log with the attempt number so a stuck doc is diagnosable.
                 logger.warning(
-                    "kb_index_embed_count_mismatch",
-                    chunks=len(chunks),
-                    vectors=len(vectors),
+                    "kb_index_attempt_failed",
+                    document_id=str(document_id),
                     stored_name=stored_name,
+                    filename=filename,
+                    attempt=attempt,
+                    max_attempts=attempts,
+                    exc_info=True,
                 )
-            n = min(len(chunks), len(vectors))
-            if n == 0:
-                return await self._mark(db, document_id, "failed", 0)
+                outcome, n = "transient", 0
 
-            points = []
-            for i in range(n):
-                vec: dict[str, Any] = {"dense": vectors[i]}
-                sp = _sparse_vector(chunks[i])
-                if sp:
-                    vec["sparse"] = sp
-                points.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "vector": vec,
-                        "payload": {
-                            "collection_id": str(collection_id),
-                            "document_id": str(document_id),
-                            "stored_name": stored_name,
-                            "filename": filename,
-                            "chunk_idx": i,
-                            "text": chunks[i],
-                        },
-                    }
-                )
-            # REUSE rag_service's qdrant upsert (same stable_documents collection).
-            await rag_service._upsert(settings, points)
-            logger.info(
-                "kb_indexed_document",
-                collection_id=str(collection_id),
-                filename=filename,
-                chunks=n,
-            )
-            return await self._mark(db, document_id, "ready", n)
-        except Exception:
+            if outcome == "ok":
+                return await self._safe_mark(db, document_id, "ready", n)
+            if outcome == "permanent":
+                return await self._safe_mark(db, document_id, "failed", 0)
+
+            if attempt < attempts:
+                idx = min(attempt - 1, len(self.INDEX_RETRY_BACKOFF_S) - 1)
+                await asyncio.sleep(self.INDEX_RETRY_BACKOFF_S[idx])
+
+        logger.warning(
+            "kb_index_document_failed",
+            document_id=str(document_id),
+            stored_name=stored_name,
+            filename=filename,
+            attempts=attempts,
+        )
+        return await self._safe_mark(db, document_id, "failed", 0)
+
+    async def _index_once(
+        self,
+        settings: Settings,
+        collection_id: Any,
+        document_id: Any,
+        stored_name: str,
+        filename: str,
+        content_type: str,
+    ) -> tuple[str, int]:
+        """One indexing attempt. Returns ``(outcome, chunk_count)`` where
+        outcome is ``"ok"`` or ``"permanent"``; TRANSIENT failures RAISE so the
+        caller's retry loop can see them. Does not touch the DB row — status
+        transitions belong to :meth:`index_kb_document` so there is exactly one
+        place a document's terminal state is decided."""
+        # Safety net: same qdrant collection rag_service uses. Raises if the
+        # index is unreachable -> transient -> retried.
+        await rag_service.ensure_collection(settings)
+
+        path = os.path.join(settings.upload_dir, stored_name)
+        if not os.path.isfile(path):
             logger.warning(
-                "kb_index_document_failed",
+                "kb_index_file_missing", stored_name=stored_name, path=path
+            )
+            return ("permanent", 0)
+
+        text = doc_extract.extract_text(path, content_type, filename)
+        if not text or not text.strip():
+            logger.info(
+                "kb_index_no_text",
                 stored_name=stored_name,
                 filename=filename,
+                content_type=content_type,
+            )
+            # Nothing extractable (e.g. scanned image) — not an error, but
+            # there is no searchable content, so it's not "ready". Retrying a
+            # scanned PDF produces the same nothing, so this is permanent.
+            return ("permanent", 0)
+
+        chunks = doc_extract.chunk_text(text)
+        if not chunks:
+            return ("permanent", 0)
+
+        # Contextual retrieval: ground each chunk in its document, then
+        # REUSE rag_service's Infinity embedder (batched <=16).
+        summary = await rag_service._doc_summary(settings, text)
+        embed_texts = rag_service._contextualize(chunks, filename, summary)
+        vectors = await rag_service.embed(settings, embed_texts)
+        if len(vectors) != len(chunks):
+            logger.warning(
+                "kb_index_embed_count_mismatch",
+                chunks=len(chunks),
+                vectors=len(vectors),
+                stored_name=stored_name,
+            )
+        n = min(len(chunks), len(vectors))
+        if n == 0:
+            # The embedder answered with nothing usable. That is far more
+            # likely to be a sick service than an unembeddable document, so
+            # treat it as transient and let the retry loop decide.
+            raise RuntimeError("embedder returned no vectors")
+
+        # Re-indexing must not double up: drop any points this document already
+        # has before writing the new ones, otherwise a retry leaves BOTH the
+        # partial old chunks and the new ones searchable.
+        await self.delete_document_vectors(settings, document_id)
+
+        points = []
+        for i in range(n):
+            vec: dict[str, Any] = {"dense": vectors[i]}
+            sp = _sparse_vector(chunks[i])
+            if sp:
+                vec["sparse"] = sp
+            points.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "vector": vec,
+                    "payload": {
+                        "collection_id": str(collection_id),
+                        "document_id": str(document_id),
+                        "stored_name": stored_name,
+                        "filename": filename,
+                        "chunk_idx": i,
+                        "text": chunks[i],
+                    },
+                }
+            )
+        # REUSE rag_service's qdrant upsert (same stable_documents collection).
+        await rag_service._upsert(settings, points)
+        logger.info(
+            "kb_indexed_document",
+            collection_id=str(collection_id),
+            document_id=str(document_id),
+            filename=filename,
+            chunks=n,
+        )
+        return ("ok", n)
+
+    async def _safe_mark(
+        self, db: AsyncSession, document_id: Any, status: str, chunk_count: int
+    ) -> int:
+        """:meth:`_mark` that never raises — the last write in a fire-and-forget
+        task must not itself be able to strand the row."""
+        try:
+            return await self._mark(db, document_id, status, chunk_count)
+        except Exception:
+            logger.warning(
+                "kb_index_mark_failed",
+                document_id=str(document_id),
+                status=status,
                 exc_info=True,
             )
             try:
-                return await self._mark(db, document_id, "failed", n)
+                await db.rollback()
             except Exception:
-                logger.warning("kb_index_mark_failed", exc_info=True)
-                return 0
+                pass
+            return 0
 
     async def _mark(
         self, db: AsyncSession, document_id: Any, status: str, chunk_count: int
@@ -204,6 +308,203 @@ class KnowledgeService:
             doc.chunk_count = chunk_count
             await db.commit()
         return chunk_count
+
+    # ---- Deletion (qdrant payload-scoped purge, then the row) ------------
+    #
+    # The vectors for EVERY tenant live in one shared qdrant collection
+    # (``settings.rag_collection`` / ``stable_documents``), separated only by a
+    # payload field. So deleting a document or a Knowledge Base from Postgres
+    # is NOT deletion — the chunks stay searchable and, because KB search is a
+    # match-any ``should`` over collection ids, an orphaned point can surface
+    # its text to whoever later queries. Deleting the vectors is the security
+    # half of the operation, and it must be CONFIRMED, not attempted: callers
+    # are expected to refuse to drop the DB row when this returns False, so the
+    # user keeps a handle on data that still exists.
+
+    async def delete_document_vectors(
+        self, settings: Settings, document_id: Any
+    ) -> bool:
+        """Purge every chunk of ONE document. See :meth:`_delete_vectors_by`."""
+        return await self._delete_vectors_by(
+            settings, "document_id", str(document_id)
+        )
+
+    async def delete_collection_vectors(
+        self, settings: Settings, collection_id: Any
+    ) -> bool:
+        """Purge every chunk of an entire Knowledge Base."""
+        return await self._delete_vectors_by(
+            settings, "collection_id", str(collection_id)
+        )
+
+    async def _delete_vectors_by(
+        self, settings: Settings, key: str, value: str
+    ) -> bool:
+        """Delete all points whose payload ``key`` equals ``value``, then VERIFY.
+
+        Two-step on purpose. qdrant's delete-by-filter is asynchronous unless
+        you ask it to block, and an ``acknowledged`` response only means the
+        request was accepted — not that the points are gone. We pass
+        ``wait=true`` AND then count the surviving matches, returning True only
+        when that count is 0. A delete that reports success while leaving
+        readable vectors behind is precisely the silent-degradation failure
+        this codebase keeps getting bitten by.
+
+        Never raises. Returns False on any error so the caller can refuse to
+        finish the destructive operation.
+        """
+        base = (
+            f"{settings.qdrant_url.rstrip('/')}/collections/"
+            f"{settings.rag_collection}"
+        )
+        qfilter = {"must": [{"key": key, "match": {"value": value}}]}
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:
+                resp = await http.post(
+                    f"{base}/points/delete?wait=true", json={"filter": qfilter}
+                )
+                if resp.status_code == 404:
+                    # The shared collection does not exist yet, so nothing was
+                    # ever indexed. Vacuously purged.
+                    logger.info(
+                        "kb_delete_vectors_no_collection",
+                        collection=settings.rag_collection,
+                        key=key,
+                    )
+                    return True
+                resp.raise_for_status()
+
+                # Verify the ARTIFACT: count what still matches the filter.
+                count = await http.post(
+                    f"{base}/points/count",
+                    json={"filter": qfilter, "exact": True},
+                )
+                count.raise_for_status()
+                remaining = int(
+                    (count.json().get("result") or {}).get("count") or 0
+                )
+        except Exception:
+            logger.warning(
+                "kb_delete_vectors_failed", key=key, value=value, exc_info=True
+            )
+            return False
+
+        if remaining:
+            logger.warning(
+                "kb_delete_vectors_incomplete",
+                key=key,
+                value=value,
+                remaining=remaining,
+            )
+            return False
+        logger.info("kb_deleted_vectors", key=key, value=value)
+        return True
+
+    async def collection_room_ids(
+        self, db: AsyncSession, collection_id: Any
+    ) -> list[Any]:
+        """Room ids this Knowledge Base is currently attached to.
+
+        Deleting the KB cascades these bindings away, silently removing the
+        knowledge those rooms' agents were answering from — so the caller shows
+        this list to the user BEFORE the delete, not after.
+        """
+        return list(
+            (
+                await db.execute(
+                    select(RoomKnowledge.room_id).where(
+                        RoomKnowledge.collection_id == collection_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def collection_document_count(
+        self, db: AsyncSession, collection_id: Any
+    ) -> int:
+        """How many documents a Knowledge Base holds (all statuses)."""
+        return int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(KnowledgeDocument)
+                    .where(KnowledgeDocument.collection_id == collection_id)
+                )
+            ).scalar()
+            or 0
+        )
+
+    # ---- Recovery: re-queue documents stranded mid-index -----------------
+
+    async def requeue_stranded_documents(
+        self,
+        settings: Settings,
+        session_factory: Any,
+        older_than_minutes: int = 10,
+        limit: int = 50,
+    ) -> int:
+        """Re-index documents left in ``indexing`` by a backend restart.
+
+        Indexing runs in an in-process ``asyncio`` task. If the process dies
+        between the row being created and the status being written, the row
+        stays ``indexing`` FOREVER — nothing on the next boot ever looks at it,
+        and the UI shows a spinner that will never resolve. This sweep is that
+        missing look: on startup, any ``indexing`` row older than
+        ``older_than_minutes`` cannot belong to a live task in THIS process, so
+        it is by definition stranded and gets re-indexed.
+
+        The age gate is what makes this safe to run at startup: a document
+        actively being indexed right now is younger than the threshold and is
+        left alone. Documents are processed SEQUENTIALLY so a restart with a
+        backlog does not stampede the shared embedding server.
+
+        Returns the number of documents re-indexed. Never raises.
+        """
+        recovered = 0
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                minutes=max(1, int(older_than_minutes))
+            )
+            async with session_factory() as session:
+                rows = (
+                    await session.execute(
+                        select(KnowledgeDocument)
+                        .where(
+                            KnowledgeDocument.status == "indexing",
+                            KnowledgeDocument.created_at < cutoff,
+                        )
+                        .order_by(KnowledgeDocument.created_at.asc())
+                        .limit(limit)
+                    )
+                ).scalars().all()
+
+                if not rows:
+                    return 0
+                logger.info("kb_stranded_sweep_start", count=len(rows))
+
+                for doc in rows:
+                    if not doc.stored_name:
+                        # No file on disk to re-read — it can never become
+                        # ready, so stop lying about it being in progress.
+                        await self._safe_mark(session, doc.id, "failed", 0)
+                        recovered += 1
+                        continue
+                    await self.index_kb_document(
+                        settings=settings,
+                        db=session,
+                        collection_id=doc.collection_id,
+                        document_id=doc.id,
+                        stored_name=doc.stored_name,
+                        filename=doc.filename,
+                        content_type=doc.content_type or "application/octet-stream",
+                    )
+                    recovered += 1
+            logger.info("kb_stranded_sweep_done", recovered=recovered)
+        except Exception:
+            logger.warning("kb_stranded_sweep_failed", exc_info=True)
+        return recovered
 
     # ---- Retrieval (REUSES rag_service embed + rerank; qdrant should-filter) ----
 

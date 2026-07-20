@@ -13,8 +13,12 @@ Routes (mounted under ``/api/v1``):
     POST   /knowledge/collections                       create a collection
     GET    /knowledge/collections                        list collections
     GET    /knowledge/collections/{id}                   read one collection
+    DELETE /knowledge/collections/{id}                   delete a collection
+    GET    /knowledge/collections/{id}/usage             what a delete would break
     POST   /knowledge/collections/{id}/documents         upload + index a doc
     GET    /knowledge/collections/{id}/documents         list a collection's docs
+    DELETE /knowledge/collections/{id}/documents/{doc}   delete a doc + its vectors
+    POST   /knowledge/collections/{id}/documents/{doc}/reindex  retry indexing
     POST   /rooms/{room_id}/knowledge                    attach a collection
     DELETE /rooms/{room_id}/knowledge/{collection_id}    detach a collection
     GET    /rooms/{room_id}/knowledge                    list a room's collections
@@ -35,6 +39,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -56,6 +61,7 @@ from app.models.knowledge import (
     KnowledgeDocument,
     RoomKnowledge,
 )
+from app.models.room import Room
 from app.security.upload_guard import (
     is_dangerous_content_type,
     sniff_is_markup,
@@ -123,6 +129,32 @@ class AttachBody(BaseModel):
     collection_id: uuid.UUID
 
 
+class UsageRoom(BaseModel):
+    """A room that would lose this Knowledge Base if it were deleted."""
+
+    id: uuid.UUID
+    display_name: str
+
+
+class CollectionUsageResponse(BaseModel):
+    """What deleting a Knowledge Base would take with it.
+
+    Shown to the user BEFORE they confirm, because a delete cascades the
+    ``room_knowledge`` bindings away — every room in ``rooms`` silently stops
+    being able to answer from these documents.
+
+    ``rooms`` only lists rooms the CALLER is a member of; rooms they cannot see
+    are counted in ``hidden_room_count`` instead of being named, so the warning
+    is honest ("2 other rooms also use this") without leaking room names.
+    """
+
+    collection_id: uuid.UUID
+    document_count: int
+    room_count: int
+    rooms: list[UsageRoom]
+    hidden_room_count: int
+
+
 class DocumentChunk(BaseModel):
     chunk_idx: int
     text: str
@@ -144,10 +176,23 @@ class KnowledgeSearchBody(BaseModel):
 
 
 class KnowledgeSearchHit(BaseModel):
+    """One retrieved excerpt, with the locator that makes it openable.
+
+    ``collection_id`` + ``document_id`` + ``chunk_idx`` are the LOCATOR: they
+    are what lets the panel point back at the exact indexed text this excerpt
+    came from, instead of showing a filename the reader cannot click. This
+    mirrors ``internal_knowledge.KnowledgeSearchHit`` field for field — the two
+    surfaces run the SAME retrieval, so a hit a human sees in the panel must be
+    as navigable as the same hit cited on an agent answer. Dropping the ids here
+    is not cosmetic: it silently strands the user on a dead-end result.
+    """
+
     text: str
     filename: str
     score: float
     collection_id: str | None = None
+    document_id: str | None = None
+    chunk_idx: int | None = None
 
 
 class KnowledgeSearchResponse(BaseModel):
@@ -256,6 +301,30 @@ async def _authz_collection(
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found"
     )
+
+
+def _unlink_stored(settings: Settings, stored_name: str | None) -> None:
+    """Remove an uploaded file from disk. Best-effort and path-confined.
+
+    ``stored_name`` is generated server-side (``<32hex><suffix>``) but is read
+    back out of the DB here, so it is re-validated and resolved INSIDE
+    ``upload_dir`` before anything is unlinked — a delete route must not be a
+    way to remove arbitrary files. A failure here is logged, never raised: the
+    authoritative deletions (vectors, then the row) have already happened and a
+    leftover blob is not a correctness or disclosure problem the way an
+    orphaned vector is.
+    """
+    if not stored_name:
+        return
+    try:
+        upload_dir = Path(settings.upload_dir).resolve()
+        target = (upload_dir / Path(stored_name).name).resolve()
+        if target.parent != upload_dir:
+            logger.warning("kb_unlink_outside_upload_dir", stored=stored_name)
+            return
+        target.unlink(missing_ok=True)
+    except Exception:
+        logger.warning("kb_unlink_failed", stored=stored_name, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -524,13 +593,46 @@ async def _index_document_task(
 
     The request-scoped ``db`` session is closed once the response is returned,
     so the background task must not use it. We open a fresh session from the
-    app's session factory (the same one ``get_db`` uses). Fully fail-safe.
+    app's session factory (the same one ``get_db`` uses).
+
+    This wrapper is the OUTERMOST layer of the indexing path, which makes it
+    the last place that can stop a document from being stranded. The retry loop
+    lives inside ``index_kb_document``; anything that fails BEFORE we get there
+    (notably resolving the session factory) used to be swallowed by a bare
+    ``except`` — leaving the row on ``indexing`` with no live task and no
+    record of why, which is precisely the "permanently stuck" bug. So:
+
+      * the session factory has a fallback (own engine from settings) rather
+        than being a single point of failure, and
+      * if we still cannot run, the row is marked ``failed`` on a best-effort
+        independent session, because a document the user can SEE has failed
+        (and can retry) is strictly better than a spinner that never resolves.
     """
+    engine = None
     try:
-        from app.config import get_settings  # noqa: F401  (settings passed in)
         from app.main import app as _app  # late import to avoid a cycle
 
-        session_factory = _app.state.db_session_factory
+        session_factory = getattr(_app.state, "db_session_factory", None)
+        if session_factory is None:
+            raise RuntimeError("app.state.db_session_factory is not set")
+    except Exception:
+        # The app-wide factory is unavailable (not yet initialised, or this
+        # task is running outside the served app). Stand up our own rather
+        # than abandoning the document.
+        logger.warning("kb_index_session_factory_fallback", exc_info=True)
+        try:
+            from sqlalchemy.ext.asyncio import (
+                async_sessionmaker,
+                create_async_engine,
+            )
+
+            engine = create_async_engine(settings.database_url)
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        except Exception:
+            logger.warning("kb_index_task_failed", exc_info=True)
+            return
+
+    try:
         async with session_factory() as session:
             await knowledge_service.index_kb_document(
                 settings=settings,
@@ -542,7 +644,24 @@ async def _index_document_task(
                 content_type=content_type,
             )
     except Exception:
+        # index_kb_document is itself fail-safe, so reaching here means the
+        # session/transport failed. Do not leave the row claiming to be in
+        # progress: mark it failed so the UI shows a retry instead of a
+        # forever-spinner.
         logger.warning("kb_index_task_failed", exc_info=True)
+        try:
+            async with session_factory() as session:
+                await knowledge_service._safe_mark(
+                    session, document_id, "failed", 0
+                )
+        except Exception:
+            logger.warning("kb_index_task_mark_failed", exc_info=True)
+    finally:
+        if engine is not None:
+            try:
+                await engine.dispose()
+            except Exception:
+                pass
 
 
 @router.get(
@@ -778,8 +897,345 @@ async def search_room_knowledge(
                 if h.get("collection_id") is not None
                 else None
             ),
+            # Carry the locator through. ``search_knowledge_detailed`` returns
+            # these; the internal (agent) route forwards them and the chat
+            # citation UI uses them to open the source. The panel gets the same.
+            document_id=(
+                str(h["document_id"])
+                if h.get("document_id") is not None
+                else None
+            ),
+            chunk_idx=(
+                h["chunk_idx"] if isinstance(h.get("chunk_idx"), int) else None
+            ),
         )
         for h in (hits or [])
         if (h.get("text") or "").strip()
     ]
     return KnowledgeSearchResponse(results=results)
+
+
+# ---------------------------------------------------------------------------
+# Deletion (destructive) + indexing retry
+#
+# Deletion is the half of the lifecycle that was missing: the quota error tells
+# users to "Delete documents" and there was no way to. Two rules govern it.
+#
+#   1. AUTHORIZATION is the manage boundary, not the read one. Every delete
+#      goes through ``_authz_collection(..., write=True)`` — the same check
+#      that gates uploads and attaching — so being a member of a room the KB
+#      happens to be attached to does NOT let you destroy it.
+#
+#   2. VECTORS COME FIRST. Every tenant's chunks share one qdrant collection,
+#      separated only by a payload field, so a Postgres-only delete leaves the
+#      text searchable by anyone whose query reaches those points. We purge
+#      qdrant, VERIFY the purge (count == 0), and only then drop the row. If
+#      the purge cannot be confirmed we return 503 and keep the row, because a
+#      user who still owns a visible document can retry — a user whose row we
+#      deleted has no handle on the vectors that outlived it.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/knowledge/collections/{collection_id}/usage",
+    response_model=CollectionUsageResponse,
+)
+async def get_collection_usage(
+    collection_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CollectionUsageResponse:
+    """Report what deleting this Knowledge Base would break.
+
+    Read-only. The UI calls this when the user opens the delete confirmation so
+    the dialog can name the rooms that depend on the KB instead of asking for a
+    blind confirmation.
+    """
+    await _authz_collection(db, collection_id, user, settings, write=True)
+
+    room_ids = await knowledge_service.collection_room_ids(db, collection_id)
+    doc_count = await knowledge_service.collection_document_count(
+        db, collection_id
+    )
+
+    visible: list[UsageRoom] = []
+    hidden = 0
+    for rid in room_ids:
+        if await is_room_member(db, rid, user["participant_id"]):
+            room = await db.get(Room, rid)
+            if room is not None:
+                visible.append(
+                    UsageRoom(
+                        id=room.id,
+                        display_name=room.display_name or room.name,
+                    )
+                )
+                continue
+        hidden += 1
+
+    return CollectionUsageResponse(
+        collection_id=collection_id,
+        document_count=doc_count,
+        room_count=len(room_ids),
+        rooms=visible,
+        hidden_room_count=hidden,
+    )
+
+
+@router.delete(
+    "/knowledge/collections/{collection_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_collection(
+    collection_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    force: Annotated[
+        bool,
+        Query(
+            description=(
+                "Acknowledge that rooms still using this Knowledge Base will "
+                "lose it. Required when the KB is attached to any room."
+            )
+        ),
+    ] = False,
+) -> None:
+    """Delete a Knowledge Base, its documents, and all of their vectors.
+
+    Refuses with **409** when the KB is still attached to at least one room and
+    ``force`` was not passed — the response names the rooms (that the caller can
+    see) so "this will break something" is a statement about WHAT, not a vague
+    warning. Re-issue with ``?force=true`` to proceed.
+
+    Returns **503** without deleting anything if the vector purge cannot be
+    confirmed. Irreversible on success.
+    """
+    await _authz_collection(db, collection_id, user, settings, write=True)
+
+    room_ids = await knowledge_service.collection_room_ids(db, collection_id)
+    if room_ids and not force:
+        names: list[str] = []
+        hidden = 0
+        for rid in room_ids:
+            room = (
+                await db.get(Room, rid)
+                if await is_room_member(db, rid, user["participant_id"])
+                else None
+            )
+            if room is not None:
+                names.append(room.display_name or room.name)
+            else:
+                hidden += 1
+        described = ", ".join(f"\u201c{n}\u201d" for n in names)
+        if hidden:
+            more = f"{hidden} other room{'s' if hidden != 1 else ''} you cannot see"
+            described = f"{described}, plus {more}" if described else more
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This Knowledge Base is still attached to {len(room_ids)} "
+                f"room{'s' if len(room_ids) != 1 else ''} ({described}). "
+                "Deleting it removes that knowledge from those rooms and their "
+                "agents will no longer be able to answer from it. Detach it "
+                "first, or confirm to delete anyway."
+            ),
+        )
+
+    # Vectors first, and only proceed on a CONFIRMED purge. A collection-scoped
+    # purge covers every document at once (they all carry this collection_id).
+    if not await knowledge_service.delete_collection_vectors(
+        settings, collection_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The Knowledge Base was NOT deleted: its indexed text could "
+                "not be removed from the search index (the index is "
+                "unreachable or the purge could not be confirmed). Nothing "
+                "was changed \u2014 try again once the index is reachable, so we "
+                "don't leave searchable copies of documents you deleted."
+            ),
+        )
+
+    # Best-effort disk cleanup before the rows go (we need stored_name).
+    documents = (
+        await db.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.collection_id == collection_id
+            )
+        )
+    ).scalars().all()
+    for doc in documents:
+        _unlink_stored(settings, doc.stored_name)
+
+    # FKs are ON DELETE CASCADE for both knowledge_documents and room_knowledge.
+    await db.execute(
+        delete(KnowledgeCollection).where(
+            KnowledgeCollection.id == collection_id
+        )
+    )
+    await db.commit()
+
+    logger.info(
+        "kb_collection_deleted",
+        participant_id=str(user["participant_id"]),
+        collection_id=str(collection_id),
+        documents=len(documents),
+        detached_rooms=len(room_ids),
+        forced=bool(force),
+    )
+    return None
+
+
+@router.delete(
+    "/knowledge/collections/{collection_id}/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_document(
+    collection_id: uuid.UUID,
+    document_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Delete one document, its vectors, and its file on disk. Irreversible.
+
+    Returns **503** without deleting the row if the vector purge cannot be
+    confirmed \u2014 see the section note above for why that ordering matters.
+    """
+    await _authz_collection(db, collection_id, user, settings, write=True)
+
+    document = await db.get(KnowledgeDocument, document_id)
+    if document is None or document.collection_id != collection_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+    stored_name = document.stored_name
+
+    if not await knowledge_service.delete_document_vectors(
+        settings, document_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The document was NOT deleted: its indexed text could not be "
+                "removed from the search index (the index is unreachable or "
+                "the purge could not be confirmed). Nothing was changed \u2014 try "
+                "again once the index is reachable, so we don't leave a "
+                "searchable copy of a document you deleted."
+            ),
+        )
+
+    await db.execute(
+        delete(KnowledgeDocument).where(KnowledgeDocument.id == document_id)
+    )
+    await db.commit()
+    _unlink_stored(settings, stored_name)
+
+    logger.info(
+        "kb_document_deleted",
+        participant_id=str(user["participant_id"]),
+        collection_id=str(collection_id),
+        document_id=str(document_id),
+        stored=stored_name,
+    )
+    return None
+
+
+@router.post(
+    "/knowledge/collections/{collection_id}/documents/{document_id}/reindex",
+    response_model=DocumentResponse,
+)
+async def reindex_document(
+    collection_id: uuid.UUID,
+    document_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _rl: Annotated[
+        None, Depends(rate_limit("kb_upload", "rate_limit_kb_upload_per_min"))
+    ] = None,
+) -> DocumentResponse:
+    """Retry indexing a document that ended up ``failed`` or stranded.
+
+    This is the user-driven half of the retry story (the automatic half is the
+    backoff loop inside ``knowledge_service.index_kb_document`` plus the
+    startup sweep for rows stranded by a restart). It is the ONLY way to
+    recover a document that already failed \u2014 the alternative was delete and
+    re-upload, which was itself impossible until now.
+
+    The row is put back into ``indexing`` and the same background task the
+    upload path uses is scheduled. Re-indexing purges the document's existing
+    points first, so a partially-indexed document does not end up with both its
+    old and new chunks searchable.
+    """
+    await _authz_collection(db, collection_id, user, settings, write=True)
+
+    document = await db.get(KnowledgeDocument, document_id)
+    if document is None or document.collection_id != collection_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+    if not document.stored_name:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This document has no stored file to re-read, so it cannot be "
+                "re-indexed. Delete it and upload the file again."
+            ),
+        )
+    stored_path = Path(settings.upload_dir) / document.stored_name
+    if not stored_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "The uploaded file backing this document is no longer on "
+                "disk, so it cannot be re-indexed. Delete it and upload the "
+                "file again."
+            ),
+        )
+
+    document.status = "indexing"
+    document.chunk_count = 0
+    await db.commit()
+    await db.refresh(document)
+
+    stored_name = document.stored_name
+    filename = document.filename
+    content_type = document.content_type or "application/octet-stream"
+
+    try:
+        import asyncio as _asyncio
+
+        from app.config import get_settings as _get_settings
+
+        _asyncio.create_task(
+            _index_document_task(
+                settings=_get_settings(),
+                collection_id=collection_id,
+                document_id=document_id,
+                stored_name=stored_name,
+                filename=filename,
+                content_type=content_type,
+            )
+        )
+    except Exception:
+        logger.warning("kb_reindex_schedule_failed", exc_info=True)
+        # Don't leave the row claiming to be in progress when nothing is.
+        document.status = "failed"
+        await db.commit()
+        await db.refresh(document)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not schedule re-indexing right now. Try again.",
+        ) from None
+
+    logger.info(
+        "kb_document_reindex_requested",
+        participant_id=str(user["participant_id"]),
+        collection_id=str(collection_id),
+        document_id=str(document_id),
+    )
+    return _document_to_response(document)
