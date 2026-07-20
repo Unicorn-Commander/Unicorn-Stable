@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
+import { fetchInstanceLogo, fetchInstanceMeta, type InstanceMeta } from "@/lib/instances";
 
 export type InstanceAuthStatus = "pending" | "authenticated" | "unauthenticated" | "error";
 export interface InstanceAuthState { status: InstanceAuthStatus; token: string | null; }
@@ -19,14 +20,38 @@ interface FederationState {
   switching: boolean;
   unreadByInstance: Record<string, number>;
   addServerOpen: boolean;
+  /** Admin-set branding per instance, fetched from each peer at runtime. */
+  metaByInstance: Record<string, InstanceMeta>;
+  /** blob: URLs for fetched logos, keyed by instance id. Owned by this store. */
+  logoByInstance: Record<string, string>;
+  /** Rail collapsed to a thin reveal strip. Persisted. */
+  railHidden: boolean;
+  /** The server-switcher palette (search + descriptions) is open. */
+  switcherOpen: boolean;
+  /** The admin identity editor for the ACTIVE instance is open. */
+  identityOpen: boolean;
   initialize: () => Promise<boolean>;
   switchInstance: (id: string) => Promise<void>;
   addInstance: (origin: string) => Promise<void>;
   setAddServerOpen: (open: boolean) => void;
+  setRailHidden: (hidden: boolean) => void;
+  setSwitcherOpen: (open: boolean) => void;
+  setIdentityOpen: (open: boolean) => void;
   refreshInstanceUnread: () => Promise<void>;
+  /** Load branding for every known instance. Safe to call repeatedly. */
+  refreshInstanceMeta: () => Promise<void>;
 }
 
 const ACTIVE_INSTANCE_KEY = "stable.active-instance.v1";
+const RAIL_HIDDEN_KEY = "stable.rail-hidden.v1";
+
+function readRailHidden(): boolean {
+  try {
+    return localStorage.getItem(RAIL_HIDDEN_KEY) === "1";
+  } catch {
+    return false; // private-mode Safari throws on localStorage; default to visible
+  }
+}
 
 export const useFederationStore = create<FederationState>((set, get) => ({
   instances: [],
@@ -37,6 +62,11 @@ export const useFederationStore = create<FederationState>((set, get) => ({
   switching: false,
   unreadByInstance: {},
   addServerOpen: false,
+  metaByInstance: {},
+  logoByInstance: {},
+  railHidden: readRailHidden(),
+  switcherOpen: false,
+  identityOpen: false,
 
   initialize: async () => {
     if (get().initialized) {
@@ -94,6 +124,9 @@ export const useFederationStore = create<FederationState>((set, get) => ({
     set({ auth, accessibleInstances: accessible.length > 0 ? accessible : [home], activeInstanceId: active.id, initialized: true });
     setActiveAuthInstance(active.id);
     localStorage.setItem(ACTIVE_INSTANCE_KEY, active.id);
+    // Branding is cosmetic and comes from UNTRUSTED peers — never block login on
+    // it. Fire-and-forget after the rail is already usable with static names.
+    void get().refreshInstanceMeta();
     return accessible.some((item) => item.id === active.id);
   },
 
@@ -147,12 +180,57 @@ export const useFederationStore = create<FederationState>((set, get) => ({
       const response = await fetch(`${instance.apiBaseUrl}/api/v1/rooms`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) return;
       set((state) => ({ instances: [...state.instances, instance], accessibleInstances: [...state.accessibleInstances, instance], auth: { ...state.auth, [instance.id]: { status: "authenticated", token } } }));
+      void get().refreshInstanceMeta();
     } catch {
       // An instance that cannot silently authenticate is not added to the rail.
     }
   },
 
   setAddServerOpen: (open) => set({ addServerOpen: open }),
+
+  setRailHidden: (hidden) => {
+    set({ railHidden: hidden });
+    try {
+      localStorage.setItem(RAIL_HIDDEN_KEY, hidden ? "1" : "0");
+    } catch {
+      // Storage denied (private mode / blocked cookies) — the toggle still works
+      // for this session, it just won't survive a reload. Not worth failing over.
+    }
+  },
+
+  setSwitcherOpen: (open) => set({ switcherOpen: open }),
+
+  setIdentityOpen: (open) => set({ identityOpen: open }),
+
+  refreshInstanceMeta: async () => {
+    const instances = get().instances;
+    if (instances.length === 0) return;
+    await Promise.all(
+      instances.map(async (instance) => {
+        // Both calls are hardened + non-throwing (see @/lib/instances): bounded
+        // timeout, no credentials, no redirects, size + content-type caps.
+        const meta = await fetchInstanceMeta(instance);
+        if (!meta) return;
+        set((state) => ({ metaByInstance: { ...state.metaByInstance, [instance.id]: meta } }));
+
+        const priorLogo = get().logoByInstance[instance.id];
+        const logo = await fetchInstanceLogo(instance, meta);
+        if (logo) {
+          set((state) => ({ logoByInstance: { ...state.logoByInstance, [instance.id]: logo } }));
+        } else if (priorLogo) {
+          // Logo was removed upstream — drop ours too.
+          set((state) => {
+            const next = { ...state.logoByInstance };
+            delete next[instance.id];
+            return { logoByInstance: next };
+          });
+        }
+        // Revoke the blob we replaced (or dropped) so repeated refreshes don't
+        // leak object URLs for the lifetime of the tab.
+        if (priorLogo && priorLogo !== logo) URL.revokeObjectURL(priorLogo);
+      }),
+    );
+  },
 
   refreshInstanceUnread: async () => {
     const { accessibleInstances, activeInstanceId } = get();

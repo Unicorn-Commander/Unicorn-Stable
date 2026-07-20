@@ -358,7 +358,7 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
       // beside chat (the co-working layout), user-resizable via the left-edge
       // handle (inline width below; md:relative keeps the handle anchored here).
       className="fixed inset-0 z-40 flex h-full w-full flex-col border-l border-slate-700/50 bg-slate-900 shadow-2xl md:relative md:z-auto md:shadow-none"
-      style={isDesktop ? { width: resize.width } : undefined}
+      style={isDesktop ? { width: resize.width } : { height: "var(--app-height, 100dvh)", paddingTop: "env(safe-area-inset-top)" }}
       aria-label="Canvas"
     >
       <div

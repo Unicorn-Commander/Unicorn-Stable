@@ -15,13 +15,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import get_settings
-from app.models.participant import Participant
+from app.models.participant import Participant, ParticipantType
 from app.models.room import RoomMember
-from app.services.presence_service import PresenceService
+from app.services.presence_service import PresenceService, TYPING_TTL
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+# Server-side floor on typing_start re-broadcasts, per (participant, room).
+# The client already throttles its keepalives, but the fan-out cost of this
+# event is paid by EVERY socket in the room, so the server does not take a
+# buggy or hostile client's word for how often that should happen. Comfortably
+# under TYPING_TTL so an honest keepalive is never swallowed.
+TYPING_REBROADCAST_FLOOR_S: float = 1.0
 
 
 async def _safe_send(ws: WebSocket, data: dict[str, Any]) -> None:
@@ -103,6 +110,72 @@ def _presence_payload(participant_id: str, *, online: bool) -> dict[str, Any]:
     }
 
 
+def _typing_payload(
+    participant_id: str,
+    room_id: str,
+    *,
+    username: str,
+    is_typing: bool,
+) -> dict[str, Any]:
+    """Canonical HUMAN typing event for the room socket.
+
+    Identity follows the same convention `_presence_payload` had to adopt: the
+    web client resolves room members on the Participant UUID, never the
+    Keycloak id, so we surface that id under BOTH `participant_id` (canonical)
+    and `user_id` (what the presence/typing hook reads). `username` is carried
+    on the wire because the alternative — the client resolving a name from its
+    members list — shows "Someone is typing…" for anyone whose row has not
+    loaded yet, which is the common case on a cold room open.
+
+    `participant_type` is stated explicitly rather than implied. This event is
+    only ever emitted for humans (see `_handle_client_events`), and saying so
+    on the wire lets the client keep human typing and agent activity
+    (`agent_typing` / `agent_relay`, see services/agent_status.py) as the two
+    distinct facts they are, even against an older or future server.
+    """
+    return {
+        "type": "typing",
+        "room_id": room_id,
+        "participant_id": participant_id,
+        "user_id": participant_id,
+        "username": username,
+        "participant_type": "human",
+        "is_typing": is_typing,
+        # The server's own key lifetime, published so the client's last-resort
+        # expiry is derived from it rather than from a second constant that can
+        # drift out of agreement with it (agent_relay does the same).
+        "ttl_seconds": TYPING_TTL,
+    }
+
+
+def _typing_event_body(data: dict[str, Any]) -> dict[str, Any]:
+    """Read a TYPING event's fields whether they are flat or under `payload`.
+
+    `services/websocket.ts` sends `{type, payload:{…}}`; this handler has
+    always read `room_id` from the TOP level. Those two never met, which is
+    why the pre-existing typing surface was inert end-to-end. Accepting both
+    shapes fixes it without requiring the browser and the backend to deploy in
+    lockstep — during a rollout each end will see the other's framing.
+
+    DELIBERATELY SCOPED TO TYPING. `mark_read` is broken in exactly the same
+    way and this unwrapping would fix it too — but that fix is not free and it
+    is not this branch's to make. `mark_read` is the SOLE writer of
+    RoomMember.last_read_at anywhere in the server, and room_service.py treats
+    NULL as "everything unread", so un-breaking it silently collapses every
+    unread badge in the product, once, irreversibly, for every user. That is a
+    product decision with a real blast radius, not a side effect of shipping
+    typing indicators. It is written up in the branch summary so it can be
+    made on purpose. Until then `mark_read` stays exactly as inert as it has
+    always been, and this branch changes only what its title claims.
+    """
+    payload = data.get("payload")
+    if isinstance(payload, dict):
+        merged = {k: v for k, v in data.items() if k != "payload"}
+        merged.update(payload)
+        return merged
+    return data
+
+
 async def _authenticate_ws(
     websocket: WebSocket,
     token: str,
@@ -148,6 +221,7 @@ async def _subscribe_to_rooms(
     pubsub = redis.pubsub()
     channels = [f"room:{rid}" for rid in room_ids]
     channels.append(f"user:{participant_id}")
+    known_rooms: set[str] = set(room_ids)
 
     await pubsub.subscribe(*channels)
     subscribed: set[str] = set(channels)
@@ -176,6 +250,16 @@ async def _subscribe_to_rooms(
                         await pubsub.subscribe(*_fresh)
                         subscribed.update(_fresh)
                         logger.debug("ws_dyn_subscribed", channels=_fresh, participant_id=participant_id)
+                    # `room_ids` is the SAME list object the client-event task
+                    # authorizes typing/mark_read against. Extending it in
+                    # place means a room joined after connect (a brand-new DM)
+                    # can emit typing without a page refresh — otherwise the
+                    # first room you open in a session is the one place the
+                    # indicator silently does nothing.
+                    for _rid in _rids:
+                        if _rid not in known_rooms:
+                            known_rooms.add(_rid)
+                            room_ids.append(_rid)
                 except Exception:
                     logger.debug("ws_room_refresh_failed", exc_info=True)
             # Poll with an explicit per-read timeout rather than pubsub.listen().
@@ -200,6 +284,17 @@ async def _subscribe_to_rooms(
                 if isinstance(data_raw, bytes):
                     data_raw = data_raw.decode("utf-8")
                 data = json.loads(data_raw)
+                # Never echo your own typing back to you. Redis pub/sub has no
+                # per-subscriber exclusion, and the publisher may be a
+                # DIFFERENT uvicorn worker than the one holding this socket, so
+                # the sender-side `exclude` used by ConnectionManager cannot
+                # help here — the drop has to happen at the receiving socket.
+                # Without this you watch yourself type.
+                if (
+                    data.get("type") == "typing"
+                    and data.get("participant_id") == participant_id
+                ):
+                    continue
                 await _safe_send(websocket, data)
             except (json.JSONDecodeError, WebSocketDisconnect):
                 break
@@ -211,14 +306,99 @@ async def _subscribe_to_rooms(
         await pubsub.aclose()
 
 
+async def _publish_typing(
+    redis: Redis,
+    presence: PresenceService,
+    *,
+    participant_id: str,
+    username: str,
+    room_id: str,
+    is_typing: bool,
+) -> None:
+    """Set/clear the Redis typing key and tell the room, in that order."""
+    if is_typing:
+        await presence.set_typing(participant_id, room_id)
+    else:
+        await presence.clear_typing(participant_id, room_id)
+    await redis.publish(
+        f"room:{room_id}",
+        json.dumps(
+            _typing_payload(
+                participant_id, room_id, username=username, is_typing=is_typing
+            )
+        ),
+    )
+
+
+async def _clear_all_typing(
+    redis: Redis,
+    presence: PresenceService,
+    *,
+    participant_id: str,
+    username: str,
+    rooms: set[str],
+) -> None:
+    """Retract every typing assertion this connection is still making.
+
+    Called from the endpoint's `finally`, so it runs on a clean close, a
+    dropped socket, an auth-expired teardown, and an unhandled error alike.
+    The Redis TTL would eventually expire these on its own, but a five-second
+    ghost is still a lie, and the OTHER browsers in the room are driven by the
+    event — not by our key's TTL — so without an explicit retraction their
+    "…is typing" row survives until their own local backstop fires. A typing
+    state with no clearing path is the exact bug class this is written to
+    avoid, so it gets one on every exit.
+    """
+    for room_id in sorted(rooms):
+        try:
+            await _publish_typing(
+                redis,
+                presence,
+                participant_id=participant_id,
+                username=username,
+                room_id=room_id,
+                is_typing=False,
+            )
+        except Exception:
+            # One unreachable room must not strand the others.
+            logger.debug(
+                "typing_clear_failed",
+                participant_id=participant_id,
+                room_id=room_id,
+                exc_info=True,
+            )
+
+
 async def _handle_client_events(
     websocket: WebSocket,
     participant_id: str,
     redis: Redis,
     presence: PresenceService,
     room_ids: list[str],
+    *,
+    username: str = "",
+    is_human: bool = True,
+    typing_rooms: set[str] | None = None,
 ) -> None:
-    """Handle incoming events from the WebSocket client."""
+    """Handle incoming events from the WebSocket client.
+
+    `is_human` gates the typing events specifically. "A person is typing" is a
+    claim about a person; an agent identity holds a keyboard for nobody. Agents
+    already have their own honest signalling — real `agent_typing` around a
+    live Brigade call, and `agent_relay` for gateway bridges that have no
+    thinking signal at all (see services/agent_status.py) — and those states
+    are deliberately different facts from this one. Letting an agent identity
+    emit `typing` here would quietly merge the two and re-open the "it looked
+    like something was happening" lie from the other end.
+
+    In practice a gateway/bridge agent talks to `api/gateway.py` over HTTP and
+    never opens this socket, so this is a structural guarantee rather than a
+    hot path: if a bridge ever does authenticate here with a uchub JWT, it is
+    refused a human's indicator by construction instead of by convention.
+    """
+    typing_rooms = typing_rooms if typing_rooms is not None else set()
+    # Last accepted typing_start per room, for the server-side rebroadcast floor.
+    last_typing_at: dict[str, float] = {}
     try:
         while True:
             raw = await websocket.receive_text()
@@ -228,36 +408,59 @@ async def _handle_client_events(
                 await _safe_send(websocket, {"error": "invalid_json"})
                 continue
 
+            # `type` is top-level in BOTH framings, so it is read before any
+            # unwrapping. Only the typing branch below reads from an unwrapped
+            # body; every other event keeps reading `data` exactly as it did
+            # before this branch — see `_typing_event_body` for why that
+            # restraint is deliberate rather than an oversight.
             event_type = data.get("type")
 
-            if event_type == "typing_start":
-                room_id = data.get("room_id")
-                if room_id and room_id in room_ids:
-                    await presence.set_typing(participant_id, room_id)
-                    # Broadcast typing event to room
-                    await redis.publish(
-                        f"room:{room_id}",
-                        json.dumps({
-                            "type": "typing",
-                            "participant_id": participant_id,
-                            "room_id": room_id,
-                            "is_typing": True,
-                        }),
+            if event_type in ("typing_start", "typing_stop", "typing"):
+                body = _typing_event_body(data)
+                # Tolerate the flag-shaped variant (`{type:"typing",
+                # is_typing:bool}`) alongside the two explicit verbs, so an
+                # older client build keeps working across a deploy.
+                is_typing = (
+                    bool(body.get("is_typing", True))
+                    if event_type == "typing"
+                    else event_type == "typing_start"
+                )
+                room_id = body.get("room_id")
+                if not (room_id and room_id in room_ids):
+                    continue
+                if not is_human:
+                    logger.debug(
+                        "typing_refused_non_human",
+                        participant_id=participant_id,
+                        room_id=room_id,
                     )
+                    continue
 
-            elif event_type == "typing_stop":
-                room_id = data.get("room_id")
-                if room_id and room_id in room_ids:
-                    await presence.clear_typing(participant_id, room_id)
-                    await redis.publish(
-                        f"room:{room_id}",
-                        json.dumps({
-                            "type": "typing",
-                            "participant_id": participant_id,
-                            "room_id": room_id,
-                            "is_typing": False,
-                        }),
-                    )
+                if is_typing:
+                    now = time.monotonic()
+                    if now - last_typing_at.get(room_id, 0.0) < TYPING_REBROADCAST_FLOOR_S:
+                        # Drop it outright — no Redis write either. A client
+                        # spamming faster than the floor still gets one
+                        # ACCEPTED event per second, and each of those refreshes
+                        # a TYPING_TTL (5s) key, so its indicator never lapses
+                        # from being throttled. Doing a 3-op Redis write per
+                        # keystroke here would hand the bandwidth we just saved
+                        # straight back to Redis.
+                        continue
+                    last_typing_at[room_id] = now
+                    typing_rooms.add(room_id)
+                else:
+                    last_typing_at.pop(room_id, None)
+                    typing_rooms.discard(room_id)
+
+                await _publish_typing(
+                    redis,
+                    presence,
+                    participant_id=participant_id,
+                    username=username,
+                    room_id=room_id,
+                    is_typing=is_typing,
+                )
 
             elif event_type == "mark_read":
                 room_id = data.get("room_id")
@@ -349,7 +552,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             return
 
         participant_id = str(participant.id)
+        # Read the identity facts while the session is open — the ORM object is
+        # detached once we leave the block, and the typing fan-out needs a name
+        # on every event without paying a DB round-trip per keystroke.
+        is_human = participant.participant_type != ParticipantType.AGENT
+        username = participant.display_name or user.get("preferred_username") or "Someone"
         room_ids = await _get_user_room_ids(db, participant_id)
+
+    # Rooms this connection is currently ASSERTING typing in. Owned by the
+    # endpoint (not the event task) so the teardown below can retract them even
+    # when that task is the one that died.
+    typing_rooms: set[str] = set()
 
     # Connect and set presence
     await manager.connect(participant_id, websocket)
@@ -370,7 +583,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         name=f"ws-pubsub-{participant_id}",
     )
     client_task = asyncio.create_task(
-        _handle_client_events(websocket, participant_id, redis, presence, room_ids),
+        _handle_client_events(
+            websocket,
+            participant_id,
+            redis,
+            presence,
+            room_ids,
+            username=username,
+            is_human=is_human,
+            typing_rooms=typing_rooms,
+        ),
         name=f"ws-client-{participant_id}",
     )
 
@@ -388,8 +610,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except Exception:
         logger.exception("ws_error", participant_id=participant_id)
     finally:
-        # Clean up
+        # Clean up. Typing goes FIRST: it is the state that lies loudest if it
+        # survives the socket, and it must be retracted whether we got here by
+        # a clean close, a network drop, or the exception branch above.
         manager.disconnect(participant_id)
+        await _clear_all_typing(
+            redis,
+            presence,
+            participant_id=participant_id,
+            username=username,
+            rooms=typing_rooms,
+        )
         await presence.set_offline(participant_id)
         for rid in room_ids:
             await presence.leave_room_presence(participant_id, rid)

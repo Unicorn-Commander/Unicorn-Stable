@@ -650,7 +650,7 @@ export function KnowledgePanel({ roomId, onClose }: KnowledgePanelProps) {
       // chat (a touch narrower than the canvas), user-resizable via the
       // left-edge handle (inline width below; md:relative anchors the handle).
       className="glass-heavy fixed inset-0 z-40 flex h-full w-full flex-col shadow-2xl md:relative md:z-auto md:shadow-none"
-      style={isDesktop ? { width: resize.width } : undefined}
+      style={isDesktop ? { width: resize.width } : { height: "var(--app-height, 100dvh)", paddingTop: "env(safe-area-inset-top)" }}
       aria-label="Knowledge bases"
     >
       <div
