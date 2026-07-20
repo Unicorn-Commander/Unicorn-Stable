@@ -133,33 +133,36 @@ export function RoomView({ roomId }: RoomViewProps) {
 
   // getRoom doesn't include members in our wire-format. Fetch separately so
   // the participant strip + read receipts have someone to render.
-  const { data: members, error: membersError } = useQuery({
+  // This is also the ONLY presence snapshot the client takes: each row carries
+  // server-side, Redis-derived `is_online`, which covers peers who were already
+  // online before we opened the room. (A second /rooms/{id}/presence poll used
+  // to seed a separate global online set; it was add-only and could resurrect a
+  // dot that a WS "offline" delta had just cleared, so the two snapshots could
+  // disagree. One transport, one reader.)
+  const {
+    data: members,
+    dataUpdatedAt: membersUpdatedAt,
+    error: membersError,
+  } = useQuery({
     queryKey: ["room-members", roomId],
     queryFn: () => api.getRoomMembers(roomId),
     refetchInterval: 30_000,
     retry: false,
   });
 
+  // Keyed on dataUpdatedAt, NOT on the `members` reference. TanStack Query's
+  // structural sharing returns the PREVIOUS object when a refetch deep-equals
+  // the cached data, so a reference-keyed effect never re-runs on an unchanged
+  // payload. Live WS deltas mutate presence in the store between polls, so the
+  // store can legitimately disagree with an unchanged cached payload — without
+  // this, that disagreement would never be re-settled. dataUpdatedAt advances
+  // on every successful fetch, guaranteeing the poll always gets the last word.
   useEffect(() => {
     if (members) {
       setParticipants(roomId, members);
     }
-  }, [members, roomId, setParticipants]);
-
-  // Seed presence on room open: who is ALREADY online in this room. Live WS
-  // presence deltas only cover changes AFTER we connect, so a peer who was
-  // online before we opened the room would otherwise show offline until they
-  // toggle. Union into the global online set; refetch on the members cadence.
-  const mergeOnlineUsers = useAppStore((s) => s.mergeOnlineUsers);
-  const { data: roomPresence } = useQuery({
-    queryKey: ["room-presence", roomId],
-    queryFn: () => api.getRoomPresence(roomId),
-    refetchInterval: 30_000,
-    retry: false,
-  });
-  useEffect(() => {
-    if (roomPresence) mergeOnlineUsers(roomPresence.online);
-  }, [roomPresence, mergeOnlineUsers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membersUpdatedAt, roomId, setParticipants]);
 
   // Live member changes (someone joined/left, was removed, role/mute changed)
   // fan out over the room socket so every open client refreshes immediately

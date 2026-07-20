@@ -35,7 +35,18 @@ class RoomMemberResponse(BaseModel):
     last_read_at: datetime | None = None
     is_muted: bool
     is_self: bool = False
+    # Redis-derived live presence. The canonical boolean the web roster reads;
+    # `status` carries the same fact as a string for status-shaped consumers.
+    is_online: bool = False
     status: str | None = None
+    # AGENTS ONLY (null for humans) — a deliberately separate fact from
+    # `is_online`. Presence means "a client is connected"; availability means
+    # "this agent can be invoked right now" (Brigade has it enabled, or a
+    # bridge session is actively polling the gateway). One of "available",
+    # "unavailable", "unknown"; `availability_reason` is a short tag the UI
+    # renders as a tooltip so an un-lit agent can explain itself.
+    availability: str | None = None
+    availability_reason: str | None = None
 
 
 class RoomResponse(BaseModel):

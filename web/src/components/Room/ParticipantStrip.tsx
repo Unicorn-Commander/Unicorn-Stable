@@ -15,6 +15,7 @@ import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { api, type RoomMember, type ApiError } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
+import { agentPresence } from "@/lib/agentStatus";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -246,7 +247,6 @@ function HumanMemberRow({
 
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
-  const onlineUsers = useAppStore((s) => s.onlineUsers);
   const qc = useQueryClient();
 
   // The caller's own membership row (server-flagged is_self) decides whether to
@@ -264,12 +264,12 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
     (p) => p.participant_type === "agent",
   );
 
-  const onlineHumans = humanParticipants.filter(
-    (p) => p.is_online || onlineUsers.includes(p.user_id || p.participant_id || ""),
-  );
-  const offlineHumans = humanParticipants.filter(
-    (p) => !p.is_online && !onlineUsers.includes(p.user_id || p.participant_id || ""),
-  );
+  // `is_online` is the single presence reader: server-derived from Redis on
+  // every /members poll, and patched in place by live WS presence deltas. It
+  // used to be OR'd with a separate global online set, which could only ever
+  // add, so a departed peer stayed green until the next members refetch.
+  const onlineHumans = humanParticipants.filter((p) => p.is_online);
+  const offlineHumans = humanParticipants.filter((p) => !p.is_online);
 
   async function removeAgent(member: RoomMember) {
     // Username is "agent-<brigade_id>"; strip the prefix back out.
@@ -285,9 +285,29 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
     }
   }
 
-  // Purely presentational: the residents currently "in the room" (agents are
-  // always live once invited), clustered as overlapping avatars up top.
-  const presentMembers = [...agentMembers, ...onlineHumans];
+  // The residents actually here, clustered as overlapping avatars up top.
+  // Agents used to be included unconditionally on the theory that they are
+  // "always live once invited" — they are not: an agent Brigade has disabled,
+  // or a bridge whose operator closed their session, is in the room's member
+  // list and reachable by nobody. Only agents we positively observed as
+  // connected or available are counted as here.
+  const agentBadges = new Map(
+    agentMembers.map((m) => [
+      m.participant_id || m.user_id || m.username,
+      agentPresence({
+        isOnline: m.is_online,
+        availability: m.availability,
+        availabilityReason: m.availability_reason,
+        name: m.display_name,
+      }),
+    ]),
+  );
+  const presentAgents = agentMembers.filter(
+    (m) =>
+      agentBadges.get(m.participant_id || m.user_id || m.username)?.kind !==
+      "unknown",
+  );
+  const presentMembers = [...presentAgents, ...onlineHumans];
 
   return (
     <aside
@@ -332,6 +352,9 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 m.participant_id || m.user_id || m.username,
                 m.display_name,
               );
+              const badge = agentBadges.get(
+                m.participant_id || m.user_id || m.username,
+              )!;
               return (
                 <li
                   key={m.id || m.participant_id || m.username}
@@ -344,7 +367,16 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                       size="sm"
                       isAgent
                     />
-                    <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live" />
+                    {/* Was hardcoded mint+pulse for every agent — the same
+                        "always online" claim this change removes. */}
+                    <span
+                      className={clsx(
+                        "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2",
+                        badge.dotClass,
+                      )}
+                      aria-label={badge.label}
+                      title={badge.label}
+                    />
                   </div>
                   <div className="min-w-0 flex-1">
                     <p
@@ -355,6 +387,21 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                     </p>
                     <p className="truncate text-[10px] text-slate-500">
                       @{(m.username ?? "").replace(/^agent-/, "")}
+                      {badge.kind !== "connected" && (
+                        <>
+                          {" · "}
+                          <span
+                            className={
+                              badge.kind === "available"
+                                ? "text-stable-cyan"
+                                : "text-slate-600"
+                            }
+                            title={badge.label}
+                          >
+                            {badge.stateText}
+                          </span>
+                        </>
+                      )}
                     </p>
                   </div>
                   <button

@@ -33,6 +33,7 @@ import {
 } from "@/utils/mute";
 import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { identityFor } from "@/lib/identity";
+import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
 import {
   useChannelCategories,
@@ -50,7 +51,6 @@ export function RoomList() {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
-  const onlineUsers = useAppStore((s) => s.onlineUsers);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   const agents = useAppStore((s) => s.agents);
@@ -573,9 +573,21 @@ export function RoomList() {
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
-    const agentOnline = others.some((p) => {
-      const id = p.participant_id || p.user_id || "";
-      return p.is_online || onlineUsers.includes(id);
+    // Two sources, in priority order. The room's own member row is the richest
+    // (it also knows whether the agent is IN a call), but `/members` is polled
+    // only for the ACTIVE room — every other agent thread in this sidebar has
+    // no row at all. The Brigade roster covers those: availability is a
+    // property of the agent, not of the room, so the fallback is not a
+    // degraded guess. An agent in neither lands on "unknown", which renders as
+    // a dim ring, not as available.
+    const agentMember = others.find((p) => p.participant_type === "agent");
+    const rosterAgent = agents.find((a) => a.id === agentId);
+    const badge = agentPresence({
+      isOnline: agentMember?.is_online,
+      availability: agentMember?.availability ?? rosterAgent?.availability,
+      availabilityReason:
+        agentMember?.availability_reason ?? rosterAgent?.availability_reason,
+      name,
     });
     return (
       <li key={`agent-${agentId}`}>
@@ -605,12 +617,14 @@ export function RoomList() {
                 className="h-1.5 w-1.5 rounded-full"
                 style={{ background: ident.color }}
               />
-              {agentOnline && (
-                <span
-                  className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
-                  aria-label="Online"
-                />
-              )}
+              <span
+                className={clsx(
+                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+                  badge.dotClass,
+                )}
+                aria-label={badge.label}
+                title={badge.label}
+              />
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
@@ -687,10 +701,11 @@ export function RoomList() {
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
-    const otherOnline = others.some((p) => {
-      const id = p.participant_id || p.user_id || "";
-      return p.is_online || onlineUsers.includes(id);
-    });
+    // Humans keep the connected-or-nothing model: `is_online` alone — see
+    // ParticipantStrip, the old global online set was add-only, so OR'ing it in
+    // kept departed peers green. Availability is an agent concept and does not
+    // apply here.
+    const humanBadge = humanPresence(others.some((p) => p.is_online));
     const isActive = activeRoomId === room.id;
     return (
       <li key={room.id}>
@@ -712,10 +727,14 @@ export function RoomList() {
           )}
           <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
             <MessageSquare className="h-4 w-4 opacity-60" />
-            {otherOnline && (
+            {humanBadge && (
               <span
-                className="animate-live absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 bg-stable-mint"
-                aria-label="Online"
+                className={clsx(
+                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+                  humanBadge.dotClass,
+                )}
+                aria-label={humanBadge.label}
+                title={humanBadge.label}
               />
             )}
           </span>

@@ -12,7 +12,10 @@ from pydantic import BaseModel
 from app.config import get_settings
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_current_user, get_db, get_livekit, rate_limit
+from redis.asyncio import Redis
+
+from app.deps import get_current_user, get_db, get_livekit, get_redis, rate_limit
+from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
@@ -53,6 +56,13 @@ class BrigadeRosterAgent(BaseModel):
     # Per-tool cost/permission detail + rollup (from Brigade's tool_catalog).
     tool_details: list[dict[str, Any]] = []
     tool_cost_summary: dict[str, Any] | None = None
+    # Can this agent actually be invoked right now? Separate from `status`,
+    # which is Brigade's own registration state and is not, by itself, the
+    # answer: a bridge agent is not a Brigade persona at all, and Brigade being
+    # unreachable is an unknown rather than a "no". "available" | "unavailable"
+    # | "unknown"; see services/agent_availability.py for the truth table.
+    availability: str = "unknown"
+    availability_reason: str = "unknown"
 
 
 class InviteAgentRequest(BaseModel):
@@ -131,7 +141,7 @@ def _brigade_native_base() -> str:
     return base[: -len("/openai/v1")] if base.endswith("/openai/v1") else base
 
 
-async def _fetch_brigade_roster() -> list[BrigadeRosterAgent]:
+async def _fetch_brigade_roster(redis: Redis) -> list[BrigadeRosterAgent]:
     """Fetch the RICH agent roster from Brigade's native ``/agents`` endpoint.
 
     Unlike ``/models`` (OpenAI-shaped: id/name/description only), the native
@@ -160,6 +170,15 @@ async def _fetch_brigade_roster() -> list[BrigadeRosterAgent]:
             )
 
     items = body.get("agents", []) if isinstance(body, dict) else (body or [])
+
+    # Availability is computed from THIS fetch (the roster we just proved we
+    # could read) plus the gateway-freshness markers, rather than by calling
+    # agent_availability.get_agent_availability, which would re-fetch the same
+    # roster. Both paths funnel through the one `classify` truth table so the
+    # sidebar and the room roster cannot disagree.
+    ids = [str(it.get("id")) for it in items if isinstance(it, dict) and it.get("id")]
+    fresh = await get_gateway_fresh(redis, ids)
+
     roster: list[BrigadeRosterAgent] = []
     for it in items:
         raw_status = (it.get("status") or "active").lower()
@@ -180,9 +199,18 @@ async def _fetch_brigade_roster() -> list[BrigadeRosterAgent]:
                 or m.startswith(("claude", "gpt", "gemini"))
                 else "employee"
             )
+        availability, availability_reason = classify(
+            gateway_fresh=str(it["id"]) in fresh,
+            # We are inside a successful roster read, so Brigade is known-good
+            # and this agent is in it by construction.
+            roster_known=True,
+            brigade_status=raw_status,
+        )
         roster.append(
             BrigadeRosterAgent(
                 id=it["id"],
+                availability=availability,
+                availability_reason=availability_reason,
                 name=name,
                 display_name=it.get("displayName") or it.get("name") or it["id"],
                 description=it.get("bio") or it.get("title") or "",
@@ -206,9 +234,16 @@ async def _fetch_brigade_roster() -> list[BrigadeRosterAgent]:
 @router.get("/brigade/roster", response_model=list[BrigadeRosterAgent])
 async def list_brigade_roster(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> list[BrigadeRosterAgent]:
-    """The rich agent roster for the org-chart view (rank/title/model/tools)."""
-    return await _fetch_brigade_roster()
+    """The rich agent roster for the org-chart view (rank/title/model/tools).
+
+    Carries `availability` so the sidebar can render an agent's dot honestly
+    without needing that room's member roster — the sidebar shows agent threads
+    for rooms that are not open, and `/members` is only polled for the ACTIVE
+    room, so a per-room-only signal would leave every collapsed thread dark.
+    """
+    return await _fetch_brigade_roster(redis)
 
 
 class ChatModel(BaseModel):
