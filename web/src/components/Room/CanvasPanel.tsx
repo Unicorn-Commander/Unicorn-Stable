@@ -320,14 +320,15 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
     // editor); the broadcast will also refresh, but refresh here too so the
     // author sees it immediately even without the data channel.
     await api.rewriteArtifact(openArtifact.id, { content });
-    await refreshOpen();
+    // snapToHead: this refresh is the result of the user's OWN save, so show it.
+    await refreshOpen({ snapToHead: true });
   }
 
   async function handleRestore() {
     if (!openArtifact || !shownVersion) return;
     try {
       await api.restoreArtifactVersion(openArtifact.id, shownVersion.id);
-      await refreshOpen(); // snaps back to HEAD
+      await refreshOpen({ snapToHead: true }); // show the restored head
       setShowDiff(false);
     } catch (e) {
       const apiErr = e as { detail?: string | null; message?: string };

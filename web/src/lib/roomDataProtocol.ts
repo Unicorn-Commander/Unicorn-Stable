@@ -159,8 +159,13 @@ export interface ArtifactEventMessage {
   current_version_id?: string | null;
   /** The new current version's seq. */
   seq?: number | null;
-  /** The edit op that produced the version, when the server includes it. */
-  op?: Record<string, unknown> | null;
+  /**
+   * The edit op that produced the version, when the server includes it:
+   * "rewrite" | "edit" | "restore" (server/app/api/artifacts.py passes these as
+   * a plain string to `broadcast_artifact_event`). Typed open as `string` so a
+   * new op name from a newer backend is not a type error on an older bundle.
+   */
+  op?: string | null;
 }
 
 export function isArtifactEventMessage(v: unknown): v is ArtifactEventMessage {
@@ -191,7 +196,13 @@ export function coerceArtifactEvent(v: unknown): ArtifactEventMessage | null {
   const m = v as Record<string, unknown>;
   const kind = m.event ?? m.type;
   if (kind !== "artifact_created" && kind !== "artifact_updated") return null;
-  const candidate = { ...m, event: kind };
+  // Keep `op` honest against its declared type rather than passing an
+  // unvalidated field through a type predicate that never looks at it.
+  const candidate = {
+    ...m,
+    event: kind,
+    op: typeof m.op === "string" ? m.op : null,
+  };
   return isArtifactEventMessage(candidate) ? candidate : null;
 }
 
