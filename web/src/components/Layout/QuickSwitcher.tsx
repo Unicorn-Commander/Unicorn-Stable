@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Plus,
   Search,
+  Server,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -17,6 +18,8 @@ import clsx from "clsx";
 import { api } from "@/services/api";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
+import { useFederationStore } from "@/stores/federationStore";
+import { displayName, instanceHost } from "@/lib/instances";
 import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface QuickSwitcherProps {
@@ -28,6 +31,7 @@ interface QuickSwitcherProps {
 // multi-step create→invite flow), so user rows would be dead entries here.
 type Item =
   | { kind: "channel"; id: string; label: string; sub: string }
+  | { kind: "server"; id: string; label: string; sub: string }
   | { kind: "dm"; id: string; label: string; sub: string }
   | { kind: "agent"; id: string; label: string; sub: string }
   | {
@@ -60,6 +64,15 @@ function fuzzyScore(needle: string, hay: string): number {
 
 export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProps) {
   const rooms = useAppStore((s) => s.rooms);
+  // Servers live in the federation store. They are folded into THIS palette
+  // rather than getting a chord of their own: one switcher that finds rooms,
+  // agents, commands and servers beats two competing for Cmd/Ctrl+K.
+  const instances = useFederationStore((s) => s.accessibleInstances);
+  const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const metaByInstance = useFederationStore((s) => s.metaByInstance);
+  const switchInstance = useFederationStore((s) => s.switchInstance);
+  // Same rule the rail uses: servers are noise until you can reach more than one.
+  const multiServer = instances.length > 1;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [q, setQ] = useState("");
@@ -103,6 +116,24 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       label: a.name,
       sub: a.description?.slice(0, 60) ?? "agent",
     }));
+    // Everything from `meta` is untrusted peer output — already sanitised and
+    // length-capped in @/lib/instances, and rendered here as a text node.
+    const serverItems: Item[] = multiServer
+      ? instances
+          .filter((instance) => instance.id !== activeInstanceId)
+          .map((instance) => {
+            const meta = metaByInstance[instance.id];
+            const host = instanceHost(instance);
+            const description = meta?.description ?? "";
+            return {
+              kind: "server" as const,
+              id: instance.id,
+              label: displayName(instance, meta),
+              // Host always rides along: the name is the falsifiable half.
+              sub: description ? host + " — " + description : host,
+            };
+          })
+      : [];
     const g = useAppStore.getState;
     const actionItems: Item[] = [
       { kind: "action", id: "new-channel", label: "Create channel", sub: "Start a new room", icon: Plus, run: () => g().setCreateRoomModalOpen(true) },
@@ -111,7 +142,25 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       { kind: "action", id: "settings", label: "Settings", sub: "Preferences & appearance", icon: Settings, run: () => g().toggleSettings() },
       { kind: "action", id: "shortcuts", label: "Keyboard shortcuts", sub: "Cheatsheet", icon: Keyboard, run: () => g().toggleCheatsheet() },
     ];
-    const all = [...actionItems, ...channelItems, ...dmItems, ...agentItems];
+    if (multiServer) {
+      // The full directory (descriptions, add-a-server, admin identity) still
+      // lives in ServerSwitcher; this row is the keyboard-only way to reach it.
+      actionItems.push({
+        kind: "action",
+        id: "browse-servers",
+        label: "Browse servers",
+        sub: "Switch Stables, see descriptions",
+        icon: Server,
+        run: () => useFederationStore.getState().setSwitcherOpen(true),
+      });
+    }
+    const all = [
+      ...actionItems,
+      ...channelItems,
+      ...dmItems,
+      ...agentItems,
+      ...serverItems,
+    ];
     if (!q.trim()) return all.slice(0, 12);
     const scored = all
       .map((it) => ({ it, score: Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub)) }))
@@ -119,7 +168,16 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       .sort((a, b) => b.score - a.score)
       .map((s) => s.it);
     return scored.slice(0, 12);
-  }, [rooms, agents, q, onOpenGlobalSearch]);
+  }, [
+    rooms,
+    agents,
+    q,
+    onOpenGlobalSearch,
+    instances,
+    activeInstanceId,
+    metaByInstance,
+    multiServer,
+  ]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -138,6 +196,12 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
     if (it.kind === "channel" || it.kind === "dm") {
       navigate(`/c/${it.id}`);
       onClose();
+      return;
+    }
+    if (it.kind === "server") {
+      // Close first: switchInstance tears down the per-server query caches.
+      onClose();
+      void switchInstance(it.id);
       return;
     }
     // Agent → same "new chat" path the sidebar uses: a fresh DM bound to the
@@ -199,7 +263,11 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search channels, agents, commands…"
+            placeholder={
+              multiServer
+                ? "Search channels, agents, servers, commands…"
+                : "Search channels, agents, commands…"
+            }
             className="min-w-0 flex-1 bg-transparent text-base text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
           <kbd className="shrink-0 rounded border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
@@ -288,6 +356,8 @@ function Icon({ item }: { item: Item }) {
     const ActionIcon = item.icon;
     return <ActionIcon className="h-4 w-4 shrink-0 text-stable-purple-light/80" />;
   }
+  if (item.kind === "server")
+    return <Server className="h-4 w-4 shrink-0 text-stable-purple-light/80" />;
   if (item.kind === "channel")
     return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
   if (item.kind === "dm")
@@ -312,7 +382,9 @@ function KindLabel({ kind }: { kind: Item["kind"] }) {
         ? "DM"
         : kind === "action"
           ? "Command"
-          : "Agent";
+          : kind === "server"
+            ? "Server"
+            : "Agent";
   return (
     <span className="shrink-0 rounded-md border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
       {label}
