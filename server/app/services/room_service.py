@@ -509,7 +509,14 @@ class RoomService:
                 "last_read_at": membership.last_read_at,
                 "is_muted": membership.is_muted,
                 "is_self": caller is not None and str(participant.id) == caller,
-                "status": "online" if str(participant.id) in online_ids else participant.status.value,
+                # Presence is Redis-derived ONLY. `participants.status` is a
+                # stale DB column: it is written once at row creation (agents
+                # are seeded ONLINE, humans OFFLINE) and the only runtime
+                # mutation is the LiveKit call webhook. Falling back to it here
+                # made every agent report "online" forever. Redis is the single
+                # source of truth for "is this participant connected right now".
+                "is_online": str(participant.id) in online_ids,
+                "status": "online" if str(participant.id) in online_ids else "offline",
             })
 
         return members

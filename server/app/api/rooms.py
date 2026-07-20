@@ -786,6 +786,7 @@ def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
         last_read_at=m["last_read_at"],
         is_muted=m["is_muted"],
         is_self=m.get("is_self", False),
+        is_online=bool(m.get("is_online", m.get("status") == "online")),
         status=m["status"],
     )
 

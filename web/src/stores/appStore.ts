@@ -1,6 +1,21 @@
 import { create } from "zustand";
 import type { Room, Message, Agent, RoomMember } from "@/services/api";
 
+/**
+ * How long a live WS presence delta outranks the periodic /members snapshot.
+ *
+ * Presence has exactly one source of truth (Redis, on the server) but two
+ * transports into the client: the live WS delta and the ~30s /members poll.
+ * A poll that was already in flight when a delta arrived carries the older
+ * view, so applying it blindly would visibly flip a dot back. Anything inside
+ * this window is assumed to be that race; the next poll settles it.
+ *
+ * Deliberately NOT reactive state: it is transport bookkeeping, not something
+ * any component renders, so keeping it out of the store avoids re-renders.
+ */
+const PRESENCE_WS_WINS_MS = 10_000;
+const lastWsPresenceAt = new Map<string, number>();
+
 export interface TypingUser {
   user_id: string;
   username: string;
@@ -279,38 +294,57 @@ export const useAppStore = create<AppState>((set) => ({
 
   setParticipants: (roomId, members) =>
     set((state) => {
-      // Seed/reconcile global presence from the authoritative /members
-      // snapshot (refetched ~30s). Without this, onlineUsers only ever held
-      // live WS deltas, so anyone already online before you connected showed
-      // offline. WS presence events still handle real-time between refetches.
+      // Reconcile global presence from the /members snapshot (refetched ~30s).
+      // The server now derives presence purely from Redis, so this snapshot is
+      // authoritative in BOTH directions: it may add AND remove. The only
+      // thing it must not do is resurrect state that a newer live WS delta has
+      // already superseded -- an in-flight poll can carry a pre-delta view. So
+      // a participant whose WS presence changed within PRESENCE_WS_WINS_MS is
+      // left alone; the next poll picks up the settled truth.
+      const now = Date.now();
       const online = new Set(state.onlineUsers);
-      for (const m of members) {
+      const reconciled = members.map((m) => {
         const id = m.participant_id || m.user_id;
-        if (!id) continue;
-        // The /members wire-format carries live presence in `status`
-        // ("online" when the participant is in the room's presence set);
-        // `is_online` is only sent by newer/alt shapes. Honor either.
-        const isOnline =
+        if (!id) return m;
+        // Wire-format carries live presence as the `is_online` boolean, with
+        // `status` ("online"/"offline") mirroring the same fact. Honor either.
+        const snapshotOnline =
           typeof m.is_online === "boolean"
             ? m.is_online
             : m.status
               ? m.status === "online"
               : undefined;
-        if (isOnline === true) online.add(id);
-        else if (isOnline === false) online.delete(id);
-      }
+        if (snapshotOnline === undefined) return m;
+
+        const wsAt = lastWsPresenceAt.get(id);
+        if (wsAt !== undefined && now - wsAt < PRESENCE_WS_WINS_MS) {
+          // A live delta is fresher than this snapshot -- keep the WS view and
+          // stamp the row so consumers reading `is_online` agree with the set.
+          return { ...m, is_online: online.has(id) };
+        }
+        if (snapshotOnline) online.add(id);
+        else online.delete(id);
+        return { ...m, is_online: snapshotOnline };
+      });
       return {
-        participants: { ...state.participants, [roomId]: members },
+        participants: { ...state.participants, [roomId]: reconciled },
         onlineUsers: Array.from(online),
       };
     }),
 
   updateParticipantOnline: (userId, isOnline) =>
     set((state) => {
+      // Called from the WS presence handler. Member rows are keyed by
+      // Participant.id and never carry `user_id`, so matching on `user_id`
+      // alone never hit -- `is_online` on the roster stayed stale until the
+      // next poll. Match either identity.
+      lastWsPresenceAt.set(userId, Date.now());
       const updated: Record<string, RoomMember[]> = {};
       for (const [roomId, members] of Object.entries(state.participants)) {
         updated[roomId] = members.map((m) =>
-          m.user_id === userId ? { ...m, is_online: isOnline } : m,
+          (m.participant_id || m.user_id) === userId
+            ? { ...m, is_online: isOnline }
+            : m,
         );
       }
       return { participants: { ...state.participants, ...updated } };
@@ -379,6 +413,9 @@ export const useAppStore = create<AppState>((set) => ({
       for (const users of Object.values(state.typing)) {
         for (const u of users) clearTimeout(u.timeout);
       }
+      // Drop presence race bookkeeping too: stamps from the old server would
+      // otherwise suppress the first /members snapshot on the new one.
+      lastWsPresenceAt.clear();
       return {
         rooms: [],
         activeRoomId: null,

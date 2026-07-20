@@ -35,6 +35,9 @@ class RoomMemberResponse(BaseModel):
     last_read_at: datetime | None = None
     is_muted: bool
     is_self: bool = False
+    # Redis-derived live presence. The canonical boolean the web roster reads;
+    # `status` carries the same fact as a string for status-shaped consumers.
+    is_online: bool = False
     status: str | None = None
 
 
