@@ -250,6 +250,56 @@ async def _respond(
         ):
             return
 
+        # Which of the two agent kinds did we just resolve?
+        #
+        # A gateway/bridge agent is an EXTERNAL process that polls the gateway.
+        # Nothing about it runs in here: it has no thinking signal, and this
+        # responder cannot generate on its behalf because Brigade has no
+        # persona under that id. Proceeding would (a) announce "<X> is
+        # thinking…" for a process that is not thinking and was never asked,
+        # and (b) post a "…" placeholder that finalizes to a fabricated
+        # "_(I had trouble reaching Brigade)_" — ATTRIBUTED TO a real person's
+        # Claude Code. Both are lies; the second is the worse one.
+        #
+        # This is the reported bug, in the room it was reported from.
+        # `aaron-shafen-claudes` (a51ac1ce…) has NO `brigade_agent_id` and two
+        # agent members, BOTH pure bridges (Aaron's and Shafen's Claude Code),
+        # each holding an un-revoked key scoped to that room. On "@all" or
+        # "@everyone" the mention router finds no specific name, so
+        # _resolve_agent falls through to the "first agent member" fallback —
+        # and their joined_at values are IDENTICAL, so it picks arbitrarily
+        # between two different people's bridges — then _should_respond says
+        # yes and we announce that whichever one it landed on is thinking.
+        # "@claude-code" reaches the same end by the mention path. Any check
+        # keyed on room metadata answers "not a bridge" here, because there is
+        # no metadata; hence the observable-evidence predicate in agent_status:
+        # an un-revoked gateway key SCOPED TO THIS ROOM. That is deliberately
+        # the structural test, not the liveness one — a bridge that has not
+        # polled in an hour is still a bridge with no Brigade persona behind
+        # it, and gating this on recent activity would quietly re-open the lie
+        # for every dormant bridge. Liveness is required only for the opposite
+        # claim, that a relay is currently outstanding.
+        #
+        # A bridge's honest state is the one the gateway can actually witness:
+        # we leave the relay marker set for this message standing, so the room
+        # reads "Waiting for Stable bridge relay — <that exact agent>" until
+        # the bridge reads or posts, and nothing at all once it has.
+        try:
+            if await agent_status.is_bridge_agent(
+                db=db, room=room, agent_id=brigade_agent_id
+            ):
+                logger.info(
+                    "agent_chat_responder_skipped_bridge_agent",
+                    room_id=str(room.id),
+                    brigade_agent_id=brigade_agent_id,
+                )
+                return
+        except Exception:
+            # A detection failure must not silence a genuine resident agent, so
+            # fall through and answer. is_bridge_agent already swallows its own
+            # errors and returns False; this is belt-and-braces.
+            logger.warning("bridge_agent_check_failed", exc_info=True)
+
         oai_history = await _build_history(
             db=db,
             room_id=room.id,
@@ -338,14 +388,15 @@ async def _respond(
             except Exception:
                 logger.warning("council_hook_failed", exc_info=True)
 
-        # Retract any outstanding-relay marker for THIS agent before asserting
-        # that it is thinking — the two states contradict each other, and only
-        # this call site knows which agent actually got the message. send_message
-        # can exclude the room's declared `brigade_agent_id`, but _resolve_agent
-        # also routes by @-mention (multi-agent rooms) and by the legacy
-        # no-metadata fallback, and in those rooms the responder is NOT the
-        # excluded one, so it would otherwise be marked as awaiting a relay while
-        # it was in fact generating.
+        # Past the bridge gate, so this agent is genuinely ours to run and the
+        # typing signal below is true. The two states are now disjoint by
+        # construction — only bridges are ever marked relay-pending, and a
+        # bridge never reaches this line — so retracting the marker is pure
+        # belt-and-braces against a marker left by an earlier state of the
+        # world (a key revoked or re-scoped mid-conversation). It deletes
+        # nothing in the normal case and publishes only on a real transition,
+        # so it costs nothing to keep and closes the one way an agent could
+        # otherwise show two contradictory lines at once.
         try:
             await agent_status.clear_relay_pending(
                 room_id=room.id, agent_id=brigade_agent_id
