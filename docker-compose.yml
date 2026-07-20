@@ -131,6 +131,7 @@ services:
       - ORG_ID=${STABLE_ORG_ID:-}
       - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@postgres:5432/stable
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - QDRANT_URL=${QDRANT_URL:-http://unicorn-qdrant:6333}
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-wss://livekit.magicunicorn.dev}
       - LIVEKIT_API_URL=http://livekit:7880
@@ -173,6 +174,7 @@ services:
     networks:
       - stable-net
       - web
+      - vectordb
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
@@ -291,6 +293,9 @@ networks:
     name: stable-network
   web:
     external: true
+  vectordb:
+    external: true
+    name: unicorn-vectordb
 
 volumes:
   postgres_data:
