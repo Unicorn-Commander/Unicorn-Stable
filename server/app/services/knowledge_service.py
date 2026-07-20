@@ -340,11 +340,14 @@ class KnowledgeService:
                 text = payload.get("text")
                 if not isinstance(text, str) or not text.strip():
                     continue
+                chunk_idx = payload.get("chunk_idx")
                 candidates.append(
                     {
                         "text": text,
                         "filename": payload.get("filename") or "document",
                         "collection_id": payload.get("collection_id"),
+                        "document_id": payload.get("document_id"),
+                        "chunk_idx": chunk_idx if isinstance(chunk_idx, int) else None,
                         "score": float(h.get("score") or 0.0),
                     }
                 )

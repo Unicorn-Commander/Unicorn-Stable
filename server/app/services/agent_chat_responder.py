@@ -84,6 +84,232 @@ async def _ws_deliver_to_room(
         logger.debug("agent_chat_ws_deliver_failed", exc_info=True)
 
 
+# A citation rides in the message row's JSON metadata and is re-sent on every
+# history fetch, so excerpts are capped rather than stored whole. These bounds
+# keep a cited answer readable without turning the message table into a second
+# copy of the corpus.
+_MAX_CITATIONS = 8
+_MAX_CITATION_CHARS = 600
+
+
+def _citation_excerpt(text: str) -> str:
+    """Trim one retrieved chunk down to a quotable excerpt."""
+    t = (text or "").strip()
+    if len(t) <= _MAX_CITATION_CHARS:
+        return t
+    return t[:_MAX_CITATION_CHARS].rstrip() + "…"
+
+
+def _format_citation_context(header: str, hits: list[dict[str, Any]]) -> str:
+    """Render retrieved excerpts into a numbered context block for the model.
+
+    Mirrors ``rag_service.format_context`` so both retrieval surfaces read the
+    same way to the agent; only the header differs.
+    """
+    lines = [header, ""]
+    n = 0
+    for h in hits:
+        text = (h.get("text") or "").strip()
+        if not text:
+            continue
+        n += 1
+        lines.append('[%d] From "%s":' % (n, h.get("filename") or "document"))
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines).strip() if n else ""
+
+
+async def _gather_grounding(
+    settings: Settings,
+    db: Any,
+    room: Room,
+    query: str,
+) -> dict[str, Any]:
+    """Retrieve the material an answer will be grounded in, and report honestly
+    what retrieval actually did.
+
+    Two surfaces are searched — the Knowledge Bases attached to the room
+    (``knowledge_service``, which yields click-through locators) and the
+    documents shared directly in the room (``rag_service``, filename-only) —
+    and BOTH the model-facing context and the human-facing citations are built
+    from the same hits, so what the agent read is what the reader is shown.
+
+    Returns ``{citations, grounding, context_blocks}`` where ``grounding`` is:
+
+      ``"knowledge"``   — excerpts were retrieved; they are in ``citations``.
+      ``"none"``        — we looked and there was genuinely no match.
+      ``"unavailable"`` — we could NOT look, so the answer is ungrounded and
+                          the UI must say so.
+      ``None``          — the room has no knowledge surface at all; assert
+                          nothing rather than implying an absence of sources.
+
+    The distinction between ``"none"`` and ``"unavailable"`` is the whole
+    point: an outage that renders as "no match" lets an agent answer from
+    nothing while looking exactly like an agent answering from knowledge.
+    """
+    citations: list[dict[str, Any]] = []
+    context_blocks: list[str] = []
+    attempted = False
+    broken = False
+
+    # -- Knowledge Bases attached to this room (clickable sources) ----------
+    try:
+        from app.models.knowledge import KnowledgeCollection, RoomKnowledge
+        from app.services.knowledge_service import (
+            RETRIEVAL_UNAVAILABLE,
+            knowledge_service,
+        )
+
+        kb_ids = [
+            str(c)
+            for c in (
+                await db.execute(
+                    select(RoomKnowledge.collection_id).where(
+                        RoomKnowledge.room_id == room.id
+                    )
+                )
+            ).scalars().all()
+        ]
+        if kb_ids:
+            attempted = True
+            kb_search = await knowledge_service.search_knowledge_detailed(
+                settings=settings, collection_ids=kb_ids, query=query, k=5
+            )
+            if kb_search.get("status") == RETRIEVAL_UNAVAILABLE:
+                broken = True
+                logger.warning(
+                    "agent_chat_kb_retrieval_unavailable",
+                    room_id=str(room.id),
+                    collections=len(kb_ids),
+                )
+            else:
+                kb_hits = kb_search.get("results") or []
+                # Resolve display names so a citation reads as the Knowledge
+                # Base a human recognises, not a bare uuid.
+                names: dict[str, str] = {}
+                try:
+                    rows = (
+                        await db.execute(
+                            select(
+                                KnowledgeCollection.id, KnowledgeCollection.name
+                            ).where(KnowledgeCollection.id.in_(kb_ids))
+                        )
+                    ).all()
+                    names = {str(r[0]): r[1] for r in rows}
+                except Exception:
+                    logger.warning("kb_citation_names_failed", exc_info=True)
+
+                for h in kb_hits:
+                    text = (h.get("text") or "").strip()
+                    if not text:
+                        continue
+                    cid = h.get("collection_id")
+                    citations.append(
+                        {
+                            "filename": h.get("filename") or "document",
+                            "text": _citation_excerpt(text),
+                            "score": float(h.get("score") or 0.0),
+                            "collection_id": str(cid) if cid else None,
+                            "collection_name": names.get(str(cid)) if cid else None,
+                            "document_id": (
+                                str(h["document_id"])
+                                if h.get("document_id")
+                                else None
+                            ),
+                            "chunk_idx": (
+                                h["chunk_idx"]
+                                if isinstance(h.get("chunk_idx"), int)
+                                else None
+                            ),
+                        }
+                    )
+                block = _format_citation_context(
+                    "Relevant excerpts from this room's knowledge bases:", kb_hits
+                )
+                if block:
+                    context_blocks.append(block)
+    except Exception:
+        # We do not know whether a match existed, so this is "could not look",
+        # not "nothing found".
+        broken = True
+        logger.warning("kb_context_inject_failed", exc_info=True)
+
+    # -- Documents shared directly in this room ------------------------------
+    # These carry no knowledge-base locator, so they cite by filename and
+    # excerpt without a click-through target — which the UI renders as plain
+    # (unlinked) sources rather than pretending they are openable.
+    if getattr(settings, "rag_enabled", False):
+        try:
+            from app.services.rag_service import rag_service
+
+            attempted = True
+            hits = await rag_service.retrieve(
+                settings=settings, room_id=str(room.id), query=query
+            )
+            if hits:
+                block = rag_service.format_context(hits)
+                if block:
+                    context_blocks.append(block)
+                    logger.info(
+                        "rag_context_injected",
+                        room_id=str(room.id),
+                        hits=len(hits),
+                    )
+                for h in hits:
+                    text = (h.get("text") or "").strip()
+                    if not text:
+                        continue
+                    citations.append(
+                        {
+                            "filename": h.get("filename") or "document",
+                            "text": _citation_excerpt(text),
+                            "score": float(h.get("score") or 0.0),
+                        }
+                    )
+        except Exception:
+            broken = True
+            logger.warning("rag_context_inject_failed", exc_info=True)
+
+    # -- Decide what we can honestly claim -----------------------------------
+    grounding: str | None
+    if citations:
+        grounding = "knowledge"
+        # Bound the metadata persisted onto every message.
+        citations = citations[:_MAX_CITATIONS]
+    elif broken:
+        grounding = "unavailable"
+    elif attempted:
+        # We came back empty. ``rag_service.retrieve`` cannot tell a miss from
+        # an outage (it returns [] for both), so before claiming "we looked and
+        # there was nothing" — a statement a reader will trust — confirm the
+        # retrieval plane was actually reachable. This probe runs only on the
+        # empty path, so a normal answered turn never pays for it.
+        try:
+            from app.services.knowledge_service import knowledge_service
+
+            health = await knowledge_service.retrieval_health(settings)
+            grounding = "none" if health.get("available") else "unavailable"
+            if not health.get("available"):
+                logger.warning(
+                    "agent_chat_retrieval_unavailable",
+                    room_id=str(room.id),
+                    detail=health.get("detail"),
+                )
+        except Exception:
+            # Cannot even confirm the plane is up: do not claim "no match".
+            logger.warning("retrieval_health_probe_failed", exc_info=True)
+            grounding = "unavailable"
+    else:
+        # No knowledge surface in this room at all — assert nothing.
+        grounding = None
+
+    return {
+        "citations": citations,
+        "grounding": grounding,
+        "context_blocks": context_blocks,
+    }
+
+
 def _stop_key(message_id: uuid.UUID | str) -> str:
     return f"stable:agentstop:{message_id}"
 
@@ -306,33 +532,42 @@ async def _respond(
             agent_participant_id=agent_participant.id,
         )
 
-        # Document RAG: retrieve the most relevant excerpts from documents
-        # shared in this room and prepend them as a system message so the
-        # agent can answer FROM the documents ("chat with your documents").
-        # Fully fail-safe — any error is a no-op and the reply proceeds
-        # without injected context. Imported lazily to avoid an import cycle.
-        if getattr(settings, "rag_enabled", False):
-            try:
-                from app.services.rag_service import rag_service
+        # Retrieval: gather the excerpts this answer will actually be grounded
+        # in, from BOTH surfaces the room has —
+        #   * documents shared directly in the room (``rag_service``), and
+        #   * Knowledge Bases attached to the room (``knowledge_service``).
+        # The excerpts are prepended as a system message so the agent answers
+        # FROM them, and the SAME excerpts are recorded as ``citations`` on the
+        # reply (see ``final_meta`` below) so the human can see, and click
+        # through to, the sources behind the answer. Injecting context without
+        # recording it is how an answer ends up looking sourced while being
+        # unauditable.
+        #
+        # ``grounding`` records what retrieval actually DID, and the three
+        # outcomes are kept distinct on purpose:
+        #   "knowledge"   — we retrieved excerpts; they are in ``citations``.
+        #   "none"        — we looked and there was genuinely no match.
+        #   "unavailable" — we could not look, so this answer is NOT grounded
+        #                   and the UI must say so instead of rendering it like
+        #                   any other answer.
+        # Collapsing "unavailable" into "none" would let a broken index read as
+        # an empty one, which is the exact failure this records against.
+        grounding_result = await _gather_grounding(
+            settings=settings, db=db, room=room, query=msg.content or ""
+        )
+        citations = grounding_result["citations"]
+        grounding = grounding_result["grounding"]
+        # Newest block first so the model reads knowledge-base excerpts ahead
+        # of room-shared documents, matching the citation order the human sees.
+        for block in reversed(grounding_result["context_blocks"]):
+            oai_history = [{"role": "system", "content": block}] + oai_history
 
-                hits = await rag_service.retrieve(
-                    settings=settings,
-                    room_id=str(room.id),
-                    query=msg.content or "",
-                )
-                if hits:
-                    context_block = rag_service.format_context(hits)
-                    if context_block:
-                        oai_history = [
-                            {"role": "system", "content": context_block}
-                        ] + oai_history
-                        logger.info(
-                            "rag_context_injected",
-                            room_id=str(room.id),
-                            hits=len(hits),
-                        )
-            except Exception:
-                logger.warning("rag_context_inject_failed", exc_info=True)
+        logger.info(
+            "agent_chat_grounding",
+            room_id=str(room.id),
+            grounding=grounding or "n/a",
+            citations=len(citations),
+        )
 
         # Facilitator mode (opt-in via the /facilitate composer command): when
         # the resident agent is an orchestrator, route this turn to the best
@@ -554,6 +789,16 @@ async def _respond(
             final_meta: dict[str, Any] | None = dict(artifact_meta or {})
             if stopped:
                 final_meta["stopped"] = True
+            # The grounding record for THIS answer: which excerpts it was built
+            # from, and — when there are none — whether that is because nothing
+            # matched or because retrieval could not run. The UI reads these to
+            # render sources, and to warn instead of sources when retrieval was
+            # unavailable. Without this stamp the sources UI has no producer and
+            # silently renders nothing on every message.
+            if grounding:
+                final_meta["grounding"] = grounding
+            if citations:
+                final_meta["citations"] = citations
             if not final_meta:
                 final_meta = None
             # Guarded so a finalize failure cannot skip the typing=False below
