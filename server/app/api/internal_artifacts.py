@@ -33,7 +33,7 @@ Routes (mounted under ``/api/v1``):
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -42,6 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._internal_auth import verify_internal_bearer
+from app.api.artifacts import broadcast_artifact_event
 from app.config import get_settings
 from app.deps import get_db, get_livekit
 from app.models.artifact import Artifact, ArtifactAuthorKind
@@ -215,41 +216,11 @@ def _raise_http(err: ArtifactError) -> None:
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err.to_dict())
 
 
-async def _broadcast(
-    livekit: LiveKitService,
-    db: AsyncSession,
-    artifact: Artifact,
-    event: str,
-    **extra: Any,
-) -> None:
-    """Fan an artifact event out over the room's LiveKit data channel.
-
-    Identical envelope + best-effort semantics to ``artifacts.py._broadcast``
-    so the canvas store's ``handleArtifactEvent`` reacts the same way to an
-    agent-authored change as a human one.
-    """
-    try:
-        lk_name = (
-            await db.execute(
-                select(Room.livekit_room_name).where(Room.id == artifact.room_id)
-            )
-        ).scalar_one_or_none()
-        if not lk_name:
-            return
-        await livekit.send_data(
-            room_name=lk_name,
-            data={
-                "type": event,
-                "room_id": str(artifact.room_id),
-                "artifact_id": str(artifact.id),
-                "current_version_id": str(artifact.current_version_id)
-                if artifact.current_version_id
-                else None,
-                **extra,
-            },
-        )
-    except Exception:
-        logger.debug("artifact_broadcast_failed", broadcast_event=event, exc_info=True)
+# Agent-authored changes fan out through the EXACT same function as human ones.
+# This was a verbatim copy of artifacts.py's broadcaster, which meant the
+# ws-plane fix had to be made twice or agents would stay invisible — and agents
+# are the main authors of artifacts. Delegating removes that trap permanently.
+_broadcast = broadcast_artifact_event
 
 
 async def _load_agent_artifact(

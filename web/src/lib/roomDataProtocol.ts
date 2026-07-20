@@ -159,8 +159,13 @@ export interface ArtifactEventMessage {
   current_version_id?: string | null;
   /** The new current version's seq. */
   seq?: number | null;
-  /** The edit op that produced the version, when the server includes it. */
-  op?: Record<string, unknown> | null;
+  /**
+   * The edit op that produced the version, when the server includes it:
+   * "rewrite" | "edit" | "restore" (server/app/api/artifacts.py passes these as
+   * a plain string to `broadcast_artifact_event`). Typed open as `string` so a
+   * new op name from a newer backend is not a type error on an older bundle.
+   */
+  op?: string | null;
 }
 
 export function isArtifactEventMessage(v: unknown): v is ArtifactEventMessage {
@@ -171,6 +176,34 @@ export function isArtifactEventMessage(v: unknown): v is ArtifactEventMessage {
     typeof m.room_id === "string" &&
     typeof m.artifact_id === "string"
   );
+}
+
+/**
+ * Normalize an artifact event off EITHER realtime plane into the canonical
+ * shape, accepting the discriminator under `event` OR `type`.
+ *
+ * Why the tolerance: the backend broadcaster historically tagged these packets
+ * `{type: "artifact_created", …}` while this decoder only ever matched on
+ * `event` — so every artifact packet on the LiveKit channel decoded to `null`
+ * and was dropped. The server now sends both keys, but accepting either means
+ * the client works against an older backend too (the deployed image is baked,
+ * so the web bundle and the API roll independently).
+ *
+ * Returns `null` for anything that isn't a well-formed artifact event.
+ */
+export function coerceArtifactEvent(v: unknown): ArtifactEventMessage | null {
+  if (!v || typeof v !== "object") return null;
+  const m = v as Record<string, unknown>;
+  const kind = m.event ?? m.type;
+  if (kind !== "artifact_created" && kind !== "artifact_updated") return null;
+  // Keep `op` honest against its declared type rather than passing an
+  // unvalidated field through a type predicate that never looks at it.
+  const candidate = {
+    ...m,
+    event: kind,
+    op: typeof m.op === "string" ? m.op : null,
+  };
+  return isArtifactEventMessage(candidate) ? candidate : null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -212,10 +245,10 @@ export function decodeRoomData(payload: Uint8Array): RoomDataMessage | null {
   if (obj.type === "ui_command") {
     return isUiCommandMessage(obj) ? obj : null;
   }
-  // Artifact events discriminate on `event` (server broadcast envelope).
-  if (obj.event === "artifact_created" || obj.event === "artifact_updated") {
-    return isArtifactEventMessage(obj) ? obj : null;
-  }
+  // Artifact events discriminate on `event` (server broadcast envelope), with
+  // `type` accepted as the legacy alias — see coerceArtifactEvent.
+  const artifact = coerceArtifactEvent(obj);
+  if (artifact) return artifact;
   return null;
 }
 

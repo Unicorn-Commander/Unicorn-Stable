@@ -3,7 +3,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
-import { Save, RotateCcw } from "lucide-react";
+import { Save, RotateCcw, AlertTriangle } from "lucide-react";
 import { languageExtension } from "./codeLanguage";
 
 /**
@@ -13,6 +13,21 @@ import { languageExtension } from "./codeLanguage";
  * the parent's onSave (→ POST /artifacts/{id}/rewrite). The `language` from the
  * artifact selects the grammar (lazy-loaded). Read-only when viewing a historic
  * version (the version toolbar) or when the parent says so.
+ *
+ * ## Never clobber unsaved typing
+ *
+ * `content` is not a static prop — it is HEAD, and HEAD now moves underneath us
+ * live: another member or an agent rewriting this artifact reaches the canvas
+ * store over the room socket, which re-fetches and pushes new `content` down.
+ * The naive `useEffect(() => setValue(content), [content])` would silently
+ * destroy whatever the user had typed but not saved.
+ *
+ * So the buffer tracks the revision it was FORKED FROM (`base`):
+ *   - buffer clean (`value === base`)  → adopt the incoming content silently.
+ *   - buffer already equals the incoming content (the usual post-Save refresh)
+ *     → nothing to show, just re-baseline.
+ *   - buffer dirty and incoming differs → keep the user's text, raise a
+ *     non-destructive banner and let THEM choose.
  *
  * Lazy-loaded by CanvasRenderer so CodeMirror stays out of the main bundle.
  */
@@ -32,16 +47,58 @@ export default function CodeRenderer({
   onSave,
 }: CodeRendererProps) {
   const [value, setValue] = useState(content);
+  /**
+   * The revision this buffer was forked from. `value !== base` ⇒ unsaved local
+   * edits. Distinct from `content`, which is live HEAD and can move remotely.
+   */
+  const [base, setBase] = useState(content);
+  /**
+   * A remote revision that arrived while the buffer was dirty. Held aside
+   * (never applied automatically) and offered to the user in the banner.
+   */
+  const [incoming, setIncoming] = useState<string | null>(null);
   const [langExt, setLangExt] = useState<Extension>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset the buffer whenever the source content changes (new version loaded,
-  // artifact switched, or version-preview toggled).
+  // Reconcile the buffer with the source content (new version loaded, artifact
+  // switched, version-preview toggled, OR a remote edit landing live).
+  // Adopting is only safe when there is nothing of the user's to lose.
   useEffect(() => {
-    setValue(content);
+    // Nothing new relative to what we forked from.
+    if (content === base) return;
+    if (value === base || value === content) {
+      // Clean buffer, or the buffer already matches what came back (the
+      // post-Save refresh) — adopt and re-baseline.
+      setValue(content);
+      setBase(content);
+      setIncoming(null);
+      setError(null);
+      return;
+    }
+    // Dirty buffer + a genuinely different revision: keep the user's work.
+    setIncoming(content);
+  }, [content, base, value]);
+
+  /** Discard local edits and take the revision that landed. */
+  function acceptIncoming() {
+    if (incoming === null) return;
+    setValue(incoming);
+    setBase(incoming);
+    setIncoming(null);
     setError(null);
-  }, [content]);
+  }
+
+  /**
+   * Keep editing on top of the remote revision. Re-baselining means Save will
+   * write the user's buffer over it — nothing is lost either way, since the
+   * remote revision is already its own entry in the version history.
+   */
+  function dismissIncoming() {
+    if (incoming === null) return;
+    setBase(incoming);
+    setIncoming(null);
+  }
 
   // Resolve the language grammar (async import) when the language changes.
   useEffect(() => {
@@ -58,7 +115,9 @@ export default function CodeRenderer({
     };
   }, [language]);
 
-  const dirty = value !== content;
+  // Dirty relative to the revision we forked from — NOT to live HEAD, which a
+  // remote edit can move without the user having touched anything.
+  const dirty = value !== base;
 
   async function handleSave() {
     if (!onSave || !dirty || saving) return;
@@ -89,6 +148,29 @@ export default function CodeRenderer({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* Remote revision landed while this buffer had unsaved edits. We show it
+          instead of applying it — the user decides. */}
+      {incoming !== null && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            This artifact was updated elsewhere. Your unsaved edits were kept.
+          </span>
+          <button
+            onClick={acceptIncoming}
+            className="rounded px-2 py-0.5 font-medium text-amber-100 hover:bg-amber-500/20"
+          >
+            Load update (discard mine)
+          </button>
+          <button
+            onClick={dismissIncoming}
+            className="rounded px-2 py-0.5 text-amber-200/80 hover:bg-amber-500/20"
+          >
+            Keep mine
+          </button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-auto">
         <CodeMirror
           value={value}
@@ -119,7 +201,10 @@ export default function CodeRenderer({
             {dirty && (
               <button
                 onClick={() => {
-                  setValue(content);
+                  // Back to the revision we forked from. If a remote update is
+                  // pending, the reconcile effect then adopts it (the buffer is
+                  // clean again), which is exactly what "revert" should mean.
+                  setValue(base);
                   setError(null);
                 }}
                 disabled={saving}
