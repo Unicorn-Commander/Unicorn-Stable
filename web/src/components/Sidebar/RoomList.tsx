@@ -61,6 +61,27 @@ function isPrivateChannel(room: Room): boolean {
   return (room as { is_private?: boolean }).is_private === true;
 }
 
+/**
+ * Which person row a room belongs to, or null if it is not a person at all
+ * (channels, and human multi-party rooms, which get their own section).
+ *
+ * This is the identity a people-folder is filed against, so it is deliberately
+ * the ONLY definition of it — the sidebar grouping and the folder lookup read
+ * the same function and cannot drift into disagreeing about who someone is.
+ *
+ * Note it is a NAME, not a server-unique id, which is why categoryStore keeps
+ * people assignments bucketed per instance instead of globally.
+ */
+function personKeyOf(room: Room): string | null {
+  if (room.type !== "dm" && room.type !== "group_dm") return null;
+  if (room.brigade_agent_id) return `agent:${room.brigade_agent_id}`;
+  if (room.type === "group_dm") return null;
+  // The /rooms payload carries no member rows, so the counterpart display name
+  // is the only handle we have on "who this is" — and it is exactly what the
+  // row already shows.
+  return `person:${room.name}`;
+}
+
 /** Section-level collapse keys. Distinct from folder keys by construction. */
 const SECTION_KEYS = {
   channels: "section:channels",
@@ -173,12 +194,19 @@ export function RoomList() {
   // sidebar — so everything here is scoped by the active instance id.
   const scope = useFederationStore((s) => s.activeInstanceId);
   const categories = useChannelCategories((s) => s.categories);
+  // People are filed BY PERSON, per instance — see categoryStore. A person key
+  // is a name, not a server-unique room id, so this map must stay scoped.
+  const peopleByScope = useChannelCategories((s) => s.people);
   const collapsed = useChannelCategories((s) => s.collapsed);
   const folderDefs = useChannelCategories((s) => s.folders);
   const setCategory = useChannelCategories((s) => s.setCategory);
+  const setPeopleCategory = useChannelCategories((s) => s.setPeopleCategory);
   const toggleCollapsed = useChannelCategories((s) => s.toggleCollapsed);
   const ensureFolder = useChannelCategories((s) => s.ensureFolder);
   const adoptLegacyFolders = useChannelCategories((s) => s.adoptLegacyFolders);
+  const adoptLegacyPeopleFolders = useChannelCategories(
+    (s) => s.adoptLegacyPeopleFolders,
+  );
 
   // Rescue folders saved before the per-instance folder list existed, once the
   // sidebar knows which server it is looking at. Idempotent + self-disarming.
@@ -193,6 +221,11 @@ export function RoomList() {
   const peopleFolders = useMemo(
     () => foldersFor(folderDefs, scope, "people"),
     [folderDefs, scope],
+  );
+  /** personKey -> folder, for the server currently on screen. */
+  const peopleFiled = useMemo(
+    () => (scope ? peopleByScope[scope] : undefined),
+    [peopleByScope, scope],
   );
 
   // Menu + inline-input state. The key is a room id for channels and a person /
@@ -270,9 +303,14 @@ export function RoomList() {
     setMenuKey(null);
   }
 
-  function commitNewCategory(roomIds: string | string[], section: FolderSection) {
+  function assignPersonCategory(personKey: string, category: string | null) {
+    if (scope) setPeopleCategory(scope, personKey, category);
+    setMenuKey(null);
+  }
+
+  function commitNewCategory(apply: (name: string) => void) {
     const name = (newCatDraft ?? "").trim();
-    if (name) setCategory(roomIds, name, { scope: scope ?? undefined, section });
+    if (name) apply(name);
     setMenuKey(null);
   }
 
@@ -289,9 +327,12 @@ export function RoomList() {
     setMenuKey(null);
   }
 
-  /** The "Move to folder" block, shared by the channel and people menus. */
+  /** The "Move to folder" block, shared by the channel and people menus.
+   *  `apply` is what actually records the choice — channels file by room id,
+   *  people file by person key — because the menu itself is identical either
+   *  way and only the thing being filed differs. */
   function renderFolderMenuItems(
-    roomIds: string | string[],
+    apply: (category: string | null) => void,
     currentCat: string | undefined,
     section: FolderSection,
   ) {
@@ -305,7 +346,7 @@ export function RoomList() {
           <button
             key={c}
             role="menuitem"
-            onClick={() => assignCategory(roomIds, c, section)}
+            onClick={() => apply(c)}
             className={clsx(
               "focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/[0.06]",
               c === currentCat ? "text-stable-purple-light" : "text-slate-300",
@@ -337,7 +378,7 @@ export function RoomList() {
                 if (e.key === "Enter") {
                   e.preventDefault();
                   e.stopPropagation();
-                  commitNewCategory(roomIds, section);
+                  commitNewCategory(apply);
                 } else if (e.key === "Escape") {
                   e.stopPropagation();
                   setNewCatDraft(null);
@@ -352,7 +393,7 @@ export function RoomList() {
         {currentCat && (
           <button
             role="menuitem"
-            onClick={() => assignCategory(roomIds, null, section)}
+            onClick={() => apply(null)}
             className="focus-ring mt-0.5 flex w-full items-center gap-2 border-t border-line px-3 py-1.5 text-left text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
           >
             Remove from “{currentCat}”
@@ -554,7 +595,11 @@ export function RoomList() {
           renderMenuShell(
             <>
               {renderNotifyItems(room)}
-              {renderFolderMenuItems(room.id, cat, "channels")}
+              {renderFolderMenuItems(
+                (name) => assignCategory(room.id, name, "channels"),
+                cat,
+                "channels",
+              )}
             </>,
           )}
       </li>
@@ -583,7 +628,7 @@ export function RoomList() {
       if (room.type !== "dm" && room.type !== "group_dm") continue;
       const agentId = room.brigade_agent_id;
       if (agentId) {
-        const key = `agent:${agentId}`;
+        const key = personKeyOf(room)!;
         const existing = byKey.get(key);
         if (existing) {
           existing.threads.push(room);
@@ -604,7 +649,7 @@ export function RoomList() {
         // 1:1 with a human. The room list carries no member rows (the /rooms
         // payload has no members), so the counterpart's display name IS the
         // grouping key — which is exactly what the row already shows.
-        const key = `person:${room.name}`;
+        const key = personKeyOf(room)!;
         const existing = byKey.get(key);
         if (existing) {
           existing.threads.push(room);
@@ -623,15 +668,42 @@ export function RoomList() {
     return { peopleEntries, privateGroups };
   }, [filteredRooms]);
 
+  // Every person on this server and all of their rooms.
+  //
+  // Deliberately built from the UNFILTERED room list: its only consumer is the
+  // one-way migration below, which must never see just whatever the search box
+  // happens to be showing.
+  const allPersonThreads = useMemo(() => {
+    const byKey = new Map<string, string[]>();
+    for (const room of rooms) {
+      const key = personKeyOf(room);
+      if (!key) continue;
+      const ids = byKey.get(key);
+      if (ids) ids.push(room.id);
+      else byKey.set(key, [room.id]);
+    }
+    return [...byKey.entries()].map(([key, roomIds]) => ({ key, roomIds }));
+  }, [rooms]);
+
+  // Rescue people filed by the previous build, which recorded the folder on
+  // every one of the person’s ROOM ids. Rooms arrive updated_at DESC, so a
+  // newly created thread became threads[0] and the old read path —
+  // categories[threads[0].id] — landed on an unassigned thread and the person
+  // visibly fell out of their folder. The folder hangs off the PERSON now; this
+  // carries the already-saved assignments over rather than orphaning them.
+  // Safe to run on every room refresh: it consumes the room-id entries it
+  // adopts, so it converges and can never resurrect a cleared assignment.
+  useEffect(() => {
+    if (!scope || allPersonThreads.length === 0) return;
+    adoptLegacyPeopleFolders(scope, allPersonThreads);
+  }, [scope, allPersonThreads, adoptLegacyPeopleFolders]);
+
+  // Keyed by the person, so thread order and newly arriving threads cannot
+  // move anyone. Empty folders still yield no group — bucket() drops them.
   const peopleBuckets = useMemo(
-    () =>
-      bucket(
-        peopleEntries,
-        peopleFolders,
-        (e) => categories[e.threads[0]?.id ?? ""],
-      ),
+    () => bucket(peopleEntries, peopleFolders, (e) => peopleFiled?.[e.key]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [peopleEntries, peopleFolders, categories],
+    [peopleEntries, peopleFolders, peopleFiled],
   );
 
   // Collapsed by default — one row per person; the chevron reveals history.
@@ -742,7 +814,7 @@ export function RoomList() {
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = threads.reduce((n, r) => n + (r.unread_count ?? 0), 0);
     const menuOpen = menuKey === entry.key;
-    const cat = categories[latest?.id ?? ""];
+    const cat = peopleFiled?.[entry.key];
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
@@ -883,10 +955,10 @@ export function RoomList() {
           renderMenuShell(
             <>
               {latest && renderNotifyItems(latest)}
-              {/* Filing a person files EVERY thread with them, so the group
-                  cannot be split across two folders by opening an old one. */}
+              {/* Filed against the person, so every thread with them — including
+                  ones that do not exist yet — comes along automatically. */}
               {renderFolderMenuItems(
-                threads.map((r) => r.id),
+                (name) => assignPersonCategory(entry.key, name),
                 cat,
                 "people",
               )}
