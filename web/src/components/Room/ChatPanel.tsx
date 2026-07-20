@@ -37,6 +37,24 @@ function describeAgents(rows: AgentActivity[]): string {
   return `${names[0]}, ${names[1]} and ${names.length - 2} more are thinking…`;
 }
 
+/**
+ * "Jordan is typing…" / "Jordan and Jason are typing…" / "Several people are
+ * typing…". PEOPLE, deliberately — this line is only ever fed by the human
+ * `typing` event, and reads a few pixels above the separate agent lines below,
+ * which say "thinking" and name agents. Keeping the two vocabularies apart is
+ * what stops the room from having to guess which kind of thing is busy.
+ *
+ * Three-and-up collapses to "Several people" rather than a count: past two
+ * names the exact number is noise, and a number that ticks 3→4→3 as keepalives
+ * lapse draws the eye to a fact nobody needs. One vague-but-stable line beats a
+ * precise flickering one.
+ */
+function describeTypists(names: string[]): string {
+  if (names.length === 1) return `${names[0]} is typing…`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
+  return "Several people are typing…";
+}
+
 /** Bridge agents get an honest delivery statement, never a fake liveness one. */
 function describeRelay(rows: AgentActivity[]): string {
   const names = rows.map((r) => r.label);
@@ -81,7 +99,8 @@ interface ChatPanelProps {
 export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const { messages, hasMore, loading, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
     useChat(roomId);
-  const { typingUsers, sendTypingIndicator } = usePresence(roomId);
+  const { typingUsers, sendTypingIndicator, clearTypingIndicator } =
+    usePresence(roomId);
   const currentUser = useAppStore((s) => s.currentUser);
   const [editFocusId, setEditFocusId] = useState<string | null>(null);
   const [editTick, setEditTick] = useState(0);
@@ -459,6 +478,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     attachments?: { url: string; filename: string; content_type: string; size: number }[],
     extraMetadata?: Record<string, unknown>,
   ) {
+    // Sending is the end of typing. Retract BEFORE the message goes out so the
+    // stop cannot land after the message it belongs to — a room that shows
+    // "Jordan is typing…" underneath a message Jordan just posted is the stuck
+    // indicator in its most obvious form.
+    clearTypingIndicator();
     sendMessage(content, threadId, attachments, extraMetadata);
     // Arm the missed-reply resync poll, but only where a reply can actually be
     // missed. This says nothing about whether an agent is working — it only
@@ -711,12 +735,16 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         <div className="shrink-0 px-4 py-1.5 md:px-8">
           <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-1">
             {typingUsers.length > 0 && (
-              <p className="animate-pulse-soft text-xs text-slate-500">
-                {typingUsers.length === 1
-                  ? `${typingUsers[0]?.username ?? "Someone"} is typing...`
-                  : typingUsers.length === 2
-                    ? `${typingUsers[0]?.username ?? "Someone"} and ${typingUsers[1]?.username ?? "someone"} are typing...`
-                    : `${typingUsers.length} people are typing...`}
+              // aria-live="polite" so a screen reader hears it without being
+              // interrupted mid-message; the region is only mounted while
+              // someone is actually typing, so it announces transitions rather
+              // than re-reading a persistent label.
+              <p
+                className="animate-pulse-soft text-xs text-slate-500"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {describeTypists(typingUsers.map((u) => u.username || "Someone"))}
               </p>
             )}
             {thinkingAgents.length > 0 && (
@@ -749,16 +777,38 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         </div>
       )}
 
-      <MessageInput
-        roomId={roomId}
-        onSend={handleSend}
-        onTyping={sendTypingIndicator}
-        onEditLast={triggerEditLast}
-        disabledReason={
-          iAmMuted ? "You've been muted in this channel by a moderator." : undefined
-        }
-        placeholder={composerPlaceholder}
-      />
+      {/* Blur clears typing.
+          React's onBlur is really focusout, so it fires for the textarea (and
+          every button) inside MessageInput and bubbles to here — which lets the
+          composer own its own focus without this needing to reach into it.
+          `relatedTarget` is the element receiving focus: if that is still
+          inside the composer (tabbing textarea → send button, opening the emoji
+          picker) you have not stopped typing, so only a focus move OUT of the
+          subtree retracts. relatedTarget is null when focus leaves the document
+          entirely — clicked another window, dismissed the mobile keyboard —
+          which counts as leaving. */}
+      <div
+        // The wrapper becomes the flex item MessageInput's root used to be, so
+        // it repeats that root's `shrink-0`. Without it the composer is
+        // allowed to compress under a long message list.
+        className="shrink-0"
+        onBlur={(e) => {
+          if (!e.relatedTarget || !e.currentTarget.contains(e.relatedTarget)) {
+            clearTypingIndicator();
+          }
+        }}
+      >
+        <MessageInput
+          roomId={roomId}
+          onSend={handleSend}
+          onTyping={sendTypingIndicator}
+          onEditLast={triggerEditLast}
+          disabledReason={
+            iAmMuted ? "You've been muted in this channel by a moderator." : undefined
+          }
+          placeholder={composerPlaceholder}
+        />
+      </div>
     </div>
   );
 }
