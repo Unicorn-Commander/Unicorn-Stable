@@ -13,9 +13,18 @@ import {
  * italic) and final (committed) lines.
  *
  * Source = `transcript` data-channel messages, ingested into the call-UI store
- * by the VoiceProvider's RoomEvent.DataReceived handler. There is no producer
- * yet — the `?devtranscript` flag surfaces a "Seed sample" button so the panel
- * is testable today.
+ * by the VoiceProvider's RoomEvent.DataReceived handler.
+ *
+ * The producer is LIVE end to end:
+ *   agents/agent_runtime/transcript_publisher.py (TranscriptPublisher, wired in
+ *   agents/brigade_backed/agent.py) -> LiveKit data channel, topic `stable`
+ *   -> web/src/contexts/VoiceProvider.tsx (`msg.type === "transcript"`)
+ *   -> callUiStore -> this panel.
+ * So an empty panel during a call means the chain broke somewhere — it is NOT
+ * the expected state, and should be investigated rather than shrugged off.
+ *
+ * The `?devtranscript` flag still surfaces a "Seed sample" button for
+ * exercising the rendering (interim vs final, autoscroll) without a live call.
  */
 export function TranscriptPanel() {
   const lines = useCallUiStore((s) => s.transcript);

@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 import structlog
-from sqlalchemy import select
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
@@ -119,12 +119,6 @@ def _format_citation_context(header: str, hits: list[dict[str, Any]]) -> str:
     return "\n".join(lines).strip() if n else ""
 
 
-# How many recent attachment-carrying messages to inspect when deciding whether
-# a room has any shared document at all. Bounded so the check costs the same in
-# a room with ten messages and a room with a hundred thousand.
-_DOC_SCAN_LIMIT = 200
-
-
 async def _room_has_shared_documents(db: Any, room: Room) -> bool | None:
     """Does this room contain a document that room-scoped RAG would have indexed?
 
@@ -134,8 +128,20 @@ async def _room_has_shared_documents(db: Any, room: Room) -> bool | None:
     (``rag_service.index_message_attachments``, scheduled from ``messages.py``),
     so the presence of such an attachment is the presence of a search surface.
 
-    Attachment content-types are judged with ``rag_service._is_doc_content_type``
-    — the same predicate the indexer uses — so this cannot drift into claiming a
+    This asks the database for the EXISTENCE of such an attachment across the
+    room's whole history — it does not sample a window of recent messages. An
+    earlier version scanned only the most recent attachment-carrying messages,
+    which meant a document shared before that window made this return False and
+    silently disabled retrieval for the room: the agent then answered from
+    nothing while looking exactly like an agent that had searched. A bounded
+    sample cannot answer an existence question, so the bound is gone. Cost stays
+    flat regardless of room size because Postgres short-circuits on ``LIMIT 1``
+    using ``ix_messages_room_id_created_at``.
+
+    Attachment content-types are judged with the SAME predicate the indexer uses
+    — the SQL below is generated from ``rag_service._DOC_CONTENT_TYPES`` and
+    ``_DOC_CONTENT_PREFIXES``, the exact lists behind
+    ``rag_service._is_doc_content_type`` — so this cannot drift into claiming a
     surface exists for files RAG silently skips (images, unknown types).
 
     Returns True / False, or ``None`` when the question could not be answered.
@@ -144,32 +150,59 @@ async def _room_has_shared_documents(db: Any, room: Room) -> bool | None:
     entitles us to describe a search we cannot vouch for.
     """
     try:
-        from app.models.message import Message
-        from app.services.rag_service import _is_doc_content_type
+        from app.services.rag_service import (
+            _DOC_CONTENT_PREFIXES,
+            _DOC_CONTENT_TYPES,
+        )
 
-        rows = (
-            await db.execute(
-                select(Message.metadata_)
-                .where(Message.room_id == room.id)
-                .where(Message.metadata_.has_key("attachments"))  # noqa: W601
-                .order_by(Message.created_at.desc())
-                .limit(_DOC_SCAN_LIMIT)
-            )
-        ).scalars().all()
+        params: dict[str, Any] = {"room_id": str(room.id)}
+        prefix_clauses = []
+        for n, prefix in enumerate(_DOC_CONTENT_PREFIXES):
+            key = "pfx%d" % n
+            params[key] = prefix.lower() + "%"
+            prefix_clauses.append("ct LIKE :%s" % key)
+        params["exact"] = [t.lower() for t in _DOC_CONTENT_TYPES]
+
+        type_test = " OR ".join(["ct IN :exact"] + prefix_clauses)
+        sql = text(
+            """
+            SELECT 1
+            FROM messages m
+            -- CASE guard, not a WHERE clause: jsonb_array_elements ERRORS on a
+            -- non-array, and the planner may expand the LATERAL before any
+            -- WHERE filter runs. One malformed metadata blob must not take the
+            -- whole probe down (that path returns None, not False, but a room
+            -- with a real document deserves a real answer).
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(m.metadata -> 'attachments') = 'array'
+                    THEN m.metadata -> 'attachments'
+                    ELSE '[]'::jsonb
+                END
+            ) AS att
+            CROSS JOIN LATERAL (
+                SELECT lower(att ->> 'content_type') AS ct
+            ) AS a
+            WHERE m.room_id = :room_id
+              AND (%s)
+            LIMIT 1
+            """
+            % type_test
+        ).bindparams(bindparam("exact", expanding=True))
+
+        found = (await db.execute(sql, params)).first()
     except Exception:
-        logger.warning("room_shared_documents_probe_failed", exc_info=True)
+        # We could not determine whether a search surface exists. That is NOT
+        # "there are none" — collapsing the two is how a broken lookup turns
+        # into a confident answer from nothing. Say so loudly and return None.
+        logger.warning(
+            "room_shared_documents_probe_failed",
+            room_id=str(getattr(room, "id", "")),
+            exc_info=True,
+        )
         return None
 
-    for meta in rows:
-        attachments = (meta or {}).get("attachments")
-        if not isinstance(attachments, list):
-            continue
-        for att in attachments:
-            if not isinstance(att, dict):
-                continue
-            if _is_doc_content_type(str(att.get("content_type") or "")):
-                return True
-    return False
+    return found is not None
 
 
 async def _gather_grounding(
