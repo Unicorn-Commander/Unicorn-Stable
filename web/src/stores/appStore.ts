@@ -1,21 +1,6 @@
 import { create } from "zustand";
 import type { Room, Message, Agent, RoomMember } from "@/services/api";
 
-/**
- * How long a live WS presence delta outranks the periodic /members snapshot.
- *
- * Presence has exactly one source of truth (Redis, on the server) but two
- * transports into the client: the live WS delta and the ~30s /members poll.
- * A poll that was already in flight when a delta arrived carries the older
- * view, so applying it blindly would visibly flip a dot back. Anything inside
- * this window is assumed to be that race; the next poll settles it.
- *
- * Deliberately NOT reactive state: it is transport bookkeeping, not something
- * any component renders, so keeping it out of the store avoids re-renders.
- */
-const PRESENCE_WS_WINS_MS = 10_000;
-const lastWsPresenceAt = new Map<string, number>();
-
 export interface TypingUser {
   user_id: string;
   username: string;
@@ -99,7 +84,6 @@ interface AppState {
   addTypingUser: (roomId: string, user: TypingUser) => void;
   removeTypingUser: (roomId: string, userId: string) => void;
   setOnlineUsers: (userIds: string[]) => void;
-  mergeOnlineUsers: (userIds: string[]) => void;
   addOnlineUser: (userId: string) => void;
   removeOnlineUser: (userId: string) => void;
   setVoiceActive: (active: boolean) => void;
@@ -294,14 +278,26 @@ export const useAppStore = create<AppState>((set) => ({
 
   setParticipants: (roomId, members) =>
     set((state) => {
-      // Reconcile global presence from the /members snapshot (refetched ~30s).
-      // The server now derives presence purely from Redis, so this snapshot is
-      // authoritative in BOTH directions: it may add AND remove. The only
-      // thing it must not do is resurrect state that a newer live WS delta has
-      // already superseded -- an in-flight poll can carry a pre-delta view. So
-      // a participant whose WS presence changed within PRESENCE_WS_WINS_MS is
-      // left alone; the next poll picks up the settled truth.
-      const now = Date.now();
+      // Reconcile presence from the /members snapshot (refetched ~30s). The
+      // server derives presence purely from Redis, so this snapshot is
+      // authoritative in BOTH directions: it may add AND remove.
+      //
+      // It is applied UNCONDITIONALLY. An earlier revision suppressed the
+      // snapshot for a few seconds after a live WS delta, to stop a poll that
+      // was already in flight from flipping a dot back. That guard was wrong
+      // twice over: it keyed off when the delta was RECEIVED rather than when
+      // the poll was ISSUED (so a strictly fresher poll was suppressed just
+      // like a stale one), and — because TanStack Query's structural sharing
+      // hands back the PREVIOUS object reference when a refetch deep-equals
+      // the cached data — a suppressed update had no recovery edge and could
+      // stick forever. The race it defended against costs a wrong dot until
+      // the next poll; the guard cost a wrong dot indefinitely. Losing the
+      // race is the cheaper failure, so we take it.
+      //
+      // RoomView re-delivers on every successful fetch (it keys the effect on
+      // dataUpdatedAt, not on the data reference), so a store diverged by a WS
+      // delta is always re-settled by the next poll even when the payload is
+      // byte-identical to the cached one.
       const online = new Set(state.onlineUsers);
       const reconciled = members.map((m) => {
         const id = m.participant_id || m.user_id;
@@ -316,12 +312,6 @@ export const useAppStore = create<AppState>((set) => ({
               : undefined;
         if (snapshotOnline === undefined) return m;
 
-        const wsAt = lastWsPresenceAt.get(id);
-        if (wsAt !== undefined && now - wsAt < PRESENCE_WS_WINS_MS) {
-          // A live delta is fresher than this snapshot -- keep the WS view and
-          // stamp the row so consumers reading `is_online` agree with the set.
-          return { ...m, is_online: online.has(id) };
-        }
         if (snapshotOnline) online.add(id);
         else online.delete(id);
         return { ...m, is_online: snapshotOnline };
@@ -338,7 +328,6 @@ export const useAppStore = create<AppState>((set) => ({
       // Participant.id and never carry `user_id`, so matching on `user_id`
       // alone never hit -- `is_online` on the roster stayed stale until the
       // next poll. Match either identity.
-      lastWsPresenceAt.set(userId, Date.now());
       const updated: Record<string, RoomMember[]> = {};
       for (const [roomId, members] of Object.entries(state.participants)) {
         updated[roomId] = members.map((m) =>
@@ -381,16 +370,6 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   setOnlineUsers: (userIds) => set({ onlineUsers: userIds }),
-  mergeOnlineUsers: (userIds) =>
-    set((state) => {
-      // Union the room-open presence snapshot into the GLOBAL online set
-      // WITHOUT clobbering peers known-online in other rooms — the sidebar DM
-      // dots read the same set. (setOnlineUsers replaces, which would drop
-      // them.) Removals are handled by live WS deltas + the /members refetch.
-      const merged = new Set(state.onlineUsers);
-      for (const id of userIds) if (id) merged.add(id);
-      return { onlineUsers: Array.from(merged) };
-    }),
   addOnlineUser: (userId) =>
     set((state) => ({
       onlineUsers: state.onlineUsers.includes(userId)
@@ -413,9 +392,6 @@ export const useAppStore = create<AppState>((set) => ({
       for (const users of Object.values(state.typing)) {
         for (const u of users) clearTimeout(u.timeout);
       }
-      // Drop presence race bookkeeping too: stamps from the old server would
-      // otherwise suppress the first /members snapshot on the new one.
-      lastWsPresenceAt.clear();
       return {
         rooms: [],
         activeRoomId: null,

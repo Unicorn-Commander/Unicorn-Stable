@@ -246,7 +246,6 @@ function HumanMemberRow({
 
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
-  const onlineUsers = useAppStore((s) => s.onlineUsers);
   const qc = useQueryClient();
 
   // The caller's own membership row (server-flagged is_self) decides whether to
@@ -264,12 +263,12 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
     (p) => p.participant_type === "agent",
   );
 
-  const onlineHumans = humanParticipants.filter(
-    (p) => p.is_online || onlineUsers.includes(p.user_id || p.participant_id || ""),
-  );
-  const offlineHumans = humanParticipants.filter(
-    (p) => !p.is_online && !onlineUsers.includes(p.user_id || p.participant_id || ""),
-  );
+  // `is_online` is the single presence reader: server-derived from Redis on
+  // every /members poll, and patched in place by live WS presence deltas. It
+  // used to be OR'd with a separate global online set, which could only ever
+  // add, so a departed peer stayed green until the next members refetch.
+  const onlineHumans = humanParticipants.filter((p) => p.is_online);
+  const offlineHumans = humanParticipants.filter((p) => !p.is_online);
 
   async function removeAgent(member: RoomMember) {
     // Username is "agent-<brigade_id>"; strip the prefix back out.

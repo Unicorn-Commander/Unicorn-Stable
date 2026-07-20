@@ -510,11 +510,20 @@ class RoomService:
                 "is_muted": membership.is_muted,
                 "is_self": caller is not None and str(participant.id) == caller,
                 # Presence is Redis-derived ONLY. `participants.status` is a
-                # stale DB column: it is written once at row creation (agents
-                # are seeded ONLINE, humans OFFLINE) and the only runtime
-                # mutation is the LiveKit call webhook. Falling back to it here
-                # made every agent report "online" forever. Redis is the single
+                # stale DB column: essentially every row is created ONLINE and
+                # then never updated. Humans are seeded ONLINE on first auth
+                # (deps.py, _auto_provision) and agents are seeded ONLINE at
+                # creation (agent_chat_responder / facilitator / gateway /
+                # internal_artifacts); the only runtime mutation anywhere is the
+                # LiveKit call webhook. So falling back to this column here made
+                # every participant who had ever authenticated — human or agent —
+                # report "online" forever, not just agents. Redis is the single
                 # source of truth for "is this participant connected right now".
+                #
+                # NB: the column is still load-bearing elsewhere and is still
+                # wrong there — push_service mention targeting filters on
+                # `status != ONLINE`, which selects almost nobody. Out of scope
+                # here; fixing it is a separate change to push targeting.
                 "is_online": str(participant.id) in online_ids,
                 "status": "online" if str(participant.id) in online_ids else "offline",
             })

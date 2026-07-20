@@ -50,7 +50,6 @@ export function RoomList() {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
-  const onlineUsers = useAppStore((s) => s.onlineUsers);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   const agents = useAppStore((s) => s.agents);
@@ -573,10 +572,7 @@ export function RoomList() {
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
-    const agentOnline = others.some((p) => {
-      const id = p.participant_id || p.user_id || "";
-      return p.is_online || onlineUsers.includes(id);
-    });
+    const agentOnline = others.some((p) => p.is_online);
     return (
       <li key={`agent-${agentId}`}>
         <div
@@ -687,10 +683,9 @@ export function RoomList() {
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
-    const otherOnline = others.some((p) => {
-      const id = p.participant_id || p.user_id || "";
-      return p.is_online || onlineUsers.includes(id);
-    });
+    // `is_online` alone — see ParticipantStrip: the old global online set was
+    // add-only, so OR'ing it in kept departed peers green.
+    const otherOnline = others.some((p) => p.is_online);
     const isActive = activeRoomId === room.id;
     return (
       <li key={room.id}>
