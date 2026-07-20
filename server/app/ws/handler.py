@@ -148,14 +148,25 @@ def _typing_payload(
     }
 
 
-def _event_body(data: dict[str, Any]) -> dict[str, Any]:
-    """Read a client event's fields whether they are flat or under `payload`.
+def _typing_event_body(data: dict[str, Any]) -> dict[str, Any]:
+    """Read a TYPING event's fields whether they are flat or under `payload`.
 
     `services/websocket.ts` sends `{type, payload:{…}}`; this handler has
     always read `room_id` from the TOP level. Those two never met, which is
     why the pre-existing typing surface was inert end-to-end. Accepting both
     shapes fixes it without requiring the browser and the backend to deploy in
     lockstep — during a rollout each end will see the other's framing.
+
+    DELIBERATELY SCOPED TO TYPING. `mark_read` is broken in exactly the same
+    way and this unwrapping would fix it too — but that fix is not free and it
+    is not this branch's to make. `mark_read` is the SOLE writer of
+    RoomMember.last_read_at anywhere in the server, and room_service.py treats
+    NULL as "everything unread", so un-breaking it silently collapses every
+    unread badge in the product, once, irreversibly, for every user. That is a
+    product decision with a real blast radius, not a side effect of shipping
+    typing indicators. It is written up in the branch summary so it can be
+    made on purpose. Until then `mark_read` stays exactly as inert as it has
+    always been, and this branch changes only what its title claims.
     """
     payload = data.get("payload")
     if isinstance(payload, dict):
@@ -397,19 +408,24 @@ async def _handle_client_events(
                 await _safe_send(websocket, {"error": "invalid_json"})
                 continue
 
-            data = _event_body(data)
+            # `type` is top-level in BOTH framings, so it is read before any
+            # unwrapping. Only the typing branch below reads from an unwrapped
+            # body; every other event keeps reading `data` exactly as it did
+            # before this branch — see `_typing_event_body` for why that
+            # restraint is deliberate rather than an oversight.
             event_type = data.get("type")
 
             if event_type in ("typing_start", "typing_stop", "typing"):
+                body = _typing_event_body(data)
                 # Tolerate the flag-shaped variant (`{type:"typing",
                 # is_typing:bool}`) alongside the two explicit verbs, so an
                 # older client build keeps working across a deploy.
                 is_typing = (
-                    bool(data.get("is_typing", True))
+                    bool(body.get("is_typing", True))
                     if event_type == "typing"
                     else event_type == "typing_start"
                 )
-                room_id = data.get("room_id")
+                room_id = body.get("room_id")
                 if not (room_id and room_id in room_ids):
                     continue
                 if not is_human:

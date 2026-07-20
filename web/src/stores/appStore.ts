@@ -417,19 +417,33 @@ export const useAppStore = create<AppState>((set) => ({
       return { typing: next };
     }),
 
+  // Drop one human's typing row. Every exit returns state UNTOUCHED unless a
+  // row actually went away: the consumer selector is
+  // `s.typing[roomId] ?? EMPTY_TYPING` (hooks/usePresence.ts), so writing a
+  // freshly-minted `[]` for a room that had no entry — the common case, since
+  // an expiry timer and an explicit typing:false routinely race and the loser
+  // finds nothing to remove — hands that selector a new array identity every
+  // time and re-renders the whole room for a no-op. Letting the key stay
+  // ABSENT is what keeps EMPTY_TYPING's stable identity worth having, which
+  // is the same discipline clearRoomTyping was careful to observe.
   removeTypingUser: (roomId, userId) =>
     set((state) => {
-      const roomTyping = state.typing[roomId] ?? [];
+      const roomTyping = state.typing[roomId];
+      if (!roomTyping || roomTyping.length === 0) return state;
       const user = roomTyping.find((t) => t.user_id === userId);
-      if (user) {
-        clearTimeout(user.timeout);
+      // Not here — nothing to clear, nothing to write.
+      if (!user) return state;
+      clearTimeout(user.timeout);
+      const remaining = roomTyping.filter((t) => t.user_id !== userId);
+      const next = { ...state.typing };
+      if (remaining.length === 0) {
+        // Last typist left: delete the key rather than parking an empty array,
+        // so the selector falls through to the shared EMPTY_TYPING constant.
+        delete next[roomId];
+      } else {
+        next[roomId] = remaining;
       }
-      return {
-        typing: {
-          ...state.typing,
-          [roomId]: roomTyping.filter((t) => t.user_id !== userId),
-        },
-      };
+      return { typing: next };
     }),
 
   // Upsert one agent's activity row. Replacing by agent_id (and clearing the

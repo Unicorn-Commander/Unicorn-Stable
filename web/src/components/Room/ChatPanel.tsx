@@ -26,6 +26,12 @@ const START = 100_000;
 /** How long after YOUR send we keep the missed-reply resync poll armed. */
 const RESYNC_WINDOW_MS = 60_000;
 
+/** Floor between mark_read assertions for one room. "How far I have read" is
+ *  a coarse fact — asserting it more than once every few seconds buys nothing
+ *  and costs a DB write plus a read_receipt frame to every member of the
+ *  room. Trailing-edge, so the newest message is never left unmarked. */
+const MARK_READ_THROTTLE_MS = 3_000;
+
 /** "Perry is thinking…" / "Perry and Quill are thinking…" / "3 agents are
  * thinking…". Names the agents while the list stays readable. */
 function describeAgents(rows: AgentActivity[]): string {
@@ -276,16 +282,6 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     if (anchor) setUnreadAnchorId(anchor.id);
   }, [roomId, loading, messages, currentUser?.id]);
 
-  // Send mark_read for the latest message whenever (a) the room becomes
-  // active, (b) a new message arrives while we're at bottom + visible.
-  useEffect(() => {
-    if (messages.length === 0) return;
-    if (document.visibilityState !== "visible") return;
-    const last = messages[messages.length - 1];
-    if (!last) return;
-    ws.send("mark_read", { room_id: roomId, message_id: last.id });
-  }, [roomId, messages.length]);
-
   // Virtuoso owns scrolling — its handle drives all programmatic scrolls
   // (jump-to-latest, scroll-on-send, scroll-to-message).
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -299,6 +295,62 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const prevLastMessageIdRef = useRef<string | null>(null);
   // Which room we've already force-pinned to newest after its first render.
   const didInitialPinRef = useRef<string | null>(null);
+
+  // Send mark_read for the newest message whenever (a) the room becomes
+  // active, (b) a new message arrives while we're at bottom + visible.
+  //
+  // Keyed on the newest message's ID, NOT `messages.length`. `loadMore`
+  // PREPENDS older history, which moves the length without changing what the
+  // newest read message is — so a length key re-fired this on every
+  // pagination page, re-asserting a fact that had not changed. It also now
+  // honours `isAtBottomRef`, which the comment above always claimed but the
+  // code never checked, and throttles per room: a burst of arrivals is
+  // exactly when the room's sockets are busiest, and each mark_read costs one
+  // DB write plus a read_receipt frame to EVERY member.
+  //
+  // NOTE: mark_read is currently inert server-side — the handler reads
+  // `room_id` off the top level while the client sends it under `payload`.
+  // That is deliberate and documented in the branch summary; this tightening
+  // exists so the surface is not pathological on the day it is switched on.
+  const lastMarkedRef = useRef<{ roomId: string; id: string; at: number } | null>(
+    null,
+  );
+  const newestMessageId =
+    messages.length > 0 ? messages[messages.length - 1]!.id : null;
+  useEffect(() => {
+    if (!newestMessageId) return;
+    if (document.visibilityState !== "visible") return;
+    if (!isAtBottomRef.current) return;
+
+    const prev = lastMarkedRef.current;
+    // Already asserted for this exact message — nothing has changed.
+    if (prev && prev.roomId === roomId && prev.id === newestMessageId) return;
+
+    const send = () => {
+      lastMarkedRef.current = {
+        roomId,
+        id: newestMessageId,
+        at: Date.now(),
+      };
+      ws.send("mark_read", { room_id: roomId, message_id: newestMessageId });
+    };
+
+    // A room switch is a fresh subject: never make the user wait out the
+    // previous room's throttle window for it.
+    const sameRoom = prev?.roomId === roomId;
+    const since = sameRoom ? Date.now() - prev!.at : Infinity;
+    if (since >= MARK_READ_THROTTLE_MS) {
+      send();
+      return;
+    }
+
+    // Inside the window: defer to the TRAILING edge rather than dropping, so
+    // the newest message is always eventually marked read. If a newer message
+    // lands first this effect re-runs and the cleanup cancels this timer —
+    // which is the intended coalescing, not a lost update.
+    const timer = setTimeout(send, MARK_READ_THROTTLE_MS - since);
+    return () => clearTimeout(timer);
+  }, [roomId, newestMessageId]);
 
   // Prepend anchor for Virtuoso: decremented by exactly the number of older
   // messages prepended on each loadMore so the viewport doesn't jump.
