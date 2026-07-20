@@ -87,6 +87,30 @@
   --color-item-unread: #c4b5fd;
   --color-item-system: #a7a9c8;
 
+  /* -- Agent/member STATUS ------------------------------------------------
+     A status dot renders as colour with no adjacent text at 6-12px, so it is
+     the *only* carrier of "is this agent available". That makes these tokens
+     load-bearing in a way the item hues above are not, and it gives them a
+     stricter contract than "clears the floor against the background":
+
+       1. Each is >=3:1 against every surface (WCAG 1.4.11, non-text UI).
+       2. Any two of them are SEPARATED from each other - 3:1 luminance where
+          they share a hue family, or a CIEDE2000 distance that survives
+          protan/deutan/tritan simulation where hue carries the difference.
+
+     Rule 2 is the one that is easy to lose: tuning each token against the
+     background alone can walk two states onto the same colour and still pass,
+     which is exactly how idle and offline collapsed to 1.54:1 once. Both rules
+     are enforced mechanically by check-contrast.mjs (STATE_GROUPS) - change a
+     value and run it.
+
+     idle/offline are neutral by design (no state to name), so luminance is the
+     only channel available to them and they take the full 3:1 gap. */
+  --color-status-active: #34d399;
+  --color-status-working: #f59e0b;
+  --color-status-idle: #e4e5ef;
+  --color-status-offline: #787994;
+
   /* Hairlines strengthened so section boundaries are legible (were 0.1/0.2). */
   --color-line: rgba(154, 158, 202, 0.16);
   --color-line-strong: rgba(160, 164, 208, 0.3);
@@ -187,6 +211,16 @@
   --color-item-mention: #be123c;
   --color-item-unread: #5b21b6;
   --color-item-system: #565873;
+
+  /* Status dots for the white page. Same two-part contract as the dark set
+     (see @theme): >=3:1 on every surface, AND separated from each other. The
+     polarity inverts with the page - on dark, "present" is the bright end and
+     offline is dim; on light, "present" is the dark end and offline is the
+     pale one nearest the paper. */
+  --color-status-active: #0d8f66;
+  --color-status-working: #734505;
+  --color-status-idle: #2e2f42;
+  --color-status-offline: #7d7e98;
   /* Dark ink at raised alpha so section boundaries actually read on white. */
   --color-line: rgba(15, 18, 40, 0.12);
   --color-line-strong: rgba(15, 18, 40, 0.22);

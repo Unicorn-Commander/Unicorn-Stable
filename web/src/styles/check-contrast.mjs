@@ -16,6 +16,15 @@
  *     Thresholds: 4.5:1 for anything used as small text, 3:1 for non-text UI
  *     (borders, section edges) per WCAG 1.4.11.
  *
+ *  3. STATE SEPARATION. Contrast-against-the-background is necessary but NOT
+ *     sufficient for a token that encodes a STATE. Two status colours can each
+ *     clear 3:1 on every surface and still be indistinguishable from EACH
+ *     OTHER — which is a worse bug, because a dot that renders as colour with
+ *     no adjacent text is then carrying no information at all. This check
+ *     existed nowhere until an "optimise every token against the floor" pass
+ *     walked agent idle and offline from 3.04:1 apart to 1.54:1 and the
+ *     harness reported PASS. See STATE_GROUPS below.
+ *
  * Not imported by the app — it is a build-time check, run by hand or in CI.
  */
 import { readFileSync } from "node:fs";
@@ -124,6 +133,141 @@ function contrast(fg, bg) {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
+/* ------------------------------------------------- perceptual separation -- */
+/*
+ * WCAG contrast is a LUMINANCE ratio, so it is blind to hue: emerald and amber
+ * at the same lightness score ~1.1:1 against each other and are still trivially
+ * telling-apart. Requiring 3:1 between every pair of state colours would
+ * therefore condemn correct designs, while requiring nothing lets two greys
+ * collapse. So separation is satisfied by EITHER channel:
+ *
+ *   - luminance: >=3:1 WCAG contrast between the two (the only channel two
+ *     neutrals have), or
+ *   - hue/chroma: CIEDE2000 distance that still holds up under dichromat
+ *     simulation. Simulating matters: #4ade80 vs #fb923c is dE 53 to normal
+ *     vision and dE 11 to a protanope, i.e. it would sail through a naive dE
+ *     check while being invisible to roughly 1 in 12 men.
+ */
+
+function rgbToLab([r, g, b]) {
+  const f = (c) => {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const R = f(r), G = f(g), B = f(b);
+  const X = (0.4124564 * R + 0.3575761 * G + 0.1804375 * B) / 0.95047;
+  const Y = 0.2126729 * R + 0.7151522 * G + 0.072175 * B;
+  const Z = (0.0193339 * R + 0.119192 * G + 0.9503041 * B) / 1.08883;
+  const g3 = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const fx = g3(X), fy = g3(Y), fz = g3(Z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+/** CIEDE2000 — perceptual colour difference. */
+function deltaE2000(lab1, lab2) {
+  const [L1, a1, b1] = lab1;
+  const [L2, a2, b2] = lab2;
+  const C1 = Math.hypot(a1, b1);
+  const C2 = Math.hypot(a2, b2);
+  const Cb = (C1 + C2) / 2;
+  const G = 0.5 * (1 - Math.sqrt(Math.pow(Cb, 7) / (Math.pow(Cb, 7) + Math.pow(25, 7))));
+  const ap1 = (1 + G) * a1;
+  const ap2 = (1 + G) * a2;
+  const Cp1 = Math.hypot(ap1, b1);
+  const Cp2 = Math.hypot(ap2, b2);
+  const hp = (a, b) => {
+    if (a === 0 && b === 0) return 0;
+    const h = (Math.atan2(b, a) * 180) / Math.PI;
+    return h < 0 ? h + 360 : h;
+  };
+  const hp1 = hp(ap1, b1);
+  const hp2 = hp(ap2, b2);
+  const dL = L2 - L1;
+  const dC = Cp2 - Cp1;
+  let dhp = 0;
+  if (Cp1 * Cp2 !== 0) {
+    dhp = hp2 - hp1;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dH = 2 * Math.sqrt(Cp1 * Cp2) * Math.sin((dhp * Math.PI) / 360);
+  const Lb = (L1 + L2) / 2;
+  const Cpb = (Cp1 + Cp2) / 2;
+  let hpb;
+  if (Cp1 * Cp2 === 0) hpb = hp1 + hp2;
+  else if (Math.abs(hp1 - hp2) > 180) hpb = (hp1 + hp2 + (hp1 + hp2 < 360 ? 360 : -360)) / 2;
+  else hpb = (hp1 + hp2) / 2;
+  const T =
+    1 -
+    0.17 * Math.cos(((hpb - 30) * Math.PI) / 180) +
+    0.24 * Math.cos((2 * hpb * Math.PI) / 180) +
+    0.32 * Math.cos(((3 * hpb + 6) * Math.PI) / 180) -
+    0.2 * Math.cos(((4 * hpb - 63) * Math.PI) / 180);
+  const dTheta = 30 * Math.exp(-Math.pow((hpb - 275) / 25, 2));
+  const Rc = 2 * Math.sqrt(Math.pow(Cpb, 7) / (Math.pow(Cpb, 7) + Math.pow(25, 7)));
+  const Sl = 1 + (0.015 * Math.pow(Lb - 50, 2)) / Math.sqrt(20 + Math.pow(Lb - 50, 2));
+  const Sc = 1 + 0.045 * Cpb;
+  const Sh = 1 + 0.015 * Cpb * T;
+  const Rt = -Math.sin((2 * dTheta * Math.PI) / 180) * Rc;
+  return Math.sqrt(
+    Math.pow(dL / Sl, 2) +
+      Math.pow(dC / Sc, 2) +
+      Math.pow(dH / Sh, 2) +
+      Rt * (dC / Sc) * (dH / Sh),
+  );
+}
+
+/** Dichromat simulation (Vienot/Brettel/Mollon LMS projection). */
+function simulateCVD([r, g, b], type) {
+  const f = (c) => {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const R = f(r), G = f(g), B = f(b);
+  const L = 0.31399022 * R + 0.63951294 * G + 0.04649755 * B;
+  const M = 0.15537241 * R + 0.75789446 * G + 0.08670142 * B;
+  const S = 0.01775239 * R + 0.10944209 * G + 0.87256922 * B;
+  let L2, M2, S2;
+  if (type === "protan") {
+    L2 = 1.05118294 * M - 0.05116099 * S;
+    M2 = M;
+    S2 = S;
+  } else if (type === "deutan") {
+    L2 = L;
+    M2 = 0.9513092 * L + 0.04866992 * S;
+    S2 = S;
+  } else {
+    L2 = L;
+    M2 = M;
+    S2 = -0.86744736 * L + 1.86727089 * M;
+  }
+  const lr = 5.47221206 * L2 - 4.6419601 * M2 + 0.16963708 * S2;
+  const lg = -1.1252419 * L2 + 2.29317094 * M2 - 0.1678952 * S2;
+  const lb = 0.02980165 * L2 - 0.19318073 * M2 + 1.16364789 * S2;
+  const enc = (c) => {
+    c = Math.max(0, Math.min(1, c));
+    return Math.round(
+      255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055),
+    );
+  };
+  return [enc(lr), enc(lg), enc(lb)];
+}
+
+/**
+ * Worst-case perceptual distance between two colours, across normal vision and
+ * all three dichromacies. A pair is only as distinguishable as its worst
+ * viewer, so the minimum is the honest number.
+ */
+function separationDeltaE(a, b) {
+  const views = [
+    [a, b],
+    [simulateCVD(a, "protan"), simulateCVD(b, "protan")],
+    [simulateCVD(a, "deutan"), simulateCVD(b, "deutan")],
+    [simulateCVD(a, "tritan"), simulateCVD(b, "tritan")],
+  ];
+  return Math.min(...views.map(([x, y]) => deltaE2000(rgbToLab(x), rgbToLab(y))));
+}
+
 /* ------------------------------------------------------------------ checks -- */
 
 const BACKGROUNDS = [
@@ -178,6 +322,43 @@ const UI_3 = [
   "--color-edge-call",
   "--color-edge-canvas",
 ];
+
+// Non-text UI that identifies a STATE. Same 3:1-on-background bar as UI_3, but
+// these are also cross-checked against each other by STATE_GROUPS below.
+const STATE_UI_3 = [
+  "--color-status-active",
+  "--color-status-working",
+  "--color-status-idle",
+  "--color-status-offline",
+];
+
+/*
+ * Sets of tokens that encode MUTUALLY EXCLUSIVE states of the same component.
+ * Within a set, every pair must be tellable apart — see separationDeltaE.
+ *
+ * Why this exists: agent status renders as a bare 6-12px dot with no adjacent
+ * text (AgentList, AgentOrgChart, AgentChatModal, HomeDashboard). If two of
+ * these colours converge, the dot stops carrying information entirely, and
+ * nothing in a background-only contrast check notices — every token still
+ * clears its floor. That is not hypothetical: idle and offline were tuned to
+ * 1.54:1 of each other while this file printed PASS.
+ */
+const STATE_GROUPS = [
+  {
+    name: "agent status",
+    tokens: STATE_UI_3,
+  },
+];
+
+/** Luminance channel alone is enough at this ratio (WCAG 1.4.11 non-text). */
+const STATE_MIN_CONTRAST = 3.0;
+/**
+ * Otherwise hue/chroma must carry it. 15 is set from measurement, not taste:
+ * the shipped separations sit at 20.9-31.0, and the idle/offline collapse this
+ * check was written to catch measures 10.8. Anything in between is a pair
+ * nobody should be shipping without looking at it.
+ */
+const STATE_MIN_DELTA_E = 15;
 
 let failures = 0;
 let checks = 0;
@@ -234,6 +415,33 @@ for (const palette of PALETTES) {
     };
     test(TEXT_AA, 4.5, "TEXT");
     test(UI_3, 3.0, "UI  ");
+    test(STATE_UI_3, 3.0, "UI  ");
+
+    // -- 3. state separation ---------------------------------------------
+    for (const group of STATE_GROUPS) {
+      const present = group.tokens
+        .map((t) => ({ t, c: parseColor(map[t] ?? "") }))
+        .filter((x) => x.c);
+      for (let i = 0; i < present.length; i++) {
+        for (let j = i + 1; j < present.length; j++) {
+          const a = present[i];
+          const b = present[j];
+          checks++;
+          const ratio = contrast(a.c, b.c);
+          if (ratio >= STATE_MIN_CONTRAST) continue;
+          const dE = separationDeltaE(a.c, b.c);
+          if (dE >= STATE_MIN_DELTA_E) continue;
+          failures++;
+          report.push(
+            `STATE ${palette}/${mode}: ${group.name} — ${a.t} vs ${b.t} are ` +
+              `not tellable apart: ${ratio.toFixed(2)}:1 luminance ` +
+              `(needs ${STATE_MIN_CONTRAST}:1) and worst-case dE ` +
+              `${dE.toFixed(1)} (needs ${STATE_MIN_DELTA_E}). Two different ` +
+              `states must not look the same.`,
+          );
+        }
+      }
+    }
   }
 }
 

@@ -1,15 +1,17 @@
 /**
  * Appearance settings — light/dark mode AND palette, the two theme axes.
  *
- * Drop-in replacement for the inline "Appearance" <section> currently in
- * Layout/SettingsModal.tsx: import it and render <AppearanceSection /> in that
- * slot. It is self-contained (owns its own state, persistence and user
- * scoping), so nothing else in the modal needs to change.
+ * Rendered by Layout/SettingsModal.tsx, which it replaced the inline
+ * "Appearance" section of. Mode is applied through lib/theme (data-theme);
+ * palette through stores/themeStore (data-palette).
+ *
+ * This component does NOT own palette boot-up. Binding the store to the
+ * signed-in user happens in AppShell, because a preference that only loads
+ * when you open the settings modal has not actually been restored.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Check, Monitor, Moon, Palette, Sun } from "lucide-react";
 import { applyTheme, getStoredTheme, resolveTheme, type ThemeChoice } from "@/lib/theme";
-import { useAppStore } from "@/stores/appStore";
 import { PALETTES, useThemeStore, type PaletteId } from "@/stores/themeStore";
 import { Tooltip } from "@/components/ui/Tooltip";
 
@@ -17,13 +19,6 @@ export function AppearanceSection() {
   const [mode, setMode] = useState<ThemeChoice>(getStoredTheme);
   const palette = useThemeStore((s) => s.palette);
   const setPalette = useThemeStore((s) => s.setPalette);
-  const scopeToUser = useThemeStore((s) => s.scopeToUser);
-  const userId = useAppStore((s) => s.currentUser?.id);
-
-  // Palette preference is per user — bind the store once identity is known.
-  useEffect(() => {
-    scopeToUser(userId ?? null);
-  }, [userId, scopeToUser]);
 
   // Which swatch row to preview depends on the *resolved* mode, so "System"
   // shows what the OS will actually give you.

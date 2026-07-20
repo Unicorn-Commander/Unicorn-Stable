@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Bell, Check, LogOut, Mail, Monitor, Moon, Sun, X } from "lucide-react";
+import { Bell, Check, LogOut, Mail, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { logout } from "@/services/auth";
 import { useModalA11y } from "@/hooks/useModalA11y";
-import { applyTheme, getStoredTheme, type ThemeChoice } from "@/lib/theme";
+import { AppearanceSection } from "@/components/Settings/AppearanceSection";
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -55,10 +55,6 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   // open); persistence is synchronous to localStorage on every change, which
   // is all consumers read (useGlobalNotifications calls loadPrefs per event).
   const [prefs, setPrefs] = useState<NotificationPrefs>(loadPrefs);
-  // Theme choice — applyTheme() persists to localStorage + stamps
-  // document.documentElement.dataset.theme (and the system listener lives
-  // in lib/theme, started from main.tsx).
-  const [theme, setThemeState] = useState<ThemeChoice>(getStoredTheme);
   const [showSaved, setShowSaved] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Esc-to-close, focus trap + restore — shared modal a11y (the panel-scoped
@@ -153,29 +149,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           </div>
         )}
 
-        {/* Appearance */}
-        <section className="mb-5">
-          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-            <Sun className="h-3 w-3" /> Appearance
-          </h3>
-          <div className="rounded-xl border border-line bg-surface-1/60 p-3.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm text-slate-200">Theme</p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  Light, dark, or match your system.
-                </p>
-              </div>
-              <ThemeSegment
-                value={theme}
-                onChange={(v) => {
-                  setThemeState(v);
-                  applyTheme(v);
-                }}
-              />
-            </div>
-          </div>
-        </section>
+        {/* Appearance — light/dark mode AND palette. Owns its own state,
+            persistence and per-user scoping. */}
+        <AppearanceSection />
 
         {/* Notifications */}
         <section className="mb-5">
@@ -267,47 +243,5 @@ function Toggle({ label, hint, checked, onChange, icon, disabled }: ToggleProps)
         {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
       </div>
     </label>
-  );
-}
-
-interface ThemeSegmentProps {
-  value: ThemeChoice;
-  onChange: (v: ThemeChoice) => void;
-}
-
-function ThemeSegment({ value, onChange }: ThemeSegmentProps) {
-  const opts: { key: ThemeChoice; label: string; icon: React.ReactNode }[] = [
-    { key: "light", label: "Light", icon: <Sun className="h-3.5 w-3.5" /> },
-    { key: "dark", label: "Dark", icon: <Moon className="h-3.5 w-3.5" /> },
-    { key: "system", label: "System", icon: <Monitor className="h-3.5 w-3.5" /> },
-  ];
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Theme"
-      className="inline-flex shrink-0 rounded-lg border border-line bg-surface-2/60 p-0.5"
-    >
-      {opts.map((o) => {
-        const active = value === o.key;
-        return (
-          <button
-            key={o.key}
-            role="radio"
-            aria-checked={active}
-            aria-label={o.label}
-            title={o.label}
-            onClick={() => onChange(o.key)}
-            className={`focus-ring flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-              active
-                ? "bg-stable-purple/20 text-stable-purple-light"
-                : "text-slate-400 hover:text-slate-100"
-            }`}
-          >
-            {o.icon}
-            <span className="hidden sm:inline">{o.label}</span>
-          </button>
-        );
-      })}
-    </div>
   );
 }

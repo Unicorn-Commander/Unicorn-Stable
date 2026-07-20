@@ -24,10 +24,11 @@ import {
   agentIdentity,
   TIER_META,
   tierOf,
-  statusDot,
   prettyDomain,
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
+import { StatusDot } from "./StatusDot";
+import { Tooltip } from "@/components/ui";
 import { buildOrgTree } from "./orgTree";
 import { useOrgLayout } from "./useOrgLayout";
 
@@ -83,11 +84,9 @@ function OrgGraphNode(props: NodeProps) {
         ) : (
           <Bot className="h-4 w-4" />
         )}
-        <span
-          className={clsx(
-            "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-2",
-            statusDot(agent.status),
-          )}
+        <StatusDot
+          status={agent.status}
+          className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 border-2 border-surface-2"
         />
       </span>
       <span className="min-w-0 flex-1">
@@ -113,27 +112,31 @@ function OrgGraphNode(props: NodeProps) {
         </span>
       </span>
       {hasChildren && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggle(agent.id);
-          }}
-          title={
+        <Tooltip
+          content={
             isExpanded
               ? `Collapse ${childCount} report${childCount === 1 ? "" : "s"}`
               : `Show ${childCount} report${childCount === 1 ? "" : "s"} under ${label(agent)}`
           }
-          aria-label={isExpanded ? "Collapse team" : "Expand team"}
-          className="nodrag nopan focus-ring flex shrink-0 items-center gap-0.5 self-stretch rounded-md bg-white/[0.04] px-1 text-[10px] font-semibold tabular-nums text-slate-400 transition-colors hover:bg-white/[0.08] hover:text-slate-100"
+          placement="right"
         >
-          {isExpanded ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronRight className="h-3 w-3" />
-          )}
-          {childCount}
-        </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle(agent.id);
+            }}
+            aria-label={isExpanded ? "Collapse team" : "Expand team"}
+            className="nodrag nopan focus-ring flex shrink-0 items-center gap-0.5 self-stretch rounded-md bg-white/[0.04] px-1 text-[10px] font-semibold tabular-nums text-slate-400 transition-colors hover:bg-white/[0.08] hover:text-slate-100"
+          >
+            {isExpanded ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            {childCount}
+          </button>
+        </Tooltip>
       )}
       <Handle
         type="source"

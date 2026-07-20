@@ -2,6 +2,7 @@ import { Plus, LoaderCircle } from "lucide-react";
 import clsx from "clsx";
 import { useFederationStore } from "@/stores/federationStore";
 import { identityFor } from "@/lib/identity";
+import { Tooltip } from "@/components/ui";
 
 export function ServerRail({ mobile = false }: { mobile?: boolean }) {
   const instances = useFederationStore((state) => state.accessibleInstances);
@@ -74,14 +75,15 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
           </button>
         );
       })}
-      <button
-        title="Add a server"
-        aria-label="Add a server"
-        onClick={() => setAddServerOpen(true)}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-dashed border-slate-600 text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
-      >
-        <Plus className="h-5 w-5" />
-      </button>
+      <Tooltip content="Add a server" placement="right">
+        <button
+          aria-label="Add a server"
+          onClick={() => setAddServerOpen(true)}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-dashed border-slate-600 text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
+        >
+          <Plus className="h-5 w-5" />
+        </button>
+      </Tooltip>
       {switching && (
         <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-slate-400" />
       )}

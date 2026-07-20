@@ -129,7 +129,13 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   setPalette: (p) => {
     if (!VALID.has(p)) return;
     const { scopedUserId } = get();
-    writeKey(scopedUserId ? userKey(scopedUserId) : anonKey(), p);
+    if (scopedUserId) writeKey(userKey(scopedUserId), p);
+    // Always mirror to the unscoped key. That key is what index.html's
+    // pre-paint script reads, and it cannot know who is signed in — so without
+    // this mirror, every reload after a palette change repaints in the default
+    // palette for a frame before AppShell re-scopes. The per-user key above
+    // stays authoritative; this one is only a paint hint.
+    writeKey(anonKey(), p);
     stamp(p);
     set({ palette: p });
   },
@@ -142,21 +148,26 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     const saved = readKey(userKey(userId));
     const next = saved ?? get().palette;
     if (!saved) writeKey(userKey(userId), next);
+    // Same paint hint as setPalette — so the next cold start opens on this
+    // user's palette rather than the default.
+    writeKey(anonKey(), next);
     stamp(next);
     set({ palette: next, scopedUserId: userId });
   },
 }));
 
 /**
- * Apply the stored palette. Called at module scope below so the attribute is
- * set as soon as anything imports this store — but the real fix for a
- * flash-of-default-palette is the inline pre-paint stamp in index.html that
- * lib/theme.ts already relies on for data-theme. See files_i_needed.
+ * Apply the stored palette at runtime. Called explicitly from main.tsx, not as
+ * a module side effect — a side effect only runs if something imports the
+ * module, and this store had no importers at all for a while, which meant
+ * data-palette was never stamped and none of the palettes could apply.
+ *
+ * index.html stamps the same value before first paint so there is no flash;
+ * this is the runtime re-apply, and scopeToUser() supersedes it once the
+ * signed-in user is known.
  */
 export function initPalette(): PaletteId {
   const p = readKey(anonKey()) ?? DEFAULT_PALETTE;
   stamp(p);
   return p;
 }
-
-if (typeof document !== "undefined") initPalette();
