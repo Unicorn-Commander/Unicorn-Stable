@@ -13,6 +13,7 @@ from app.models.agent import AgentConfig
 from app.models.message import Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember, RoomType
+from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
 
@@ -496,8 +497,40 @@ class RoomService:
         online_ids = await self._presence.get_online_in_room(str(room_id))
         caller = str(caller_id) if caller_id is not None else None
 
+        # Agents get a SECOND, different fact alongside presence: availability.
+        # Presence answers "is a client connected" and is right for humans and
+        # for an agent that has actually joined a call; it is meaningless for a
+        # chat agent, which is invoked on demand and holds no socket. Deriving
+        # an agent's dot from presence alone reports every Brigade agent
+        # offline forever — as false as the `participants.status` column that
+        # reported them all online forever. See services/agent_availability.py.
+        agent_ids_by_participant: dict[str, str] = {}
+        for _membership, participant in rows:
+            if participant.participant_type != ParticipantType.AGENT:
+                continue
+            sub = participant.keycloak_sub or ""
+            if sub.startswith("brigade:"):
+                agent_ids_by_participant[str(participant.id)] = sub[len("brigade:"):]
+        availability = await get_agent_availability(
+            self._presence.redis, set(agent_ids_by_participant.values())
+        )
+
         members: list[dict[str, Any]] = []
         for membership, participant in rows:
+            brigade_id = agent_ids_by_participant.get(str(participant.id))
+            if participant.participant_type == ParticipantType.AGENT:
+                # An agent with no `brigade:<id>` identity is one we have no way
+                # to reach or ask about, so it is unknown — not available.
+                avail, avail_reason = (
+                    availability.get(brigade_id, (UNKNOWN, "not_in_brigade_roster"))
+                    if brigade_id
+                    else (UNKNOWN, "no_brigade_identity")
+                )
+            else:
+                # Humans have no availability concept; `is_online` is the whole
+                # truth for them. Null keeps the two ideas from bleeding into
+                # each other on the wire.
+                avail, avail_reason = (None, None)
             members.append({
                 "id": membership.id,
                 "participant_id": participant.id,
@@ -526,6 +559,12 @@ class RoomService:
                 # here; fixing it is a separate change to push targeting.
                 "is_online": str(participant.id) in online_ids,
                 "status": "online" if str(participant.id) in online_ids else "offline",
+                # Agents only (null for humans). "available" | "unavailable" |
+                # "unknown" — never inferred from `is_online`, which is why an
+                # agent can be available without being connected, and connected
+                # (in a call) without Brigade having it enabled.
+                "availability": avail,
+                "availability_reason": avail_reason,
             })
 
         return members

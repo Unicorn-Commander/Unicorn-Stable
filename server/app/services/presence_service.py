@@ -15,6 +15,14 @@ class PresenceService:
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
 
+    @property
+    def redis(self) -> Redis:
+        """The underlying client, for callers that need a Redis fact this
+        service does not model — e.g. agent availability, which is a different
+        question from participant presence and deliberately does not ride on
+        the ``presence:*`` keys (see services/agent_availability.py)."""
+        return self._redis
+
     async def set_online(self, participant_id: str, status: str = "online") -> None:
         """Mark a participant as online with a TTL."""
         key = f"presence:{participant_id}"

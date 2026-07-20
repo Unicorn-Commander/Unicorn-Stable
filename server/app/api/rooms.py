@@ -788,6 +788,8 @@ def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
         is_self=m.get("is_self", False),
         is_online=bool(m.get("is_online", m.get("status") == "online")),
         status=m["status"],
+        availability=m.get("availability"),
+        availability_reason=m.get("availability_reason"),
     )
 
 

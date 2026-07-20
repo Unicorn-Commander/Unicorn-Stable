@@ -52,6 +52,7 @@ from app.models.participant import (
 )
 from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageCreate, MessageListResponse, MessageResponse
+from app.services.agent_availability import touch_gateway_agent
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
@@ -76,8 +77,19 @@ async def authenticate_gateway_caller(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> GatewayPrincipal:
-    """Resolve the caller to a scoped GatewayPrincipal (JWT or key)."""
+    """Resolve the caller to a scoped GatewayPrincipal (JWT or key).
+
+    Also records the caller as a currently-reachable bridge agent. A bridge is
+    an external process (a Claude Code holding a gateway credential) that is
+    reachable only while it is polling — there is no long-poll endpoint and no
+    socket to observe — so a recent authenticated call is the only liveness
+    evidence that exists. Doing it here rather than in each endpoint means both
+    the read and the post path are covered and neither can forget; the touch is
+    best-effort and cannot fail the request. See
+    services/agent_availability.py.
+    """
     if not _gateway_enabled():
         # Feature-flagged off → behave as if the router does not exist.
         raise HTTPException(status_code=404, detail="Not found")
@@ -92,10 +104,14 @@ async def authenticate_gateway_caller(
     token = auth.removeprefix("Bearer ").strip()
     try:
         if token.startswith(_KEY_PREFIXES):
-            return await verify_gateway_key(token, db)
-        return await validate_gateway_jwt(token, settings)
+            principal = await verify_gateway_key(token, db)
+        else:
+            principal = await validate_gateway_jwt(token, settings)
     except GatewayAuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    await touch_gateway_agent(redis, principal.agent_id)
+    return principal
 
 
 async def _gateway_rate_limit(

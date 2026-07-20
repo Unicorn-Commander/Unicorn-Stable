@@ -375,7 +375,13 @@ export function AppShell() {
   const { data: agents } = useQuery({
     queryKey: ["agents", activeInstanceId],
     queryFn: () => api.getAgents(),
-    staleTime: 120_000,
+    // The roster now carries live `availability` (RoomList renders the sidebar
+    // agent dots from it for every thread whose room is not open), so it has to
+    // actually refresh. A 120s staleTime with no interval froze it for the
+    // whole session — an agent disabled in Brigade, or a bridge that went away,
+    // would keep reading available until a reload.
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 
   useEffect(() => {

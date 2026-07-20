@@ -73,6 +73,16 @@ export interface RoomMember {
   role: "owner" | "admin" | "member";
   participant_type?: "human" | "agent";
   is_online?: boolean;
+  /**
+   * AGENTS ONLY (null for humans). "Can this agent be invoked right now" —
+   * a different fact from `is_online`, which is "is a client connected". Most
+   * agents are invoked on demand and hold no socket, so they are routinely
+   * available while not connected; an agent that joined a call is both. See
+   * lib/agentStatus.ts.
+   */
+  availability?: "available" | "unavailable" | "unknown" | null;
+  /** Short server tag explaining `availability`, rendered as a tooltip. */
+  availability_reason?: string | null;
   is_muted?: boolean;
   // Server-set: true for the row that belongs to the requesting user. The
   // Keycloak id never equals the participant UUID, so this is the only
@@ -133,6 +143,14 @@ export interface Agent {
   description: string;
   avatar_url: string | null;
   status: "active" | "idle" | "working" | "offline";
+  /**
+   * Server-computed reachability, carried on the roster so the sidebar can be
+   * honest about agents whose room is not open (`/members` is only polled for
+   * the ACTIVE room). Distinct from `status`, which is Brigade's registration
+   * state alone and cannot see bridge sessions.
+   */
+  availability?: "available" | "unavailable" | "unknown";
+  availability_reason?: string;
   capabilities: string[];
   model: string;
   // Org-chart fields (from Brigade's rich roster). Optional so older callers and
