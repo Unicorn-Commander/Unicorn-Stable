@@ -40,3 +40,28 @@ def verify_internal_bearer(request: Request) -> None:
     """Raise 401 unless the request carries the valid internal agent bearer."""
     if not internal_bearer_ok(request.headers.get("Authorization")):
         raise HTTPException(status_code=401, detail="Bad agent secret")
+
+
+def _expected_key_admin_secret() -> str:
+    cfg = get_settings()
+    # Dedicated key-admin credential; fall back to the internal bearer (and in
+    # turn the LiveKit secret) while a deploy has not yet set the split value.
+    return cfg.gateway_key_admin_secret or _expected_internal_secret()
+
+
+def verify_key_admin_bearer(request: Request) -> None:
+    """Raise 401 unless the request carries the gateway KEY-ADMIN bearer.
+
+    Guards the gateway key mint/list/revoke endpoints. Those sit on the public
+    `/api` router and are internet-reachable by design, so they get their own
+    credential rather than reusing the widely-distributed internal agent
+    secret — a leak of that secret should not confer the ability to mint
+    long-lived agent identities. Constant-time compare, same as the internal
+    bearer.
+    """
+    expected = _expected_key_admin_secret()
+    auth = request.headers.get("Authorization")
+    if not expected or not auth or not auth.startswith(_BEARER):
+        raise HTTPException(status_code=401, detail="Bad key-admin secret")
+    if not hmac.compare_digest(auth[len(_BEARER):], expected):
+        raise HTTPException(status_code=401, detail="Bad key-admin secret")

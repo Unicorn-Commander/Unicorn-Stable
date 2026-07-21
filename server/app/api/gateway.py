@@ -25,7 +25,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api._internal_auth import verify_internal_bearer
+from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
 from app.api.messages import _build_message_service, _msg_to_response, send_message
 from app.auth.gateway_auth import (
     GatewayAuthError,
@@ -358,7 +358,7 @@ async def mint_gateway_key(
 
     The raw key is returned ONCE; only its SHA-256 hash is stored.
     """
-    verify_internal_bearer(request)
+    verify_key_admin_bearer(request)
     agent_id = slugify(body.agent_id)
     raw = f"{_KEY_PREFIXES[0]}{secrets.token_urlsafe(32)}"
     row = AgentGatewayKey(
@@ -390,7 +390,7 @@ async def list_gateway_keys(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """List key metadata (no secrets). Operator-only."""
-    verify_internal_bearer(request)
+    verify_key_admin_bearer(request)
     rows = (await db.execute(select(AgentGatewayKey))).scalars().all()
     return {
         "keys": [
@@ -415,7 +415,7 @@ async def revoke_gateway_key(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Revoke a key (instant). Operator-only."""
-    verify_internal_bearer(request)
+    verify_key_admin_bearer(request)
     from datetime import datetime, timezone
 
     row = (

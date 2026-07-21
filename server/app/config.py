@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     # explicitly everywhere.
     internal_agent_secret: str = ""
 
+    # Credential for MINTING/LISTING/REVOKING gateway keys
+    # (POST|GET|DELETE /api/v1/gateway/keys). Deliberately split from
+    # internal_agent_secret: those endpoints ride the PUBLIC `stable-api`
+    # router (PathPrefix `/api`), so unlike the /api/v1/internal surface they
+    # are reachable from the internet BY DESIGN and are guarded by a bearer
+    # alone. Sharing one platform-wide, long-lived secret meant that any leak
+    # of it — from any of the many services that hold it to talk to the
+    # internal surface — also granted the power to mint durable scoped agent
+    # identities. Separating them keeps a leaked internal bearer from
+    # escalating into persistent access.
+    # Falls back to internal_agent_secret when unset (migration safety), so
+    # deploying this change breaks nothing; set it explicitly to get the split.
+    gateway_key_admin_secret: str = ""
+
     # Keycloak
     keycloak_url: str = "http://localhost:8080"
     keycloak_realm: str = "stable"

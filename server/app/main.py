@@ -92,6 +92,13 @@ def _validate_production_secrets(settings) -> None:
             detail="INTERNAL_AGENT_SECRET unset; falling back to the LiveKit "
             "secret. Set a distinct random value.",
         )
+    if not settings.gateway_key_admin_secret:
+        log.warning(
+            "gateway_key_admin_secret_fallback",
+            detail="GATEWAY_KEY_ADMIN_SECRET unset; gateway key mint/revoke "
+            "falls back to the internal agent secret. Set a distinct random "
+            "value so a leaked internal bearer cannot mint agent keys.",
+        )
     if not settings.upload_url_secret:
         log.warning(
             "upload_url_secret_fallback",
@@ -255,11 +262,29 @@ def create_app() -> FastAPI:
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
     app.include_router(artifacts_router, prefix="/api/v1", tags=["Artifacts"])
     # Internal agent-surface routers (/api/v1/internal/*). Agents reach these
-    # directly over the Docker network (http://backend:8400); they are removed
-    # from the PUBLIC edge by the Traefik rule
-    # (`... && !PathPrefix(/api/v1/internal)`) so the internet cannot reach them
-    # (B2). The constant-time internal bearer (B1) is defense-in-depth behind
-    # that. Keep these mounts — they serve the internal Docker traffic.
+    # directly over the Docker network (http://backend:8400), never via Traefik.
+    #
+    # HOW THE EDGE BLOCK ACTUALLY WORKS — the path prefix is NOT the boundary.
+    # There is no `!PathPrefix(...)` anywhere in the compose (an earlier version
+    # of this comment claimed there was, and that claim misled readers into
+    # believing anything under /api/v1/internal is automatically off-edge). The
+    # real mechanism is a dedicated higher-priority Traefik router
+    # (`stable-internal-deny*`, priority 1000) that captures this prefix and
+    # runs it through an ipAllowList permitting only loopback -> 403.
+    #
+    # That distinction matters because the block is PER-ENTRYPOINT. Until
+    # 2026-07-21 the deny router existed on `websecure` only, while the SPA's
+    # `stable-http` router served the same Host on `web` (:80) and its nginx
+    # proxied /api/ straight to this backend — so plain HTTP reached these
+    # handlers from the internet (verified: https -> 403, http -> 422). Fixed by
+    # adding a `web`-entrypoint deny router plus an HTTP->HTTPS redirect.
+    #
+    # DO NOT assume a new route is private because of where you mounted it.
+    # Reachability is decided by the compose routers, so any new edge surface
+    # must be re-checked there. The constant-time internal bearer (B1) is the
+    # authn that actually travels with the request; treat the network block as
+    # defense in depth, not the only lock.
+    # Keep these mounts — they serve the internal Docker traffic.
     app.include_router(internal_artifacts_router, prefix="/api/v1", tags=["Artifacts"])
     app.include_router(knowledge_router, prefix="/api/v1", tags=["Knowledge"])
     app.include_router(internal_knowledge_router, prefix="/api/v1", tags=["Knowledge"])

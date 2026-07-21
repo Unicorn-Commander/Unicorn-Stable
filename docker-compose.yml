@@ -138,6 +138,9 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
       - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
+      # Only the BACKEND validates key-admin bearers; the agents sidecar
+      # never mints keys, so it deliberately does NOT receive this.
+      - GATEWAY_KEY_ADMIN_SECRET=${GATEWAY_KEY_ADMIN_SECRET:-}
       - GATEWAY_ENABLED=${GATEWAY_ENABLED:-true}
       - UPLOAD_URL_SECRET=${UPLOAD_URL_SECRET:-}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
@@ -197,6 +200,19 @@ services:
       - "traefik.http.routers.stable-internal-deny.service=stable-api"
       - "traefik.http.routers.stable-internal-deny.middlewares=stable-internal-denylist"
       - "traefik.http.middlewares.stable-internal-denylist.ipallowlist.sourcerange=127.0.0.1/32"
+      # B2-fix (2026-07-21): the deny router above is `entrypoints=websecure`
+      # ONLY. The SPA's `stable-http` router serves the same Host on entrypoint
+      # `web` (:80) and its nginx proxies `location /api/ -> http://backend`,
+      # so port 80 bypassed the ipAllowList entirely: verified off-host,
+      # https:// -> 403 but http:// -> 422 (FastAPI body validation = the
+      # handler was REACHED). Traefik matches routers per-entrypoint, so the
+      # deny must be declared on `web` as its own router. Priority 1000 beats
+      # `stable-http`, so this wins before the SPA/nginx path.
+      - "traefik.http.routers.stable-internal-deny-http.rule=Host(`stable.magicunicorn.dev`) && PathPrefix(`/api/v1/internal`)"
+      - "traefik.http.routers.stable-internal-deny-http.entrypoints=web"
+      - "traefik.http.routers.stable-internal-deny-http.priority=1000"
+      - "traefik.http.routers.stable-internal-deny-http.service=stable-api"
+      - "traefik.http.routers.stable-internal-deny-http.middlewares=stable-internal-denylist"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/health')"]
       interval: 15s
@@ -296,6 +312,23 @@ services:
       - "traefik.http.routers.stable-http.rule=Host(`stable.magicunicorn.dev`)"
       - "traefik.http.routers.stable-http.entrypoints=web"
       - "traefik.http.routers.stable-http.service=stable"
+      # Close the plaintext edge as a CLASS, not one path at a time. Port 80
+      # served the entire app (session cookies, bearer tokens, the public API)
+      # in cleartext, and any future router inherits the same hole. Scoped to
+      # THIS router on purpose: a fleet-wide `entryPoints.web.http.redirections`
+      # would hit ~25 unrelated services on this Traefik.
+      # Verified safe before making it: no consumer speaks plain HTTP to this
+      # host. The agents sidecar uses STABLE_BACKEND_URL=http://backend:8400
+      # and the cross-app callers (email-ops, research-relay) use
+      # http://stable-backend:8400 — all container-to-container on the Docker
+      # network, never through Traefik.
+      # ACME: this Traefik solves HTTP-01 on the `web` entrypoint. Traefik's
+      # internal `acme-http@internal` router outranks docker-provider routers,
+      # so /.well-known/acme-challenge is still answered. Cert renews ~Aug 23
+      # (expires Sep 22) — confirm renewal succeeds before then.
+      - "traefik.http.routers.stable-http.middlewares=stable-https-redirect"
+      - "traefik.http.middlewares.stable-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.stable-https-redirect.redirectscheme.permanent=true"
 networks:
   stable-net:
     driver: bridge
