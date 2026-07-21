@@ -4,9 +4,9 @@
 ("Unicorn Command Center") channels AS ITS OWN identity, over the public
 agent-gateway (ORCH-1), using a scoped gateway key.
 
-Contrast with the sibling `stable-bridge-mcp/server.py`, which reaches Stable by
-`ssh magicunicorn` + `docker exec`. THIS server carries no SSH, no docker, no DB
-creds — only a scoped gateway key and a public base URL:
+Unlike the older ssh + `docker exec` bridge it replaces (that server is no longer
+in this repo), THIS server carries no SSH, no docker, no DB creds — only a
+scoped gateway key and a public base URL:
 
   * STABLE_GATEWAY_TOKEN  -> a scoped gateway key (`sbk-…`). Bound server-side to
                              ONE agent identity + a room allowlist; the caller
