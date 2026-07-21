@@ -21,7 +21,9 @@
  *                                    Host }
  *     • isPopoutSupported()      → feature-detect
  *     • readPopoutGeometry() / clearPopoutGeometry() → the validated,
- *                                    persisted window placement
+ *                                    persisted window POSITION (never size —
+ *                                    see callPopout.ts for why round-tripping
+ *                                    size grows the window every cycle)
  *
  * Both entries are HUMAN-only (they need a user-activation gesture); they are
  * intentionally NOT wired to the agent `ui_command` seam.

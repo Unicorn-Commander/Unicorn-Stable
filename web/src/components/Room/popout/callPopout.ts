@@ -54,62 +54,134 @@ export function getPopoutRoot(doc: Document): HTMLElement {
 }
 
 /* ------------------------------------------------------------------ *
- * Window-position persistence
+ * Window-POSITION persistence
  *
  * The user's monitor placement is worth keeping across reloads (that's the
- * whole point of a detached window on a multi-monitor desk), but SCREEN
- * coordinates are only meaningful while the monitor that hosted them is still
- * attached. So every restore is validated:
+ * whole point of a detached window on a multi-monitor desk).
  *
- *   • the stored value must parse to four finite numbers,
- *   • the size must be sane (240..10000px — a 0×0 or 40000px window is junk),
- *   • the position must be within a generous virtual-desktop bound
- *     (±20000px, which covers any realistic multi-monitor arrangement).
+ * WE PERSIST POSITION ONLY, NEVER SIZE — and that is a correctness decision,
+ * not a scope cut. `window.open`'s `width`/`height` features are CONTENT
+ * dimensions, but the only size an opener can read back from a child window is
+ * `outerWidth`/`outerHeight`, which INCLUDE the title bar and borders. Feeding
+ * one into the other adds the chrome size on every single open/close cycle, so
+ * the window grows without bound (a few dozen px taller each time). There is no
+ * portable way to measure a child popup's chrome, so the only honest fix is not
+ * to round-trip size at all. Size always comes from the caller's options.
  *
- * Anything else falls back to centering on the opener's screen. We deliberately
- * do NOT try to prove the coordinate lands on a live monitor — we can only see
- * the opener's screen (the Window Management API needs a permission prompt), so
- * a "is it visible?" test would wrongly yank legitimately-placed windows back
- * from a second monitor. Browsers already clamp popup coordinates onto an
- * existing screen; {@link healDegenerateGeometry} covers the residual case
- * where the result comes back degenerate.
+ * Position has no such unit mismatch: the `left`/`top` features and
+ * `screenX`/`screenY` both address the window frame's top-left corner. Where a
+ * browser does apply a small offset, {@link calibrate} MEASURES it once per
+ * window (observed − requested) and cancels it out on save, so it cannot
+ * accumulate either.
+ *
+ * Every restore is validated:
+ *
+ *   • the stored value must parse to two finite numbers,
+ *   • within an absolute virtual-desktop bound (±20000px), and
+ *   • within a generous envelope around the CURRENTLY attached screen
+ *     ({@link isOnCurrentDesktop}) — this is what recovers a coordinate saved
+ *     on a monitor that is no longer plugged in.
+ *
+ * The envelope is deliberately loose (several screens out in every direction,
+ * including negative) because we can only see the OPENER's screen — the
+ * Window Management API needs a permission prompt — and a tight "is it
+ * visible?" test would wrongly yank legitimately-placed windows back from a
+ * second monitor. It only rejects coordinates that no plausible arrangement of
+ * the current display could contain.
  * ------------------------------------------------------------------ */
 
-const GEOMETRY_KEY = "stable.call-popout-geometry.v1";
-/** Sane content-size bounds for a restored window. */
-const MIN_DIM = 240;
-const MAX_DIM = 10000;
-/** Generous virtual-desktop coordinate bound (multi-monitor, incl. negative). */
+const GEOMETRY_KEY = "stable.call-popout-position.v2";
+/** Absolute virtual-desktop coordinate bound (multi-monitor, incl. negative). */
 const MAX_COORD = 20000;
+/** How many screen-widths/heights out from the current screen we still trust. */
+const DESKTOP_SPAN_FACTOR = 3;
+/**
+ * Largest observed−requested offset we treat as this browser's chrome offset
+ * rather than a relocation. Title bars are tens of px; a clamp onto a different
+ * monitor moves the window by hundreds or thousands.
+ */
+const MAX_CALIBRATION_OFFSET = 400;
+/** Below this, a presented window is junk rather than merely small. */
+const MIN_PRESENTED_DIM = 100;
 
 function isPlausibleGeometry(value: unknown): value is PopoutGeometry {
   if (!value || typeof value !== "object") return false;
-  const { left, top, width, height } = value as Record<string, unknown>;
+  const { left, top } = value as Record<string, unknown>;
   if (
-    ![left, top, width, height].every(
-      (n) => typeof n === "number" && Number.isFinite(n),
-    )
+    ![left, top].every((n) => typeof n === "number" && Number.isFinite(n))
   ) {
     return false;
   }
-  const w = width as number;
-  const h = height as number;
-  if (w < MIN_DIM || w > MAX_DIM || h < MIN_DIM || h > MAX_DIM) return false;
   if (Math.abs(left as number) > MAX_COORD) return false;
   if (Math.abs(top as number) > MAX_COORD) return false;
   return true;
 }
 
-/** The last validated pop-out geometry, or null when absent/invalid. */
-export function readPopoutGeometry(): PopoutGeometry | null {
+/**
+ * Could this coordinate belong to the display setup we can see RIGHT NOW?
+ *
+ * Answers the "saved on a monitor that is no longer attached" case. We measure
+ * a box {@link DESKTOP_SPAN_FACTOR} screens out from the current screen in
+ * every direction; anything outside it cannot be reached by any realistic
+ * arrangement of this display and is treated as stale.
+ */
+function isOnCurrentDesktop(geom: PopoutGeometry): boolean {
   try {
-    const raw = localStorage.getItem(GEOMETRY_KEY);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return isPlausibleGeometry(parsed) ? parsed : null;
+    const scr = typeof window !== "undefined" ? window.screen : undefined;
+    const w = scr?.width;
+    const h = scr?.height;
+    // No screen metrics (SSR / exotic embed) — do not reject on ignorance.
+    if (!w || !h || !Number.isFinite(w) || !Number.isFinite(h)) return true;
+    const spanX = w * DESKTOP_SPAN_FACTOR;
+    const spanY = h * DESKTOP_SPAN_FACTOR;
+    return (
+      geom.left >= -spanX &&
+      geom.left <= spanX &&
+      geom.top >= -spanY &&
+      geom.top <= spanY
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The last validated pop-out position, or null when absent/invalid/stale.
+ *
+ * Self-healing: a stored value that fails validation is DELETED here rather
+ * than merely ignored, so a coordinate stranded on a detached monitor cannot
+ * sit in localStorage forever waiting for a re-plug that never comes. This is
+ * one of {@link clearPopoutGeometry}'s live call sites.
+ */
+export function readPopoutGeometry(): PopoutGeometry | null {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(GEOMETRY_KEY);
   } catch {
     return null;
   }
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    clearPopoutGeometry();
+    return null;
+  }
+  if (!isPlausibleGeometry(parsed)) {
+    clearPopoutGeometry();
+    return null;
+  }
+  if (!isOnCurrentDesktop(parsed)) {
+    // Saved against a display that is not attached any more — forget it and
+    // centre on the screen we can actually see.
+    clearPopoutGeometry();
+    return null;
+  }
+  // Normalise to exactly {left, top}. A payload written by an older build also
+  // carried width/height; returning it verbatim would let a stale SIZE leak
+  // back into a caller, which is the whole bug this module now refuses to have.
+  return { left: parsed.left, top: parsed.top };
 }
 
 /** Forget the stored placement (next open centers again). */
@@ -124,20 +196,33 @@ export function clearPopoutGeometry(): void {
 function savePopoutGeometry(geom: PopoutGeometry): void {
   if (!isPlausibleGeometry(geom)) return;
   try {
-    localStorage.setItem(GEOMETRY_KEY, JSON.stringify(geom));
+    // Write exactly {left, top} — never let a size field into the payload.
+    localStorage.setItem(
+      GEOMETRY_KEY,
+      JSON.stringify({ left: geom.left, top: geom.top }),
+    );
   } catch {
     /* private mode / quota — placement is a nicety, never a hard failure */
   }
 }
 
-/** Read a live window's on-screen rect, or null when it reads back as junk. */
+/**
+ * Read a live window's on-screen POSITION, or null when the window is not
+ * (yet) presented.
+ *
+ * A freshly-opened `about:blank` popup routinely reports `outerWidth`/
+ * `outerHeight` of 0 before the OS has actually put it on screen, and its
+ * `screenX`/`screenY` are meaningless until then. Requiring non-zero outer
+ * dimensions is how we tell "not presented yet" from "really at 0,0" — the
+ * dimensions are used ONLY as this liveness signal and are never persisted.
+ */
 function readWindowGeometry(win: Window): PopoutGeometry | null {
   try {
+    if (win.closed) return null;
+    if (!(win.outerWidth > 0) || !(win.outerHeight > 0)) return null;
     const geom: PopoutGeometry = {
       left: Math.round(win.screenX ?? win.screenLeft ?? 0),
       top: Math.round(win.screenY ?? win.screenTop ?? 0),
-      width: Math.round(win.outerWidth || 0),
-      height: Math.round(win.outerHeight || 0),
     };
     return isPlausibleGeometry(geom) ? geom : null;
   } catch {
@@ -147,25 +232,56 @@ function readWindowGeometry(win: Window): PopoutGeometry | null {
 }
 
 /**
- * Post-open self-heal: if the window came back DEGENERATE (unreadable or a junk
- * rect — e.g. the restored coordinates belonged to a monitor that is no longer
- * attached and the browser did not clamp), recentre + resize it on the opener's
- * screen and drop the stored placement so the next open starts clean.
+ * Run `onPresented` once the child window is genuinely on screen.
  *
- * Only degeneracy triggers this. A window that legitimately landed on another
- * monitor reads back as a perfectly plausible rect and is left alone.
+ * This exists because the previous implementation self-healed inside the
+ * child's FIRST `requestAnimationFrame`, where `outerWidth`/`outerHeight` are
+ * still commonly 0 — so the geometry read failed, the "degenerate" branch fired
+ * on every single open, and it WIPED the stored placement. Position persistence
+ * silently degraded to a permanent no-op.
+ *
+ * So: poll until the window reports stable non-zero outer dimensions twice in a
+ * row (one sample can catch a transient 1×1 frame mid-presentation). If the
+ * budget expires without that ever happening, we do NOTHING — an unreadable
+ * window is INCONCLUSIVE, never evidence that the stored placement is bad.
+ * Returns a cancel function; teardown must call it.
  */
-function healDegenerateGeometry(win: Window, width: number, height: number): void {
-  if (readWindowGeometry(win)) return;
-  clearPopoutGeometry();
-  try {
-    if (win.closed) return;
-    const { left, top } = centeredPosition(width, height);
-    win.resizeTo(width, height);
-    win.moveTo(left, top);
-  } catch {
-    /* the browser may refuse move/resize — the window is still usable */
-  }
+function whenPresented(win: Window, onPresented: () => void): () => void {
+  const POLL_MS = 50;
+  const DEADLINE_MS = 4000;
+  const started = Date.now();
+  let timer = 0;
+  let cancelled = false;
+  let lastW = -1;
+  let lastH = -1;
+
+  const tick = (): void => {
+    if (cancelled) return;
+    let w = 0;
+    let h = 0;
+    try {
+      if (win.closed) return;
+      w = win.outerWidth || 0;
+      h = win.outerHeight || 0;
+    } catch {
+      return; // window gone — inconclusive, leave storage alone
+    }
+    // Two consecutive identical non-zero samples ⇒ actually presented.
+    if (w > 0 && h > 0 && w === lastW && h === lastH) {
+      onPresented();
+      return;
+    }
+    lastW = w;
+    lastH = h;
+    if (Date.now() - started >= DEADLINE_MS) return; // give up silently
+    timer = window.setTimeout(tick, POLL_MS);
+  };
+
+  timer = window.setTimeout(tick, POLL_MS);
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
 }
 
 /** Centre a `width`×`height` window on the opener's screen. */
@@ -188,24 +304,16 @@ function centeredPosition(width: number, height: number): { left: number; top: n
 }
 
 /**
- * Popup window features string. Restores `saved` placement when it passed
- * validation; otherwise centres on the opener's screen.
+ * Popup window features string for an already-decided position. `width`/
+ * `height` are CONTENT dimensions and always come from the caller's options —
+ * they are never restored from storage (see the persistence note above).
  */
 function popupFeatures(
   width: number,
   height: number,
-  saved: PopoutGeometry | null,
+  left: number,
+  top: number,
 ): string {
-  let left = 0;
-  let top = 0;
-  if (saved) {
-    left = saved.left;
-    top = saved.top;
-  } else {
-    const c = centeredPosition(width, height);
-    left = c.left;
-    top = c.top;
-  }
   return [
     "popup=1",
     `width=${width}`,
@@ -272,18 +380,22 @@ export function openCallPopoutWithResult(
   opts?: OpenCallPopoutOptions,
 ): OpenCallPopoutResult {
   if (!isPopoutSupported()) return { handle: null, failure: "unsupported" };
-  const saved = readPopoutGeometry();
   const {
     title = "Stable — call",
-    width = saved?.width ?? 960,
-    height = saved?.height ?? 600,
+    width = 960,
+    height = 600,
     onClose,
   } = opts ?? {};
+
+  // Size ALWAYS comes from the options — never from storage. Only the position
+  // is restored, and only after validating it against the current display.
+  const saved = readPopoutGeometry();
+  const requested = saved ?? centeredPosition(width, height);
 
   const win = window.open(
     "about:blank",
     "_blank",
-    popupFeatures(width, height, saved),
+    popupFeatures(width, height, requested.left, requested.top),
   );
   // Popup blocked (or not called from a user gesture) — the ONLY signal the
   // browser gives us. Never swallow this.
@@ -355,18 +467,35 @@ export function openCallPopoutWithResult(
   });
   headObserver.observe(document.head, { childList: true });
 
-  // Last rect we saw while the window was alive. Sampled by the watchdog (so a
-  // close via the OS chrome still leaves us a good value — by the time we learn
-  // the window is gone its geometry is unreadable) and persisted on teardown.
+  // Last position we saw while the window was alive. Sampled by the watchdog
+  // (so a close via the OS chrome still leaves us a good value — by the time we
+  // learn the window is gone its geometry is unreadable) and persisted on
+  // teardown.
   let lastGeometry: PopoutGeometry | null = null;
+  /**
+   * This browser's (observed − requested) placement offset, measured once the
+   * window is actually presented. Subtracted on save so a browser that offsets
+   * `left`/`top` by the chrome does not walk the window across the screen a
+   * little further on every open/close cycle. `null` until measured — and while
+   * it is null we do NOT persist a position, because we cannot yet tell a real
+   * coordinate from an offset one.
+   */
+  let calibration: { dx: number; dy: number } | null = null;
 
   const teardown = (): void => {
     if (closed) return;
     closed = true;
-    // Persist the freshest rect: read live first (a `.close()` from our own UI
-    // still has the window), else fall back to the last watchdog sample.
+    cancelPresentationWatch();
+    // Persist the freshest position: read live first (a `.close()` from our own
+    // UI still has the window), else fall back to the last watchdog sample.
+    // Only ever with a measured calibration — see `calibration`.
     const geom = readWindowGeometry(win) ?? lastGeometry;
-    if (geom) savePopoutGeometry(geom);
+    if (geom && calibration) {
+      savePopoutGeometry({
+        left: geom.left - calibration.dx,
+        top: geom.top - calibration.dy,
+      });
+    }
     window.clearInterval(watchdog);
     themeObserver.disconnect();
     headObserver.disconnect();
@@ -412,18 +541,60 @@ export function openCallPopoutWithResult(
     if (geom) lastGeometry = geom;
   }, 500);
 
-  // Self-heal a degenerate window (restored coords from a detached monitor that
-  // the browser did not clamp). Deferred one frame so the browser has applied
-  // the requested placement before we read it back.
-  if (typeof win.requestAnimationFrame === "function") {
-    win.requestAnimationFrame(() => {
-      if (!closed) healDegenerateGeometry(win, width, height);
-    });
-  } else {
-    win.setTimeout(() => {
-      if (!closed) healDegenerateGeometry(win, width, height);
-    }, 32);
-  }
+  /**
+   * Once the window is GENUINELY presented (not merely one frame old — see
+   * {@link whenPresented}), do two things:
+   *
+   *   1. Measure this browser's placement offset so saves round-trip exactly.
+   *   2. Self-heal the two failure modes we can actually detect — a window the
+   *      browser relocated wholesale (the restored coordinate was unusable,
+   *      e.g. a monitor that is no longer attached) and a degenerate frame.
+   *      Both drop the stored placement so the next open starts clean; these
+   *      are {@link clearPopoutGeometry}'s other live call sites.
+   *
+   * Anything we cannot read stays untouched: an inconclusive measurement must
+   * never delete a placement that may be perfectly good.
+   */
+  const cancelPresentationWatch = whenPresented(win, () => {
+    if (closed) return;
+    const observed = readWindowGeometry(win);
+    if (!observed) return; // inconclusive — leave storage alone
+
+    let degenerate = false;
+    try {
+      degenerate =
+        win.outerWidth < MIN_PRESENTED_DIM || win.outerHeight < MIN_PRESENTED_DIM;
+    } catch {
+      return;
+    }
+
+    const dx = observed.left - requested.left;
+    const dy = observed.top - requested.top;
+    const relocated =
+      Math.abs(dx) > MAX_CALIBRATION_OFFSET ||
+      Math.abs(dy) > MAX_CALIBRATION_OFFSET;
+
+    if (relocated || degenerate) {
+      // The requested placement did not survive: forget it, and treat the
+      // window's actual position as truth from here on (offset 0), so the next
+      // cycle calibrates cleanly against a coordinate that does work.
+      clearPopoutGeometry();
+      calibration = { dx: 0, dy: 0 };
+    } else {
+      calibration = { dx, dy };
+    }
+
+    if (degenerate) {
+      try {
+        if (win.closed) return;
+        const c = centeredPosition(width, height);
+        win.resizeTo(width, height);
+        win.moveTo(c.left, c.top);
+      } catch {
+        /* the browser may refuse move/resize — the window is still usable */
+      }
+    }
+  });
 
   const handle: CallPopoutHandle = {
     get window() {

@@ -90,14 +90,23 @@ export interface CallPopoutHandle {
   close(): void;
 }
 
-/** A pop-out window's on-screen rect, as persisted across reloads. */
+/**
+ * A pop-out window's on-screen POSITION, as persisted across reloads.
+ *
+ * Position only — deliberately NOT size. `window.open`'s `width`/`height`
+ * features are CONTENT dimensions, while `outerWidth`/`outerHeight` (the only
+ * size a parent can read back) INCLUDE the window chrome. Round-tripping one
+ * through the other adds the chrome size on every open/close cycle, so the
+ * window grows without bound. Position has no such mismatch: both the `left`/
+ * `top` features and `screenX`/`screenY` address the window frame's top-left
+ * corner, and any residual per-browser offset is measured and cancelled (see
+ * `callPopout.ts`), so it cannot accumulate.
+ */
 export interface PopoutGeometry {
   /** Screen X of the window's left edge (may be negative on a left monitor). */
   left: number;
   /** Screen Y of the window's top edge. */
   top: number;
-  width: number;
-  height: number;
 }
 
 /**

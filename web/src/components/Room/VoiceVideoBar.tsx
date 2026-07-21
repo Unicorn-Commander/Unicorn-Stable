@@ -42,7 +42,12 @@ import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useIsDesktop } from "@/hooks/usePanelResize";
-import { useCallUiStore, uiCommandBus } from "@/stores/callUiStore";
+import {
+  useCallUiStore,
+  uiCommandBus,
+  DEFAULT_CALL_VIEW_MODE,
+} from "@/stores/callUiStore";
+import type { CallViewMode } from "@/lib/roomDataProtocol";
 import { api, type BrigadeAgent } from "@/services/api";
 import { ViewModeSwitcher } from "./ViewModeSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -878,7 +883,38 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Gate on BOTH desktop and the module's feature-detect (CONTRACT §3.5).
   const isDesktop = useIsDesktop();
   const popoutSupported = isDesktop && isPopoutSupported();
-  const popout = useCallPopout({ onClose: () => setPopoutOpen(roomId, false) });
+
+  // Popping out from the audio-compact default has to lift the view into the
+  // video stage (that's what the pop-out shows). `setViewMode` PERSISTS to
+  // localStorage, so without this the single act of popping out would silently
+  // and permanently rewrite the user's saved view mode for the room. Remember
+  // what we changed and put it back when the window closes — by our button OR
+  // by the user closing the OS window, which is why the restore lives in the
+  // `onClose` callback rather than in `bringBackPopout`.
+  const popoutPriorViewRef = useRef<{
+    mode: CallViewMode;
+    showVideo: boolean;
+  } | null>(null);
+
+  const restorePrePopoutView = useCallback(() => {
+    const prior = popoutPriorViewRef.current;
+    popoutPriorViewRef.current = null;
+    if (!prior) return;
+    const s = useCallUiStore.getState();
+    // Only undo what is still OURS. If the user picked a different view while
+    // popped out, that's a deliberate choice and it wins.
+    if ((s.viewModes[roomId] ?? DEFAULT_CALL_VIEW_MODE) === "grid") {
+      s.setViewMode(roomId, prior.mode);
+    }
+    if (s.showVideo && !prior.showVideo) s.toggleVideo(false);
+  }, [roomId]);
+
+  const popout = useCallPopout({
+    onClose: () => {
+      setPopoutOpen(roomId, false);
+      restorePrePopoutView();
+    },
+  });
 
   // Audio-first / video-off shows chips; the video modes show tiles.
   const showChips = viewMode === "compact" || !showVideo;
@@ -955,12 +991,17 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // opened).
     if (!popout.open()) return;
     if (showChips) {
+      // Record the pre-pop-out view BEFORE mutating it so closing the window
+      // restores it (setViewMode persists — see `popoutPriorViewRef`).
+      popoutPriorViewRef.current = { mode: viewMode, showVideo };
       toggleVideo(true);
       if (viewMode === "compact") setViewMode(roomId, "grid");
     }
     setPopoutOpen(roomId, true);
   }
   function bringBackPopout() {
+    // `close()` runs the handle's teardown synchronously, which fires the
+    // `onClose` above → `restorePrePopoutView()`. No second restore here.
     popout.close();
     setPopoutOpen(roomId, false);
   }
