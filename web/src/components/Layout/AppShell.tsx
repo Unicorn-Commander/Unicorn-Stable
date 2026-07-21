@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Bookmark, Settings, LogOut, Wifi, WifiOff } from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
-import { logout } from "@/services/auth";
+import { login, logout } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
@@ -668,9 +668,18 @@ export function AppShell() {
  * state. Debounced: a drop that recovers within 2s (backoff attempt #1) never
  * shows, so brief blips don't flash the UI. After a real outage reconnects, a
  * green "Reconnected" confirmation lingers ~2s then dismisses itself.
+ *
+ * The `expired` phase is terminal and deliberately NOT debounced or
+ * self-dismissing: it means the refresh token is dead, so the socket has
+ * stopped retrying entirely. Without it the app would render fine at HTTP 200
+ * while silently receiving nothing — the exact "Stable went offline" symptom
+ * this banner exists to make visible. It offers the only action that can fix
+ * it, and outranks "lost" because reconnecting is no longer what's happening.
  */
 function ConnectionBanner() {
-  const [phase, setPhase] = useState<"hidden" | "lost" | "restored">("hidden");
+  const [phase, setPhase] = useState<
+    "hidden" | "lost" | "stalled" | "restored" | "expired"
+  >("hidden");
 
   useEffect(() => {
     let lostTimer: number | null = null;
@@ -681,12 +690,49 @@ function ConnectionBanner() {
         window.clearTimeout(restoredTimer);
         restoredTimer = null;
       }
-      setPhase((p) => (p === "restored" ? "lost" : p));
+      // Never DOWNGRADE: "expired" is terminal and "stalled" is a strictly
+      // more accurate account of the same outage, so a fresh `disconnected`
+      // from a retry that also failed must not walk either back to "lost".
+      setPhase((p) =>
+        p === "expired" || p === "stalled"
+          ? p
+          : p === "restored"
+            ? "lost"
+            : p,
+      );
       if (lostTimer !== null) return;
       lostTimer = window.setTimeout(() => {
         lostTimer = null;
-        setPhase("lost");
+        setPhase((p) => (p === "expired" || p === "stalled" ? p : "lost"));
       }, 2000);
+    });
+
+    const offExpired = ws.on("auth_expired", () => {
+      if (lostTimer !== null) {
+        window.clearTimeout(lostTimer);
+        lostTimer = null;
+      }
+      if (restoredTimer !== null) {
+        window.clearTimeout(restoredTimer);
+        restoredTimer = null;
+      }
+      setPhase("expired");
+    });
+
+    // Reconnection is still being attempted, but it has been failing long
+    // enough that "reconnecting…" alone leaves the user with no way out. This
+    // upgrades the SAME banner with a sign-in action; it is not terminal, and
+    // a socket that comes back on its own still clears it.
+    const offStalled = ws.on("auth_stalled", () => {
+      if (lostTimer !== null) {
+        window.clearTimeout(lostTimer);
+        lostTimer = null;
+      }
+      if (restoredTimer !== null) {
+        window.clearTimeout(restoredTimer);
+        restoredTimer = null;
+      }
+      setPhase((p) => (p === "expired" ? p : "stalled"));
     });
 
     const offUp = ws.on("connected", () => {
@@ -697,7 +743,13 @@ function ConnectionBanner() {
         return;
       }
       setPhase((p) => {
-        if (p !== "lost") return p;
+        // "expired" clears here as well as "lost". It is terminal for a GIVEN
+        // session, not for the app: a federated server switch re-points auth at
+        // another instance and reconnects, so a live socket is proof the
+        // expired-session banner no longer describes reality. Without this the
+        // socket would recover while the banner kept telling the user to sign
+        // in again for a server whose session is fine.
+        if (p !== "lost" && p !== "expired" && p !== "stalled") return p;
         if (restoredTimer !== null) window.clearTimeout(restoredTimer);
         restoredTimer = window.setTimeout(() => {
           restoredTimer = null;
@@ -707,9 +759,17 @@ function ConnectionBanner() {
       });
     });
 
+    // The socket can reach the terminal state before this effect subscribes
+    // (e.g. a reconnect that resolves during mount). Read it once so the banner
+    // can't miss the event and leave the app looking silently offline.
+    if (ws.sessionExpired) setPhase("expired");
+    else if (ws.connectionStalled) setPhase("stalled");
+
     return () => {
       offDown();
       offUp();
+      offExpired();
+      offStalled();
       if (lostTimer !== null) window.clearTimeout(lostTimer);
       if (restoredTimer !== null) window.clearTimeout(restoredTimer);
     };
@@ -724,20 +784,48 @@ function ConnectionBanner() {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: -32, opacity: 0 }}
           transition={{ duration: 0.25, ease: "easeOut" }}
-          role="status"
-          aria-live="polite"
+          role={phase === "expired" || phase === "stalled" ? "alert" : "status"}
+          aria-live={
+            phase === "expired" || phase === "stalled" ? "assertive" : "polite"
+          }
           className="fixed inset-x-0 top-0 z-[60]"
           style={{ paddingTop: "env(safe-area-inset-top)" }}
         >
           <div
             className={clsx(
               "flex items-center justify-center gap-2 border-b px-4 py-1.5 text-xs font-medium backdrop-blur-md",
-              phase === "lost"
-                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                : "border-stable-mint/30 bg-stable-mint/10 text-stable-mint",
+              phase === "expired"
+                ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                : phase === "lost" || phase === "stalled"
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                  : "border-stable-mint/30 bg-stable-mint/10 text-stable-mint",
             )}
           >
-            {phase === "lost" ? (
+            {phase === "expired" ? (
+              <>
+                <WifiOff className="h-3.5 w-3.5 shrink-0" />
+                Your session expired — live updates are paused.
+                <button
+                  type="button"
+                  onClick={() => login()}
+                  className="ml-1 rounded px-2 py-0.5 font-semibold underline underline-offset-2 hover:bg-rose-500/20"
+                >
+                  Sign in again
+                </button>
+              </>
+            ) : phase === "stalled" ? (
+              <>
+                <WifiOff className="h-3.5 w-3.5 shrink-0" />
+                Still reconnecting — live updates are paused.
+                <button
+                  type="button"
+                  onClick={() => login()}
+                  className="ml-1 rounded px-2 py-0.5 font-semibold underline underline-offset-2 hover:bg-amber-500/20"
+                >
+                  Sign in again
+                </button>
+              </>
+            ) : phase === "lost" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
                 Connection lost — reconnecting…
