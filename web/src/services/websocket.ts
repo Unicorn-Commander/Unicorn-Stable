@@ -636,6 +636,21 @@ class StableWebSocket {
       this.clearHandshakeTimeout();
       this._connected = false;
       this.stopHeartbeat();
+      // Count a rejected handshake as a failed attempt too.
+      //
+      // failedAttempts used to increment ONLY in retryLater(), i.e. only when
+      // no socket was ever created. But the most likely real-world auth outage
+      // takes the other path: when Keycloak answers 5xx (rather than 400) the
+      // token is NOT cleared, so we fall back to the cached stale token, a
+      // socket IS opened, and the server rejects it here. That loop is honest
+      // and self-healing, but it never escalated — a user could sit on amber
+      // "reconnecting…" indefinitely with no "sign in again" escape hatch.
+      // onopen resets this to 0, so a healthy reconnect still clears it.
+      this.failedAttempts++;
+      if (this.failedAttempts >= STALL_ESCALATION_ATTEMPTS && !this.stalled) {
+        this.stalled = true;
+        this.emit("auth_stalled", {} as WsEventPayload);
+      }
       this.emit("disconnected", {} as WsEventPayload);
 
       if (!this.intentionalClose && !this.authExpired) {

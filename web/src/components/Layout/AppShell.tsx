@@ -737,10 +737,13 @@ function ConnectionBanner() {
 
     const offUp = ws.on("connected", () => {
       if (lostTimer !== null) {
-        // Recovered inside the debounce window — the banner never showed.
+        // Recovered inside the debounce window — the transient "lost" banner
+        // never needs to show. Cancel the timer but DO NOT return: the phase
+        // may already be a terminal one ("expired"/"stalled") set before this
+        // blip, and returning here left that stale red banner up forever over
+        // a fully working socket. Fall through and let the reducer decide.
         window.clearTimeout(lostTimer);
         lostTimer = null;
-        return;
       }
       setPhase((p) => {
         // "expired" clears here as well as "lost". It is terminal for a GIVEN
