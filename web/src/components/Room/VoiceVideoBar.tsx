@@ -42,7 +42,12 @@ import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useIsDesktop } from "@/hooks/usePanelResize";
-import { useCallUiStore, uiCommandBus } from "@/stores/callUiStore";
+import {
+  useCallUiStore,
+  uiCommandBus,
+  DEFAULT_CALL_VIEW_MODE,
+} from "@/stores/callUiStore";
+import type { CallViewMode } from "@/lib/roomDataProtocol";
 import { api, type BrigadeAgent } from "@/services/api";
 import { ViewModeSwitcher } from "./ViewModeSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -217,18 +222,30 @@ function useFullscreen(): FullscreenController {
 interface TileControlButtonProps {
   icon: LucideIcon;
   label: string;
+  /**
+   * Longer hover tooltip when the terse `label` (which stays the accessible
+   * name) needs disambiguating — e.g. Picture-in-Picture vs. the call bar's
+   * "Pop out to window", two similar-looking controls that do different things.
+   */
+  title?: string;
   onClick: (e: ReactMouseEvent) => void;
   active?: boolean;
 }
 
-function TileControlButton({ icon: Icon, label, onClick, active }: TileControlButtonProps) {
+function TileControlButton({
+  icon: Icon,
+  label,
+  title,
+  onClick,
+  active,
+}: TileControlButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-label={label}
       aria-pressed={active}
-      title={label}
+      title={title ?? label}
       className={clsx(
         "glass focus-ring flex h-6 w-6 items-center justify-center rounded-md text-slate-200 transition-colors hover:text-white",
         active && "text-stable-purple-light ring-1 ring-stable-purple/60",
@@ -400,6 +417,7 @@ function ParticipantTile({
           <TileControlButton
             icon={PictureInPicture2}
             label="Picture in picture"
+            title="Picture in picture — float just this video in a small always-on-top thumbnail (use the call bar’s “Pop out to window” for a full second window)"
             active={pip.isActive}
             onClick={(e) => {
               e.stopPropagation();
@@ -543,6 +561,7 @@ function ScreenShareTile({
           <TileControlButton
             icon={PictureInPicture2}
             label="Picture in picture"
+            title="Picture in picture — float just this video in a small always-on-top thumbnail (use the call bar’s “Pop out to window” for a full second window)"
             active={pip.isActive}
             onClick={(e) => {
               e.stopPropagation();
@@ -864,7 +883,38 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Gate on BOTH desktop and the module's feature-detect (CONTRACT §3.5).
   const isDesktop = useIsDesktop();
   const popoutSupported = isDesktop && isPopoutSupported();
-  const popout = useCallPopout({ onClose: () => setPopoutOpen(roomId, false) });
+
+  // Popping out from the audio-compact default has to lift the view into the
+  // video stage (that's what the pop-out shows). `setViewMode` PERSISTS to
+  // localStorage, so without this the single act of popping out would silently
+  // and permanently rewrite the user's saved view mode for the room. Remember
+  // what we changed and put it back when the window closes — by our button OR
+  // by the user closing the OS window, which is why the restore lives in the
+  // `onClose` callback rather than in `bringBackPopout`.
+  const popoutPriorViewRef = useRef<{
+    mode: CallViewMode;
+    showVideo: boolean;
+  } | null>(null);
+
+  const restorePrePopoutView = useCallback(() => {
+    const prior = popoutPriorViewRef.current;
+    popoutPriorViewRef.current = null;
+    if (!prior) return;
+    const s = useCallUiStore.getState();
+    // Only undo what is still OURS. If the user picked a different view while
+    // popped out, that's a deliberate choice and it wins.
+    if ((s.viewModes[roomId] ?? DEFAULT_CALL_VIEW_MODE) === "grid") {
+      s.setViewMode(roomId, prior.mode);
+    }
+    if (s.showVideo && !prior.showVideo) s.toggleVideo(false);
+  }, [roomId]);
+
+  const popout = useCallPopout({
+    onClose: () => {
+      setPopoutOpen(roomId, false);
+      restorePrePopoutView();
+    },
+  });
 
   // Audio-first / video-off shows chips; the video modes show tiles.
   const showChips = viewMode === "compact" || !showVideo;
@@ -876,6 +926,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const videoHidden = showChips;
 
   // A popped-out stage makes no sense once we're back in chips; auto-close it.
+  // NOTE: `openPopout` lifts out of chips in the SAME click (batched with the
+  // open), so opening from the default compact view does not trip this.
   useEffect(() => {
     if (popout.isOpen && showChips) {
       popout.close();
@@ -927,11 +979,29 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     await room.localParticipant.setCameraEnabled(!isCamOn);
   }
   function openPopout() {
+    // The pop-out shows the VIDEO STAGE, which the audio-compact default view
+    // doesn't render — so lift out of chips as part of the same click instead
+    // of hiding the control (which is why users concluded it didn't exist).
+    // The lift is batched with this click, so by the time the auto-close effect
+    // runs `showChips` is already false and it does not immediately re-close.
     // Synchronous in the click handler — no await before .open() (audit §5).
-    popout.open();
+    // `open()` returns false when the popup was blocked; `popout.error` then
+    // drives the visible banner, so we must NOT claim the stage is detached
+    // (and must not disturb the user's view mode for a window that never
+    // opened).
+    if (!popout.open()) return;
+    if (showChips) {
+      // Record the pre-pop-out view BEFORE mutating it so closing the window
+      // restores it (setViewMode persists — see `popoutPriorViewRef`).
+      popoutPriorViewRef.current = { mode: viewMode, showVideo };
+      toggleVideo(true);
+      if (viewMode === "compact") setViewMode(roomId, "grid");
+    }
     setPopoutOpen(roomId, true);
   }
   function bringBackPopout() {
+    // `close()` runs the handle's teardown synchronously, which fires the
+    // `onClose` above → `restorePrePopoutView()`. No second restore here.
     popout.close();
     setPopoutOpen(roomId, false);
   }
@@ -1190,8 +1260,19 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         </button>
       )}
 
-      {/* Pop out the video stage into a separate window (desktop only). */}
-      {!showChips && popoutSupported && (
+      {/* Pop the video stage out into a REAL separate OS window you can drag to
+          another monitor (desktop only — `popoutSupported` already folds in
+          `useIsDesktop()`, so this never renders on touch).
+
+          Deliberately NOT gated on `!showChips` any more: the default view IS
+          audio-compact, so that gate hid the feature entirely and users
+          concluded it didn't exist. `openPopout` lifts the view out of chips
+          itself.
+
+          Distinct from the per-tile `PictureInPicture2` control, which floats
+          ONE video into the small always-on-top OS PiP thumbnail. Labels and
+          tooltips on both spell the difference out. */}
+      {popoutSupported && (
         <button
           onClick={poppedOut ? bringBackPopout : openPopout}
           className={clsx(
@@ -1200,12 +1281,16 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               ? "bg-stable-purple/20 text-stable-purple-light hover:bg-stable-purple/30"
               : "text-slate-200 hover:bg-white/[0.06] hover:text-slate-100",
           )}
-          aria-label={poppedOut ? "Bring the call back" : "Pop out the video"}
+          aria-label={
+            poppedOut
+              ? "Bring the call back into this window"
+              : "Pop out to window"
+          }
           aria-pressed={poppedOut}
           title={
             poppedOut
               ? "Bring the video back into this window"
-              : "Pop the video out into a separate window"
+              : "Pop out to window — opens the video in a separate window you can move to another monitor"
           }
         >
           <ExternalLink className="h-5 w-5" />
@@ -1236,6 +1321,43 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           <Volume2 className="h-4 w-4" />
           Tap to hear the call
         </button>
+      )}
+
+      {/* Pop-out blocked. `window.open` returning null is the browser's ONLY
+          signal and it is otherwise invisible — without this banner the button
+          appears to do nothing at all. Actionable: says what to change, and
+          retries in a fresh user gesture. */}
+      {popout.error && (
+        <div
+          role="alert"
+          className="flex w-full shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-400/20 bg-amber-400/15 px-4 py-2 text-sm text-amber-200"
+        >
+          <span className="flex items-center gap-2">
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            {popout.error === "blocked"
+              ? "Your browser blocked the pop-out window. Allow pop-ups for this site, then try again."
+              : "This browser can’t open a separate call window."}
+          </span>
+          <span className="flex shrink-0 items-center gap-1">
+            {popout.error === "blocked" && (
+              <button
+                type="button"
+                onClick={openPopout}
+                className="focus-ring rounded-md bg-amber-400/20 px-2 py-0.5 text-xs font-semibold transition-colors hover:bg-amber-400/30"
+              >
+                Try again
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={popout.clearError}
+              className="focus-ring rounded-md px-1.5 py-0.5 text-xs text-amber-200/70 transition-colors hover:text-amber-100"
+              aria-label="Dismiss the pop-out warning"
+            >
+              Dismiss
+            </button>
+          </span>
+        </div>
       )}
 
       {/* Agent working-state orb (listening / thinking / speaking). */}

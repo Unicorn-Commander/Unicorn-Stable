@@ -90,6 +90,39 @@ export interface CallPopoutHandle {
   close(): void;
 }
 
+/**
+ * A pop-out window's on-screen POSITION, as persisted across reloads.
+ *
+ * Position only — deliberately NOT size. `window.open`'s `width`/`height`
+ * features are CONTENT dimensions, while `outerWidth`/`outerHeight` (the only
+ * size a parent can read back) INCLUDE the window chrome. Round-tripping one
+ * through the other adds the chrome size on every open/close cycle, so the
+ * window grows without bound. Position has no such mismatch: both the `left`/
+ * `top` features and `screenX`/`screenY` address the window frame's top-left
+ * corner, and any residual per-browser offset is measured and cancelled (see
+ * `callPopout.ts`), so it cannot accumulate.
+ */
+export interface PopoutGeometry {
+  /** Screen X of the window's left edge (may be negative on a left monitor). */
+  left: number;
+  /** Screen Y of the window's top edge. */
+  top: number;
+}
+
+/**
+ * Why a pop-out failed to open.
+ *   • `"unsupported"` — no `window.open` (SSR / exotic embed).
+ *   • `"blocked"` — the browser's popup blocker ate it. USER-VISIBLE: this is
+ *     recoverable (allow popups for the site) and must never degrade silently.
+ */
+export type PopoutOpenFailure = "unsupported" | "blocked";
+
+/** Result of `openCallPopoutWithResult` — exactly one side is non-null. */
+export interface OpenCallPopoutResult {
+  handle: CallPopoutHandle | null;
+  failure: PopoutOpenFailure | null;
+}
+
 /** Options for {@link openCallPopout}. */
 export interface OpenCallPopoutOptions {
   /** Window + document title. Default "Stable — call". */
@@ -108,10 +141,21 @@ export interface OpenCallPopoutOptions {
  */
 export interface CallPopoutController {
   isOpen: boolean;
-  /** Open (or focus) the pop-out. Call directly from an `onClick` (user gesture). */
-  open: () => void;
+  /**
+   * Open (or focus) the pop-out. Call directly from an `onClick` (user gesture).
+   * Returns true when a window is now open; false means it failed and
+   * {@link error} has been set for the UI to render.
+   */
+  open: () => boolean;
   /** Close the pop-out. */
   close: () => void;
+  /**
+   * The last open failure, or null. Non-null ⇒ RENDER SOMETHING: a blocked
+   * popup is invisible at the browser level, so the app owns telling the user.
+   */
+  error: PopoutOpenFailure | null;
+  /** Clear {@link error} (dismiss the banner). */
+  clearError: () => void;
   /** Portals its children into the pop-out while open; renders null otherwise. */
   Host: FC<{ children: ReactNode }>;
 }

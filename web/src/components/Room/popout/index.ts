@@ -13,9 +13,17 @@
  *
  *   Detached window (real second window; tiles rendered via a React portal)
  *     • openCallPopout(opts?)    → imperative CallPopoutHandle | null
+ *     • openCallPopoutWithResult → { handle, failure } — distinguishes a
+ *                                    BLOCKED popup from unsupported so the UI
+ *                                    can say so instead of doing nothing
  *     • CallPopoutHost           → portals children into the pop-out
- *     • useCallPopout(opts?)     → { isOpen, open, close, Host }
+ *     • useCallPopout(opts?)     → { isOpen, open, close, error, clearError,
+ *                                    Host }
  *     • isPopoutSupported()      → feature-detect
+ *     • readPopoutGeometry() / clearPopoutGeometry() → the validated,
+ *                                    persisted window POSITION (never size —
+ *                                    see callPopout.ts for why round-tripping
+ *                                    size grows the window every cycle)
  *
  * Both entries are HUMAN-only (they need a user-activation gesture); they are
  * intentionally NOT wired to the agent `ui_command` seam.
@@ -27,7 +35,13 @@ export { pipManager, PipUnsupportedError } from "./pipManager";
 export { mergeVideoRefs } from "./mergeVideoRefs";
 
 // --- Detached window ---
-export { openCallPopout, isPopoutSupported } from "./callPopout";
+export {
+  openCallPopout,
+  openCallPopoutWithResult,
+  isPopoutSupported,
+  readPopoutGeometry,
+  clearPopoutGeometry,
+} from "./callPopout";
 export { CallPopoutHost, useCallPopout } from "./CallPopoutHost";
 
 // --- Types ---
@@ -37,5 +51,8 @@ export type {
   CallPopoutHandle,
   CallPopoutController,
   OpenCallPopoutOptions,
+  OpenCallPopoutResult,
+  PopoutOpenFailure,
+  PopoutGeometry,
   VideoCallbackRef,
 } from "./types";
