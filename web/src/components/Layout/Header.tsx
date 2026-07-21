@@ -17,6 +17,7 @@ import {
 import { useState, useRef, useEffect } from "react";
 import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
+import { useDirectCall } from "@/hooks/useDirectCall";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
 import { Avatar } from "@/components/Avatar";
@@ -76,6 +77,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
   const activeRoom = rooms.find((r) => r.id === activeRoomId);
+  const { startCall } = useDirectCall();
   // Identity hue for the signed-in resident — rings the avatar + menu header.
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
 
@@ -86,7 +88,6 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
     localParticipant,
     isConnected: lkConnected,
     isConnecting: lkConnecting,
-    connect: lkConnect,
     disconnect: lkDisconnect,
     // Read purely to re-render on mic/camera/track changes. LiveKit mutates
     // the SAME LocalParticipant object in place, so the object identity never
@@ -198,8 +199,11 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   function handleCallToggle() {
     if (lkConnected || lkConnecting) {
       lkDisconnect();
-    } else {
-      void lkConnect();
+    } else if (activeRoomId) {
+      // DMs ring the person; channels fall through to a plain join inside
+      // startCall. Both used to be `lkConnect()`, which is why a DM call had
+      // no way to tell anybody it was happening.
+      void startCall(activeRoomId);
     }
   }
 

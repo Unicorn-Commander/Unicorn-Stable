@@ -98,14 +98,47 @@ export interface WsRoomUpdateEvent {
 
 /** Someone started a call in a room the user belongs to. */
 export interface WsCallStartedEvent {
+  /**
+   * Server call id. OPTIONAL on the type, required in practice from the
+   * producer added alongside this field (api/calls.py). It is optional here
+   * because this event's shape predates any producer at all, and a receiver
+   * that cannot accept an id-less frame would be asserting something about a
+   * server it has not met. With no id the banner degrades to join/dismiss —
+   * accept/decline are server transitions and need one.
+   */
+  call_id?: string;
   room_id: string;
   room_type: "dm" | "group_dm" | "channel";
   room_name: string;
   caller: {
     id: string;
     display_name: string;
+    /** Added with the ringing producer: the callee must see WHO is calling. */
+    avatar_url?: string | null;
   };
   started_at: string;
+  /** Server's ring deadline. Client timers derive from this — see the note in
+   *  incomingCallStore — so the two ends share ONE clock. */
+  expires_at?: string;
+  ring_timeout_seconds?: number;
+}
+
+/** Caller-side outcome of a ring. Delivered on `user:{participant_id}`. */
+export interface WsCallRingStateEvent {
+  call_id: string;
+  room_id: string;
+  /** accepted | declined | canceled | timeout */
+  state: string;
+  by: { id: string | null; display_name: string | null } | null;
+}
+
+/** Callee-side "stop ringing" — fans out to EVERY device of that identity. */
+export interface WsCallResolvedEvent {
+  call_id: string;
+  room_id: string;
+  /** accepted | declined | canceled | timeout */
+  reason: string;
+  by_participant_id: string | null;
 }
 
 export type WsEventPayload =
@@ -115,7 +148,9 @@ export type WsEventPayload =
   | WsMessageEditEvent
   | WsMessageDeleteEvent
   | WsRoomUpdateEvent
-  | WsCallStartedEvent;
+  | WsCallStartedEvent
+  | WsCallRingStateEvent
+  | WsCallResolvedEvent;
 
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 30000;

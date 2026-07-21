@@ -94,6 +94,32 @@ export interface RoomMember {
   status?: string;
 }
 
+/** Per-callee reachability, as the server determined it at ring time. */
+export interface RingTarget {
+  id: string;
+  display_name: string;
+  /** ringing | offline | busy | unknown */
+  state: string;
+}
+
+export interface RingResponse {
+  /** null when nobody was rung (everyone offline/busy) — there is no call. */
+  call_id: string | null;
+  room_id: string;
+  /** ringing | unreachable */
+  state: string;
+  started_at: string | null;
+  expires_at: string | null;
+  ring_timeout_seconds: number;
+  targets: RingTarget[];
+}
+
+export interface CallActionResponse {
+  call_id: string;
+  room_id: string;
+  state: string;
+}
+
 export interface RoomPresenceResponse {
   /** Participant IDs (Participant.id) currently online in the room. */
   online: string[];
@@ -315,6 +341,42 @@ class StableApiClient {
       "POST",
       "/api/v1/tokens/livekit",
       { room_name: roomId },
+    );
+  }
+
+  /**
+   * Ring the other member(s) of a DM. 400 on a channel (ringing a channel is
+   * refused by the server, not merely avoided by the client), 403 if you are
+   * not a member of the room.
+   */
+  async ringRoom(roomId: string): Promise<RingResponse> {
+    return this.request<RingResponse>(
+      "POST",
+      `/api/v1/rooms/${roomId}/call/ring`,
+    );
+  }
+
+  /** Callee answers. 410 if the call already ended. */
+  async acceptCall(callId: string): Promise<CallActionResponse> {
+    return this.request<CallActionResponse>(
+      "POST",
+      `/api/v1/calls/${callId}/accept`,
+    );
+  }
+
+  /** Callee declines — the caller is told by name. 410 if already ended. */
+  async declineCall(callId: string): Promise<CallActionResponse> {
+    return this.request<CallActionResponse>(
+      "POST",
+      `/api/v1/calls/${callId}/decline`,
+    );
+  }
+
+  /** Caller gives up. 410 if already ended, 403 if you are not the caller. */
+  async cancelCall(callId: string): Promise<CallActionResponse> {
+    return this.request<CallActionResponse>(
+      "POST",
+      `/api/v1/calls/${callId}/cancel`,
     );
   }
 

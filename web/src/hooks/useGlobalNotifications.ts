@@ -2,9 +2,12 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { useIncomingCallStore } from "@/stores/incomingCallStore";
+import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
 import {
   ws,
   WsCallStartedEvent,
+  WsCallResolvedEvent,
+  WsCallRingStateEvent,
   WsEventPayload,
   WsMessageEvent,
 } from "@/services/websocket";
@@ -214,6 +217,39 @@ export function useGlobalNotifications() {
       useIncomingCallStore.getState().ingest(event);
     });
 
+    // CALLER feedback. Without this the caller's card would ring until its
+    // own backstop fired, no matter what the callee actually did.
+    const unsubRingState = ws.on("call_ring_state", (data: WsEventPayload) => {
+      const e = data as unknown as WsCallRingStateEvent;
+      if (!e?.call_id || !e?.state) return;
+      const who = e.by?.display_name || "They";
+      const settle = useOutgoingCallStore.getState().settle;
+      switch (e.state) {
+        case "accepted":
+          settle("accepted", `${who} answered.`, { callId: e.call_id });
+          break;
+        case "declined":
+          settle("declined", `${who} declined the call.`, { callId: e.call_id });
+          playCue("notify");
+          break;
+        case "timeout":
+          settle("no_answer", "They didn't pick up.", { callId: e.call_id });
+          break;
+        case "canceled":
+          settle("canceled", "The call was cancelled.", { callId: e.call_id });
+          break;
+      }
+    });
+
+    // CALLEE side, EVERY device of this identity: the call is over, whoever
+    // ended it. This is what makes "answer on the phone, laptop stops ringing"
+    // work — both sockets subscribe to the same `user:{id}` Redis channel.
+    const unsubCallResolved = ws.on("call_resolved", (data: WsEventPayload) => {
+      const e = data as unknown as WsCallResolvedEvent;
+      if (!e?.call_id) return;
+      useIncomingCallStore.getState().resolve(e.call_id);
+    });
+
     const unsubRead = ws.on("read_receipt", (data: WsEventPayload) => {
       const e = data as unknown as {
         room_id: string;
@@ -349,6 +385,8 @@ export function useGlobalNotifications() {
       unsubMessage();
       unsubInvited();
       unsubCallStarted();
+      unsubRingState();
+      unsubCallResolved();
       unsubReaction();
       unsubRead();
       unsubMsgUpdate();
