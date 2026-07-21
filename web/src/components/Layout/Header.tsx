@@ -83,14 +83,30 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   // publish + agent dispatch + audio playback all happen in the provider now.
   const {
     room,
+    localParticipant,
     isConnected: lkConnected,
     isConnecting: lkConnecting,
     connect: lkConnect,
     disconnect: lkDisconnect,
+    // Read purely to re-render on mic/camera/track changes. LiveKit mutates
+    // the SAME LocalParticipant object in place, so the object identity never
+    // changes and a version bump is the only signal a toggle happened.
+    version: _lkVersion,
   } = useStableRoom();
 
-  const [micEnabled, setMicEnabled] = useState(true);
-  const [camEnabled, setCamEnabled] = useState(false);
+  // DERIVE from LiveKit; never mirror it in local state.
+  //
+  // These used to be `useState(true)` / `useState(false)` that only updated
+  // when THIS header's own buttons were clicked. Two independent bugs fell out:
+  //   1. Toggling the camera from the in-call bar (VoiceVideoBar) or the call
+  //      dock changed the real track but never told the header, so the header
+  //      icon kept showing the old state until you clicked the header itself.
+  //   2. The seed values were fiction -- mic defaulted to "on" and camera to
+  //      "off" regardless of the actual published tracks, so the header could
+  //      be wrong before anyone touched anything.
+  // CallDock and VoiceVideoBar already derive; the header was the odd one out.
+  const micEnabled = localParticipant?.isMicrophoneEnabled ?? false;
+  const camEnabled = localParticipant?.isCameraEnabled ?? false;
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const avatarBtnRef = useRef<HTMLButtonElement>(null);
@@ -113,16 +129,15 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
   async function handleToggleMic() {
     if (!room) return;
-    const next = !micEnabled;
-    await room.localParticipant.setMicrophoneEnabled(next);
-    setMicEnabled(next);
+    // No local echo: the RoomEvent.TrackMuted/TrackUnmuted listener in
+    // VoiceProvider bumps `version`, which re-renders every consumer with the
+    // real state. Echoing here is what let the header drift out of sync.
+    await room.localParticipant.setMicrophoneEnabled(!micEnabled);
   }
 
   async function handleToggleCam() {
     if (!room) return;
-    const next = !camEnabled;
-    await room.localParticipant.setCameraEnabled(next);
-    setCamEnabled(next);
+    await room.localParticipant.setCameraEnabled(!camEnabled);
   }
 
   async function handleScreenShare() {
