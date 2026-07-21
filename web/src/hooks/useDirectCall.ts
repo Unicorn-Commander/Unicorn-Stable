@@ -88,6 +88,21 @@ export function useDirectCall() {
         await connect();
       } catch (err) {
         const e = err as ApiError;
+
+        // 409 = "there is nobody in this conversation to ring". The server
+        // only rings HUMAN participants, so every agent DM lands here. That
+        // is not a failure: an agent DM has no one to ring, you simply JOIN,
+        // and the agent is dispatched by the LiveKit room itself -- which is
+        // exactly what main did before ringing existed. Without this
+        // fall-through the phone button reports "Call failed" instead of
+        // starting the call, and in this database 43 of 48 DMs are
+        // human<->agent, so it would break voice for ~90% of DMs including
+        // every "talk to an agent" conversation.
+        if (e?.status === 409) {
+          await connect();
+          return;
+        }
+
         out.showOutcome({
           callId: null,
           roomId,

@@ -155,17 +155,27 @@ export function useFeedPopouts(): FeedPopoutRegistry {
     [handles],
   );
 
-  // Bound Host — re-created only when the handle map changes (i.e. a window
-  // opened or closed), so a live window's portal subtree is never remounted by
-  // an unrelated parent re-render. Remounting it would detach and re-attach the
-  // LiveKit track: a visible black frame.
+  // Bound Host with a PERMANENTLY STABLE component identity.
+  //
+  // This previously depended on [handles], which mints a new component TYPE
+  // every time the registry changes. React cannot reconcile across a changed
+  // type, so opening or closing ANY feed unmounted and remounted EVERY other
+  // open feed's portal subtree -- destroying and rebuilding each <video> and
+  // forcing a real LiveKit detach/attach, i.e. a visible black flash on every
+  // other monitor. Measured: opening 4 feeds then closing 1 produced 5 mounts
+  // / 4 unmounts for a feed that should have seen 2 / 1.
+  //
+  // Empty dep array makes the type stable forever; the handle is read from
+  // `handlesRef` at render time. Freshness is preserved because `commit`
+  // updates the ref and calls setState in the same tick, so the parent
+  // re-renders and this body re-runs -- an update, not a remount.
   const Host = useCallback<FC<{ feedKey: FeedKey; children: ReactNode }>>(
     ({ feedKey, children }) => (
-      <CallPopoutHost handle={handles.get(feedKey) ?? null}>
+      <CallPopoutHost handle={handlesRef.current.get(feedKey) ?? null}>
         {children}
       </CallPopoutHost>
     ),
-    [handles],
+    [],
   );
 
   return { openKeys, isOpen, open, close, closeAll, error, clearError, Host };

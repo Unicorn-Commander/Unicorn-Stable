@@ -120,6 +120,14 @@ interface CallParticipant {
 /** Resolved screen-share tile model: video + its sibling screen audio (if any). */
 interface ScreenShareVM {
   sid: string;
+  /**
+   * Identity-derived, STABLE across reloads and reconnects -- unlike `sid`,
+   * which is a LiveKit participant sid regenerated every session. Only used
+   * to build the pop-out feed key, which doubles as the localStorage key for
+   * remembered monitor placement: keying that on `sid` meant placement was
+   * silently never restored and the store grew unbounded.
+   */
+  feedId: string;
   label: string;
   videoTrack: LocalTrack | RemoteTrack;
   /**
@@ -944,7 +952,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       );
       // Local screen audio isn't looped back to self → audioTrack is null.
       if (v?.track)
-        out.push({ sid: "local-screen", label: "You — screen", videoTrack: v.track, audioTrack: null });
+        out.push({ sid: "local-screen", feedId: "local-screen", label: "You — screen", videoTrack: v.track, audioTrack: null });
     }
     for (const p of remoteParticipants) {
       const pubs = Array.from(p.trackPublications.values());
@@ -959,6 +967,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         );
         out.push({
           sid: p.sid,
+          feedId: p.identity,
           label: `${agent?.name || p.name || p.identity} — screen`,
           videoTrack: v.track,
           // Remote screen_share_audio is a RemoteAudioTrack; source-string
@@ -1093,7 +1102,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     for (const p of participants) {
       if (p.videoTrack) keys.add(camFeedKey(p.id));
     }
-    for (const s of screenShares) keys.add(screenFeedKey(s.sid));
+    for (const s of screenShares) keys.add(screenFeedKey(s.feedId));
     return keys;
   }, [participants, screenShares]);
 
@@ -1314,7 +1323,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     opts?: { fill?: boolean; onClick?: () => void; inPopout?: boolean },
   ) {
     const inPopout = !!opts?.inPopout;
-    const feedKey = screenFeedKey(s.sid);
+    const feedKey = screenFeedKey(s.feedId);
     return (
       <ScreenShareTile
         key={s.sid}
@@ -1346,7 +1355,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   /** Main-stage screen tile: the real tile, or a placeholder when detached. */
   function renderScreen(s: ScreenShareVM, opts?: { fill?: boolean; onClick?: () => void }) {
-    const feedKey = screenFeedKey(s.sid);
+    const feedKey = screenFeedKey(s.feedId);
     if (isFeedPoppedOut(feedKey)) {
       return (
         <FeedPoppedOutPlaceholder
