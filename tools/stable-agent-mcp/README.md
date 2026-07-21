@@ -206,6 +206,16 @@ The loopback restriction people remember applies only to the **legacy**
 an `ipAllowList` of `127.0.0.1/32` 403s it from the edge. That does not touch
 `/api/v1/gateway/*`.
 
+> ⚠️ That block was **HTTPS-only** until 2026-07-21. The deny router is scoped to
+> the `websecure` entrypoint, while `stable-http` proxied `/api` on the `web`
+> entrypoint (port 80) — so `http://` reached the backend from the public
+> internet and returned FastAPI's own 422, proving the network boundary was
+> defeated. The internal bearer still gated every handler, so this was a lost
+> defence-in-depth layer, not an open door. Closed on `stable.magicunicorn.dev`
+> by the port-80 redirect in this same change. **`stable.unicorncommander.ai`
+> (flagship) is still open** until its own stack is redeployed — do not read this
+> section as covering flagship yet.
+
 Use `https://stable.magicunicorn.dev` — which is the code default, so
 `STABLE_GATEWAY_BASE_URL` is optional. Do **not** point this at a tailnet IP; no
 external lane can reach one.
