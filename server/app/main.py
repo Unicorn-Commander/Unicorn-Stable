@@ -25,6 +25,7 @@ from app.api.internal_knowledge import router as internal_knowledge_router
 from app.api.knowledge import router as knowledge_router
 from app.api.messages import router as messages_router
 from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gateway
+from app.api.calls import router as calls_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
 from app.api.tts import router as tts_router
@@ -257,6 +258,7 @@ def create_app() -> FastAPI:
     app.include_router(messages_router, prefix="/api/v1", tags=["Messages"])
     app.include_router(gateway_router, prefix="/api/v1", tags=["Gateway"])  # ORCH-1
     app.include_router(tokens_router, prefix="/api/v1", tags=["Tokens"])
+    app.include_router(calls_router, prefix="/api/v1", tags=["Calls"])
     app.include_router(tts_router, prefix="/api/v1", tags=["TTS"])
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])

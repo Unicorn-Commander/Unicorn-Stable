@@ -23,6 +23,7 @@ import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useCallUiStore } from "@/stores/callUiStore";
+import { useDirectCall } from "@/hooks/useDirectCall";
 import { emojiSuggestions, ensureEmojiIndex, replaceEmojiShortcodes } from "@/utils/emoji";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
 import { FormatToolbar, type FormatKind } from "./FormatToolbar";
@@ -355,11 +356,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   // Shared call (VoiceProvider): tapping the phone/mic just calls connect();
   // mic publish + agent dispatch + audio playback all happen in the provider.
-  const {
-    connect: lkConnect,
-    isConnected,
-    isConnecting,
-  } = useStableRoom();
+  const { isConnected, isConnecting } = useStableRoom();
+  // The START-a-call seam: a DM rings the person, a channel just joins.
+  const { startCall } = useDirectCall();
 
   // Brigade roster — all 22 personas. Fetched once, cached in react-query.
   // We let users @mention any agent regardless of room membership; the agent
@@ -935,7 +934,8 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     // screen). Connected to a DIFFERENT room's call → connect() treats this as
     // an explicit call-switch (tear the old one down, join here).
     if (isConnected && activeCallRoomId === roomId) return;
-    void lkConnect();
+    // DM -> ring the person (and tell me what happened); channel -> plain join.
+    void startCall(roomId);
   }
 
   if (disabledReason) {

@@ -40,6 +40,7 @@ import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
 import { RoomView } from "@/components/Room/RoomView";
 import { IncomingCallBanner } from "@/components/Call/IncomingCallBanner";
+import { OutgoingCallStatus } from "@/components/Call/OutgoingCallStatus";
 import { HomeDashboard } from "@/components/Home/HomeDashboard";
 import { AgentsPage } from "@/components/Agents/AgentsPage";
 import { BridgePage } from "@/components/Bridge/BridgePage";
@@ -657,6 +658,7 @@ export function AppShell() {
 
       <ConnectionBanner />
       <IncomingCallBanner />
+      <OutgoingCallStatus />
       <ToastStack />
     </div>
   );

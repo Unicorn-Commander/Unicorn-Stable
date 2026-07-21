@@ -97,10 +97,50 @@ function tone(ctx: AudioContext, spec: ToneSpec): void {
  * document is hidden; `notify` plays regardless (a notification pop while the
  * tab is backgrounded is the point).
  */
+/**
+ * Why a cue would NOT be heard right now, as a sentence to show a user — or
+ * null if sound should work.
+ *
+ * `playCue` swallows everything by design (sound is decoration and must never
+ * take down a message handler). For the RING that guarantee has a sharp edge:
+ * a silently-silent ring is a missed call the user never knew arrived. This is
+ * the reporting half — the ringing surface asks, and renders the answer.
+ * Deliberately side-effect-light: it will not construct an AudioContext before
+ * the page has had a user gesture, since that is the case it is detecting.
+ */
+export function cueBlockedReason(): string | null {
+  try {
+    if (!soundCuesEnabled()) return "Sound cues are off in Settings";
+    const Ctor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!Ctor) return "This browser can't play the ring";
+    const activation = (
+      navigator as Navigator & { userActivation?: { hasBeenActive?: boolean } }
+    ).userActivation;
+    // `userActivation` is unsupported on some browsers (Safari <16): absent is
+    // not the same as false, so only an explicit false blocks.
+    if (activation && activation.hasBeenActive === false) {
+      return "Ringing silently \u2014 click the page to allow sound";
+    }
+    if (audioCtx && audioCtx.state === "suspended") {
+      return "Ringing silently \u2014 click the page to allow sound";
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function playCue(name: CueName): void {
   try {
     if (!soundCuesEnabled()) return;
-    if (name !== "notify" && document.hidden) return;
+    // `ring` joins `notify` in playing while the tab is hidden. The old rule
+    // ("call cues only make sense with the tab in use") is right for
+    // join/leave chimes and exactly backwards for a ring: a call arriving
+    // while you are in another tab is precisely the one you need to hear.
+    if (name !== "notify" && name !== "ring" && document.hidden) return;
     const ctx = getContext();
     if (!ctx) return;
 
