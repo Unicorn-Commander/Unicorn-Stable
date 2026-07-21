@@ -18,7 +18,13 @@
  *                                    can say so instead of doing nothing
  *     • CallPopoutHost           → portals children into the pop-out
  *     • useCallPopout(opts?)     → { isOpen, open, close, error, clearError,
- *                                    Host }
+ *                                    Host }  — ONE window per hook instance
+ *     • useFeedPopouts()         → { openKeys, isOpen, open, close, closeAll,
+ *                                    error, clearError, Host } — N windows,
+ *                                    one per feed (participant camera or
+ *                                    screen share), each with its OWN persisted
+ *                                    position. This is what lets four feeds sit
+ *                                    on four monitors at once.
  *     • isPopoutSupported()      → feature-detect
  *     • readPopoutGeometry() / clearPopoutGeometry() → the validated,
  *                                    persisted window POSITION (never size —
@@ -43,6 +49,7 @@ export {
   clearPopoutGeometry,
 } from "./callPopout";
 export { CallPopoutHost, useCallPopout } from "./CallPopoutHost";
+export { useFeedPopouts } from "./useFeedPopouts";
 
 // --- Types ---
 export type {
@@ -55,4 +62,8 @@ export type {
   PopoutOpenFailure,
   PopoutGeometry,
   VideoCallbackRef,
+  FeedKey,
+  FeedPopoutError,
+  FeedPopoutRegistry,
+  OpenFeedPopoutOptions,
 } from "./types";

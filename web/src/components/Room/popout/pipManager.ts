@@ -33,10 +33,32 @@ type Listener = () => void;
 let autoSeq = 0;
 const nextAutoId = (): string => `pip-auto-${++autoSeq}`;
 
+/**
+ * The document a media element actually lives in.
+ *
+ * MULTI-WINDOW: once a tile is portalled into a pop-out, its <video> belongs to
+ * the CHILD document. `document.pictureInPictureElement` / `exitPictureInPicture`
+ * on the global (opener) document then describe the wrong window, so PiP started
+ * from a popped-out tile could never be exited and `isActive` would lie. This is
+ * the same wrong-document bug class as SplitPane writing to the main
+ * `document.body`: resolve the document from the NODE, never from the global.
+ */
+function docOf(el: Element | null): Document | null {
+  const owner = el?.ownerDocument ?? null;
+  if (owner) return owner;
+  return typeof document !== "undefined" ? document : null;
+}
+
 class PipManager {
   private listeners = new Set<Listener>();
   private activeEl: HTMLVideoElement | null = null;
   private activeId: string | null = null;
+  /**
+   * The document that owns the current PiP element. Remembered because by the
+   * time `exitPip()` is called the element may already be detached (its
+   * `ownerDocument` no longer reachable through the live tree).
+   */
+  private activeDoc: Document | null = null;
   /** element → stable id, so `activePipId` survives across events. */
   private ids = new WeakMap<HTMLVideoElement, string>();
 
@@ -89,7 +111,10 @@ class PipManager {
     // Only clear when THIS element is still the recorded owner. When PiP moves
     // B←A, B's `enter` may fire before A's `leave`; guarding here means the
     // late `leave` from A doesn't stomp the new owner B.
-    if (this.activeEl === el) this.setActive(null, null);
+    if (this.activeEl === el) {
+      this.activeDoc = null;
+      this.setActive(null, null);
+    }
   };
 
   /**
@@ -107,11 +132,12 @@ class PipManager {
     const rid = id ?? this.ids.get(el) ?? nextAutoId();
     this.ids.set(el, rid);
 
+    // Resolve the element's OWN document — it may be a pop-out window's.
+    const doc = docOf(el);
+
     // Already the PiP element → just reconcile the id and return.
-    if (
-      typeof document !== "undefined" &&
-      document.pictureInPictureElement === el
-    ) {
+    if (doc && doc.pictureInPictureElement === el) {
+      this.activeDoc = doc;
       this.setActive(el, rid);
       return;
     }
@@ -124,15 +150,28 @@ class PipManager {
 
     // The `enter` event also fires, but its ordering vs. this resolution isn't
     // guaranteed, so reflect immediately for a snappy UI.
+    this.activeDoc = doc;
     this.setActive(el, rid);
   };
 
-  /** Close the PiP window if one is open. Safe to call unconditionally. */
+  /**
+   * Close the PiP window if one is open. Safe to call unconditionally.
+   *
+   * Exits on the document that actually owns the PiP element (which is the
+   * pop-out window's document when PiP was started from a detached tile), NOT
+   * the global opener document.
+   */
   exitPip = async (): Promise<void> => {
-    if (typeof document === "undefined") return;
-    if (document.pictureInPictureElement) {
-      await document.exitPictureInPicture();
+    const doc = this.activeDoc ?? docOf(this.activeEl);
+    try {
+      if (doc?.pictureInPictureElement) {
+        await doc.exitPictureInPicture();
+      }
+    } catch {
+      // A pop-out window closed under us takes its PiP with it; the state reset
+      // below is still correct, so this must not reject into the caller.
     }
+    this.activeDoc = null;
     this.setActive(null, null);
   };
 }
