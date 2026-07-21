@@ -91,6 +91,25 @@ export function getPopoutRoot(doc: Document): HTMLElement {
  * ------------------------------------------------------------------ */
 
 const GEOMETRY_KEY = "stable.call-popout-position.v2";
+
+/**
+ * Storage key for one window's position.
+ *
+ * MULTI-WINDOW: each pop-out gets its OWN slot, namespaced by a caller-supplied
+ * `geometryKey` (the feed id — `cam:local`, `screen:PA_abc…`). Without this every
+ * window would share one coordinate and a 4-monitor layout would collapse to a
+ * single remembered spot. Passing no key keeps the ORIGINAL slot, so the
+ * whole-stage pop-out's saved position survives this change.
+ *
+ * The key is sanitised: LiveKit identities are user-influenced strings and this
+ * lands in localStorage, so anything outside a conservative charset is escaped
+ * rather than concatenated raw.
+ */
+function geometryStorageKey(geometryKey?: string): string {
+  if (!geometryKey) return GEOMETRY_KEY;
+  const safe = geometryKey.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 120);
+  return `${GEOMETRY_KEY}.${safe}`;
+}
 /** Absolute virtual-desktop coordinate bound (multi-monitor, incl. negative). */
 const MAX_COORD = 20000;
 /** How many screen-widths/heights out from the current screen we still trust. */
@@ -153,10 +172,10 @@ function isOnCurrentDesktop(geom: PopoutGeometry): boolean {
  * sit in localStorage forever waiting for a re-plug that never comes. This is
  * one of {@link clearPopoutGeometry}'s live call sites.
  */
-export function readPopoutGeometry(): PopoutGeometry | null {
+export function readPopoutGeometry(geometryKey?: string): PopoutGeometry | null {
   let raw: string | null = null;
   try {
-    raw = localStorage.getItem(GEOMETRY_KEY);
+    raw = localStorage.getItem(geometryStorageKey(geometryKey));
   } catch {
     return null;
   }
@@ -165,17 +184,17 @@ export function readPopoutGeometry(): PopoutGeometry | null {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    clearPopoutGeometry();
+    clearPopoutGeometry(geometryKey);
     return null;
   }
   if (!isPlausibleGeometry(parsed)) {
-    clearPopoutGeometry();
+    clearPopoutGeometry(geometryKey);
     return null;
   }
   if (!isOnCurrentDesktop(parsed)) {
     // Saved against a display that is not attached any more — forget it and
     // centre on the screen we can actually see.
-    clearPopoutGeometry();
+    clearPopoutGeometry(geometryKey);
     return null;
   }
   // Normalise to exactly {left, top}. A payload written by an older build also
@@ -185,20 +204,20 @@ export function readPopoutGeometry(): PopoutGeometry | null {
 }
 
 /** Forget the stored placement (next open centers again). */
-export function clearPopoutGeometry(): void {
+export function clearPopoutGeometry(geometryKey?: string): void {
   try {
-    localStorage.removeItem(GEOMETRY_KEY);
+    localStorage.removeItem(geometryStorageKey(geometryKey));
   } catch {
     /* private mode / quota */
   }
 }
 
-function savePopoutGeometry(geom: PopoutGeometry): void {
+function savePopoutGeometry(geom: PopoutGeometry, geometryKey?: string): void {
   if (!isPlausibleGeometry(geom)) return;
   try {
     // Write exactly {left, top} — never let a size field into the payload.
     localStorage.setItem(
-      GEOMETRY_KEY,
+      geometryStorageKey(geometryKey),
       JSON.stringify({ left: geom.left, top: geom.top }),
     );
   } catch {
@@ -283,6 +302,19 @@ function whenPresented(win: Window, onPresented: () => void): () => void {
     window.clearTimeout(timer);
   };
 }
+
+/**
+ * Cascade step for the Nth simultaneously-open window that has no SAVED
+ * position yet. Without it, popping out four feeds for the first time centres
+ * all four on the identical pixel and looks like only one opened.
+ *
+ * This offsets a DEFAULT only — it is never derived from, nor fed back into,
+ * persisted geometry, so it cannot accumulate the way the old size round-trip
+ * did. Once a window has a saved position, the saved value wins outright.
+ */
+const CASCADE_STEP_PX = 36;
+/** Wrap the cascade so a 10th window doesn't march off the bottom-right. */
+const CASCADE_WRAP = 6;
 
 /** Centre a `width`×`height` window on the opener's screen. */
 function centeredPosition(width: number, height: number): { left: number; top: number } {
@@ -384,13 +416,24 @@ export function openCallPopoutWithResult(
     title = "Stable — call",
     width = 960,
     height = 600,
+    geometryKey,
+    cascadeIndex = 0,
     onClose,
   } = opts ?? {};
 
   // Size ALWAYS comes from the options — never from storage. Only the position
   // is restored, and only after validating it against the current display.
-  const saved = readPopoutGeometry();
-  const requested = saved ?? centeredPosition(width, height);
+  // MULTI-WINDOW: the slot is namespaced per feed (see `geometryStorageKey`), so
+  // each pop-out remembers its OWN monitor placement.
+  const saved = readPopoutGeometry(geometryKey);
+  let requested: { left: number; top: number };
+  if (saved) {
+    requested = saved;
+  } else {
+    const c = centeredPosition(width, height);
+    const step = (Math.max(0, cascadeIndex) % CASCADE_WRAP) * CASCADE_STEP_PX;
+    requested = { left: c.left + step, top: c.top + step };
+  }
 
   const win = window.open(
     "about:blank",
@@ -491,10 +534,13 @@ export function openCallPopoutWithResult(
     // Only ever with a measured calibration — see `calibration`.
     const geom = readWindowGeometry(win) ?? lastGeometry;
     if (geom && calibration) {
-      savePopoutGeometry({
-        left: geom.left - calibration.dx,
-        top: geom.top - calibration.dy,
-      });
+      savePopoutGeometry(
+        {
+          left: geom.left - calibration.dx,
+          top: geom.top - calibration.dy,
+        },
+        geometryKey,
+      );
     }
     window.clearInterval(watchdog);
     themeObserver.disconnect();
@@ -578,7 +624,7 @@ export function openCallPopoutWithResult(
       // The requested placement did not survive: forget it, and treat the
       // window's actual position as truth from here on (offset 0), so the next
       // cycle calibrates cleanly against a coordinate that does work.
-      clearPopoutGeometry();
+      clearPopoutGeometry(geometryKey);
       calibration = { dx: 0, dy: 0 };
     } else {
       calibration = { dx, dy };

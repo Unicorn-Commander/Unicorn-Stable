@@ -131,8 +131,83 @@ export interface OpenCallPopoutOptions {
   width?: number;
   /** Content height in px. Default 600. */
   height?: number;
+  /**
+   * Namespace for this window's persisted POSITION. Omit for the original
+   * single whole-stage pop-out (keeps its existing storage slot); pass the feed
+   * id for a per-feed window so each one remembers its own monitor.
+   */
+  geometryKey?: string;
+  /**
+   * Nth simultaneously-open window, used ONLY to cascade the default centred
+   * position so several first-time windows don't stack on the same pixel. A
+   * saved position always wins over the cascade.
+   */
+  cascadeIndex?: number;
   /** Fired once when the window closes (child unload, `.close()`, or opener unload). */
   onClose?: () => void;
+}
+
+/* ------------------------------------------------------------------ *
+ * Multi-window feed registry
+ * ------------------------------------------------------------------ */
+
+/**
+ * Identifies ONE poppable feed. A participant can publish BOTH a camera and a
+ * screen share, and those are separately poppable, so the source is part of the
+ * key — `cam:<participantId>` / `screen:<screenSid>`. This string is also the
+ * geometry namespace, so it must be stable across reloads for a given feed.
+ */
+export type FeedKey = string;
+
+/** A feed pop-out that failed to open, with enough context to name it. */
+export interface FeedPopoutError {
+  feedKey: FeedKey;
+  /** Human label for the feed ("Shafen — screen"), for the error banner. */
+  label: string;
+  failure: PopoutOpenFailure;
+}
+
+/** Per-feed overrides when opening a feed window. */
+export interface OpenFeedPopoutOptions {
+  /** Window + document title, e.g. "Shafen — screen · Stable". */
+  title?: string;
+  /** Human label used in the blocked-popup banner. Defaults to the key. */
+  label?: string;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Registry of N simultaneously-open feed windows, returned by
+ * {@link useFeedPopouts}.
+ *
+ * THE LOAD-BEARING INVARIANT (same as CallPopoutHost): a feed's tile must be
+ * rendered in EXACTLY ONE place at a time. When {@link isOpen} is true for a
+ * key, the main grid must render a PLACEHOLDER and the real tile must be
+ * rendered inside that key's {@link Host} — never both, or the LiveKit track
+ * gets double-attached and you get black frames.
+ */
+export interface FeedPopoutRegistry {
+  /** Feed keys with a live window, in open order. Reactive. */
+  openKeys: FeedKey[];
+  /** Is this feed currently in its own window? Reactive. */
+  isOpen: (feedKey: FeedKey) => boolean;
+  /**
+   * Open (or focus) this feed's window. MUST be called synchronously from a
+   * user gesture — one gesture per window, which is also what keeps popup
+   * blockers from eating the 2nd..Nth. Returns false on failure and sets
+   * {@link error}.
+   */
+  open: (feedKey: FeedKey, opts?: OpenFeedPopoutOptions) => boolean;
+  /** Close one feed's window (returns that feed to the grid). */
+  close: (feedKey: FeedKey) => void;
+  /** Close every feed window. */
+  closeAll: () => void;
+  /** Last open failure. Non-null ⇒ the UI MUST render it. */
+  error: FeedPopoutError | null;
+  clearError: () => void;
+  /** Portals its children into `feedKey`'s window; null when that feed is closed. */
+  Host: FC<{ feedKey: FeedKey; children: ReactNode }>;
 }
 
 /**

@@ -71,12 +71,33 @@ import { SplitPane } from "./SplitPane";
 // pop-out/PiP stay human-only controls and are intentionally NOT on the agent
 // `ui_command` wire (see roomDataProtocol.ts / audit §4c, §5).
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// MULTI-WINDOW (`useFeedPopouts`): the whole-stage `useCallPopout` above holds a
+// SINGLE handle, so it can only ever detach one window. `useFeedPopouts` keeps a
+// REGISTRY keyed by feed — participant identity PLUS track source, because one
+// participant can publish both a camera and a screen share and Aaron wants those
+// on separate monitors. Each key portals exactly one tile into its own window.
 import {
   usePipTile,
   useMergedVideoRef,
   useCallPopout,
+  useFeedPopouts,
   isPopoutSupported,
 } from "@/components/Room/popout";
+
+/* ------------------------------------------------------------------ *
+ * Feed keys — the identity of ONE poppable video feed.
+ *
+ * Source-qualified on purpose: `cam:local` and `screen:local-screen` are two
+ * different feeds from the same person, independently poppable. The key is also
+ * the geometry namespace (see callPopout.ts), so it must be STABLE across
+ * reloads for a given feed or the remembered monitor placement is lost.
+ *
+ * Camera keys use the participant identity (stable across reconnects), not the
+ * LiveKit `sid` (which is regenerated per session).
+ * ------------------------------------------------------------------ */
+const camFeedKey = (participantId: string): string => `cam:${participantId}`;
+const screenFeedKey = (screenSid: string): string => `screen:${screenSid}`;
 
 interface VoiceVideoBarProps {
   roomId: string;
@@ -168,8 +189,22 @@ interface FullscreenController {
   toggle: () => void;
 }
 
+/**
+ * Per-tile fullscreen.
+ *
+ * DOCUMENT-AWARE (multi-window): a tile that has been popped out lives in the
+ * CHILD window's document, so `document.fullscreenElement` and
+ * `document.exitFullscreen()` on the global (opener) document address the wrong
+ * window entirely — the button would report the wrong state and could never
+ * exit. Everything here resolves the document from the NODE (`el.ownerDocument`)
+ * and re-binds its listeners when the node moves between documents. This is the
+ * same wrong-document bug class that makes SplitPane unsafe to portal.
+ */
 function useFullscreen(): FullscreenController {
   const elRef = useRef<HTMLDivElement | null>(null);
+  // The document our node currently lives in; flips when the tile is portalled
+  // into (or back out of) a pop-out window, which re-runs the listener effect.
+  const [ownerDoc, setOwnerDoc] = useState<Document | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const supported =
     typeof document !== "undefined" &&
@@ -177,28 +212,34 @@ function useFullscreen(): FullscreenController {
       !!(document as FullscreenDoc).webkitFullscreenEnabled);
 
   useEffect(() => {
+    const doc = ownerDoc ?? (typeof document !== "undefined" ? document : null);
+    if (!doc) return;
     const onChange = () => {
-      const doc = document as FullscreenDoc;
-      const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+      const d = doc as FullscreenDoc;
+      const fsEl = doc.fullscreenElement ?? d.webkitFullscreenElement ?? null;
       setIsFullscreen(!!elRef.current && fsEl === elRef.current);
     };
-    document.addEventListener("fullscreenchange", onChange);
-    document.addEventListener("webkitfullscreenchange", onChange as EventListener);
+    // Reconcile immediately: moving documents can only ever drop fullscreen, and
+    // a stale `true` would leave the tile stuck rendering its exit affordance.
+    onChange();
+    doc.addEventListener("fullscreenchange", onChange);
+    doc.addEventListener("webkitfullscreenchange", onChange as EventListener);
     return () => {
-      document.removeEventListener("fullscreenchange", onChange);
-      document.removeEventListener("webkitfullscreenchange", onChange as EventListener);
+      doc.removeEventListener("fullscreenchange", onChange);
+      doc.removeEventListener("webkitfullscreenchange", onChange as EventListener);
     };
-  }, []);
+  }, [ownerDoc]);
 
   const toggle = useCallback(() => {
     const el = elRef.current as FullscreenEl | null;
     if (!el) return;
-    const doc = document as FullscreenDoc;
-    const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+    // Resolve from the node, NOT the global — this is the whole point.
+    const doc = (el.ownerDocument ?? document) as FullscreenDoc;
+    const fsEl = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
     void (async () => {
       try {
         if (fsEl === el) {
-          await (document.exitFullscreen?.() ?? doc.webkitExitFullscreen?.());
+          await (doc.exitFullscreen?.() ?? doc.webkitExitFullscreen?.());
         } else {
           await (el.requestFullscreen?.() ?? el.webkitRequestFullscreen?.());
         }
@@ -210,6 +251,7 @@ function useFullscreen(): FullscreenController {
 
   const ref = useCallback((el: HTMLDivElement | null) => {
     elRef.current = el;
+    setOwnerDoc(el?.ownerDocument ?? null);
   }, []);
 
   return { ref, isFullscreen, supported, toggle };
@@ -276,6 +318,14 @@ interface ParticipantTileProps {
   onClick?: () => void;
   /** Show the drag-reorder grip affordance (grid tiles). */
   showGrip?: boolean;
+  /**
+   * Pop THIS feed into its own window. Supplied only when the feed is poppable
+   * (desktop + a real video track); calling it must open the window
+   * synchronously, straight out of the click.
+   */
+  onPopOut?: () => void;
+  /** This tile is currently being rendered INSIDE its pop-out window. */
+  inPopout?: boolean;
 }
 
 function ParticipantTile({
@@ -290,6 +340,8 @@ function ParticipantTile({
   onToggleHide,
   onClick,
   showGrip,
+  onPopOut,
+  inPopout,
 }: ParticipantTileProps) {
   const pip = usePipTile();
   const fs = useFullscreen();
@@ -413,11 +465,27 @@ function ParticipantTile({
             }}
           />
         )}
+        {/* Pop THIS feed into its own window. Deliberately adjacent to — and
+            unambiguously distinct from — the Picture-in-Picture control above:
+            two similar-looking controls confused Aaron once, so the accessible
+            names are the plain-English "Pop out … to its own window" vs
+            "Picture in picture", and both tooltips spell out the difference. */}
+        {onPopOut && p.videoTrack && (
+          <TileControlButton
+            icon={ExternalLink}
+            label={`Pop out ${p.name}’s camera to its own window`}
+            title={`Pop out to window — opens ${p.name}’s camera in a separate window you can drag to another monitor (different from “Picture in picture”, which floats a small always-on-top thumbnail)`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPopOut();
+            }}
+          />
+        )}
         {pip.supported && p.videoTrack && (
           <TileControlButton
             icon={PictureInPicture2}
             label="Picture in picture"
-            title="Picture in picture — float just this video in a small always-on-top thumbnail (use the call bar’s “Pop out to window” for a full second window)"
+            title="Picture in picture — float just this video in a small always-on-top thumbnail (use “Pop out to window” for a full second window)"
             active={pip.isActive}
             onClick={(e) => {
               e.stopPropagation();
@@ -425,7 +493,9 @@ function ParticipantTile({
             }}
           />
         )}
-        {onToggleHide && p.videoTrack && (
+        {/* Hiding a feed that lives in its own window would blank that window
+            with no visible cause, so the control is dropped there. */}
+        {!inPopout && onToggleHide && p.videoTrack && (
           <TileControlButton
             icon={hidden ? Eye : EyeOff}
             label={hidden ? `Show ${p.name} video` : `Hide ${p.name} video`}
@@ -444,52 +514,42 @@ function ParticipantTile({
  * ScreenShareTile — screen video + (NEW) its own audio + per-share mute.
  * ------------------------------------------------------------------ */
 
-interface ScreenShareTileProps {
-  label: string;
-  videoRef: AttachRef;
-  /**
-   * The sibling `screen_share_audio` track (audit §4b). The tile mounts its OWN
-   * un-muted <audio> for it and CLAIMS ownership from VoiceProvider's global
-   * sink (claim → the provider detaches its sink element so audio plays here
-   * once, not twice; release on unmount → the provider re-attaches the sink so
-   * audio-only / compact listeners keep hearing it). This is the claim-handoff
-   * VoiceProvider exposes (SCREENAUDIO-NOTE), which is strictly better than the
-   * audit's naive "always tile-owned" sketch (that regressed compact/audio-only
-   * to silence). Because the <audio> lives in the tile subtree, it follows the
-   * tile into a pop-out portal for free.
-   */
-  audioTrack?: RemoteAudioTrack | null;
-  /** User's per-share mute of the screen audio (element property, not attach). */
-  muted?: boolean;
-  onToggleMuted?: () => void;
-  fill?: boolean;
-  onClick?: () => void;
-}
-
-function ScreenShareTile({
-  label,
-  videoRef,
+/**
+ * ScreenAudioSink — owns ONE screen share's `screen_share_audio` track.
+ *
+ * WHY THIS IS ITS OWN COMPONENT, MOUNTED IN THE MAIN TREE:
+ *
+ *  1. AUDIO STAYS IN THE MAIN DOCUMENT. This used to live inside ScreenShareTile,
+ *     so the <audio> followed the tile into a pop-out portal. With per-feed
+ *     windows that would scatter call audio across up to four child windows,
+ *     each of which can raise its OWN autoplay prompt — and the "Tap to hear the
+ *     call" banner only exists in the main tab, so the user would have no way to
+ *     unblock it. Mounted here it never moves, matching the rule the tile
+ *     <video> elements already follow (they are `muted`; the VoiceProvider sink
+ *     is untouched).
+ *  2. PAGINATION CAN'T MUTE IT. VideoGrid unmounts off-page tiles, which
+ *     previously tore down the screen audio with them — paging away from a
+ *     screen share silently killed its sound. This sink is a sibling of the
+ *     stage, so paging and view-mode switches never unmount it.
+ *
+ * The VoiceProvider claim-handoff (SCREENAUDIO-NOTE) is unchanged: claim → the
+ * provider detaches its global sink element so the audio plays here once, not
+ * twice; release on unmount → the provider re-attaches it so audio-only and
+ * compact listeners keep hearing it.
+ */
+function ScreenAudioSink({
   audioTrack,
   muted,
-  onToggleMuted,
-  fill = false,
-  onClick,
-}: ScreenShareTileProps) {
+}: {
+  audioTrack: RemoteAudioTrack;
+  muted: boolean;
+}) {
   const { claimScreenAudio, releaseScreenAudio } = useStableRoom();
-  const pip = usePipTile();
-  const fs = useFullscreen();
-  const composedVideoRef = useMergedVideoRef(videoRef, pip.videoRef);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
-  const hasAudio = !!audioTrack;
 
-  // Own the screen audio while mounted: attach to our <audio> + claim it from
-  // the global sink; detach + release on unmount / track change. Effect-keyed on
-  // the track so a stage switch (focus→grid→sidebar) or a move into the pop-out
-  // hands ownership tile→tile with no gap and no doubling (the provider defers
-  // the sink re-attach one microtask so the new claim cancels it).
   useEffect(() => {
     const el = audioElRef.current;
-    if (!el || !audioTrack) return;
+    if (!el) return;
     audioTrack.attach(el);
     claimScreenAudio(audioTrack);
     return () => {
@@ -500,8 +560,43 @@ function ScreenShareTile({
 
   // Per-share mute is a media-element property — never gate the attach on it.
   useEffect(() => {
-    if (audioElRef.current) audioElRef.current.muted = !!muted;
+    if (audioElRef.current) audioElRef.current.muted = muted;
   }, [muted]);
+
+  return <audio ref={audioElRef} autoPlay playsInline className="hidden" />;
+}
+
+interface ScreenShareTileProps {
+  label: string;
+  videoRef: AttachRef;
+  /**
+   * Whether this share HAS sibling screen audio — drives the mute button only.
+   * The actual <audio> element lives in {@link ScreenAudioSink} in the main
+   * document and is never portalled; see that component for why.
+   */
+  hasAudio?: boolean;
+  /** User's per-share mute of the screen audio. */
+  muted?: boolean;
+  onToggleMuted?: () => void;
+  fill?: boolean;
+  onClick?: () => void;
+  /** Pop THIS share into its own window (synchronously, from the click). */
+  onPopOut?: () => void;
+}
+
+function ScreenShareTile({
+  label,
+  videoRef,
+  hasAudio = false,
+  muted,
+  onToggleMuted,
+  fill = false,
+  onClick,
+  onPopOut,
+}: ScreenShareTileProps) {
+  const pip = usePipTile();
+  const fs = useFullscreen();
+  const composedVideoRef = useMergedVideoRef(videoRef, pip.videoRef);
 
   return (
     <div
@@ -521,12 +616,9 @@ function ScreenShareTile({
         className="h-full w-full bg-black object-contain"
       />
 
-      {/* Screen audio: un-muted media element (the video above stays muted).
-          Autoplay is covered by the existing "Tap to hear" banner — the Room
-          registers this element via track.attach(). */}
-      {hasAudio && (
-        <audio ref={audioElRef} autoPlay playsInline className="hidden" />
-      )}
+      {/* NOTE: no <audio> here. Screen audio is owned by <ScreenAudioSink> in
+          the MAIN document so it never rides a portal into a child window (see
+          that component). The video above stays `muted`, as it always has. */}
 
       <div className="glass absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-stable-cyan">
         <MonitorUp className="h-3 w-3 shrink-0" />
@@ -557,11 +649,25 @@ function ScreenShareTile({
             }}
           />
         )}
+        {/* A screen share is a DISTINCT track source from the same participant's
+            camera, so it pops out into its OWN window independently — which is
+            exactly the "my camera here, my screenshare there" layout. */}
+        {onPopOut && (
+          <TileControlButton
+            icon={ExternalLink}
+            label={`Pop out ${label} to its own window`}
+            title={`Pop out to window — opens ${label} in a separate window you can drag to another monitor (different from “Picture in picture”, which floats a small always-on-top thumbnail)`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPopOut();
+            }}
+          />
+        )}
         {pip.supported && (
           <TileControlButton
             icon={PictureInPicture2}
             label="Picture in picture"
-            title="Picture in picture — float just this video in a small always-on-top thumbnail (use the call bar’s “Pop out to window” for a full second window)"
+            title="Picture in picture — float just this video in a small always-on-top thumbnail (use “Pop out to window” for a full second window)"
             active={pip.isActive}
             onClick={(e) => {
               e.stopPropagation();
@@ -616,7 +722,59 @@ function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
   );
 }
 
-/** Placeholder shown in the main window while the stage is popped out. */
+/**
+ * FeedPoppedOutPlaceholder — occupies ONE feed's slot in the main grid while
+ * that feed is showing in its own window.
+ *
+ * This is the visible half of the load-bearing invariant: the real tile is
+ * rendered in exactly one place, and when that place is the pop-out, the grid
+ * gets this instead. Keeping a same-shaped tile in the layout means the grid
+ * doesn't reflow every other tile the moment you detach one, and the user has
+ * an obvious way back that doesn't require finding the OS window first.
+ */
+function FeedPoppedOutPlaceholder({
+  label,
+  fill,
+  onBringBack,
+  onFocusWindow,
+}: {
+  label: string;
+  fill?: boolean;
+  onBringBack: () => void;
+  onFocusWindow: () => void;
+}) {
+  return (
+    <div
+      className={clsx(
+        "flex w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-stable-purple/40 bg-surface-1/60 p-3 text-center",
+        fill ? "h-full" : "aspect-video",
+      )}
+    >
+      <ExternalLink className="h-5 w-5 shrink-0 text-stable-purple-light" />
+      <p className="max-w-full truncate text-xs font-medium text-slate-200">
+        {label} is in its own window
+      </p>
+      <div className="flex flex-wrap items-center justify-center gap-1">
+        <button
+          type="button"
+          onClick={onFocusWindow}
+          className="focus-ring rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
+        >
+          Find window
+        </button>
+        <button
+          type="button"
+          onClick={onBringBack}
+          className="focus-ring rounded-lg bg-stable-purple/20 px-2 py-1 text-[11px] font-semibold text-stable-purple-light transition-colors hover:bg-stable-purple/30"
+        >
+          Bring it back
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Placeholder shown in the main window while the WHOLE stage is popped out. */
 function PoppedOutPlaceholder({ onBringBack }: { onBringBack: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-line bg-surface-1/60 p-6 text-center">
@@ -883,6 +1041,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Gate on BOTH desktop and the module's feature-detect (CONTRACT §3.5).
   const isDesktop = useIsDesktop();
   const popoutSupported = isDesktop && isPopoutSupported();
+  // Per-tile pop-out controls carry the SAME gate (DESKTOP_QUERY min-width
+  // 768px + feature detect), so they never render on touch. The tile control
+  // cluster they live in is `md:opacity-0 md:group-hover:opacity-100` — i.e.
+  // hover-reveal ONLY at ≥md, permanently visible below it — so the controls
+  // that do show on touch are not hover-gated. It also carries
+  // `focus-within:opacity-100`, so the cluster is keyboard-reachable.
+  const feedPopoutSupported = popoutSupported;
 
   // Popping out from the audio-compact default has to lift the view into the
   // video stage (that's what the pop-out shows). `setViewMode` PERSISTS to
@@ -915,6 +1080,39 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       restorePrePopoutView();
     },
   });
+
+  // Per-feed windows: N open at once, one per camera / screen share.
+  const feedPopouts = useFeedPopouts();
+  const { openKeys: poppedFeedKeys, isOpen: isFeedPoppedOut } = feedPopouts;
+  const feedPopoutClose = feedPopouts.close;
+  const feedPopoutCloseAll = feedPopouts.closeAll;
+
+  // Every feed that currently EXISTS and is therefore poppable.
+  const liveFeedKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const p of participants) {
+      if (p.videoTrack) keys.add(camFeedKey(p.id));
+    }
+    for (const s of screenShares) keys.add(screenFeedKey(s.sid));
+    return keys;
+  }, [participants, screenShares]);
+
+  // A window whose feed went away (participant left, camera off, share stopped)
+  // has nothing left to render. Close it rather than leaving an empty window
+  // stranded on a monitor with no way to tell what it was.
+  useEffect(() => {
+    for (const key of poppedFeedKeys) {
+      if (!liveFeedKeys.has(key)) feedPopoutClose(key);
+    }
+  }, [poppedFeedKeys, liveFeedKeys, feedPopoutClose]);
+
+  // The call ended → close every feed window. The hook's own unmount cleanup
+  // does NOT cover this: when the call drops, this component early-returns null
+  // but stays MOUNTED, so without this the windows would linger showing frozen
+  // video from a call that is over.
+  useEffect(() => {
+    if (!isConnected && !isConnecting) feedPopoutCloseAll();
+  }, [isConnected, isConnecting, feedPopoutCloseAll]);
 
   // Audio-first / video-off shows chips; the video modes show tiles.
   const showChips = viewMode === "compact" || !showVideo;
@@ -1022,13 +1220,35 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   // ---- Tile builders --------------------------------------------------------
 
-  function renderTile(
+  /**
+   * Build the REAL camera tile. Callers must guarantee it ends up in exactly one
+   * place — either the main stage (`renderTile`, which substitutes a placeholder
+   * when the feed is detached) or that feed's pop-out Host, never both.
+   *
+   * `inPopout` matters for more than styling: inside a window the tile ignores
+   * `showChips` (a detached feed keeps playing even when the main tab is in
+   * audio-compact — that is the point of putting it on another monitor) and it
+   * renders `fill`, so the feed uses the whole window.
+   */
+  function buildTile(
     p: CallParticipant,
-    opts?: { size?: "normal" | "large"; onClick?: () => void; grip?: boolean; fill?: boolean },
+    opts?: {
+      size?: "normal" | "large";
+      onClick?: () => void;
+      grip?: boolean;
+      fill?: boolean;
+      inPopout?: boolean;
+    },
   ) {
-    const hidden = hiddenTileIds.has(p.id);
-    const trackVisible = !showChips && !hidden && !!p.videoTrack;
+    const inPopout = !!opts?.inPopout;
+    const hidden = !inPopout && hiddenTileIds.has(p.id);
+    // In a pop-out the feed is visible on its own merits; in the main stage it
+    // still obeys the chips / hidden rules.
+    const trackVisible = inPopout
+      ? !!p.videoTrack
+      : !showChips && !hidden && !!p.videoTrack;
     const isPinned = pinnedId === p.id;
+    const feedKey = camFeedKey(p.id);
     return (
       <ParticipantTile
         key={p.id}
@@ -1036,6 +1256,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         size={opts?.size ?? "normal"}
         fill={opts?.fill}
         hidden={hidden}
+        inPopout={inPopout}
         speaking={speakingIds.has(p.id)}
         isPinned={isPinned}
         onClick={opts?.onClick}
@@ -1047,11 +1268,53 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         onToggleHide={
           p.videoTrack ? () => setTileHidden(p.id, !hidden) : undefined
         }
+        // Synchronous open, straight out of the click — one window per gesture,
+        // which is what keeps a popup blocker from eating the 2nd..Nth.
+        onPopOut={
+          feedPopoutSupported && !inPopout
+            ? () =>
+                feedPopouts.open(feedKey, {
+                  title: `${p.name} — camera · Stable`,
+                  label: `${p.name}’s camera`,
+                })
+            : undefined
+        }
       />
     );
   }
 
-  function renderScreen(s: ScreenShareVM, opts?: { fill?: boolean; onClick?: () => void }) {
+  /** Main-stage camera tile: the real tile, or a placeholder when detached. */
+  function renderTile(
+    p: CallParticipant,
+    opts?: { size?: "normal" | "large"; onClick?: () => void; grip?: boolean; fill?: boolean },
+  ) {
+    const feedKey = camFeedKey(p.id);
+    if (isFeedPoppedOut(feedKey)) {
+      // EXACTLY ONE PLACE: the real tile is mounted in this feed's pop-out Host
+      // (rendered near the component root, outside the stage), so it must NOT be
+      // rendered here as well.
+      return (
+        <FeedPoppedOutPlaceholder
+          key={p.id}
+          label={p.name}
+          fill={opts?.fill}
+          onBringBack={() => feedPopoutClose(feedKey)}
+          onFocusWindow={() =>
+            feedPopouts.open(feedKey, { label: `${p.name}’s camera` })
+          }
+        />
+      );
+    }
+    return buildTile(p, opts);
+  }
+
+  /** Build the REAL screen-share tile. Same exactly-one-place contract. */
+  function buildScreen(
+    s: ScreenShareVM,
+    opts?: { fill?: boolean; onClick?: () => void; inPopout?: boolean },
+  ) {
+    const inPopout = !!opts?.inPopout;
+    const feedKey = screenFeedKey(s.sid);
     return (
       <ScreenShareTile
         key={s.sid}
@@ -1059,11 +1322,62 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         fill={opts?.fill}
         onClick={opts?.onClick}
         videoRef={attachTrack(s.videoTrack)}
-        audioTrack={s.audioTrack}
+        // Audio is NOT owned by the tile any more — <ScreenAudioSink> in the
+        // main document owns it, so it can't ride a portal into a child window.
+        hasAudio={!!s.audioTrack}
         muted={mutedScreens.has(s.sid)}
         onToggleMuted={s.audioTrack ? () => toggleScreenMuted(s.sid) : undefined}
+        onPopOut={
+          feedPopoutSupported && !inPopout
+            ? () =>
+                feedPopouts.open(feedKey, {
+                  title: `${s.label} · Stable`,
+                  label: s.label,
+                  // Screen shares are wide and detail-dense — give them a bigger
+                  // default window than a camera tile.
+                  width: 1280,
+                  height: 760,
+                })
+            : undefined
+        }
       />
     );
+  }
+
+  /** Main-stage screen tile: the real tile, or a placeholder when detached. */
+  function renderScreen(s: ScreenShareVM, opts?: { fill?: boolean; onClick?: () => void }) {
+    const feedKey = screenFeedKey(s.sid);
+    if (isFeedPoppedOut(feedKey)) {
+      return (
+        <FeedPoppedOutPlaceholder
+          key={s.sid}
+          label={s.label}
+          fill={opts?.fill}
+          onBringBack={() => feedPopoutClose(feedKey)}
+          onFocusWindow={() => feedPopouts.open(feedKey, { label: s.label })}
+        />
+      );
+    }
+    return buildScreen(s, opts);
+  }
+
+  /**
+   * Resolve a feed key back to its live tile for rendering inside that key's
+   * window. Returns null when the feed no longer exists — the effect above then
+   * closes the window on the next commit.
+   */
+  function renderPoppedFeed(feedKey: string): ReactNode {
+    if (feedKey.startsWith("cam:")) {
+      const id = feedKey.slice("cam:".length);
+      const p = participants.find((x) => x.id === id);
+      return p ? buildTile(p, { fill: true, inPopout: true, size: "large" }) : null;
+    }
+    if (feedKey.startsWith("screen:")) {
+      const sid = feedKey.slice("screen:".length);
+      const s = screenShares.find((x) => x.sid === sid);
+      return s ? buildScreen(s, { fill: true, inPopout: true }) : null;
+    }
+    return null;
   }
 
   // ---- The stage surface (the pop-out-able tiles), per mode -----------------
@@ -1401,6 +1715,89 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           </div>
         ) : null}
       </popout.Host>
+
+      {/* Screen-share AUDIO owners. Mounted here — a sibling of the stage, in
+          the MAIN document — so they survive pagination, view-mode switches and
+          every pop-out. Audio never rides a portal into a child window (see
+          ScreenAudioSink), which is what keeps a single autoplay prompt and a
+          single copy of the sound. */}
+      {screenShares.map((s) =>
+        s.audioTrack ? (
+          <ScreenAudioSink
+            key={`audio:${s.sid}`}
+            audioTrack={s.audioTrack}
+            muted={mutedScreens.has(s.sid)}
+          />
+        ) : null,
+      )}
+
+      {/* PER-FEED POP-OUT HOSTS — the multi-window seam.
+          One Host per open window; each portals exactly ONE feed's tile into
+          its own document. Rendered HERE, at the component root, and NOT inside
+          `stageSurface`, which matters for two reasons:
+
+           • PAGINATION: VideoGrid mounts only the current page's tiles, so a
+             popped-out feed rendered inside the grid would be unmounted (and
+             its LiveKit layer paused) the moment you paged past it. From here
+             the grid can never unmount it — paging only ever swaps the cheap
+             placeholder.
+           • VIEW MODES: switching compact/grid/focus/sidebar rebuilds
+             `stageSurface` wholesale. These Hosts are unaffected, so a detached
+             feed doesn't blink through a detach/re-attach on every switch. */}
+      {poppedFeedKeys.map((feedKey) => (
+        <feedPopouts.Host key={feedKey} feedKey={feedKey}>
+          <div className="flex h-full w-full flex-col bg-surface-0 p-2">
+            {renderPoppedFeed(feedKey)}
+          </div>
+        </feedPopouts.Host>
+      ))}
+
+      {/* A blocked per-feed pop-out. Same reasoning as the whole-stage banner:
+          `window.open` returning null is the browser's only signal and it is
+          otherwise completely invisible, so the button would just appear dead.
+          Opening 4 windows is the classic blocker trigger, so this names WHICH
+          feed failed — with 4 windows in play "the pop-out was blocked" isn't
+          actionable on its own. */}
+      {feedPopouts.error && (
+        <div
+          role="alert"
+          className="flex w-full shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-400/20 bg-amber-400/15 px-4 py-2 text-sm text-amber-200"
+        >
+          <span className="flex items-center gap-2">
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            {feedPopouts.error.failure === "blocked"
+              ? `Your browser blocked the window for ${feedPopouts.error.label}. Allow pop-ups for this site, then try again — browsers often block the 2nd and later windows even when the first one worked.`
+              : `This browser can’t open a separate window for ${feedPopouts.error.label}.`}
+          </span>
+          <span className="flex shrink-0 items-center gap-1">
+            {feedPopouts.error.failure === "blocked" && (
+              <button
+                type="button"
+                // A fresh user gesture — the retry is a real click, so it can
+                // succeed where the original was blocked.
+                onClick={() => {
+                  const err = feedPopouts.error;
+                  if (!err) return;
+                  if (feedPopouts.open(err.feedKey, { label: err.label })) {
+                    feedPopouts.clearError();
+                  }
+                }}
+                className="focus-ring rounded-md bg-amber-400/20 px-2 py-0.5 text-xs font-semibold transition-colors hover:bg-amber-400/30"
+              >
+                Try again
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={feedPopouts.clearError}
+              className="focus-ring rounded-md px-1.5 py-0.5 text-xs text-amber-200/70 transition-colors hover:text-amber-100"
+              aria-label="Dismiss the pop-out warning"
+            >
+              Dismiss
+            </button>
+          </span>
+        </div>
+      )}
 
       <div
         className={clsx(
