@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import Settings, get_settings
-from app.models.participant import Participant, ParticipantStatus, ParticipantType
+
 from app.models.room import RoomMember
+from app.services.participant_identity import resolve_participant_for_identity
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
 
@@ -105,43 +106,12 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Ensure the participant exists in our database (upsert)
-    result = await db.execute(
-        select(Participant).where(Participant.keycloak_sub == user_identity["sub"])
+    # Ensure the participant exists in our database (JIT provision; links an
+    # existing email-matched persona instead of duplicating -- see
+    # services/participant_identity.py).
+    participant = await resolve_participant_for_identity(
+        db, settings, user_identity, claims
     )
-    participant = result.scalar_one_or_none()
-
-    if participant is None:
-        participant = Participant(
-            keycloak_sub=user_identity["sub"],
-            username=user_identity["username"],
-            display_name=user_identity.get("display_name") or user_identity["username"],
-            avatar_url=user_identity.get("avatar_url"),
-            participant_type=ParticipantType(user_identity["participant_type"]),
-            status=ParticipantStatus.ONLINE,
-        )
-        db.add(participant)
-        await db.commit()
-        await db.refresh(participant)
-        logger.info(
-            "participant_auto_created",
-            participant_id=str(participant.id),
-            username=participant.username,
-        )
-    else:
-        # Sync mutable fields if Keycloak changed them
-        changed = False
-        new_display = user_identity.get("display_name")
-        if new_display and new_display != participant.display_name:
-            participant.display_name = new_display
-            changed = True
-        new_avatar = user_identity.get("avatar_url")
-        if new_avatar and new_avatar != participant.avatar_url:
-            participant.avatar_url = new_avatar
-            changed = True
-        if changed:
-            await db.commit()
-            await db.refresh(participant)
 
     user_identity["participant_id"] = participant.id
     return user_identity
