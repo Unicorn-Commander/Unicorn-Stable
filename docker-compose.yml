@@ -108,7 +108,7 @@ services:
   # Stable Backend — FastAPI: auth, rooms, messages, tokens, WebSocket
   # ==========================================================================
   backend:
-    image: unicorn-stable-backend:565943ef4aed  # wave 14
+    image: unicorn-stable-backend:6b1df10dad29  # identity-link
     build:
       context: ./server
       dockerfile: Dockerfile
