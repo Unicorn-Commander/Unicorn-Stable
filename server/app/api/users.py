@@ -20,6 +20,7 @@ from app.config import Settings
 from app.deps import get_current_user, get_db, get_settings_dep
 from app.models.participant import Participant, ParticipantType
 from app.services.keycloak_admin import KeycloakAdmin
+from app.services.participant_identity import link_participant_by_email
 
 logger = structlog.get_logger(__name__)
 
@@ -180,6 +181,18 @@ async def resolve_or_create_participant(
     kc_user = await admin.get_user(keycloak_sub)
     if kc_user is None:
         raise ValueError(f"Keycloak user not found: {keycloak_sub}")
+
+    # Before minting a fresh row, link an existing email-matched persona
+    # (the invitee may already exist under the OTHER Keycloak realm's sub --
+    # see services/participant_identity.py). The sub here came from the
+    # configured realm's admin API, so it is trusted by construction.
+    email = (kc_user.get("email") or "").strip().lower()
+    if email:
+        linked = await link_participant_by_email(
+            db, settings, new_sub=keycloak_sub, email=email
+        )
+        if linked is not None:
+            return linked
 
     first = (kc_user.get("firstName") or "").strip()
     last = (kc_user.get("lastName") or "").strip()
