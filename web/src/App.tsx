@@ -9,6 +9,7 @@ import { AppShell } from "@/components/Layout/AppShell";
 import { StableMark } from "@/components/StableMark";
 import { VoiceProvider } from "@/contexts/VoiceProvider";
 import { CallDock } from "@/components/Room/CallDock";
+import { Landing } from "@/components/Landing";
 
 function AuthGate({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
@@ -28,6 +29,9 @@ function AuthGate({ children }: { children: ReactNode }) {
         if (!mounted) return;
 
         if (authenticated) {
+          // Mark this browser as a returning user so the marketing front door
+          // (LandingGate) is shown only to brand-new anonymous visitors.
+          try { localStorage.setItem("stable.seen", "1"); } catch { /* private mode */ }
           const profile = getUserProfile();
           if (profile) {
             setCurrentUser({
@@ -250,12 +254,44 @@ function AuthGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * Marketing front door. A brand-new anonymous visitor who lands on "/" sees the
+ * product landing page instead of an immediate Keycloak redirect. Everyone else
+ * falls straight through to AuthGate unchanged, so no existing user's login flow
+ * changes:
+ *   - returning users are recognised by any `stable.*` localStorage key (the
+ *     federation store writes `stable.active-instance.v1`, plus the `stable.seen`
+ *     flag AuthGate sets on first successful auth),
+ *   - the post-login callback (`?code&state`) must reach AuthGate to complete auth,
+ *   - deep links (any path other than "/") always go through AuthGate.
+ * "Enter Stable" simply mounts AuthGate, whose initialize() performs the normal
+ * login-required redirect — the landing itself contains no auth logic.
+ */
+function LandingGate({ children }: { children: ReactNode }) {
+  const [entered, setEntered] = useState(false);
+  const showLanding = (() => {
+    if (entered) return false;
+    if (typeof window === "undefined") return false;
+    if (window.location.pathname !== "/") return false;
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("code") && params.has("state")) return false;
+    try {
+      if (localStorage.getItem("stable.seen") === "1") return false;
+      if (Object.keys(localStorage).some((k) => k.startsWith("stable."))) return false;
+    } catch { /* private-mode Safari throws — treat as a new visitor */ }
+    return true;
+  })();
+  if (showLanding) return <Landing onEnter={() => setEntered(true)} />;
+  return <>{children}</>;
+}
+
 export function App() {
   return (
     // reducedMotion="user": every framer-motion transform/entrance in the tree
     // collapses to opacity-only when the OS asks for reduced motion (the CSS
     // animate-* utilities are neutralized in globals.css).
     <MotionConfig reducedMotion="user">
+    <LandingGate>
     <AuthGate>
       <VoiceProvider>
       <Routes>
@@ -283,6 +319,7 @@ export function App() {
       <CallDock />
       </VoiceProvider>
     </AuthGate>
+    </LandingGate>
     </MotionConfig>
   );
 }
