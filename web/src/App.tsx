@@ -274,7 +274,13 @@ function LandingGate({ children }: { children: ReactNode }) {
     if (typeof window === "undefined") return false;
     if (window.location.pathname !== "/") return false;
     const params = new URLSearchParams(window.location.search);
-    if (params.has("code") && params.has("state")) return false;
+    // Keycloak returns the auth code in the URL FRAGMENT (#code=&state=), not the
+    // query. A visitor coming back from login MUST fall through to AuthGate so
+    // keycloak-js can consume it — otherwise the landing paints over an
+    // unprocessed code and the user is bounced back onto the landing (the
+    // "login redirects me back to the landing page" bug).
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if ((params.has("code") && params.has("state")) || (hash.has("code") && hash.has("state"))) return false;
     // "?app=1" is the explicit "take me into the app" entrypoint used by the
     // landing's Open/Enter Stable CTAs — skip the marketing page and go straight
     // to Keycloak (which lands you in the app if you already have an SSO session).
