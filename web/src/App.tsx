@@ -275,6 +275,10 @@ function LandingGate({ children }: { children: ReactNode }) {
     if (window.location.pathname !== "/") return false;
     const params = new URLSearchParams(window.location.search);
     if (params.has("code") && params.has("state")) return false;
+    // "?app=1" is the explicit "take me into the app" entrypoint used by the
+    // landing's Open/Enter Stable CTAs — skip the marketing page and go straight
+    // to Keycloak (which lands you in the app if you already have an SSO session).
+    if (params.has("app")) return false;
     try {
       if (localStorage.getItem("stable.seen") === "1") return false;
       if (Object.keys(localStorage).some((k) => k.startsWith("stable."))) return false;

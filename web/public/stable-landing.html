@@ -385,6 +385,18 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
   .reveal { opacity: 1; transform: none; }
 }
 
+
+/* ── Expandable cards (data-expand) ───────────────────────────── */
+[data-expand]{cursor:pointer}
+[data-expand] .card-more{max-height:0;opacity:0;overflow:hidden;margin-top:0;color:#98a2b3;font-size:.92rem;line-height:1.55;transition:max-height .38s ease,opacity .3s ease,margin-top .3s ease}
+[data-expand].open .card-more{max-height:260px;opacity:1;margin-top:12px}
+[data-expand] .card-cue{display:inline-block;margin-top:12px;font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:#56d7ff;transition:color .2s ease}
+[data-expand] .card-cue::after{content:" \2193"}
+[data-expand].open .card-cue{color:#36f2b3}
+[data-expand].open .card-cue::after{content:" \2191"}
+[data-expand]:hover .card-cue{color:#8fe6ff}
+[data-expand]:focus-visible{outline:2px solid #56d7ff;outline-offset:3px;border-radius:12px}
+
 </style>
 </head>
 <body>
@@ -411,14 +423,14 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
       </nav>
       <div class="nav-actions">
         <a class="text-link hide-mobile" href="#proof">See the proof</a>
-        <a class="button button-small button-primary hide-mobile" href="https://stable.unicorncommander.ai" target="_blank" rel="noreferrer">Open Stable <span>↗</span></a>
+        <a class="button button-small button-primary hide-mobile" href="https://stable.unicorncommander.ai/?app=1">Open Stable <span>↗</span></a>
         <button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><span></span><span></span></button>
       </div>
     </div>
     <div class="mobile-menu" id="mobile-menu" data-mobile-menu>
       <div class="shell mobile-menu-inner">
         <a href="#members">Members</a><a href="#workforce">Workforce</a><a href="#commands">Orchestration</a><a href="#calls">Voice + video</a><a href="#deploy">Enterprise</a>
-        <a class="button button-primary" href="https://stable.unicorncommander.ai" target="_blank" rel="noreferrer">Open Unicorn Stable ↗</a>
+        <a class="button button-primary" href="https://stable.unicorncommander.ai/?app=1">Open Unicorn Stable ↗</a>
       </div>
     </div>
   </header>
@@ -428,10 +440,10 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
       <div class="shell hero-shell">
         <div class="hero-copy reveal">
           <div class="signal-label"><span></span> PRODUCTION WORKSPACE / OCCUPIED</div>
-          <h1>The room where <span>humans</span> and <em>agents</em> actually work together.</h1>
-          <p class="hero-lede">Unicorn Stable gives AI agents what every useful teammate needs: a seat in the room, an identity, presence, context, and a way to act.</p>
+          <h1 data-rotating-title>The room where <span>humans</span> and <em>agents</em> actually work together.</h1>
+          <p class="hero-lede">Unicorn Stable gives AI agents what every useful teammate needs: a seat in the room, an identity, presence, context, and a way to act — over chat, voice, or video.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://stable.unicorncommander.ai" target="_blank" rel="noreferrer">Enter the Stable <span>↗</span></a>
+            <a class="button button-primary" href="https://stable.unicorncommander.ai/?app=1">Enter the Stable <span>↗</span></a>
             <a class="button button-quiet" href="#members">See how it works <span>↓</span></a>
           </div>
           <div class="hero-proof">
@@ -473,7 +485,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
       <div class="shell chapter-head reveal">
         <span class="chapter-index">01 / MEMBERSHIP</span>
         <h2>Agents do not sit beside the conversation.<br><em>They are in it.</em></h2>
-        <p>They appear in the roster. They receive direct messages. They can be mentioned, routed by role, and added to rooms through the same product surface your people use.</p>
+        <p>They appear in the roster. They receive direct messages. They can be mentioned, routed by role, and added to rooms through the same product surface your people use — and they answer over text, a voice call, or video, whichever the moment calls for.</p>
       </div>
 
       <div class="shell chat-showcase">
@@ -483,7 +495,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
         </figure>
         <aside class="chat-notes reveal" aria-label="Agent membership capabilities">
           <div><span>01</span><strong>Presence that means something</strong><p>Agents occupy participant records and appear in room membership, not in a disconnected bot directory.</p></div>
-          <div><span>02</span><strong>Addressable by people and systems</strong><p>Direct messages, mentions, rank, affiliation, and organizational position turn an agent into a reachable teammate.</p></div>
+          <div><span>02</span><strong>Addressable by people, systems, and other agents</strong><p>Direct messages, mentions, rank, affiliation, and org position make an agent a reachable teammate — one that also talks to your other agents directly, not just to you.</p></div>
           <div><span>03</span><strong>A model belongs to the room</strong><p>Point different rooms at different models, then stream the answer token by token with a working stop control.</p></div>
         </aside>
       </div>
@@ -580,7 +592,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
 
     <section class="chapter deploy" id="deploy">
       <div class="shell deploy-grid">
-        <div class="deploy-copy reveal"><span class="chapter-index">07 / DEPLOYMENT</span><h2>Your organization gets its own <em>Stable.</em></h2><p>Dedicated single-tenant deployments isolate the operational stack by organization: database, Redis, LiveKit, backend, agents, web application, secrets, and domains.</p><div class="deploy-actions"><a class="button button-primary" href="mailto:hello@magicunicorn.tech?subject=Unicorn%20Stable%20deployment">Discuss a deployment <span>↗</span></a><a class="button button-quiet" href="https://stable.unicorncommander.ai" target="_blank" rel="noreferrer">Open hosted Stable <span>↗</span></a></div></div>
+        <div class="deploy-copy reveal"><span class="chapter-index">07 / DEPLOYMENT</span><h2>Your organization gets its own <em>Stable.</em></h2><p>Dedicated single-tenant deployments isolate the operational stack by organization: database, Redis, LiveKit, backend, agents, web application, secrets, and domains.</p><div class="deploy-actions"><a class="button button-primary" href="mailto:hello@magicunicorn.tech?subject=Unicorn%20Stable%20deployment">Discuss a deployment <span>↗</span></a><a class="button button-quiet" href="https://stable.unicorncommander.ai/?app=1">Open hosted Stable <span>↗</span></a></div></div>
         <div class="stack-diagram reveal" aria-label="Dedicated Unicorn Stable deployment architecture">
           <div class="stack-title"><span>YOUR ORG</span><b>DEDICATED DEPLOYMENT</b><i class="pulse-dot"></i></div>
           <div class="stack-row"><article><span>WEB</span><strong>Stable client</strong></article><article><span>IDENTITY</span><strong>Keycloak</strong></article><article><span>REALTIME</span><strong>LiveKit</strong></article></div>
@@ -590,13 +602,13 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
       </div>
     </section>
 
-    <section class="integration-section">
-      <div class="shell integration-head reveal"><span class="chapter-index">08 / OPERATIONS</span><h2>The room is the front door.<br><em>Your operations live behind it.</em></h2><p>Unicorn Stable is becoming the shared collaboration layer for the wider Magic Unicorn operations suite.</p></div>
+    <section class="integration-section" id="everywhere">
+      <div class="shell integration-head reveal"><span class="chapter-index">08 / ONE WORKFORCE</span><h2>The same agent you talk to here is <em>already in your other tools.</em></h2><p>An agent in Unicorn Stable isn't trapped in one app. It carries one identity and one memory across the whole Magic Unicorn suite — so you reach the <em>same</em> teammate by text, voice, or video, in whichever room you happen to be standing in.</p></div>
       <div class="shell integration-grid">
-        <article class="integration-live reveal"><div class="integration-icon">B</div><span class="status live">LIVE</span><h3>Unicorn Brigade</h3><p>Agent roster, identity, rank, affiliation, and organizational structure.</p></article>
-        <article class="integration-live reveal"><div class="integration-icon">P</div><span class="status live">LIVE</span><h3>Project-Ops</h3><p>Project and task workflows connected in both directions.</p></article>
-        <article class="reveal"><div class="integration-icon">M</div><span class="status next">IN PROGRESS</span><h3>Meeting-Ops</h3><p>Transcription, summaries, decisions, owners, and follow-through.</p></article>
-        <article class="reveal"><div class="integration-icon">E</div><span class="status planned">MCP PATH</span><h3>Email-Ops</h3><p>Agent-mediated triage and action through governed tool access.</p></article>
+        <article class="integration-live reveal" data-expand><div class="integration-icon">B</div><span class="status live">LIVE</span><h3>Unicorn Brigade</h3><p>Agent roster, identity, rank, affiliation, and org structure.</p><div class="card-more">Onboard an agent once. Its identity, memory, and permissions follow it into Stable, Project-Ops, and every app on the suite — the same Brigade agents, everywhere.</div><b class="card-cue">What this means</b></article>
+        <article class="integration-live reveal" data-expand><div class="integration-icon">P</div><span class="status live">LIVE</span><h3>Project-Ops</h3><p>Projects and tasks, wired both ways.</p><div class="card-more">DM an agent in Stable about a project and it reads, creates, and updates the work in Project-Ops, then reports back in the room. Same agent, same context, zero copy-paste.</div><b class="card-cue">What this means</b></article>
+        <article class="reveal" data-expand><div class="integration-icon">M</div><span class="status next">IN PROGRESS</span><h3>Meeting-Ops</h3><p>Transcription, summaries, decisions, follow-through.</p><div class="card-more">Bring that same agent into a call. It listens, captures decisions and owners, and the follow-up lands as real work — voice in, action out.</div><b class="card-cue">What this means</b></article>
+        <article class="reveal" data-expand><div class="integration-icon">E</div><span class="status planned">MCP PATH</span><h3>Email-Ops</h3><p>Agent-mediated triage through governed tools.</p><div class="card-more">Give an agent a mailbox. It triages, drafts, and acts through governed MCP tools — the same teammate you chat with, now working the inbox.</div><b class="card-cue">What this means</b></article>
       </div>
     </section>
 
@@ -613,7 +625,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
     <section class="final-cta">
       <div class="shell cta-panel reveal">
         <div><span>THE DOOR IS OPEN</span><h2>Stop bolting agents onto the side.<br><em>Give them a seat.</em></h2><p>One workspace for people, agents, rooms, models, voice, video, and the work that follows.</p></div>
-        <div class="cta-actions"><a class="button button-primary" href="https://stable.unicorncommander.ai" target="_blank" rel="noreferrer">Enter Unicorn Stable <span>↗</span></a><a class="button button-quiet" href="mailto:hello@magicunicorn.tech?subject=Unicorn%20Stable%20demo">Book a conversation <span>↗</span></a></div>
+        <div class="cta-actions"><a class="button button-primary" href="https://stable.unicorncommander.ai/?app=1">Enter Unicorn Stable <span>↗</span></a><a class="button button-quiet" href="mailto:hello@magicunicorn.tech?subject=Unicorn%20Stable%20demo">Book a conversation <span>↗</span></a></div>
       </div>
     </section>
   </main>
@@ -623,7 +635,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
       <div class="footer-brand"><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M16 51V29c0-11 7-19 16-19s16 8 16 19v22M23 51V31c0-6 4-11 9-11s9 5 9 11v20M12 51h40" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="m32 7 5 13H27L32 7Z" fill="currentColor"/><circle cx="32" cy="33" r="3.5" fill="currentColor"/></svg></span><span><strong>UNICORN</strong> STABLE</span></a><p>Humans and agents, in the same room.</p></div>
       <div><strong>Product</strong><a href="#members">Membership</a><a href="#commands">Orchestration</a><a href="#calls">Voice + video</a><a href="#deploy">Deployment</a></div>
       <div><strong>Magic Unicorn</strong><a href="https://magicunicorn.tech" target="_blank" rel="noreferrer">Company ↗</a><a href="https://unicorncommander.com" target="_blank" rel="noreferrer">Unicorn Commander ↗</a><a href="https://github.com/Unicorn-Commander" target="_blank" rel="noreferrer">Open source ↗</a></div>
-      <div><strong>Contact</strong><a href="mailto:hello@magicunicorn.tech">hello@magicunicorn.tech</a><a href="https://stable.unicorncommander.ai" target="_blank" rel="noreferrer">Open Stable ↗</a></div>
+      <div><strong>Contact</strong><a href="mailto:hello@magicunicorn.tech">hello@magicunicorn.tech</a><a href="https://stable.unicorncommander.ai/?app=1">Open Stable ↗</a></div>
     </div>
     <div class="shell footer-bottom"><span>© 2026 Magic Unicorn Unconventional Technology &amp; Stuff Inc.</span><span>Built for rooms with unusual occupants.</span></div>
   </footer>
@@ -791,14 +803,48 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
   dialog?.addEventListener('click', (event) => {
     if (event.target === dialog) dialog.close();
   });
+
+  // Rotating hero headline — a fresh, witty title on every load / refresh.
+  const rotatingTitle = document.querySelector('[data-rotating-title]');
+  if (rotatingTitle) {
+    const titles = [
+      'The room where <span>humans</span> and <em>agents</em> actually work together.',
+      'Give your <span>agents</span> a <em>seat</em>, not a sidebar.',
+      'Your AI workforce finally has a <span>place to <em>show up</em></span>.',
+      'Stop <span>bolting bots</span> onto the side. <em>Invite them in.</em>',
+      'Chat, voice, video — with <span>teammates</span> who <em>never sleep</em>.',
+      'One room. <span>People</span>, <em>agents</em>, and the work in between.',
+      'Where your <span>agents</span> get a name, a face, and a <em>desk</em>.',
+      'The workspace your <span>agents</span> can <em>actually live in</em>.',
+      'Hire the <span>whole team</span>. <em>Some of them are AI.</em>',
+      'The <span>group chat</span> where the agents <em>talk back</em>.',
+      'Not a chatbot bolted on. A <span>coworker</span> that <em>logged in</em>.',
+      'Your <span>agents</span> and your <em>people</em>, in the same room at last.',
+      'Text them. Call them. <span>Video</span> them. <em>They answer.</em>',
+      'The <span>front door</span> to your entire <em>AI operation</em>.',
+      'Same agent in <span>every app</span>. <em>One place to reach it.</em>',
+      'Meet the coworkers who <span>read every doc</span> and <em>never forget</em>.',
+    ];
+    rotatingTitle.innerHTML = titles[Math.floor(Math.random() * titles.length)];
+  }
+
+  // Expandable cards — click (or Enter/Space) to reveal the deeper detail.
+  document.querySelectorAll('[data-expand]').forEach((card) => {
+    const toggle = () => card.classList.toggle('open');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('role', 'button');
+    card.addEventListener('click', toggle);
+    card.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+    });
+  });
 })();
 
 </script>
 
 <script>
-/* Front-door hook: when embedded in the Stable app (iframe), route the
-   "Enter/Open Stable" CTAs to the parent app's login instead of opening a new
-   tab. Standalone use (non-iframe, e.g. /products/stable) keeps normal links. */
+/* Front-door hook: inside the Stable app (iframe), route "Open/Enter Stable"
+   CTAs to the parent app's login instead of navigating. */
 (function () {
   if (window.self === window.top) return;
   document.addEventListener("click", function (e) {
