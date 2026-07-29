@@ -224,6 +224,18 @@ class Settings(BaseSettings):
     # Suite default voice = Majik (af_heart).
     tts_default_voice: str = "af_heart"
 
+    # -- Meeting-Ops transcript federation (app/api/transcripts.py) --
+    # Optional forward target for finalized call transcripts ("Send to
+    # Meeting-Ops"). Leave MEETING_OPS_URL empty to accept exports locally only
+    # (logged, 200) without attempting a remote POST. No secrets are shipped —
+    # set MEETING_OPS_API_KEY in the deploy environment when the remote requires
+    # a bearer. See server/app/services/meeting_ops.py.
+    meeting_ops_url: str = ""
+    meeting_ops_ingest_path: str = "/api/v1/sessions/ingest"
+    meeting_ops_api_key: str = ""
+    # Master switch. When False, never forward even if URL is set.
+    meeting_ops_enabled: bool = True
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:

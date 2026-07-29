@@ -1,10 +1,10 @@
 /**
  * Dev-only helper to inject sample transcript lines so the live-transcript
- * panel is testable NOW, before the real STT producer exists.
+ * panel is testable without a live call / mic.
  *
- * There is no transcript producer wired yet (that's a later track). This feeds
- * the SAME store path real `transcript` data-channel messages will use, so the
- * panel renders and autoscrolls exactly as it will in production.
+ * Production producers (agent STT + browser human STT) write through the SAME
+ * store path (`ingestTranscript`), so the panel renders and autoscrolls exactly
+ * as it does with real data-channel traffic.
  *
  * Usage (any of):
  *   - Append `?devtranscript` to the URL → a hidden "seed transcript" control

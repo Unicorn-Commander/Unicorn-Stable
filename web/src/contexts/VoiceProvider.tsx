@@ -27,6 +27,7 @@ import {
 } from "@/stores/callUiStore";
 import { handleArtifactEvent } from "@/stores/canvasStore";
 import { playCue } from "@/lib/sounds";
+import { HumanTranscriptSession } from "@/lib/humanTranscript";
 
 /**
  * THE single LiveKit Room for the whole app.
@@ -113,6 +114,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Join cue fires once per connect() — Reconnected/state churn must not
   // re-chime. Reset when a fresh Room is created in connect().
   const joinCuePlayedRef = useRef(false);
+  // Browser STT for the local human when no agent is in the room. Prefer the
+  // agent STT path (Parakeet/Amanuensis via transcript_publisher) when present.
+  const humanTranscriptRef = useRef<HumanTranscriptSession | null>(null);
 
   // Screen-share audio sink bookkeeping. `screenSinkEls` maps a screen-share
   // audio track's sid → the hidden <audio> element WE created for the global
@@ -214,8 +218,56 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const disconnect = useCallback(() => {
     const r = roomRef.current;
+    // Capture call room before we clear activeCallRoomId so export knows where
+    // to POST. Hang-up is the natural finalize point for "Send to Meeting-Ops".
+    const callRoomId = useCallUiStore.getState().activeCallRoomId;
     roomRef.current = null;
     connectingRef.current = false;
+
+    // Stop browser STT before tearing the room down.
+    try {
+      humanTranscriptRef.current?.stop();
+    } catch {
+      /* ignore */
+    }
+    humanTranscriptRef.current = null;
+
+    // Best-effort Meeting-Ops / local export of final caption lines.
+    // Fire-and-forget so hang-up never blocks on the network.
+    void (async () => {
+      try {
+        const ui = useCallUiStore.getState();
+        if (!ui.sendToMeetingOps || !callRoomId) return;
+        const finals = ui.transcript.filter((l) => l.isFinal && l.text.trim());
+        if (finals.length === 0) return;
+        const roomMeta = useAppStore
+          .getState()
+          .rooms.find((rm) => rm.id === callRoomId);
+        await api.exportCallTranscript(callRoomId, {
+          lines: finals.map((l) => ({
+            participant_id: l.participantId,
+            name: l.name,
+            text: l.text,
+            ts: l.ts,
+            is_final: true,
+            segment_id: l.id,
+          })),
+          room_name:
+            roomMeta?.display_name || roomMeta?.name || null,
+          call_started_at: ui.callStartedAt
+            ? new Date(ui.callStartedAt).toISOString()
+            : null,
+          call_ended_at: new Date().toISOString(),
+          send_to_meeting_ops: true,
+          label: roomMeta
+            ? `Stable call · ${roomMeta.display_name || roomMeta.name}`
+            : "Stable call",
+        });
+      } catch (e) {
+        console.warn("call transcript export on hang-up failed", e);
+      }
+    })();
+
     if (r) {
       // Only a live (connected) room earns the hang-up cue — tearing down a
       // failed/stale room object must stay silent.
@@ -402,10 +454,27 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // Tell the imperative uiCommandBus which room agent commands apply to
       // (it runs outside React, so it can't read the active room itself).
       setActiveCallRoom(roomId);
+      // Seed Meeting-Ops session toggle from the "always by default" pref and
+      // clear any leftover captions from a prior call.
+      useCallUiStore.getState().beginCallTranscriptSession();
 
       await r.connect(ws_url, token);
       setRoom(r);
       setVoiceActive(true);
+
+      // Human live captions when no agent is present (agent STT path covers
+      // the agent-in-call case via transcript_publisher). Re-evaluate on
+      // participant join/leave so we hand off cleanly.
+      try {
+        humanTranscriptRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
+      const humanSession = new HumanTranscriptSession(r);
+      humanTranscriptRef.current = humanSession;
+      humanSession.start();
+      r.on(RoomEvent.ParticipantConnected, () => humanSession.reevaluate());
+      r.on(RoomEvent.ParticipantDisconnected, () => humanSession.reevaluate());
 
       // Publish the human's mic so the agent can hear them. Do NOT await — the
       // mic-permission prompt would otherwise block the agent dispatch below
