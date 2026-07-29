@@ -96,9 +96,12 @@ export interface SidebarSection {
 }
 
 export interface SidebarModel {
-  /** Channels, then people, then private groups — a fixed tuple, not a
-   *  loose list, so both consumers can name a section without a
-   *  might-be-undefined dance. */
+  /** People (DMs) first, then private groups, then channels — a fixed tuple,
+   *  not a loose list, so both consumers can name a section without a
+   *  might-be-undefined dance.
+   *
+   *  Order matches the product ask (Meeting-Ops 77fd49a9): DMs above channels.
+   *  Keyboard Alt+↑/↓ flattens `sections` in this same order. */
   sections: readonly [SidebarSection, SidebarSection, SidebarSection];
   /** Every person on this instance and all of their rooms, from the UNFILTERED
    *  room list — its consumer is the one-way people migration, which must never
@@ -248,13 +251,9 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
   }));
 
   return {
+    // People (DMs / agents) → private groups → channels. The render order in
+    // RoomList must match this tuple (and does — it destructures by name).
     sections: [
-      {
-        id: "channels",
-        collapseKey: SECTION_KEYS.channels,
-        collapsed: collapsed[SECTION_KEYS.channels] === true,
-        groups: channelGroups,
-      },
       {
         id: "people",
         collapseKey: SECTION_KEYS.people,
@@ -276,6 +275,12 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
             rows: groupRowsOnly,
           },
         ],
+      },
+      {
+        id: "channels",
+        collapseKey: SECTION_KEYS.channels,
+        collapsed: collapsed[SECTION_KEYS.channels] === true,
+        groups: channelGroups,
       },
     ],
     allPersonThreads,

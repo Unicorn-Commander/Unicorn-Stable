@@ -248,6 +248,11 @@ function HumanMemberRow({
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const qc = useQueryClient();
+  // Global presence (server-wide). Meeting-Ops 77fd49a9: right-hand view of
+  // who is online even outside this room so you can call them into a room.
+  const onlineUserIds = useAppStore((s) => s.onlineUsers);
+  const participantsByRoom = useAppStore((s) => s.participants);
+  const agents = useAppStore((s) => s.agents);
 
   // The caller's own membership row (server-flagged is_self) decides whether to
   // show moderation controls at all. Only owners/admins moderate.
@@ -271,17 +276,90 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const onlineHumans = humanParticipants.filter((p) => p.is_online);
   const offlineHumans = humanParticipants.filter((p) => !p.is_online);
 
+  // Resolve global online ids → display names using every roster we've seen
+  // plus the agent list. Room-local members are skipped here (they already
+  // appear under Online/Agents below).
+  const inThisRoom = new Set(
+    participants
+      .map((p) => p.participant_id || p.user_id || p.id)
+      .filter(Boolean) as string[],
+  );
+  const nameById = new Map<string, { name: string; avatar?: string | null; isAgent: boolean }>();
+  for (const list of Object.values(participantsByRoom)) {
+    for (const m of list) {
+      const id = m.participant_id || m.user_id || m.id;
+      if (!id || nameById.has(id)) continue;
+      nameById.set(id, {
+        name: m.display_name,
+        avatar: m.avatar_url,
+        isAgent: m.participant_type === "agent",
+      });
+    }
+  }
+  for (const a of agents) {
+    if (!nameById.has(a.id)) {
+      nameById.set(a.id, {
+        name: a.name,
+        avatar: a.avatar_url,
+        isAgent: true,
+      });
+    }
+  }
+  const globalOnline = onlineUserIds
+    .filter((id) => !inThisRoom.has(id))
+    .map((id) => {
+      const known = nameById.get(id);
+      return {
+        id,
+        name: known?.name ?? "Someone",
+        avatar: known?.avatar ?? null,
+        isAgent: known?.isAgent ?? false,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   async function removeAgent(member: RoomMember) {
-    // Username is "agent-<brigade_id>"; strip the prefix back out.
-    const slug = (member.username ?? "").replace(/^agent-/, "");
-    if (!slug) return;
+    // Username is "agent-<brigade_id>"; strip the prefix back out. Prefer an
+    // explicit brigade id if the membership row ever carries one.
+    const slug =
+      (member as { brigade_agent_id?: string }).brigade_agent_id ||
+      (member.username ?? "").replace(/^agent-/, "");
+    if (!slug) {
+      useAppStore.getState().pushToast({
+        title: "Couldn't remove agent",
+        body: "Missing agent id on this member row.",
+      });
+      return;
+    }
     if (!confirm(`Remove ${member.display_name} from this channel?`)) return;
     try {
       await api.removeBrigadeAgent(roomId, slug);
       await qc.invalidateQueries({ queryKey: ["room-members", roomId] });
+      // Optimistic: drop from local roster so the strip updates even if the
+      // members refetch races the delete.
+      const roster = useAppStore.getState().participants[roomId] ?? [];
+      useAppStore.getState().setParticipants(
+        roomId,
+        roster.filter(
+          (p) =>
+            (p.participant_id || p.user_id || p.id) !==
+            (member.participant_id || member.user_id || member.id),
+        ),
+      );
+      useAppStore.getState().pushToast({
+        title: `Removed ${member.display_name}`,
+        body: "Agent left this room.",
+      });
     } catch (e) {
       console.error("remove agent failed", e);
-      alert("Couldn't remove agent: " + (e as Error).message);
+      const apiErr = e as ApiError;
+      useAppStore.getState().pushToast({
+        title: "Couldn't remove agent",
+        body:
+          (typeof apiErr?.detail === "string" && apiErr.detail) ||
+          apiErr?.message ||
+          (e instanceof Error ? e.message : "Request failed"),
+      });
     }
   }
 
@@ -316,6 +394,41 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
       className="flex h-full w-full flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
       aria-label="Room participants"
     >
+      {globalOnline.length > 0 && (
+        <section className="mb-4">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            Online on this server ({globalOnline.length})
+          </h3>
+          <p className="mb-2 px-1 text-[10px] leading-snug text-slate-600">
+            Not in this room — start a DM or invite them in.
+          </p>
+          <ul role="list" className="flex flex-col gap-1">
+            {globalOnline.slice(0, 24).map((p) => (
+              <li
+                key={p.id}
+                className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300"
+              >
+                <div className="relative shrink-0">
+                  <Avatar
+                    name={p.name}
+                    src={p.avatar}
+                    size="sm"
+                    isAgent={p.isAgent}
+                  />
+                  <span
+                    className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live"
+                    aria-label="Online"
+                  />
+                </div>
+                <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                  {p.name}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {presentMembers.length > 0 && (
         <div className="mb-4 flex items-center gap-2.5 px-1">
           <div className="flex -space-x-1.5">
@@ -404,16 +517,22 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                       )}
                     </p>
                   </div>
+                  {/* Always reachable on mobile + desktop. The old
+                      `md:hidden md:group-hover:block` combo failed on desktop
+                      (group-hover couldn't reliably unhide) so agents got
+                      stuck in the room until you left and re-entered. */}
                   <button
-                    onClick={() => removeAgent(m)}
-                    className="block shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 focus-ring md:hidden md:p-1 md:group-hover:block"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void removeAgent(m);
+                    }}
+                    className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md p-1.5 text-slate-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 focus-ring touch-manipulation opacity-100 md:opacity-70 md:group-hover:opacity-100"
                     aria-label={`Remove ${m.display_name}`}
                     title="Remove from channel"
                   >
-                    <X className="h-3 w-3" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
-                  {/* Mic icon retained as visual marker for future stage feature */}
-                  <Mic className="hidden h-3 w-3 shrink-0 text-stable-cyan" />
                 </li>
               );
             })}

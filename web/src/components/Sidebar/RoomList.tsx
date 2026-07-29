@@ -1171,7 +1171,11 @@ export function RoomList() {
     );
   }
 
-  const [channelSection, peopleSection, groupsSection] = model.sections;
+  // sections tuple is [people, groups, channels] — keep names explicit so a
+  // future reorder cannot silently swap labels and bodies.
+  const peopleSection = model.sections.find((s) => s.id === "people")!;
+  const groupsSection = model.sections.find((s) => s.id === "groups")!;
+  const channelSection = model.sections.find((s) => s.id === "channels")!;
   const channelCount = channelSection.groups.reduce(
     (n, g) => n + g.rows.length,
     0,
@@ -1275,59 +1279,13 @@ export function RoomList() {
           <span className="truncate text-sm font-medium">Bridge &amp; connect</span>
         </button>
 
-        <section>
-          {renderSectionHeader(
-            SECTION_KEYS.channels,
-            "Channels",
-            "Public — anyone on this server can find and join these",
-            <>
-              {renderNewFolderButton("channels")}
-              <button
-                onClick={() => setBrowseOpen(true)}
-                className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
-                aria-label="Browse channels"
-                title="Browse channels you can join"
-              >
-                Browse
-              </button>
-              <button
-                onClick={() => setCreateRoomModalOpen(true)}
-                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-                aria-label="Create channel"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </>,
-          )}
-
-          {!channelSection.collapsed && (
-            <>
-              {renderNewFolderInput("channels")}
-
-              {channelCount === 0 && (
-                <div className="px-2.5 py-2">
-                  <p className="mb-2 text-xs text-slate-500">No channels yet</p>
-                  <button
-                    onClick={handleSeedDefaults}
-                    disabled={seeding}
-                    className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
-                  >
-                    <Sparkles className="h-3 w-3" />
-                    {seeding ? "Creating…" : "Seed business channels"}
-                  </button>
-                </div>
-              )}
-
-              {renderSectionBody(channelSection)}
-            </>
-          )}
-        </section>
-
+        {/* People / DMs first (Meeting-Ops 77fd49a9 + product ask). Channels
+            are still a first-class section — they just sit below DMs. */}
         <section>
           {renderSectionHeader(
             SECTION_KEYS.people,
-            "People & agents",
-            "Private — direct conversations, one row per person you talk to",
+            "Direct messages",
+            "Private — people and agents you talk to one-on-one",
             <>
               {renderNewFolderButton("people")}
               <button
@@ -1383,6 +1341,54 @@ export function RoomList() {
             {!groupsSection.collapsed && renderSectionBody(groupsSection)}
           </section>
         )}
+
+        <section>
+          {renderSectionHeader(
+            SECTION_KEYS.channels,
+            "Channels",
+            "Public — anyone on this server can find and join these",
+            <>
+              {renderNewFolderButton("channels")}
+              <button
+                onClick={() => setBrowseOpen(true)}
+                className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+                aria-label="Browse channels"
+                title="Browse channels you can join"
+              >
+                Browse
+              </button>
+              <button
+                onClick={() => setCreateRoomModalOpen(true)}
+                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+                aria-label="Create channel"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </>,
+          )}
+
+          {!channelSection.collapsed && (
+            <>
+              {renderNewFolderInput("channels")}
+
+              {channelCount === 0 && (
+                <div className="px-2.5 py-2">
+                  <p className="mb-2 text-xs text-slate-500">No channels yet</p>
+                  <button
+                    onClick={handleSeedDefaults}
+                    disabled={seeding}
+                    className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    {seeding ? "Creating…" : "Seed business channels"}
+                  </button>
+                </div>
+              )}
+
+              {renderSectionBody(channelSection)}
+            </>
+          )}
+        </section>
       </nav>
 
       {createDmOpen && (
