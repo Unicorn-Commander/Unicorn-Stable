@@ -10,8 +10,10 @@
  *
  * Three message families today:
  *   - `transcript` — near-real-time speaker-labeled caption lines (interim +
- *     final). Produced by the STT pipeline (Amanuensis) later; consumed by the
- *     live-transcript panel.
+ *     final). Produced by the agent STT path (Parakeet/Amanuensis via
+ *     transcript_publisher) when an agent is in-call, or by the browser Web
+ *     Speech API (humanTranscript.ts) for the local human when no agent is
+ *     present; consumed by the live-transcript panel.
  *   - `ui_command`  — AG-UI-style imperative UI control ("change the call view",
  *     "focus this participant", "pin this participant", …). Only honored when the
  *     sender is an AGENT — this is the seam that lets Majik drive the interface.

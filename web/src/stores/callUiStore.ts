@@ -4,6 +4,7 @@ import type {
   TranscriptMessage,
   UiCommandMessage,
 } from "@/lib/roomDataProtocol";
+import { getSendByDefault } from "@/lib/meetingOpsPrefs";
 
 /**
  * Call-UI store — modular, agent-drivable call surface state.
@@ -115,6 +116,14 @@ interface CallUiState {
   videoPrompted: boolean;
   /** Transcript buffer (final + the current interim line per speaker). */
   transcript: TranscriptLine[];
+  /**
+   * Per-session: when true, hang-up (and the manual Send control) will POST the
+   * call transcript to Stable's export endpoint, which may forward it to
+   * Meeting-Ops. Seeded from the "always by default" preference on call start.
+   */
+  sendToMeetingOps: boolean;
+  /** Epoch ms when the current call's transcript buffer was opened (connect). */
+  callStartedAt: number | null;
 
   getViewMode: (roomId: string) => CallViewMode;
   setViewMode: (roomId: string, mode: CallViewMode) => void;
@@ -127,6 +136,9 @@ interface CallUiState {
   focusParticipant: (participantId: string | null) => void;
   setPopoutOpen: (roomId: string, open: boolean) => void;
   setVideoPrompted: (v: boolean) => void;
+  setSendToMeetingOps: (on: boolean) => void;
+  /** Seed session Meeting-Ops flag + call start clock when a call connects. */
+  beginCallTranscriptSession: () => void;
 
   ingestTranscript: (msg: TranscriptMessage) => void;
   clearTranscript: () => void;
@@ -149,6 +161,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   activeCallRoomId: null,
   videoPrompted: false,
   transcript: [],
+  sendToMeetingOps:
+    typeof window !== "undefined" ? getSendByDefault() : true,
+  callStartedAt: null,
 
   getViewMode: (roomId) => get().viewModes[roomId] ?? DEFAULT_CALL_VIEW_MODE,
 
@@ -198,6 +213,17 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
     set({ popout: { open, ownerRoomId: open ? roomId : null } }),
 
   setVideoPrompted: (v) => set({ videoPrompted: v }),
+
+  setSendToMeetingOps: (on) => set({ sendToMeetingOps: on }),
+
+  beginCallTranscriptSession: () =>
+    set({
+      // Re-read the default each call so a settings change mid-session applies
+      // to the *next* call without forcing a reload.
+      sendToMeetingOps: getSendByDefault(),
+      callStartedAt: Date.now(),
+      transcript: [],
+    }),
 
   ingestTranscript: (msg) =>
     set((state) => {
@@ -250,6 +276,8 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       popout: { open: false, ownerRoomId: null },
       videoPrompted: false,
       transcript: [],
+      callStartedAt: null,
+      sendToMeetingOps: getSendByDefault(),
     }),
 }));
 

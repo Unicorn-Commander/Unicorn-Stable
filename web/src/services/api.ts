@@ -1057,6 +1057,60 @@ class StableApiClient {
     return response.blob();
   }
 
+  /* ----------------------- Call transcripts / Meeting-Ops ----------------------- */
+
+  /**
+   * Finalize a call transcript and optionally forward it to Meeting-Ops.
+   * Backend accepts the payload even when Meeting-Ops is not configured
+   * (local-only accept + delivery report in the response).
+   */
+  async exportCallTranscript(
+    roomId: string,
+    body: {
+      lines: Array<{
+        participant_id: string;
+        name: string;
+        text: string;
+        ts: number;
+        is_final: boolean;
+        segment_id?: string;
+      }>;
+      include_interim?: boolean;
+      room_name?: string | null;
+      call_started_at?: string | null;
+      call_ended_at?: string | null;
+      meeting_ops_session_id?: string | null;
+      label?: string | null;
+      send_to_meeting_ops?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<{
+    ok: boolean;
+    export_id: string;
+    room_id: string;
+    line_count: number;
+    meeting_ops_configured: boolean;
+    meeting_ops: {
+      forwarded: boolean;
+      status: string;
+      detail?: string;
+      http_status?: number;
+      remote_session_id?: string | null;
+    };
+    exported_at: string;
+  }> {
+    return this.request("POST", `/api/v1/rooms/${roomId}/transcripts/export`, body);
+  }
+
+  /** Whether Meeting-Ops is wired on this instance (no secrets exposed). */
+  async getMeetingOpsStatus(): Promise<{
+    configured: boolean;
+    enabled: boolean;
+    has_url: boolean;
+  }> {
+    return this.request("GET", "/api/v1/transcripts/meeting-ops/status");
+  }
+
   /* ----------------------------- Artifacts ----------------------------- *
    * The co-working canvas. Artifacts are room-scoped, versioned documents
    * (markdown/code/html/svg/mermaid/react/sheet). See @/types/artifact.ts for

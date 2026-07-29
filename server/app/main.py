@@ -29,6 +29,7 @@ from app.api.calls import router as calls_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
 from app.api.tts import router as tts_router
+from app.api.transcripts import router as transcripts_router
 from app.api.uploads import router as uploads_router
 from app.api.users import router as users_router
 from app.api.push import router as push_router
@@ -260,6 +261,7 @@ def create_app() -> FastAPI:
     app.include_router(tokens_router, prefix="/api/v1", tags=["Tokens"])
     app.include_router(calls_router, prefix="/api/v1", tags=["Calls"])
     app.include_router(tts_router, prefix="/api/v1", tags=["TTS"])
+    app.include_router(transcripts_router, prefix="/api/v1", tags=["Transcripts"])
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
     app.include_router(artifacts_router, prefix="/api/v1", tags=["Artifacts"])

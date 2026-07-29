@@ -4,6 +4,7 @@ import {
   Bell,
   BellRing,
   BookOpen,
+  Captions,
   Check,
   LogOut,
   Mail,
@@ -22,6 +23,11 @@ import { useModalA11y } from "@/hooks/useModalA11y";
 import { Tooltip } from "@/components/ui";
 import { AppearanceSection } from "@/components/Settings/AppearanceSection";
 import { HelpCenter } from "@/components/Help";
+import {
+  loadMeetingOpsPrefs,
+  saveMeetingOpsPrefs,
+  type MeetingOpsTranscriptPrefs,
+} from "@/lib/meetingOpsPrefs";
 
 /**
  * Settings — one modal, four panes.
@@ -280,6 +286,8 @@ function NotificationsPane() {
 
       <BrowserNotificationsSection />
 
+      <MeetingOpsTranscriptSection />
+
       <section>
         <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
           <Mail className="h-3 w-3" /> Email
@@ -301,6 +309,71 @@ function NotificationsPane() {
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * Default for the per-call "Send to Meeting-Ops" toggle. Session toggle lives
+ * on the live transcript panel; this is only the always-by-default seed.
+ */
+function MeetingOpsTranscriptSection() {
+  const [moPrefs, setMoPrefs] = useState<MeetingOpsTranscriptPrefs>(
+    loadMeetingOpsPrefs,
+  );
+  const [moConfigured, setMoConfigured] = useState<boolean | null>(null);
+  const [showSaved, setShowSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .getMeetingOpsStatus()
+      .then((s) => {
+        if (live) setMoConfigured(Boolean(s.configured));
+      })
+      .catch(() => {
+        if (live) setMoConfigured(null);
+      });
+    return () => {
+      live = false;
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    };
+  }, []);
+
+  function setSendByDefault(value: boolean) {
+    const next = { ...moPrefs, sendByDefault: value };
+    setMoPrefs(next);
+    saveMeetingOpsPrefs(next);
+    setShowSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setShowSaved(false), 1500);
+  }
+
+  return (
+    <section className="mb-5">
+      <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+        <Captions className="h-3 w-3" /> Call transcripts
+        {showSaved && (
+          <span className="animate-fade-in ml-auto flex items-center gap-1 normal-case tracking-normal text-stable-mint">
+            <Check className="h-3 w-3" /> Saved
+          </span>
+        )}
+      </h3>
+      <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface-1/60">
+        <Toggle
+          label="Send call transcripts to Meeting-Ops by default"
+          hint={
+            moConfigured === false
+              ? "On by default for new calls. This instance has no MEETING_OPS_URL configured — exports are still accepted by Stable (local-only) until Meeting-Ops is wired."
+              : moConfigured === true
+                ? "New calls start with “Send to Meeting-Ops” on. You can still flip it per call in the live transcript panel."
+                : "New calls start with “Send to Meeting-Ops” on. You can still flip it per call in the live transcript panel."
+          }
+          checked={moPrefs.sendByDefault}
+          onChange={setSendByDefault}
+        />
+      </div>
+    </section>
   );
 }
 
