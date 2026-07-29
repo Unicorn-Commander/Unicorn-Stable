@@ -682,6 +682,11 @@ function ConnectionBanner() {
   const [phase, setPhase] = useState<
     "hidden" | "lost" | "stalled" | "restored" | "expired"
   >("hidden");
+  // User can dismiss the non-terminal reconnect banners so they don't cover
+  // call chrome / pop-out controls forever (meeting: frozen pop-out +
+  // "reconnecting — live updates" bar that could not be dismissed). Expired
+  // still requires sign-in; dismiss is only for lost/stalled/restored.
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     let lostTimer: number | null = null;
@@ -692,6 +697,8 @@ function ConnectionBanner() {
         window.clearTimeout(restoredTimer);
         restoredTimer = null;
       }
+      // A fresh outage should re-show even if the user dismissed the last one.
+      setDismissed(false);
       // Never DOWNGRADE: "expired" is terminal and "stalled" is a strictly
       // more accurate account of the same outage, so a fresh `disconnected`
       // from a retry that also failed must not walk either back to "lost".
@@ -718,6 +725,7 @@ function ConnectionBanner() {
         window.clearTimeout(restoredTimer);
         restoredTimer = null;
       }
+      setDismissed(false);
       setPhase("expired");
     });
 
@@ -734,6 +742,9 @@ function ConnectionBanner() {
         window.clearTimeout(restoredTimer);
         restoredTimer = null;
       }
+      // Don't force-show if the user already dismissed this outage episode —
+      // stalled is the same episode as lost, just longer. They can still
+      // sign-in from Settings if needed.
       setPhase((p) => (p === "expired" ? p : "stalled"));
     });
 
@@ -780,9 +791,14 @@ function ConnectionBanner() {
     };
   }, []);
 
+  // Dismiss hides non-terminal banners so call controls / pop-outs stay usable
+  // during a long reconnect. Expired is never dismissible — sign-in is required.
+  const visible =
+    phase !== "hidden" && (phase === "expired" || !dismissed);
+
   return (
     <AnimatePresence>
-      {phase !== "hidden" && (
+      {visible && (
         <motion.div
           key={phase}
           initial={{ y: -32, opacity: 0 }}
@@ -829,16 +845,40 @@ function ConnectionBanner() {
                 >
                   Sign in again
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setDismissed(true)}
+                  className="ml-1 rounded px-2 py-0.5 text-amber-200/80 underline-offset-2 hover:bg-amber-500/15 hover:underline"
+                  aria-label="Dismiss connection banner"
+                >
+                  Dismiss
+                </button>
               </>
             ) : phase === "lost" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
                 Connection lost — reconnecting…
+                <button
+                  type="button"
+                  onClick={() => setDismissed(true)}
+                  className="ml-1 rounded px-2 py-0.5 text-amber-200/80 underline-offset-2 hover:bg-amber-500/15 hover:underline"
+                  aria-label="Dismiss connection banner"
+                >
+                  Dismiss
+                </button>
               </>
             ) : (
               <>
                 <Wifi className="h-3.5 w-3.5 shrink-0" />
                 Reconnected
+                <button
+                  type="button"
+                  onClick={() => setDismissed(true)}
+                  className="ml-1 rounded px-2 py-0.5 text-stable-mint/80 underline-offset-2 hover:bg-stable-mint/15 hover:underline"
+                  aria-label="Dismiss reconnected banner"
+                >
+                  Dismiss
+                </button>
               </>
             )}
           </div>
