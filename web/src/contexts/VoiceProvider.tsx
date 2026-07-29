@@ -114,8 +114,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Join cue fires once per connect() — Reconnected/state churn must not
   // re-chime. Reset when a fresh Room is created in connect().
   const joinCuePlayedRef = useRef(false);
-  // Browser STT for the local human when no agent is in the room. Prefer the
-  // agent STT path (Parakeet/Amanuensis via transcript_publisher) when present.
+  // Speaker-owned browser STT for the local human. It runs with or without an
+  // agent and mirrors the LiveKit mute state.
   const humanTranscriptRef = useRef<HumanTranscriptSession | null>(null);
 
   // Screen-share audio sink bookkeeping. `screenSinkEls` maps a screen-share
@@ -133,6 +133,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const sync = useCallback((r: Room) => {
     setLocalParticipant(r.localParticipant);
     setRemoteParticipants(Array.from(r.remoteParticipants.values()));
+    humanTranscriptRef.current?.syncMicrophone(
+      r.localParticipant.isMicrophoneEnabled,
+    );
     setVersion((v) => v + 1);
   }, []);
 
@@ -462,9 +465,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       setRoom(r);
       setVoiceActive(true);
 
-      // Human live captions when no agent is present (agent STT path covers
-      // the agent-in-call case via transcript_publisher). Re-evaluate on
-      // participant join/leave so we hand off cleanly.
+      // Speaker-owned human captions. Every browser labels its own local mic;
+      // the linked-agent STT remains a deduplicated quality/fallback source.
+      // Re-evaluate on participant churn in case the recognition engine ended
+      // while the browser changed audio devices.
       try {
         humanTranscriptRef.current?.stop();
       } catch {

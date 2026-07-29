@@ -32,7 +32,12 @@ function refreshFor(id: string): void {
   const old = refreshers.get(id);
   if (old) clearInterval(old);
   refreshers.set(id, setInterval(() => {
-    void client.updateToken(TOKEN_MIN_VALIDITY_S).catch(() => stopRefresh(id));
+    void client.updateToken(TOKEN_MIN_VALIDITY_S).catch(() => {
+      // A brief IdP/network failure must not permanently turn refresh off.
+      // keycloak-js clears `authenticated` when the refresh token itself is
+      // rejected; only that terminal state should stop the scheduler.
+      if (!client.authenticated) stopRefresh(id);
+    });
   }, TOKEN_REFRESH_INTERVAL_MS));
 }
 
@@ -55,7 +60,11 @@ export async function initInstanceAuth(instance: StableInstance, onLoad: "login-
   });
   initializedInstances.add(instance.id);
   if (authenticated) refreshFor(instance.id);
-  client.onTokenExpired = () => { void client.updateToken(TOKEN_MIN_VALIDITY_S); };
+  client.onTokenExpired = () => {
+    void client.updateToken(TOKEN_MIN_VALIDITY_S).catch(() => {
+      if (!client.authenticated) stopRefresh(instance.id);
+    });
+  };
   client.onAuthLogout = () => stopRefresh(instance.id);
   return authenticated;
 }
@@ -105,7 +114,13 @@ export async function initAuth(): Promise<boolean> {
   setActiveAuthInstance(instance.id);
   return authenticated;
 }
-export function login(): void { clients.get(activeInstanceId ?? "")?.login({ redirectUri: window.location.origin }); }
+export function login(): void {
+  // Preserve the room the person was working in. Returning every re-auth to
+  // "/" made the recovery action feel like a reset and discarded context.
+  void clients.get(activeInstanceId ?? "")?.login({
+    redirectUri: window.location.href,
+  });
+}
 export function logout(): void {
   if (activeInstanceId) stopRefresh(activeInstanceId);
   void clients.get(activeInstanceId ?? "")?.logout({ redirectUri: window.location.origin });

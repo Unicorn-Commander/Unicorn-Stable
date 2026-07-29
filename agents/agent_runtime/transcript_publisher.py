@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -53,14 +54,43 @@ logger = structlog.get_logger(__name__)
 TRANSCRIPT_TOPIC = "stable"
 
 
-def resolve_human(room: rtc.Room, speaker_id: str | None) -> tuple[str, str]:
+def _participant_label(participant: Any) -> tuple[str, str]:
+    identity = getattr(participant, "identity", "") or "human"
+    return identity, (getattr(participant, "name", "") or identity)
+
+
+def _participant_matches(participant: Any, candidate: str) -> bool:
+    """Whether a LiveKit identity, participant SID, or track SID names p."""
+    if candidate in {
+        getattr(participant, "identity", None),
+        getattr(participant, "sid", None),
+    }:
+        return True
+    try:
+        publications = getattr(participant, "track_publications", {}) or {}
+        for publication in publications.values():
+            if candidate == getattr(publication, "sid", None):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_human(
+    room: rtc.Room,
+    speaker_id: str | None,
+    linked_participant: Any | None = None,
+) -> tuple[str, str]:
     """Resolve a (livekit_identity, displayName) for the human speaker.
 
-    Prefers an exact ``speaker_id`` match against the room's remote
-    participants; falls back to the single non-agent remote (the common
-    1-human + 1-agent call); last resort uses ``speaker_id`` or a generic
-    label. Shared by the caption publisher and the history persister so both
-    attribute a turn to the same participant.
+    Prefers a ``speaker_id`` match against a LiveKit identity, participant SID,
+    or audio-track SID. LiveKit's normal UserInputTranscribedEvent has a null
+    speaker_id, however: an AgentSession is associated with one linked
+    participant, and THAT relationship is the trustworthy fallback in a
+    multi-human room. Only use the historical single-human fallback after both.
+
+    Shared by the caption publisher and history persister so both attribute a
+    turn to the same participant.
     """
     try:
         remotes = list(room.remote_participants.values())
@@ -69,8 +99,21 @@ def resolve_human(room: rtc.Room, speaker_id: str | None) -> tuple[str, str]:
 
     if speaker_id:
         for p in remotes:
-            if getattr(p, "identity", None) == speaker_id:
-                return speaker_id, (getattr(p, "name", "") or speaker_id)
+            if _participant_matches(p, speaker_id):
+                return _participant_label(p)
+
+    if linked_participant is not None:
+        if isinstance(linked_participant, str):
+            for p in remotes:
+                if _participant_matches(p, linked_participant):
+                    return _participant_label(p)
+        else:
+            linked_identity = getattr(linked_participant, "identity", None)
+            if linked_identity:
+                for p in remotes:
+                    if getattr(p, "identity", None) == linked_identity:
+                        return _participant_label(p)
+                return _participant_label(linked_participant)
 
     humans = [
         p
@@ -78,12 +121,12 @@ def resolve_human(room: rtc.Room, speaker_id: str | None) -> tuple[str, str]:
         if not (getattr(p, "identity", "") or "").startswith("agent-")
     ]
     if len(humans) == 1:
-        p = humans[0]
-        ident = getattr(p, "identity", "") or (speaker_id or "human")
-        return ident, (getattr(p, "name", "") or ident)
+        return _participant_label(humans[0])
 
+    # A provider diarization label ("speaker_0") is not a LiveKit identity.
+    # Never publish it as if it named a person in a multi-human room.
     if speaker_id:
-        return speaker_id, speaker_id
+        return "human", "Unidentified speaker"
     return "human", "Speaker"
 
 
@@ -143,6 +186,7 @@ class _AgentInterim:
                 text=text,
                 is_final=False,
                 segment_id=self._segment_id,
+                source="agent",
             )
         except Exception:
             # NEVER let a captioning error bubble into the voice loop.
@@ -163,6 +207,7 @@ class TranscriptPublisher:
         room: rtc.Room,
         agent_identity: str,
         agent_name: str,
+        linked_participant_getter: Callable[[], Any | None] | None = None,
     ) -> None:
         self._room: rtc.Room = room
         # Majik's own LiveKit identity (the "agent-..." convention). The
@@ -171,6 +216,7 @@ class TranscriptPublisher:
         # agent identity.
         self._agent_identity: str = agent_identity
         self._agent_name: str = agent_name
+        self._linked_participant_getter = linked_participant_getter
         # Monotonic counter to give each agent utterance a unique segmentId so
         # the frontend keys consecutive final lines distinctly even within the
         # same millisecond.
@@ -191,9 +237,9 @@ class TranscriptPublisher:
         """Handle a ``UserInputTranscribedEvent`` (interim + final user STT).
 
         Fields (livekit-agents 1.6): ``transcript`` (str), ``is_final`` (bool),
-        ``speaker_id`` (str | None). We label the line with the human's room
-        participant (identity + display name) resolved from ``speaker_id`` when
-        present, else the single remote human in the room.
+        ``speaker_id`` (str | None). Resolve the human from a supported
+        speaker/track id, then the AgentSession's linked participant. A generic
+        single-human fallback is only safe after those checks.
         """
         try:
             text = (getattr(ev, "transcript", "") or "").strip()
@@ -215,6 +261,7 @@ class TranscriptPublisher:
                 text=text,
                 is_final=is_final,
                 segment_id=segment_id,
+                source="agent_stt",
             )
         except Exception:
             # NEVER let a captioning error bubble into the voice loop.
@@ -250,6 +297,7 @@ class TranscriptPublisher:
                 text=text,
                 is_final=True,
                 segment_id=segment_id,
+                source="agent",
             )
         except Exception:
             logger.debug("transcript_agent_publish_failed", exc_info=True)
@@ -280,7 +328,13 @@ class TranscriptPublisher:
     def _resolve_human(self, speaker_id: str | None) -> tuple[str, str]:
         """Delegate to the shared module-level resolver (one source of truth
         for both captions and history persistence)."""
-        return resolve_human(self._room, speaker_id)
+        linked = None
+        if self._linked_participant_getter is not None:
+            try:
+                linked = self._linked_participant_getter()
+            except Exception:
+                logger.debug("linked_participant_resolve_failed", exc_info=True)
+        return resolve_human(self._room, speaker_id, linked)
 
     def _publish(
         self,
@@ -290,6 +344,7 @@ class TranscriptPublisher:
         text: str,
         is_final: bool,
         segment_id: str | None,
+        source: str,
     ) -> None:
         """Build the transcript envelope and fire-and-forget publish it."""
         msg: dict[str, Any] = {
@@ -299,6 +354,7 @@ class TranscriptPublisher:
             "text": text,
             "isFinal": is_final,
             "ts": _now_ms(),
+            "source": source,
         }
         if segment_id:
             msg["segmentId"] = segment_id
@@ -352,10 +408,12 @@ class VoiceHistoryPersister:
         room: rtc.Room,
         livekit_room_name: str,
         brigade_agent_id: str | None,
+        linked_participant_getter: Callable[[], Any | None] | None = None,
     ) -> None:
         self._room = room
         self._lk_room_name = livekit_room_name
         self._brigade_agent_id = brigade_agent_id or "majik"
+        self._linked_participant_getter = linked_participant_getter
         cfg = get_agent_settings()
         self._base = (getattr(cfg, "stable_backend_url", "") or "").rstrip("/")
         self._secret = (
@@ -374,7 +432,16 @@ class VoiceHistoryPersister:
             text = (getattr(ev, "transcript", "") or "").strip()
             if not text:
                 return
-            identity, _name = resolve_human(self._room, getattr(ev, "speaker_id", None))
+            linked = (
+                self._linked_participant_getter()
+                if self._linked_participant_getter is not None
+                else None
+            )
+            identity, _name = resolve_human(
+                self._room,
+                getattr(ev, "speaker_id", None),
+                linked,
+            )
             self._fire(
                 "/api/v1/internal/voice-user-message",
                 {

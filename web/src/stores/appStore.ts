@@ -125,6 +125,7 @@ interface AppState {
 
   toggleSidebar: () => void;
   toggleParticipantPanel: () => void;
+  setParticipantPanelOpen: (open: boolean) => void;
   toggleSettings: () => void;
   toggleCheatsheet: () => void;
   setThreadMessageId: (id: string | null) => void;
@@ -169,7 +170,9 @@ export const useAppStore = create<AppState>((set) => ({
     // hamburger to reveal it — otherwise the 280px drawer covers the whole
     // screen on load. Desktop keeps it open in-flow.
     sidebarOpen: typeof window !== "undefined" ? window.innerWidth >= 768 : true,
-    participantPanelOpen: typeof window !== "undefined" ? window.innerWidth >= 768 : true,
+    // The conversation is the primary surface. Members are one click away,
+    // but defaulting this open squeezed chat before the user asked for it.
+    participantPanelOpen: false,
     savedOpen: false,
     settingsOpen: false,
     cheatsheetOpen: false,
@@ -224,7 +227,16 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
-  setActiveRoomId: (id) => set({ activeRoomId: id }),
+  setActiveRoomId: (id) =>
+    set((state) => ({
+      activeRoomId: id,
+      // A thread belongs to one room. Carrying its message id into another
+      // room produced an empty, contextless column.
+      ui:
+        state.activeRoomId !== id
+          ? { ...state.ui, threadMessageId: null }
+          : state.ui,
+    })),
 
   setMessages: (roomId, data) =>
     set((state) => ({
@@ -550,6 +562,10 @@ export const useAppStore = create<AppState>((set) => ({
         ...state.ui,
         participantPanelOpen: !state.ui.participantPanelOpen,
       },
+    })),
+  setParticipantPanelOpen: (open) =>
+    set((state) => ({
+      ui: { ...state.ui, participantPanelOpen: open },
     })),
   toggleSettings: () =>
     set((state) => ({

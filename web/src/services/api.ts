@@ -285,8 +285,14 @@ export interface SendMessageRequest {
 class StableApiClient {
   private async getAuthHeaders(): Promise<Record<string, string>> {
     let token = getToken();
-    if (!token) {
-      token = await refreshToken();
+    try {
+      // updateToken() is a cheap local no-op while the token is healthy. Doing
+      // this before every request closes the same stale-token hole the
+      // WebSocket path already guards: background tabs suspend refresh timers.
+      token = (await refreshToken()) ?? token;
+    } catch {
+      // A transient IdP failure should not block a request whose cached token
+      // is still valid. The API response remains the source of truth.
     }
     if (!token) {
       return {};

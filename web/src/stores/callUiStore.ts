@@ -64,6 +64,7 @@ export interface TranscriptLine {
   text: string;
   isFinal: boolean;
   ts: number;
+  source?: TranscriptMessage["source"];
 }
 
 /** Which room's video surface is detached into a pop-out window (transient). */
@@ -74,6 +75,41 @@ export interface PopoutState {
 
 /** Cap the buffer so a long call can't grow memory unbounded. */
 const MAX_TRANSCRIPT_LINES = 500;
+const TRANSCRIPT_DEDUPE_WINDOW_MS = 12_000;
+
+function transcriptWords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLocaleLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Browser and agent STT often segment the same utterance differently. Treat
+ * lines as the same speech when one normalized string contains the other, or
+ * when most words in the shorter line overlap.
+ */
+function sameUtterance(a: string, b: string): boolean {
+  const na = Array.from(transcriptWords(a)).join(" ");
+  const nb = Array.from(transcriptWords(b)).join(" ");
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (Math.min(na.length, nb.length) >= 8 && (na.includes(nb) || nb.includes(na))) {
+    return true;
+  }
+  const aw = transcriptWords(a);
+  const bw = transcriptWords(b);
+  const shorter = Math.min(aw.size, bw.size);
+  if (shorter === 0) return false;
+  let overlap = 0;
+  aw.forEach((word) => {
+    if (bw.has(word)) overlap++;
+  });
+  return overlap / shorter >= 0.72;
+}
 
 interface CallUiState {
   /** Per-room persisted view mode. Missing key ⇒ DEFAULT_CALL_VIEW_MODE. */
@@ -235,12 +271,41 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
         text: msg.text,
         isFinal: msg.isFinal,
         ts: msg.ts,
+        source: msg.source,
       };
 
       // Collapse the rolling interim line for a speaker: while a speaker is
       // mid-utterance we keep exactly ONE non-final line for them and replace
       // it in place; a final line for that speaker supersedes their interim.
-      const lines = state.transcript.slice();
+      let lines = state.transcript.slice();
+
+      // The local-mic producer is authoritative for WHO spoke. The agent STT
+      // is retained as a fallback when a browser cannot caption, but matching
+      // copies should never render twice or make one person look like another.
+      const counterpartSource =
+        msg.source === "agent_stt"
+          ? "local_mic"
+          : msg.source === "local_mic"
+            ? "agent_stt"
+            : null;
+      if (counterpartSource) {
+        const duplicateIndexes = lines
+          .map((candidate, index) => ({ candidate, index }))
+          .filter(
+            ({ candidate }) =>
+              candidate.participantId === msg.participantId &&
+              candidate.source === counterpartSource &&
+              Math.abs(candidate.ts - msg.ts) <= TRANSCRIPT_DEDUPE_WINDOW_MS &&
+              sameUtterance(candidate.text, msg.text),
+          )
+          .map(({ index }) => index);
+
+        if (duplicateIndexes.length > 0) {
+          if (msg.source === "agent_stt") return state;
+          const duplicateSet = new Set(duplicateIndexes);
+          lines = lines.filter((_, index) => !duplicateSet.has(index));
+        }
+      }
       const interimIdx = lines.findIndex(
         (l) => !l.isFinal && l.participantId === msg.participantId,
       );

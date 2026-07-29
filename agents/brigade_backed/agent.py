@@ -401,6 +401,11 @@ class BrigadeBackedAgent(StableAgent):
         session = AgentSession()
         self._session = session
 
+        def linked_participant():
+            """The one human whose audio this AgentSession actually consumes."""
+            room_io = getattr(session, "room_io", None)
+            return getattr(room_io, "linked_participant", None)
+
         # --- Live transcript publishing (additive, fire-and-forget) ---
         # Republish the human STT (interim + final) and Majik’s spoken
         # replies as `transcript` data messages on the "stable" topic so the
@@ -424,6 +429,7 @@ class BrigadeBackedAgent(StableAgent):
                 room=ctx.room,
                 agent_identity=agent_identity,
                 agent_name=_agent_display_name(brigade_agent_id),
+                linked_participant_getter=linked_participant,
             )
             # Tee the agent's streamed reply text (via transcription_node) into
             # the publisher so the caption builds up live "as it reads"; the
@@ -464,6 +470,7 @@ class BrigadeBackedAgent(StableAgent):
                 room=ctx.room,
                 livekit_room_name=ctx.room.name,
                 brigade_agent_id=brigade_agent_id,
+                linked_participant_getter=linked_participant,
             )
             session.on(
                 "user_input_transcribed", self._voice_history.on_user_transcript

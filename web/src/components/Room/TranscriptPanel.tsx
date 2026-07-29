@@ -41,6 +41,7 @@ export function TranscriptPanel() {
   const callStartedAt = useCallUiStore((s) => s.callStartedAt);
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   const rooms = useAppStore((s) => s.rooms);
+  const currentUser = useAppStore((s) => s.currentUser);
   const pushToast = useAppStore((s) => s.pushToast);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -142,7 +143,11 @@ export function TranscriptPanel() {
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-3">
         <div className="flex items-center gap-1.5 font-display text-xs font-semibold text-slate-200">
           <Captions className="h-3.5 w-3.5 text-stable-cyan" />
-          Transcript
+          Live transcript
+          <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-stable-mint/10 px-1.5 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.08em] text-stable-mint">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-stable-mint" />
+            Live
+          </span>
         </div>
         <div className="flex items-center gap-1">
           {isDevTranscriptEnabled() && (
@@ -231,30 +236,74 @@ export function TranscriptPanel() {
             </p>
           </div>
         ) : (
-          lines.map((line) => {
+          lines.map((line, index) => {
             const ident = identityFor(
               line.participantId.replace(/^agent-/, ""),
               line.name,
             );
+            const previous = lines[index - 1];
+            const continuation =
+              previous?.participantId === line.participantId &&
+              line.ts - previous.ts < 60_000;
+            const isMe = currentUser?.id === line.participantId;
+            const initials = line.name
+              .split(/\s+/)
+              .filter(Boolean)
+              .slice(0, 2)
+              .map((part) => part[0]?.toUpperCase())
+              .join("");
             return (
               <div
                 key={line.id}
-                className="rounded-md px-1.5 py-0.5 text-sm leading-snug transition-colors hover:bg-white/[0.03]"
+                className="group flex gap-2 rounded-xl px-2 py-1.5 text-sm leading-snug transition-colors hover:bg-white/[0.035]"
               >
-                <span
-                  className="mr-1.5 font-semibold"
-                  style={{ color: ident.text }}
-                >
-                  {line.name}
-                </span>
-                {line.isFinal ? (
-                  <span className="text-slate-200">{line.text}</span>
-                ) : (
-                  <span className="italic">
-                    <span className="animate-shimmer">{line.text}</span>
-                    <span className="ml-0.5 inline-block h-3 w-1 animate-pulse-soft rounded-full bg-slate-500 align-middle" />
-                  </span>
-                )}
+                <div className="w-7 shrink-0 pt-0.5">
+                  {!continuation && (
+                    <div
+                      className="grid h-7 w-7 place-items-center rounded-lg text-[9px] font-bold text-white shadow-sm"
+                      style={{ background: ident.gradient }}
+                      aria-hidden="true"
+                    >
+                      {initials || "?"}
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  {!continuation && (
+                    <div className="mb-0.5 flex min-w-0 items-baseline gap-1.5">
+                      <span
+                        className="truncate text-[11px] font-semibold"
+                        style={{ color: ident.text }}
+                      >
+                        {line.name}
+                      </span>
+                      {isMe && (
+                        <span className="rounded-full bg-white/[0.06] px-1 py-px text-[8px] font-semibold uppercase tracking-wide text-slate-400">
+                          You
+                        </span>
+                      )}
+                      <time
+                        className="ml-auto shrink-0 text-[9px] tabular-nums text-slate-600 opacity-0 transition-opacity group-hover:opacity-100"
+                        dateTime={new Date(line.ts).toISOString()}
+                      >
+                        {new Date(line.ts).toLocaleTimeString([], {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </div>
+                  )}
+                  {line.isFinal ? (
+                    <p className="text-[13px] leading-relaxed text-slate-200">
+                      {line.text}
+                    </p>
+                  ) : (
+                    <p className="text-[13px] italic leading-relaxed">
+                      <span className="animate-shimmer">{line.text}</span>
+                      <span className="ml-1 inline-block h-3 w-1 animate-pulse-soft rounded-full bg-slate-500 align-middle" />
+                    </p>
+                  )}
+                </div>
               </div>
             );
           })

@@ -1,17 +1,20 @@
 /**
  * Browser-side live captions for the LOCAL human participant.
  *
- * When an agent is in the call, the agent runtime already runs STT (Parakeet /
- * Amanuensis via livekit-agents) and republishes human + agent lines as
- * `transcript` data-channel messages (see agents/agent_runtime/transcript_publisher.py).
- * We deliberately DO NOT run browser STT in that case — reusing the agent path
- * avoids double captions and keeps agent voice history persistence working.
+ * This module runs for every human participant, including rooms with an agent.
+ * A LiveKit AgentSession is linked to one participant and its speaker_id is
+ * normally null unless the STT provider performs diarization. It therefore
+ * cannot truthfully identify every human in a group call. The local browser
+ * owns the one fact it can prove: which signed-in person's mic produced the
+ * audio.
  *
- * When NO agent is present (human↔human calls), this module uses the Web
- * Speech API to caption the local mic and:
+ * The Web Speech API captions that local mic and:
  *   1. ingests lines into callUiStore (local TranscriptPanel), and
  *   2. publishes them on the LiveKit `stable` data topic so remote peers see
  *      the same speaker-labeled captions.
+ *
+ * The agent STT path remains active as a quality/fallback source; callUiStore
+ * deduplicates it when a matching local-mic line arrives.
  *
  * Fail-safe: if SpeechRecognition is missing or errors, we log and stay quiet
  * — never break the call audio path.
@@ -20,7 +23,6 @@
 import type { Room } from "livekit-client";
 import {
   encodeRoomData,
-  isAgentParticipant,
   ROOM_DATA_TOPIC,
   type TranscriptMessage,
 } from "@/lib/roomDataProtocol";
@@ -61,17 +63,6 @@ export function isBrowserSttAvailable(): boolean {
   return getSpeechRecognitionCtor() !== null;
 }
 
-function roomHasAgent(room: Room): boolean {
-  try {
-    for (const p of room.remoteParticipants.values()) {
-      if (isAgentParticipant(p)) return true;
-    }
-  } catch {
-    // room tearing down
-  }
-  return false;
-}
-
 function buildMsg(
   room: Room,
   text: string,
@@ -89,6 +80,7 @@ function buildMsg(
     text: trimmed,
     isFinal,
     ts: Date.now(),
+    source: "local_mic",
   };
   if (segmentId) msg.segmentId = segmentId;
   return msg;
@@ -110,13 +102,14 @@ function publishAndIngest(room: Room, msg: TranscriptMessage): void {
 }
 
 /**
- * Owns one SpeechRecognition session for a LiveKit Room. Create once per call;
- * call start()/stop() as agents join/leave or the call ends.
+ * Owns one SpeechRecognition session for a LiveKit Room. Create once per call
+ * and call start()/stop() with the call lifecycle.
  */
 export class HumanTranscriptSession {
   private room: Room;
   private rec: SpeechRecognitionLike | null = null;
   private wanted = false;
+  private micEnabled = false;
   private running = false;
   private stopped = false;
   private interimSegId: string | null = null;
@@ -126,10 +119,22 @@ export class HumanTranscriptSession {
     this.room = room;
   }
 
-  /** Begin (or re-evaluate) captioning. No-ops when an agent is present. */
+  /** Begin captioning the signed-in participant's local microphone. */
   start(): void {
     this.wanted = true;
     this.stopped = false;
+    this.micEnabled = this.room.localParticipant.isMicrophoneEnabled;
+    this.ensureRunning();
+  }
+
+  /**
+   * Mirror the call's real mute state. SpeechRecognition owns a browser mic
+   * capture separate from LiveKit, so failing to stop it here would keep
+   * captioning after the person pressed Mute.
+   */
+  syncMicrophone(enabled: boolean): void {
+    this.micEnabled = enabled;
+    if (!this.wanted || this.stopped) return;
     this.ensureRunning();
   }
 
@@ -141,8 +146,8 @@ export class HumanTranscriptSession {
   }
 
   /**
-   * Re-check agent presence. Call when participants join/leave so we hand off
-   * to (or take over from) the agent STT path.
+   * Kept for the call lifecycle's participant-change hook. A recognition
+   * engine can end during device churn, so this also restarts it if needed.
    */
   reevaluate(): void {
     if (!this.wanted || this.stopped) return;
@@ -150,12 +155,7 @@ export class HumanTranscriptSession {
   }
 
   private ensureRunning(): void {
-    if (this.stopped || !this.wanted) {
-      this.teardownRec();
-      return;
-    }
-    // Prefer the agent STT path when an agent is in the room.
-    if (roomHasAgent(this.room)) {
+    if (this.stopped || !this.wanted || !this.micEnabled) {
       this.teardownRec();
       return;
     }
@@ -179,12 +179,7 @@ export class HumanTranscriptSession {
       (typeof navigator !== "undefined" && navigator.language) || "en-US";
 
     rec.onresult = (ev) => {
-      if (this.stopped) return;
-      // Skip if an agent joined mid-utterance.
-      if (roomHasAgent(this.room)) {
-        this.teardownRec();
-        return;
-      }
+      if (this.stopped || !this.micEnabled) return;
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const result = ev.results[i];
         if (!result) continue;
@@ -221,12 +216,11 @@ export class HumanTranscriptSession {
     rec.onend = () => {
       this.running = false;
       // Continuous mode often ends after a pause — restart while still wanted.
-      if (this.stopped || !this.wanted) return;
-      if (roomHasAgent(this.room)) return;
+      if (this.stopped || !this.wanted || !this.micEnabled) return;
       if (this.restartTimer) clearTimeout(this.restartTimer);
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
-        if (!this.stopped && this.wanted && !roomHasAgent(this.room)) {
+        if (!this.stopped && this.wanted && this.micEnabled) {
           this.spinUp();
         }
       }, 250);

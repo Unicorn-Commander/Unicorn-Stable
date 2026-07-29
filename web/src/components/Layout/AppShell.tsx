@@ -682,10 +682,8 @@ function ConnectionBanner() {
   const [phase, setPhase] = useState<
     "hidden" | "lost" | "stalled" | "restored" | "expired"
   >("hidden");
-  // User can dismiss the non-terminal reconnect banners so they don't cover
-  // call chrome / pop-out controls forever (meeting: frozen pop-out +
-  // "reconnecting — live updates" bar that could not be dismissed). Expired
-  // still requires sign-in; dismiss is only for lost/stalled/restored.
+  // Brief reconnect/recovery notices are dismissible. A stalled or expired
+  // account session is actionable and stays visible until it is resolved.
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
@@ -742,9 +740,7 @@ function ConnectionBanner() {
         window.clearTimeout(restoredTimer);
         restoredTimer = null;
       }
-      // Don't force-show if the user already dismissed this outage episode —
-      // stalled is the same episode as lost, just longer. They can still
-      // sign-in from Settings if needed.
+      setDismissed(false);
       setPhase((p) => (p === "expired" ? p : "stalled"));
     });
 
@@ -791,10 +787,12 @@ function ConnectionBanner() {
     };
   }, []);
 
-  // Dismiss hides non-terminal banners so call controls / pop-outs stay usable
-  // during a long reconnect. Expired is never dismissible — sign-in is required.
+  // Stalled/expired states are not decorative: realtime is unavailable and a
+  // user action may be required. Keep those visible; only transient states can
+  // be dismissed.
   const visible =
-    phase !== "hidden" && (phase === "expired" || !dismissed);
+    phase !== "hidden" &&
+    (phase === "expired" || phase === "stalled" || !dismissed);
 
   return (
     <AnimatePresence>
@@ -837,21 +835,13 @@ function ConnectionBanner() {
             ) : phase === "stalled" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
-                Still reconnecting — live updates are paused.
+                Live updates paused — your account connection needs attention.
                 <button
                   type="button"
                   onClick={() => login()}
                   className="ml-1 rounded px-2 py-0.5 font-semibold underline underline-offset-2 hover:bg-amber-500/20"
                 >
-                  Sign in again
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDismissed(true)}
-                  className="ml-1 rounded px-2 py-0.5 text-amber-200/80 underline-offset-2 hover:bg-amber-500/15 hover:underline"
-                  aria-label="Dismiss connection banner"
-                >
-                  Dismiss
+                  Reconnect account
                 </button>
               </>
             ) : phase === "lost" ? (

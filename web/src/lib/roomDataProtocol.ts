@@ -10,10 +10,9 @@
  *
  * Three message families today:
  *   - `transcript` — near-real-time speaker-labeled caption lines (interim +
- *     final). Produced by the agent STT path (Parakeet/Amanuensis via
- *     transcript_publisher) when an agent is in-call, or by the browser Web
- *     Speech API (humanTranscript.ts) for the local human when no agent is
- *     present; consumed by the live-transcript panel.
+ *     final). Every human browser publishes its own `local_mic` captions; the
+ *     in-room agent publishes its replies and a linked-participant STT fallback.
+ *     The transcript store deduplicates matching browser/agent hypotheses.
  *   - `ui_command`  — AG-UI-style imperative UI control ("change the call view",
  *     "focus this participant", "pin this participant", …). Only honored when the
  *     sender is an AGENT — this is the seam that lets Majik drive the interface.
@@ -69,6 +68,13 @@ export interface TranscriptMessage {
   ts: number;
   /** Optional STT segment id; lets a producer revise a specific segment. */
   segmentId?: string;
+  /**
+   * Attribution provenance. `local_mic` is emitted by the human speaker's own
+   * browser, `agent_stt` is the linked-participant fallback from the in-room
+   * agent, and `agent` is the agent's spoken reply. Optional for compatibility
+   * with older producers.
+   */
+  source?: "local_mic" | "agent_stt" | "agent";
 }
 
 /* ------------------------------------------------------------------ *
@@ -267,7 +273,11 @@ export function isTranscriptMessage(v: unknown): v is TranscriptMessage {
     typeof m.name === "string" &&
     typeof m.text === "string" &&
     typeof m.isFinal === "boolean" &&
-    typeof m.ts === "number"
+    typeof m.ts === "number" &&
+    (m.source === undefined ||
+      m.source === "local_mic" ||
+      m.source === "agent_stt" ||
+      m.source === "agent")
   );
 }
 

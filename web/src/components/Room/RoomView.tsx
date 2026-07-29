@@ -41,6 +41,9 @@ interface RoomViewProps {
 export function RoomView({ roomId }: RoomViewProps) {
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
+  const setParticipantPanelOpen = useAppStore(
+    (s) => s.setParticipantPanelOpen,
+  );
   // Desktop drag-to-resize for the docked participants column. On phones the
   // panel is a fixed-width overlay drawer, so the stored width never applies.
   const isDesktop = useIsDesktop();
@@ -56,7 +59,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   // Canvas (co-working artifacts) right-drawer. Open state is global (single
   // active canvas); the toggle + the data-channel both drive it.
   const canvasOpen = useCanvasStore((s) => s.panelOpen);
-  const toggleCanvas = useCanvasStore((s) => s.togglePanel);
+  const setCanvasOpen = useCanvasStore((s) => s.setPanelOpen);
   const setCanvasRoom = useCanvasStore((s) => s.setRoom);
   // Attention state for the Canvas toggle. `canvasCount` makes an existing
   // artifact discoverable at all (nothing else in the header hints the room has
@@ -76,7 +79,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   // global (single active panel) and the store is scoped to the active room so
   // the room's attached collections are always for the right room.
   const knowledgeOpen = useKnowledgeStore((s) => s.panelOpen);
-  const toggleKnowledge = useKnowledgeStore((s) => s.togglePanel);
+  const setKnowledgeOpen = useKnowledgeStore((s) => s.setPanelOpen);
   const setKnowledgeRoom = useKnowledgeStore((s) => s.setRoom);
   useEffect(() => {
     setKnowledgeRoom(roomId);
@@ -107,6 +110,77 @@ export function RoomView({ roomId }: RoomViewProps) {
     setMuted(isMuted(roomId));
     return onMutedChange(() => setMuted(isMuted(roomId)));
   }, [roomId]);
+
+  /**
+   * Room utilities share one workspace dock. Opening a thread, Canvas,
+   * Knowledge, pins, or the roster replaces the current utility instead of
+   * stacking another column onto chat.
+   */
+  function closeWorkspaceExcept(
+    keep: "thread" | "pins" | "canvas" | "knowledge" | "participants",
+  ) {
+    if (keep !== "thread") setThreadMessageId(null);
+    if (keep !== "pins") setPinsOpen(false);
+    if (keep !== "canvas") setCanvasOpen(false);
+    if (keep !== "knowledge") setKnowledgeOpen(false);
+    if (keep !== "participants") setParticipantPanelOpen(false);
+  }
+
+  function togglePins() {
+    if (pinsOpen) {
+      setPinsOpen(false);
+      return;
+    }
+    closeWorkspaceExcept("pins");
+    setPinsOpen(true);
+  }
+
+  function toggleCanvas() {
+    if (canvasOpen) {
+      setCanvasOpen(false);
+      return;
+    }
+    closeWorkspaceExcept("canvas");
+    setCanvasOpen(true);
+  }
+
+  function toggleKnowledge() {
+    if (knowledgeOpen) {
+      setKnowledgeOpen(false);
+      return;
+    }
+    closeWorkspaceExcept("knowledge");
+    setKnowledgeOpen(true);
+  }
+
+  function toggleParticipants() {
+    if (participantPanelOpen) {
+      toggleParticipantPanel();
+      return;
+    }
+    closeWorkspaceExcept("participants");
+    setParticipantPanelOpen(true);
+  }
+
+  function openThread(messageId: string) {
+    closeWorkspaceExcept("thread");
+    setThreadMessageId(messageId);
+  }
+
+  // ChatPanel, pinned results, and global search open threads directly through
+  // appStore. Reconcile those entry points with the one-dock contract too.
+  useEffect(() => {
+    if (!threadMessageId) return;
+    setPinsOpen(false);
+    setCanvasOpen(false);
+    setKnowledgeOpen(false);
+    setParticipantPanelOpen(false);
+  }, [
+    threadMessageId,
+    setCanvasOpen,
+    setKnowledgeOpen,
+    setParticipantPanelOpen,
+  ]);
 
   // Close the overflow menu on outside-click.
   useEffect(() => {
@@ -439,9 +513,13 @@ export function RoomView({ roomId }: RoomViewProps) {
               <Search className="h-4 w-4" />
             </button>
             <button
-              onClick={() => setPinsOpen((v) => !v)}
-              className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+              onClick={togglePins}
+              className={clsx(
+                "rounded-md p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5",
+                pinsOpen && "bg-white/[0.08] text-slate-100",
+              )}
               aria-label="Show pinned messages"
+              aria-pressed={pinsOpen}
               title="Pinned messages"
             >
               <Pin className="h-4 w-4" />
@@ -503,9 +581,13 @@ export function RoomView({ roomId }: RoomViewProps) {
             <span className="hidden md:inline">Invite</span>
           </button>
           <button
-            onClick={toggleParticipantPanel}
-            className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+            onClick={toggleParticipants}
+            className={clsx(
+              "rounded-md p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5",
+              participantPanelOpen && "bg-white/[0.08] text-slate-100",
+            )}
             aria-label="Toggle participants panel"
+            aria-pressed={participantPanelOpen}
             title="Show/hide members & agents"
           >
             <Users className="h-4 w-4" />
@@ -555,7 +637,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                   role="menuitem"
                   onClick={() => {
                     setOverflowOpen(false);
-                    setPinsOpen(true);
+                    if (!pinsOpen) togglePins();
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
@@ -642,9 +724,9 @@ export function RoomView({ roomId }: RoomViewProps) {
             onSelect={(m) => {
               // Open message in thread if it has replies, else just jump
               if (m.thread_id) {
-                setThreadMessageId(m.thread_id);
+                openThread(m.thread_id);
               } else {
-                setThreadMessageId(m.id);
+                openThread(m.id);
               }
             }}
           />
