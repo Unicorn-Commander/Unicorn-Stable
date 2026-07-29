@@ -91,9 +91,21 @@ async def synthesize_speech(
     # Kokoro's phonemizer raises ValueError on text with no speakable
     # content (whitespace-only, or anything that yields zero phonemes),
     # which the upstream returns as a 500 and this proxy surfaces as a 502.
-    # A message with nothing to say returns a clean 422 so read-aloud fails
-    # gracefully instead of erroring.
-    if not body.text.strip():
+    # Strip emoji/symbol-only noise so pure-reaction messages 422 cleanly
+    # instead of becoming a 502 from the GPU host.
+    speakable = re.sub(r"\s+", " ", body.text).strip()
+    # Keep letters/numbers/common punctuation; drop most emoji/symbol runs
+    # that phonemize to nothing. Leave enough ASCII so "ok :)" still works.
+    speakable = re.sub(
+        r"[\U00010000-\U0010ffff"
+        r"\u2600-\u27BF"
+        r"\uFE0F"
+        r"\u200D]+",
+        " ",
+        speakable,
+    )
+    speakable = re.sub(r"\s+", " ", speakable).strip()
+    if not speakable or not re.search(r"[A-Za-z0-9]", speakable):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Nothing to read aloud",
@@ -111,7 +123,7 @@ async def synthesize_speech(
                 f"{settings.kokoro_base_url}/v1/audio/speech",
                 json={
                     "model": "kokoro",
-                    "input": body.text,
+                    "input": speakable,
                     "voice": voice,
                     "response_format": "mp3",
                     "speed": body.speed,
@@ -138,7 +150,7 @@ async def synthesize_speech(
     logger.info(
         "tts_synthesized",
         participant_id=user.get("participant_id") or user.get("sub"),
-        chars=len(body.text),
+        chars=len(speakable),
         agent=body.agent,
         voice=voice,
     )

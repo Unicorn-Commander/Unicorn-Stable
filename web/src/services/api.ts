@@ -1037,10 +1037,20 @@ class StableApiClient {
       }),
     });
     if (!response.ok) {
+      // Surface FastAPI `detail` when present so the UI can toast something
+      // more useful than a bare "Bad Gateway".
+      let detail: string | null = null;
+      try {
+        const body = (await response.json()) as { detail?: unknown };
+        if (typeof body?.detail === "string") detail = body.detail;
+        else if (body?.detail != null) detail = JSON.stringify(body.detail);
+      } catch {
+        /* non-JSON body */
+      }
       const error: ApiError = {
         status: response.status,
         message: response.statusText,
-        detail: null,
+        detail,
       };
       throw error;
     }
