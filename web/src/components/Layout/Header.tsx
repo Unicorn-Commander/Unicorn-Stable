@@ -24,41 +24,11 @@ import { Avatar } from "@/components/Avatar";
 import { Tooltip } from "@/components/ui";
 import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
-
-/** Read `.name` off an unknown thrown value without relying on `instanceof`.
- * getDisplayMedia rejects with a DOMException, and `DOMException instanceof
- * Error` is unreliable across engines (the spec doesn't make it inherit Error),
- * so we duck-type instead — this also survives any wrapper that preserves the
- * error name. */
-function errorName(err: unknown): string {
-  if (typeof err === "object" && err !== null && "name" in err) {
-    return String((err as { name: unknown }).name);
-  }
-  return "";
-}
-
-function errorMessage(err: unknown): string {
-  if (typeof err === "object" && err !== null && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return "";
-}
-
-/**
- * getDisplayMedia rejections that mean "the user chose not to share" (dismissed
- * the picker) or "there was nothing to share" — NOT a failure worth surfacing or
- * retrying. Re-prompting after a deliberate cancel would be hostile, so we treat
- * these as a silent no-op. Everything else is a real error we can try to recover
- * from (see handleScreenShare's video-only fallback).
- */
-function isUserDismissedShare(err: unknown): boolean {
-  const name = errorName(err);
-  return (
-    name === "NotAllowedError" ||
-    name === "AbortError" ||
-    name === "NotFoundError"
-  );
-}
+import {
+  runScreenShareAction,
+  windowShareGuidance,
+  monitorShareHint,
+} from "@/lib/screenShare";
 
 // `hideOnMobile` lets AppShell collapse this top bar on phones when a room is
 // active — there the RoomView sub-header (with a hamburger) is the single bar,
@@ -108,6 +78,7 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   // CallDock and VoiceVideoBar already derive; the header was the odd one out.
   const micEnabled = localParticipant?.isMicrophoneEnabled ?? false;
   const camEnabled = localParticipant?.isCameraEnabled ?? false;
+  const screenShareEnabled = localParticipant?.isScreenShareEnabled ?? false;
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const avatarBtnRef = useRef<HTMLButtonElement>(null);
@@ -143,54 +114,27 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
   async function handleScreenShare() {
     if (!room) return;
-    const lp = room.localParticipant;
-
-    // Toggle OFF — no capture options; wrap so a stray rejection can't bubble up
-    // as an unhandled promise rejection.
-    if (lp.isScreenShareEnabled) {
-      try {
-        await lp.setScreenShareEnabled(false);
-      } catch (err) {
-        console.error("failed to stop screen share", err);
-      }
+    // Shared helper: prefer full-display surface, clean stop/start, window tip.
+    const result = await runScreenShareAction(room.localParticipant, "toggle");
+    if (!result.ok) {
+      if (result.action === "cancelled") return;
+      useAppStore.getState().pushToast({
+        title: "Couldn't share your screen",
+        body: result.error || "Your browser blocked screen sharing.",
+      });
       return;
     }
-
-    // Toggle ON — request tab/system AUDIO alongside the display video so remote
-    // participants can HEAR the shared tab/app.
-    //   audio: true              → getDisplayMedia({ audio: … }) captures the tab/system audio track
-    //   systemAudio: "include"   → offer whole-system audio as a source (Chromium)
-    //   selfBrowserSurface:"exclude" → don't offer the Stable tab itself (sharing it back into the
-    //                                   call would loop the call's own audio → echo)
-    //
-    // Browser support for screenshare audio is limited (Chrome/Edge tab, or
-    // Chromium system audio; Safari/Firefox capture none; picking a *window*
-    // yields none). In every "no audio available" case getDisplayMedia simply
-    // returns a video-only stream and LiveKit publishes just the screen video —
-    // the share still works. We only need to defend against (a) the user
-    // dismissing the picker and (b) the rare browser that REJECTS the audio
-    // constraints outright, which we recover from by retrying video-only.
-    try {
-      await lp.setScreenShareEnabled(true, {
-        audio: true,
-        systemAudio: "include",
-        selfBrowserSurface: "exclude",
-      });
-    } catch (err) {
-      if (isUserDismissedShare(err)) return; // user closed the picker — no-op
-      console.warn(
-        "screen share with audio failed; retrying without audio",
-        err,
-      );
-      try {
-        await lp.setScreenShareEnabled(true);
-      } catch (err2) {
-        if (isUserDismissedShare(err2)) return;
-        console.error("screen share failed", err2);
+    if (result.action === "started" || result.action === "replaced") {
+      if (result.surface === "window" || result.surface === "browser") {
         useAppStore.getState().pushToast({
-          title: "Couldn't share your screen",
-          body:
-            errorMessage(err2) || "Your browser blocked screen sharing.",
+          title: "Window share active",
+          body: windowShareGuidance(),
+        });
+      } else if (result.surface === "unknown") {
+        // Browser didn't report displaySurface — still surface the tip once.
+        useAppStore.getState().pushToast({
+          title: "Screen share started",
+          body: monitorShareHint(),
         });
       }
     }
@@ -296,9 +240,22 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
                 </button>
 
                 <button
-                  onClick={handleScreenShare}
-                  className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
-                  aria-label="Share screen"
+                  onClick={() => void handleScreenShare()}
+                  className={clsx(
+                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
+                    screenShareEnabled
+                      ? "bg-stable-cyan/15 text-stable-cyan hover:bg-stable-cyan/25"
+                      : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
+                  )}
+                  aria-label={
+                    screenShareEnabled ? "Stop sharing screen" : "Share screen"
+                  }
+                  aria-pressed={screenShareEnabled}
+                  title={
+                    screenShareEnabled
+                      ? "Stop sharing your screen"
+                      : "Share your screen — pick Entire Screen for a full display (not just a window)"
+                  }
                 >
                   <MonitorUp className="h-4 w-4" />
                 </button>

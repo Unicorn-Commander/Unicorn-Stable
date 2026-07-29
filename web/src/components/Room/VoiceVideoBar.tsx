@@ -25,6 +25,7 @@ import {
   VolumeX,
   Bot,
   MonitorUp,
+  MonitorOff,
   Eye,
   EyeOff,
   Pin,
@@ -35,6 +36,8 @@ import {
   ExternalLink,
   GripVertical,
   MessageSquare,
+  RefreshCw,
+  Plus,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
@@ -49,6 +52,13 @@ import {
 } from "@/stores/callUiStore";
 import type { CallViewMode } from "@/lib/roomDataProtocol";
 import { api, type BrigadeAgent } from "@/services/api";
+import { useAppStore } from "@/stores/appStore";
+import {
+  runScreenShareAction,
+  windowShareGuidance,
+  monitorShareHint,
+  localScreenShareCount,
+} from "@/lib/screenShare";
 import { ViewModeSwitcher } from "./ViewModeSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { VoiceAgentStatus } from "./VoiceAgentStatus";
@@ -126,6 +136,7 @@ interface ScreenShareVM {
    * to build the pop-out feed key, which doubles as the localStorage key for
    * remembered monitor placement: keying that on `sid` meant placement was
    * silently never restored and the store grew unbounded.
+   * Multi-share extras append the track publication sid so each feed is unique.
    */
   feedId: string;
   label: string;
@@ -136,6 +147,8 @@ interface ScreenShareVM {
    * claim/release against VoiceProvider (SCREENAUDIO-NOTE / audit §4b).
    */
   audioTrack: RemoteAudioTrack | null;
+  /** True when this is a local (self) share. */
+  isLocal?: boolean;
 }
 
 /**
@@ -449,8 +462,17 @@ function ParticipantTile({
         </div>
       )}
 
-      {/* Hover control cluster (top-right): pin · fullscreen · PiP · hide. */}
-      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
+      {/* Control cluster (top-right): pin · fullscreen · PiP · hide.
+          Always visible inside a pop-out so a frozen frame can't hide the only
+          way to PiP/fullscreen; hover-reveal on the main stage. */}
+      <div
+        className={clsx(
+          "absolute right-1.5 top-1.5 flex items-center gap-1",
+          inPopout
+            ? "opacity-100"
+            : "transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100",
+        )}
+      >
         {onTogglePin && (
           <TileControlButton
             icon={isPinned ? PinOff : Pin}
@@ -590,6 +612,8 @@ interface ScreenShareTileProps {
   onClick?: () => void;
   /** Pop THIS share into its own window (synchronously, from the click). */
   onPopOut?: () => void;
+  /** Tile is rendered inside a pop-out — keep controls always visible. */
+  inPopout?: boolean;
 }
 
 function ScreenShareTile({
@@ -601,6 +625,7 @@ function ScreenShareTile({
   fill = false,
   onClick,
   onPopOut,
+  inPopout,
 }: ScreenShareTileProps) {
   const pip = usePipTile();
   const fs = useFullscreen();
@@ -633,8 +658,16 @@ function ScreenShareTile({
         <span className="truncate">{label}</span>
       </div>
 
-      {/* Hover controls: mute (if audio) · fullscreen · PiP. */}
-      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
+      {/* Controls: always visible in a pop-out (frozen frame / no reliable hover);
+          hover-reveal on the main stage. */}
+      <div
+        className={clsx(
+          "absolute right-1.5 top-1.5 flex items-center gap-1",
+          inPopout
+            ? "opacity-100"
+            : "transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100",
+        )}
+      >
         {hasAudio && onToggleMuted && (
           <TileControlButton
             icon={muted ? VolumeX : Volume2}
@@ -943,38 +976,57 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   }, [liveSpeakerId, stableSpeakerId]);
 
   // Screen-shares (local + remote): video + sibling screen audio (audit §4b).
+  // Collects ALL local screen-share publications so a second share (multi-monitor)
+  // shows as its own tile, not just the primary setScreenShareEnabled track.
   const screenShares = useMemo<ScreenShareVM[]>(() => {
     const out: ScreenShareVM[] = [];
     if (localParticipant) {
       const pubs = Array.from(localParticipant.trackPublications.values());
-      const v = pubs.find(
+      const localVideos = pubs.filter(
         (t) => t.kind === "video" && t.track && t.source === "screen_share",
       );
-      // Local screen audio isn't looped back to self → audioTrack is null.
-      if (v?.track)
-        out.push({ sid: "local-screen", feedId: "local-screen", label: "You — screen", videoTrack: v.track, audioTrack: null });
+      localVideos.forEach((v, i) => {
+        if (!v.track) return;
+        const trackSid = v.trackSid || v.track.sid || String(i);
+        const multi = localVideos.length > 1;
+        out.push({
+          sid: multi ? `local-screen:${trackSid}` : "local-screen",
+          feedId: multi ? `local-screen:${trackSid}` : "local-screen",
+          label: multi ? `You — screen ${i + 1}` : "You — screen",
+          videoTrack: v.track,
+          // Local screen audio isn't looped back to self.
+          audioTrack: null,
+          isLocal: true,
+        });
+      });
     }
     for (const p of remoteParticipants) {
       const pubs = Array.from(p.trackPublications.values());
-      const v = pubs.find(
+      const videos = pubs.filter(
         (t) => t.kind === "video" && t.track && t.source === "screen_share",
       );
-      if (v?.track) {
+      const audios = pubs.filter(
+        (t) =>
+          t.kind === "audio" && t.track && t.source === "screen_share_audio",
+      );
+      videos.forEach((v, i) => {
+        if (!v.track) return;
         const agent = matchAgent(p.identity);
-        const a = pubs.find(
-          (t) =>
-            t.kind === "audio" && t.track && t.source === "screen_share_audio",
-        );
+        const name = agent?.name || p.name || p.identity;
+        const multi = videos.length > 1;
+        const trackSid = v.trackSid || v.track.sid || String(i);
+        // Pair the i-th screen audio when present (best-effort; LiveKit usually
+        // publishes one audio per share session).
+        const a = audios[i] ?? audios[0];
         out.push({
-          sid: p.sid,
-          feedId: p.identity,
-          label: `${agent?.name || p.name || p.identity} — screen`,
+          sid: multi ? `${p.sid}:${trackSid}` : p.sid,
+          feedId: multi ? `${p.identity}:${trackSid}` : p.identity,
+          label: multi ? `${name} — screen ${i + 1}` : `${name} — screen`,
           videoTrack: v.track,
-          // Remote screen_share_audio is a RemoteAudioTrack; source-string
-          // narrowing isn't reflected in the publication type, so cast.
           audioTrack: (a?.track as RemoteAudioTrack | undefined) ?? null,
+          isLocal: false,
         });
-      }
+      });
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1152,6 +1204,23 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     }
   }, [hasAnyVideo, viewMode, videoPrompted, setVideoPrompted]);
 
+  // Screen-share menu (stop / replace / add) — hooks must stay above early returns.
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const shareMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!shareMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (
+        shareMenuRef.current &&
+        !shareMenuRef.current.contains(e.target as Node)
+      ) {
+        setShareMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [shareMenuOpen]);
+
   if (!isConnected && !isConnecting) {
     return null;
   }
@@ -1185,6 +1254,56 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     if (!room) return;
     await room.localParticipant.setCameraEnabled(!isCamOn);
   }
+
+  const isScreenSharing =
+    !!localParticipant && localScreenShareCount(localParticipant) > 0;
+
+  async function handleShareAction(mode: "toggle" | "replace" | "add") {
+    if (!room) return;
+    setShareMenuOpen(false);
+    // Lift into Presentation when starting a share so the stage is useful.
+    if (mode !== "toggle" || !isScreenSharing) {
+      if (viewMode === "compact") setViewMode(roomId, "screen");
+      toggleVideo(true);
+    }
+    const result = await runScreenShareAction(room.localParticipant, mode);
+    if (!result.ok) {
+      if (result.action === "cancelled") return;
+      useAppStore.getState().pushToast({
+        title: "Couldn't share your screen",
+        body: result.error || "Your browser blocked screen sharing.",
+      });
+      // Multi-share failed — offer replace as the next click path.
+      if (mode === "add") {
+        useAppStore.getState().pushToast({
+          title: "One share at a time here",
+          body: "Use Replace share to switch to another display or window without freezing the call.",
+        });
+      }
+      return;
+    }
+    if (
+      result.action === "started" ||
+      result.action === "replaced" ||
+      result.action === "added"
+    ) {
+      if (result.surface === "window" || result.surface === "browser") {
+        useAppStore.getState().pushToast({
+          title: "Window share active",
+          body: windowShareGuidance(),
+        });
+      } else if (result.surface === "unknown" && result.action === "started") {
+        useAppStore.getState().pushToast({
+          title: "Screen share started",
+          body: monitorShareHint(),
+        });
+      }
+      if (viewMode !== "screen" && viewMode !== "grid" && viewMode !== "spotlight") {
+        setViewMode(roomId, "screen");
+      }
+    }
+  }
+
   function openPopout() {
     // The pop-out shows the VIDEO STAGE, which the audio-compact default view
     // doesn't render — so lift out of chips as part of the same click instead
@@ -1335,6 +1454,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         // main document owns it, so it can't ride a portal into a child window.
         hasAudio={!!s.audioTrack}
         muted={mutedScreens.has(s.sid)}
+        inPopout={inPopout}
         onToggleMuted={s.audioTrack ? () => toggleScreenMuted(s.sid) : undefined}
         onPopOut={
           feedPopoutSupported && !inPopout
@@ -1526,6 +1646,85 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
       </button>
 
+      {/* Screen share — in-call control (Header also has one). When already
+          sharing, a small menu offers Stop / Replace / Share another display
+          so multi-monitor desks aren't forced into a frozen single share. */}
+      <div className="relative" ref={shareMenuRef}>
+        <button
+          type="button"
+          onClick={() => {
+            if (isScreenSharing) {
+              setShareMenuOpen((o) => !o);
+            } else {
+              void handleShareAction("toggle");
+            }
+          }}
+          className={clsx(
+            "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
+            isScreenSharing
+              ? "border-stable-cyan/40 bg-stable-cyan/15 text-stable-cyan hover:bg-stable-cyan/25"
+              : "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100",
+          )}
+          aria-label={
+            isScreenSharing ? "Screen share options" : "Share screen"
+          }
+          aria-pressed={isScreenSharing}
+          aria-haspopup={isScreenSharing ? "menu" : undefined}
+          aria-expanded={isScreenSharing ? shareMenuOpen : undefined}
+          title={
+            isScreenSharing
+              ? "Screen share options — stop, replace, or share another display"
+              : "Share your screen — pick Entire Screen for a full display"
+          }
+        >
+          {isScreenSharing ? (
+            <MonitorOff className="h-5 w-5" />
+          ) : (
+            <MonitorUp className="h-5 w-5" />
+          )}
+        </button>
+        {shareMenuOpen && isScreenSharing && (
+          <div
+            role="menu"
+            className="glass-heavy absolute bottom-full left-1/2 z-40 mb-2 w-56 -translate-x-1/2 rounded-xl p-1.5 shadow-pop"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void handleShareAction("toggle")}
+              className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-rose-300 transition-colors hover:bg-rose-500/15"
+            >
+              <MonitorOff className="h-3.5 w-3.5 shrink-0" />
+              Stop sharing
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void handleShareAction("replace")}
+              className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-slate-200 transition-colors hover:bg-white/[0.06]"
+            >
+              <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+              Replace share
+              <span className="ml-auto text-[10px] font-normal text-slate-400">
+                full screen / window
+              </span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void handleShareAction("add")}
+              className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-slate-200 transition-colors hover:bg-white/[0.06]"
+            >
+              <Plus className="h-3.5 w-3.5 shrink-0" />
+              Share another display
+            </button>
+            <p className="px-2.5 pb-1.5 pt-1 text-[10px] leading-snug text-slate-400">
+              Prefer Entire Screen in the picker for a full-display capture.
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Hide / show the VIDEO section — the single, canonical control for it
           (the ViewModeSwitcher's old duplicate video toggle was removed so the
           two can't disagree). Hidden ⇒ audio-only: a slim bar keeps THESE
@@ -1634,8 +1833,46 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // needs vertical room, so fall back to the column layout even in compact.
   const slim = viewMode === "compact" && !showTranscript;
 
+  // LiveKit mid-call reconnect: show a dismissible strip so a long reconnect
+  // doesn't feel like a frozen, un-dismissable chrome over the stage (same
+  // class of bug as the websocket "live updates paused" banner).
+  const showLkReconnect = isConnecting && !!room && !isConnected;
+
   return (
     <div className="flex h-full flex-col">
+      {showLkReconnect && (
+        <div
+          role="status"
+          className="flex w-full shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-400/20 bg-amber-400/15 px-4 py-1.5 text-xs text-amber-200"
+        >
+          <span className="flex items-center gap-1.5 font-medium">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            Reconnecting to the call…
+          </span>
+          <span className="flex items-center gap-1">
+            {(poppedOut || poppedFeedKeys.length > 0) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (poppedOut) bringBackPopout();
+                  feedPopoutCloseAll();
+                }}
+                className="focus-ring rounded-md bg-amber-400/20 px-2 py-0.5 font-semibold transition-colors hover:bg-amber-400/30"
+              >
+                Close pop-outs
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={disconnect}
+              className="focus-ring rounded-md px-2 py-0.5 font-semibold text-rose-300 transition-colors hover:bg-rose-500/20"
+            >
+              Leave call
+            </button>
+          </span>
+        </div>
+      )}
+
       {audioBlocked && (
         <button
           onClick={() => void startAudio()}

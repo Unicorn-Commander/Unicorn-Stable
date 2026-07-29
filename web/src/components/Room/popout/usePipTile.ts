@@ -75,12 +75,17 @@ export function usePipTile(opts?: {
       el.removeEventListener("leavepictureinpicture", onLeave);
       // Tile unmounting while it owns PiP → close the OS window so it doesn't
       // linger over a torn-down element.
-      if (
-        typeof document !== "undefined" &&
-        document.pictureInPictureElement === el
-      ) {
+      // MULTI-WINDOW: the <video> may live in a pop-out child document; the
+      // global `document.pictureInPictureElement` is the WRONG document then.
+      // Exit via pipManager, which remembers the owning document.
+      const owner = el.ownerDocument;
+      const ownsPip =
+        owner?.pictureInPictureElement === el ||
+        (typeof document !== "undefined" &&
+          document.pictureInPictureElement === el);
+      if (ownsPip) {
         selfExitingRef.current = true;
-        void document.exitPictureInPicture().catch(() => {});
+        void pipManager.exitPip().catch(() => {});
       }
       if (elRef.current === el) elRef.current = null;
     };
@@ -91,20 +96,34 @@ export function usePipTile(opts?: {
     // Expected no-ops (no element / unsupported / opted out) resolve silently so
     // a gated button never rejects; genuine PiP API errors propagate to callers.
     if (!el || !pipManager.isSupported() || el.disablePictureInPicture) return;
+    // Ensure the video is actually playing before requestPictureInPicture —
+    // some Chromium builds reject PiP on a paused/zero-frame element after a
+    // LiveKit re-attach (common when a tile just moved into a pop-out).
+    try {
+      if (el.paused) void el.play().catch(() => {});
+    } catch {
+      /* ignore */
+    }
     await pipManager.requestPip(el, id);
   }, [id]);
 
   const exit = useCallback(async () => {
+    // Use manager ownership (id), not only the main-document PiP element.
+    // Popped-out tiles put their <video> in a child document; checking only
+    // `document.pictureInPictureElement` left the button stuck "active" with
+    // no way to exit.
     const el = elRef.current;
-    if (!el) return;
-    if (
-      typeof document !== "undefined" &&
-      document.pictureInPictureElement === el
-    ) {
-      selfExitingRef.current = true;
-      await pipManager.exitPip();
-    }
-  }, []);
+    const owner = el?.ownerDocument ?? null;
+    const ownsPip =
+      pipManager.getActivePipId() === id ||
+      (!!el && owner?.pictureInPictureElement === el) ||
+      (!!el &&
+        typeof document !== "undefined" &&
+        document.pictureInPictureElement === el);
+    if (!ownsPip) return;
+    selfExitingRef.current = true;
+    await pipManager.exitPip();
+  }, [id]);
 
   const toggle = useCallback(async () => {
     if (isActive) await exit();

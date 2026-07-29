@@ -461,17 +461,87 @@ export function openCallPopoutWithResult(
 
   // Persistent base layout so the portal root fills the window. Tagged with a
   // DIFFERENT marker than the clones so a stylesheet re-sync never removes it.
+  //
+  // CHROME BAR: a native (non-React) top strip with Close. When a shared
+  // desktop freezes or LiveKit reconnect stalls, React portal updates can lag
+  // or the hover-only tile controls become unreachable under a frozen frame.
+  // This chrome is plain DOM + a click handler wired at open time, so Close
+  // still works even when the portalled React tree is stuck. z-index is maxed
+  // so a reconnecting banner cloned into styles cannot cover it.
+  const CHROME_ID = "stable-popout-chrome";
   const base = doc.createElement("style");
   base.setAttribute(BASE_MARK, "");
   base.textContent =
-    `html,body{height:100%;margin:0;padding:0;}` +
-    `#${POPOUT_ROOT_ID}{height:100%;min-height:100vh;display:flex;` +
+    `html,body{height:100%;margin:0;padding:0;display:flex;flex-direction:column;}` +
+    `#${CHROME_ID}{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;` +
+    `gap:8px;padding:6px 10px;font:600 12px/1.2 system-ui,sans-serif;` +
+    `color:#e2e8f0;background:rgba(15,23,42,0.92);border-bottom:1px solid rgba(148,163,184,0.25);` +
+    `backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);` +
+    `position:relative;z-index:2147483647;user-select:none;}` +
+    `#${CHROME_ID} button{appearance:none;border:0;cursor:pointer;border-radius:8px;` +
+    `padding:6px 10px;font:600 12px/1 system-ui,sans-serif;color:#f8fafc;` +
+    `background:rgba(168,85,247,0.35);}` +
+    `#${CHROME_ID} button:hover{background:rgba(168,85,247,0.55);}` +
+    `#${CHROME_ID} button[data-kind="close"]{background:rgba(244,63,94,0.35);}` +
+    `#${CHROME_ID} button[data-kind="close"]:hover{background:rgba(244,63,94,0.55);}` +
+    `#${CHROME_ID} .stable-popout-chrome-title{opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}` +
+    `#${POPOUT_ROOT_ID}{flex:1 1 auto;min-height:0;display:flex;` +
     `flex-direction:column;overflow:hidden;}`;
   doc.head.appendChild(base);
 
   mirrorTheme(document, doc);
   cloneStyles(document, doc);
   mirrorBody(document, doc);
+
+  // Native chrome BEFORE the portal root so it's never covered by portalled tiles.
+  const chrome = doc.createElement("div");
+  chrome.id = CHROME_ID;
+  chrome.setAttribute("role", "toolbar");
+  chrome.setAttribute("aria-label", "Pop-out window controls");
+  const titleEl = doc.createElement("span");
+  titleEl.className = "stable-popout-chrome-title";
+  titleEl.textContent = title;
+  const actions = doc.createElement("div");
+  actions.style.display = "flex";
+  actions.style.gap = "6px";
+  actions.style.flexShrink = "0";
+  const focusBtn = doc.createElement("button");
+  focusBtn.type = "button";
+  focusBtn.textContent = "Focus main";
+  focusBtn.title = "Bring the main Stable tab to the front";
+  focusBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      window.focus();
+    } catch {
+      /* ignore */
+    }
+  });
+  const closeBtn = doc.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.setAttribute("data-kind", "close");
+  closeBtn.textContent = "Close";
+  closeBtn.title = "Close this pop-out and return the video to the main window";
+  // Wired after teardown is defined — placeholder; reassigned below.
+  let closeChrome = (): void => {
+    try {
+      if (!win.closed) win.close();
+    } catch {
+      /* ignore */
+    }
+  };
+  closeBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeChrome();
+  });
+  actions.appendChild(focusBtn);
+  actions.appendChild(closeBtn);
+  chrome.appendChild(titleEl);
+  chrome.appendChild(actions);
+  doc.body.appendChild(chrome);
+
   getPopoutRoot(doc);
 
   // --- lifecycle wiring ---
@@ -563,6 +633,11 @@ export function openCallPopoutWithResult(
       console.error("openCallPopout onClose threw", e);
     }
   };
+
+  // Chrome Close runs the same teardown path as handle.close() so React state
+  // (feed registry / stage pop-out) always clears — not just win.close(), which
+  // on some browsers fails to fire pagehide promptly when the content is frozen.
+  closeChrome = () => teardown();
 
   // Opener navigating/closing must not orphan the pop-out. Use `pagehide` only
   // on the opener (fires on tab-close/navigate/bfcache) — a `beforeunload`
