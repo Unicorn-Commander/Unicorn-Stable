@@ -265,7 +265,15 @@ async def _rate_limit_hit(
 # Buckets whose upstream is a scarce shared resource (GPU embedding/synthesis,
 # disk). These fail CLOSED so a Redis outage can't lift the only backpressure.
 _FAIL_CLOSED_BUCKETS = frozenset(
-    {"upload", "kb_upload", "kb_create", "tts", "agent_invite", "agent_chat"}
+    {
+        "upload",
+        "kb_upload",
+        "kb_create",
+        "tts",
+        "stt",
+        "agent_invite",
+        "agent_chat",
+    }
 )
 
 

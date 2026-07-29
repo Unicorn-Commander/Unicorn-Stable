@@ -27,11 +27,19 @@ Contract (ORCH-1 gateway, app/api/gateway.py):
   READ   -> GET {base}/api/v1/gateway/rooms/{room}/messages?limit=&cursor=
             headers: Authorization: Bearer <STABLE_GATEWAY_TOKEN>
             The token-authed read endpoint (finally) — so get_new_messages works.
+
+  VOICE  -> POST {base}/api/v1/gateway/tts   (suite Kokoro / Orator)
+            POST {base}/api/v1/gateway/stt   (suite Amanuensis / Parakeet)
+
+  EXIT   -> POST   {base}/api/v1/gateway/rooms/{room}/leave
+            DELETE {base}/api/v1/gateway/rooms/{room}/brigade-agents/{id}
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
+import pathlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,6 +63,8 @@ BASE_URL = (
 ).rstrip("/")
 
 GATEWAY_MESSAGES_URL = f"{BASE_URL}/api/v1/gateway/messages"
+GATEWAY_TTS_URL = f"{BASE_URL}/api/v1/gateway/tts"
+GATEWAY_STT_URL = f"{BASE_URL}/api/v1/gateway/stt"
 
 
 def _gateway_read_url(room: str, limit: int, cursor: str) -> str:
@@ -64,6 +74,21 @@ def _gateway_read_url(room: str, limit: int, cursor: str) -> str:
     return (
         f"{BASE_URL}/api/v1/gateway/rooms/"
         f"{urllib.parse.quote(room, safe='')}/messages?{urllib.parse.urlencode(q)}"
+    )
+
+
+def _gateway_leave_url(room: str) -> str:
+    return (
+        f"{BASE_URL}/api/v1/gateway/rooms/"
+        f"{urllib.parse.quote(room, safe='')}/leave"
+    )
+
+
+def _gateway_remove_agent_url(room: str, agent_id: str) -> str:
+    return (
+        f"{BASE_URL}/api/v1/gateway/rooms/"
+        f"{urllib.parse.quote(room, safe='')}/brigade-agents/"
+        f"{urllib.parse.quote(agent_id, safe='')}"
     )
 
 
@@ -77,6 +102,8 @@ LANE_PREFIX = os.environ.get("STABLE_LANE_PREFIX", "").strip()
 _RAW_ROOMS = os.environ.get("STABLE_ROOMS", "").strip()
 
 HTTP_TIMEOUT = float(os.environ.get("STABLE_HTTP_TIMEOUT_S", "30"))
+# Voice synthesis/transcription can take longer on cold GPU.
+VOICE_HTTP_TIMEOUT = float(os.environ.get("STABLE_VOICE_HTTP_TIMEOUT_S", "120"))
 
 mcp = FastMCP("stable-agent")
 
@@ -111,36 +138,121 @@ def _resolve_room(room: str) -> str:
     return room
 
 
-def _request(url: str, *, method: str, payload: dict | None = None) -> dict:
-    data = json.dumps(payload).encode() if payload is not None else None
+def _auth_headers(*, content_type: str | None = "application/json") -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {GATEWAY_TOKEN}",
+        # Cloudflare fronts the public hosts and 403s (error 1010) the default
+        # python-urllib User-Agent; present a curl UA so lanes work through CF.
+        "User-Agent": os.environ.get("STABLE_HTTP_USER_AGENT", "curl/8.4.0"),
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def _request(
+    url: str,
+    *,
+    method: str,
+    payload: dict | None = None,
+    timeout: float | None = None,
+    raw_body: bool = False,
+) -> dict:
+    if payload is not None:
+        data: bytes | None = json.dumps(payload).encode()
+        headers = _auth_headers(content_type="application/json")
+    elif method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
+        # Empty body (leave/kick). Avoid Content-Type: application/json with no body.
+        data = b""
+        headers = _auth_headers(content_type=None)
+    else:
+        data = None
+        headers = _auth_headers(content_type=None)
     req = urllib.request.Request(
         url,
         data=data,
         method=method,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {GATEWAY_TOKEN}",
-            # Cloudflare fronts the public hosts and 403s (error 1010) the default
-            # python-urllib User-Agent; present a curl UA so lanes work through CF.
-            "User-Agent": os.environ.get("STABLE_HTTP_USER_AGENT", "curl/8.4.0"),
-        },
+        headers=headers,
     )
+    to = HTTP_TIMEOUT if timeout is None else timeout
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=to) as resp:
+            raw_bytes = resp.read()
+            status = resp.status
+            content_type = resp.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, "detail": e.read().decode(errors="replace")[:400]}
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"cannot reach {url}: {e.reason}. Confirm STABLE_GATEWAY_BASE_URL is "
+            "reachable and the gateway is enabled."
+        ) from e
+    if raw_body:
+        return {
+            "status": status,
+            "content_type": content_type,
+            "raw": raw_bytes,
+        }
+    raw = raw_bytes.decode() if raw_bytes else ""
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        body = {}
+    return {"status": status, "body": body}
+
+
+def _multipart_post(
+    url: str,
+    *,
+    fields: dict[str, str],
+    file_field: str,
+    filename: str,
+    file_bytes: bytes,
+    content_type: str,
+    timeout: float | None = None,
+) -> dict:
+    """Minimal multipart/form-data POST without third-party deps."""
+    boundary = "----StableAgentBoundary7MA4YWxkTrZu0gW"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        )
+        chunks.append(value.encode())
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}\r\n".encode())
+    chunks.append(
+        (
+            f'Content-Disposition: form-data; name="{file_field}"; '
+            f'filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+    )
+    chunks.append(file_bytes)
+    chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(chunks)
+
+    headers = _auth_headers(content_type=f"multipart/form-data; boundary={boundary}")
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    to = VOICE_HTTP_TIMEOUT if timeout is None else timeout
+    try:
+        with urllib.request.urlopen(req, timeout=to) as resp:
             raw = resp.read().decode()
             status = resp.status
     except urllib.error.HTTPError as e:
-        return {"status": e.code, "detail": e.read().decode()[:400]}
+        return {"status": e.code, "detail": e.read().decode(errors="replace")[:400]}
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"cannot reach {url}: {e.reason}. Confirm STABLE_GATEWAY_BASE_URL is "
             "reachable and the gateway is enabled."
         ) from e
     try:
-        body = json.loads(raw) if raw else {}
+        parsed = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
-        body = {}
-    return {"status": status, "body": body}
+        parsed = {"text": raw}
+    return {"status": status, "body": parsed}
 
 
 def _require_config() -> str | None:
@@ -239,6 +351,232 @@ def get_new_messages(room: str, since: str = "", limit: int = 30) -> str:
     if cursor and body.get("has_more"):
         lines.append(f"\n(more available — pass since={cursor!r})")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def speak_text(
+    text: str,
+    voice: str = "",
+    agent: str = "",
+    out_path: str = "",
+    speed: float = 1.0,
+) -> str:
+    """Synthesize speech via suite TTS (Kokoro / Orator) through the Stable gateway.
+
+    Returns a short summary and either writes mp3 bytes to ``out_path`` or
+    includes a base64 prefix of the audio so callers can save it.
+
+    Args:
+        text: words to speak (max ~4000 chars; emoji-only text is rejected).
+        voice: optional Kokoro voice id (e.g. af_heart). Overrides agent map.
+        agent: optional brigade agent id / display name for preset voice.
+        out_path: if set, write the mp3 here; otherwise return base64 (truncated).
+        speed: 0.5–2.0 playback rate (default 1.0).
+    """
+    err = _require_config()
+    if err:
+        return f"NOT CONFIGURED: {err}"
+    if not (text or "").strip():
+        return "FAILED: text is required"
+    payload: dict = {"text": text, "speed": float(speed or 1.0)}
+    if voice:
+        payload["voice"] = voice
+    if agent:
+        payload["agent"] = agent
+    res = _request(
+        GATEWAY_TTS_URL,
+        method="POST",
+        payload=payload,
+        timeout=VOICE_HTTP_TIMEOUT,
+        raw_body=True,
+    )
+    if res.get("status", 0) >= 300:
+        return f"FAILED to synthesize (status {res.get('status')}): {res.get('detail')}"
+    audio: bytes = res.get("raw") or b""
+    if not audio:
+        return "FAILED: empty audio response"
+    if out_path:
+        path = pathlib.Path(out_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(audio)
+        return (
+            f"Spoke {len(text)} chars → {len(audio)} byte mp3 written to {path} "
+            f"(content-type={res.get('content_type') or 'audio/mpeg'})."
+        )
+    b64 = base64.b64encode(audio).decode()
+    preview = b64 if len(b64) <= 200 else b64[:200] + "…"
+    return (
+        f"Spoke {len(text)} chars → {len(audio)} byte mp3 "
+        f"(content-type={res.get('content_type') or 'audio/mpeg'}). "
+        f"base64_preview={preview} (pass out_path to save full audio)."
+    )
+
+
+@mcp.tool()
+def transcribe_audio(
+    path: str,
+    language: str = "",
+    model: str = "",
+) -> str:
+    """Transcribe an audio file via suite STT (Amanuensis / Parakeet) through the gateway.
+
+    Args:
+        path: local filesystem path to an audio file (wav/mp3/webm/m4a/ogg/flac).
+        language: optional BCP-47 / ISO language hint (e.g. en).
+        model: optional model name (default whisper-1; suite ignores if single-model).
+    """
+    err = _require_config()
+    if err:
+        return f"NOT CONFIGURED: {err}"
+    p = pathlib.Path(path).expanduser()
+    if not p.is_file():
+        return f"FAILED: file not found: {p}"
+    data = p.read_bytes()
+    if not data:
+        return "FAILED: empty audio file"
+    # Guess content-type from suffix.
+    suffix = p.suffix.lower()
+    ctype = {
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".ogg": "audio/ogg",
+        ".webm": "audio/webm",
+        ".flac": "audio/flac",
+        ".mp4": "audio/mp4",
+    }.get(suffix, "application/octet-stream")
+    fields: dict[str, str] = {}
+    if language:
+        fields["language"] = language
+    if model:
+        fields["model"] = model
+    res = _multipart_post(
+        GATEWAY_STT_URL,
+        fields=fields,
+        file_field="file",
+        filename=p.name,
+        file_bytes=data,
+        content_type=ctype,
+    )
+    if res.get("status", 0) >= 300:
+        return f"FAILED to transcribe (status {res.get('status')}): {res.get('detail')}"
+    body = res.get("body") or {}
+    text = body.get("text") if isinstance(body, dict) else None
+    if text is None:
+        return f"Transcribed (raw): {body!r}"
+    lang = body.get("language") if isinstance(body, dict) else None
+    extra = f" language={lang}" if lang else ""
+    return f"Transcript{extra}:\n{text}"
+
+
+@mcp.tool()
+def leave_room(room: str) -> str:
+    """Leave a Stable room as this lane's agent identity (clean bridge exit).
+
+    Removes the agent from the room member strip and best-effort-evicts LiveKit
+    so the channel no longer shows a stuck agent after the MCP session ends.
+
+    Args:
+        room: friendly name, room slug, or livekit_room_name.
+    """
+    err = _require_config()
+    if err:
+        return f"NOT CONFIGURED: {err}"
+    try:
+        room_ref = _resolve_room(room)
+    except ValueError as e:
+        return f"FAILED: {e}"
+    res = _request(_gateway_leave_url(room_ref), method="POST", payload=None)
+    status = res.get("status", 0)
+    # 204 No Content is success; urllib may surface it as status 204 with empty body.
+    if status and status >= 300:
+        return f"FAILED to leave (status {status}): {res.get('detail')}"
+    return f"Left room {room_ref} as this agent. Member strip should clear shortly."
+
+
+@mcp.tool()
+def close_bridge_session(room: str = "", remove_agents: str = "") -> str:
+    """Close out a Stable Bridge session cleanly.
+
+    Prefer calling this when the human is done with the bridge conversation:
+      1. Optionally kick stuck agents listed in ``remove_agents`` (comma-separated
+         brigade agent ids, e.g. ``claude,majik``).
+      2. Leave the room as this lane's own identity (if ``room`` is set).
+
+    Args:
+        room: room to leave (friendly name / slug / livekit_room_name). Empty skips leave.
+        remove_agents: comma-separated brigade agent ids to kick first.
+    """
+    err = _require_config()
+    if err:
+        return f"NOT CONFIGURED: {err}"
+    lines: list[str] = []
+    room_ref = ""
+    if room:
+        try:
+            room_ref = _resolve_room(room)
+        except ValueError as e:
+            return f"FAILED: {e}"
+
+    for agent_id in [a.strip() for a in (remove_agents or "").split(",") if a.strip()]:
+        if not room_ref:
+            lines.append(f"skip kick {agent_id}: room required")
+            continue
+        res = _request(
+            _gateway_remove_agent_url(room_ref, agent_id),
+            method="DELETE",
+            payload=None,
+        )
+        status = res.get("status", 0)
+        if status and status >= 300:
+            lines.append(f"kick {agent_id}: FAILED ({status}) {res.get('detail')}")
+        else:
+            lines.append(f"kick {agent_id}: ok")
+
+    if room_ref:
+        res = _request(_gateway_leave_url(room_ref), method="POST", payload=None)
+        status = res.get("status", 0)
+        if status and status >= 300:
+            lines.append(f"leave {room_ref}: FAILED ({status}) {res.get('detail')}")
+        else:
+            lines.append(f"leave {room_ref}: ok")
+    elif not lines:
+        return (
+            "Nothing to do — pass room=... and/or remove_agents=agent1,agent2. "
+            "After this returns, you can stop the MCP client process."
+        )
+
+    lines.append("Bridge session closed. Safe to stop the MCP client.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def remove_room_agent(room: str, brigade_agent_id: str) -> str:
+    """Remove a stuck Brigade agent from a room this key is scoped to.
+
+    Args:
+        room: friendly name, room slug, or livekit_room_name.
+        brigade_agent_id: e.g. claude, majik, sgt-swift (not the agent- prefix).
+    """
+    err = _require_config()
+    if err:
+        return f"NOT CONFIGURED: {err}"
+    try:
+        room_ref = _resolve_room(room)
+    except ValueError as e:
+        return f"FAILED: {e}"
+    agent_id = (brigade_agent_id or "").strip().removeprefix("agent-")
+    if not agent_id:
+        return "FAILED: brigade_agent_id required"
+    res = _request(
+        _gateway_remove_agent_url(room_ref, agent_id),
+        method="DELETE",
+        payload=None,
+    )
+    status = res.get("status", 0)
+    if status and status >= 300:
+        return f"FAILED to remove (status {status}): {res.get('detail')}"
+    return f"Removed agent {agent_id} from {room_ref}."
 
 
 # --- self-test / entrypoint --------------------------------------------------
