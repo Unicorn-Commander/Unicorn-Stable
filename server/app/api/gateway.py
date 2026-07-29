@@ -19,10 +19,22 @@ import uuid
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import httpx
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
@@ -236,6 +248,13 @@ class GatewayMessageBody(BaseModel):
     via: str | None = None
 
 
+class GatewayTtsBody(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+    voice: str | None = None
+    agent: str | None = None
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
 class MintKeyBody(BaseModel):
     agent_id: str = Field(..., min_length=1, max_length=100)
     label: str | None = None
@@ -341,6 +360,317 @@ async def gateway_get_messages(
     return MessageListResponse(
         messages=messages, cursor=result["cursor"], has_more=result["has_more"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Voice (suite TTS / STT) + session lifecycle for MCP bridges
+# ---------------------------------------------------------------------------
+
+
+@router.post("/tts")
+async def gateway_tts(
+    body: GatewayTtsBody,
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> Response:
+    """Synthesize speech via suite Kokoro (Orator) for a gateway/MCP agent.
+
+    Same contract as ``POST /api/v1/tts`` but authenticated with a gateway key
+    or uchub JWT that has the agent-gateway role. Rate-limited per principal.
+    """
+    await _gateway_rate_limit(principal, redis, bucket="gw_tts", fail_open=False)
+
+    # Reuse the public TTS voice map + speakable scrub via a local import so we
+    # don't drift from the browser path.
+    from app.api.tts import (
+        AGENT_DEFAULT_VOICE,
+        AGENT_VOICES,
+        _normalize_agent,
+    )
+    import re as _re
+
+    speakable = _re.sub(r"\s+", " ", body.text).strip()
+    speakable = _re.sub(
+        r"[\U00010000-\U0010ffff\u2600-\u27BF\uFE0F\u200D]+",
+        " ",
+        speakable,
+    )
+    speakable = _re.sub(r"\s+", " ", speakable).strip()
+    if not speakable or not _re.search(r"[A-Za-z0-9]", speakable):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nothing to speak",
+        )
+
+    if body.voice:
+        voice = body.voice
+    elif body.agent:
+        voice = AGENT_VOICES.get(_normalize_agent(body.agent), AGENT_DEFAULT_VOICE)
+    else:
+        # Prefer the caller's own agent identity voice when known.
+        voice = AGENT_VOICES.get(
+            _normalize_agent(principal.agent_id), settings.tts_default_voice
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            upstream = await client.post(
+                f"{settings.kokoro_base_url}/v1/audio/speech",
+                json={
+                    "model": "kokoro",
+                    "input": speakable,
+                    "voice": voice,
+                    "response_format": "mp3",
+                    "speed": body.speed,
+                },
+            )
+    except httpx.HTTPError:
+        logger.warning("gateway_tts_upstream_unreachable", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="TTS service unreachable",
+        ) from None
+
+    if upstream.status_code != 200:
+        logger.warning(
+            "gateway_tts_upstream_error",
+            status=upstream.status_code,
+            body=upstream.text[:200],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="TTS synthesis failed",
+        )
+
+    logger.info(
+        "gateway_tts_synthesized",
+        agent_id=principal.agent_id,
+        chars=len(speakable),
+        voice=voice,
+    )
+    return Response(
+        content=upstream.content,
+        media_type=upstream.headers.get("content-type", "audio/mpeg"),
+    )
+
+
+@router.post("/stt")
+async def gateway_stt(
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    file: UploadFile = File(..., description="Audio file to transcribe"),
+    language: str | None = Form(default=None),
+    model: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Transcribe audio via suite STT (Amanuensis/Parakeet) for a gateway agent.
+
+    Same upstream as ``POST /api/v1/stt``; auth is gateway key / agent JWT.
+    """
+    await _gateway_rate_limit(principal, redis, bucket="gw_stt", fail_open=False)
+
+    base = (settings.whisper_base_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="STT service not configured",
+        )
+
+    audio = await file.read()
+    if not audio:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Empty audio payload",
+        )
+    if len(audio) > 25 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Audio exceeds 25 MB limit",
+        )
+
+    use_model = (model or settings.whisper_model or "whisper-1").strip()
+    filename = file.filename or "audio.webm"
+    content_type = (file.content_type or "application/octet-stream").split(";")[0]
+    form_data: dict[str, Any] = {"model": use_model}
+    if language:
+        form_data["language"] = language.strip()
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            upstream = await client.post(
+                f"{base}/audio/transcriptions",
+                data=form_data,
+                files={"file": (filename, audio, content_type)},
+            )
+    except httpx.HTTPError:
+        logger.warning("gateway_stt_upstream_unreachable", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="STT service unreachable",
+        ) from None
+
+    if upstream.status_code != 200:
+        logger.warning(
+            "gateway_stt_upstream_error",
+            status=upstream.status_code,
+            body=upstream.text[:200],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="STT transcription failed",
+        )
+
+    try:
+        body = upstream.json()
+    except ValueError:
+        body = {"text": upstream.text}
+
+    logger.info(
+        "gateway_stt_transcribed",
+        agent_id=principal.agent_id,
+        bytes=len(audio),
+        chars=len((body.get("text") if isinstance(body, dict) else "") or ""),
+    )
+    if isinstance(body, dict):
+        return body
+    return {"text": str(body)}
+
+
+@router.post("/rooms/{room}/leave", status_code=status.HTTP_204_NO_CONTENT)
+async def gateway_leave_room(
+    room: str,
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> None:
+    """Remove the caller's agent identity from a room (clean bridge exit).
+
+    Deletes the RoomMember row for ``brigade:{agent_id}``, clears any relay
+    marker, and best-effort-evicts the LiveKit participant so the strip no
+    longer shows a ghost agent after Claude Code / MCP disconnects.
+    """
+    await _gateway_rate_limit(principal, redis, bucket="gw_leave", fail_open=True)
+    room_obj = await _resolve_room(db, room)
+    await _enforce_scope(db, principal, room_obj)
+
+    pseudo_sub = f"brigade:{principal.agent_id}"
+    agent_p = (
+        await db.execute(select(Participant).where(Participant.keycloak_sub == pseudo_sub))
+    ).scalar_one_or_none()
+    if agent_p is not None:
+        await db.execute(
+            delete(RoomMember).where(
+                RoomMember.room_id == room_obj.id,
+                RoomMember.participant_id == agent_p.id,
+            )
+        )
+        await db.commit()
+
+    try:
+        await clear_relay_pending(room_id=room_obj.id, agent_id=principal.agent_id)
+    except Exception:
+        logger.debug("gateway_leave_relay_clear_failed", exc_info=True)
+
+    # Best-effort LiveKit eviction (identity patterns match remove_brigade_agent).
+    try:
+        for identity in (
+            f"agent-{principal.agent_id}",
+            f"agent-brigade-{principal.agent_id}",
+            principal.agent_id,
+        ):
+            try:
+                await livekit.remove_participant(
+                    room_name=room_obj.livekit_room_name,
+                    identity=identity,
+                )
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("gateway_leave_livekit_evict_failed", exc_info=True)
+
+    logger.info(
+        "gateway_left_room",
+        agent_id=principal.agent_id,
+        room=room_obj.livekit_room_name,
+    )
+    return None
+
+
+@router.delete(
+    "/rooms/{room}/brigade-agents/{brigade_agent_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def gateway_remove_brigade_agent(
+    room: str,
+    brigade_agent_id: str,
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> None:
+    """Kick a stuck Brigade agent from a room the caller is scoped to.
+
+    Mirrors ``DELETE /api/v1/rooms/{room}/brigade-agents/{id}`` for MCP bridges
+    that hold a gateway credential rather than a browser user JWT. The caller
+    must be scoped to the room; they may remove any agent in that room
+    (including themselves — prefer ``POST .../leave`` for self-exit).
+    """
+    await _gateway_rate_limit(principal, redis, bucket="gw_kick", fail_open=False)
+    room_obj = await _resolve_room(db, room)
+    await _enforce_scope(db, principal, room_obj)
+
+    agent_id = (brigade_agent_id or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=422, detail="brigade_agent_id required")
+
+    pseudo_sub = f"brigade:{agent_id}"
+    agent_p = (
+        await db.execute(
+            select(Participant).where(
+                Participant.keycloak_sub == pseudo_sub,
+                Participant.participant_type == ParticipantType.AGENT,
+            )
+        )
+    ).scalar_one_or_none()
+    if agent_p is not None:
+        await db.execute(
+            delete(RoomMember).where(
+                RoomMember.room_id == room_obj.id,
+                RoomMember.participant_id == agent_p.id,
+            )
+        )
+        await db.commit()
+
+    try:
+        await clear_relay_pending(room_id=room_obj.id, agent_id=agent_id)
+    except Exception:
+        logger.debug("gateway_kick_relay_clear_failed", exc_info=True)
+
+    try:
+        for identity in (
+            f"agent-{agent_id}",
+            f"agent-brigade-{agent_id}",
+            agent_id,
+        ):
+            try:
+                await livekit.remove_participant(
+                    room_name=room_obj.livekit_room_name,
+                    identity=identity,
+                )
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("gateway_kick_livekit_evict_failed", exc_info=True)
+
+    logger.info(
+        "gateway_removed_agent",
+        by=principal.agent_id,
+        removed=agent_id,
+        room=room_obj.livekit_room_name,
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------

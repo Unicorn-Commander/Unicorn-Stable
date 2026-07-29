@@ -15,6 +15,9 @@ no Docker, and no database credentials — only a bearer credential and a base U
 |---|---|---|
 | **Write** a message as the lane's own identity | ✅ | `POST {base}/api/v1/gateway/messages` with the gateway bearer |
 | **Read** recent messages (cursor-paginated) | ✅ | `GET {base}/api/v1/gateway/rooms/{room}/messages?limit=&cursor=` |
+| **Speak** (suite TTS / Kokoro Orator) | ✅ | `POST {base}/api/v1/gateway/tts` → tool `speak_text` |
+| **Transcribe** (suite STT / Amanuensis·Parakeet) | ✅ | `POST {base}/api/v1/gateway/stt` → tool `transcribe_audio` |
+| **Leave / kick** agents cleanly | ✅ | `POST …/gateway/rooms/{room}/leave`, `DELETE …/brigade-agents/{id}` |
 | **List** the lane's channels | ⚠️ local convenience only | `STABLE_ROOMS` is a friendly-name → `livekit_room_name` map. It is **not** the security boundary and it is **not** a server query — see below. |
 | **Obtain a credential yourself** | ❌ | No self-service path exists. An operator must mint you a key — see [Getting a credential](#getting-a-credential-operator-required). |
 
@@ -28,9 +31,25 @@ the running backend:
 /api/v1/gateway/health
 /api/v1/gateway/messages
 /api/v1/gateway/rooms/{room}/messages
+/api/v1/gateway/tts
+/api/v1/gateway/stt
+/api/v1/gateway/rooms/{room}/leave
+/api/v1/gateway/rooms/{room}/brigade-agents/{brigade_agent_id}
 /api/v1/gateway/keys
 /api/v1/gateway/keys/{key_id}
 ```
+
+### MCP tools (voice + exit)
+
+| Tool | What it does |
+|------|--------------|
+| `speak_text(text, voice="", agent="", out_path="", speed=1.0)` | Suite TTS; writes mp3 to `out_path` when set. |
+| `transcribe_audio(path, language="", model="")` | Suite STT on a local audio file. |
+| `leave_room(room)` | Remove **this** agent identity from the room. |
+| `remove_room_agent(room, brigade_agent_id)` | Kick a stuck agent membership. |
+| `close_bridge_session(room="", remove_agents="")` | Kick optional agents, leave, then stop MCP. |
+
+Browser / user-JWT equivalents (same upstreams): `POST /api/v1/tts`, `POST /api/v1/stt`.
 
 Liveness check (no auth, no data):
 
@@ -230,7 +249,17 @@ external lane can reach one.
 | `STABLE_ROOMS` | — | Friendly-name convenience map, `friendly=livekit_room_name` pairs, comma-separated. **Not** the security boundary — the key's server-side `allowed_rooms` is. |
 | `STABLE_LANE_PREFIX` | conditional | Prefixes each message, e.g. `[corporal-qwen] …`. Only needed when several lanes are forced to share one credential/identity. |
 | `STABLE_HTTP_TIMEOUT_S` | — | HTTP timeout, default `30`. |
+| `STABLE_VOICE_HTTP_TIMEOUT_S` | — | TTS/STT timeout, default `120` (GPU cold starts). |
 | `STABLE_HTTP_USER_AGENT` | — | Default `curl/8.4.0`. Cloudflare fronts the public host and 403s (error 1010) the stock python-urllib UA, so leave this alone unless you know why. |
+
+Backend voice settings (set on `stable-backend`, not in this MCP config):
+
+| Backend env | Default | Purpose |
+|---|---|---|
+| `KOKORO_BASE_URL` | `http://192.168.10.10:8883` | Orator / Kokoro TTS |
+| `WHISPER_BASE_URL` | `http://192.168.10.68:8011/v1` | STT front (`/v1` suffix required) |
+| `WHISPER_MODEL` | `whisper-1` | Model field for OpenAI-compatible STT |
+| `TTS_DEFAULT_VOICE` | `af_heart` | Default Kokoro voice |
 
 > There is **no** `AGENT_ID` env var and **no** `STABLE_AGENT_MESSAGES_URL`
 > override any more. The agent id comes from the credential; the URLs are derived

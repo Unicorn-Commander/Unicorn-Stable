@@ -8,6 +8,8 @@ import {
   Bot,
   Terminal,
   ArrowRight,
+  Mic,
+  LogOut,
 } from "lucide-react";
 
 /**
@@ -26,8 +28,19 @@ const CONFIG_SNIPPET = `{
       "command": "uv",
       "args": [
         "run", "--with", "mcp", "python",
-        "/path/to/stable-bridge/server.py"
+        "/path/to/Unicorn-Stable/tools/stable-bridge-mcp/server.py"
       ]
+    },
+    "stable-agent": {
+      "command": "uv",
+      "args": [
+        "run", "--with", "mcp", "python",
+        "/path/to/Unicorn-Stable/tools/stable-agent-mcp/server.py"
+      ],
+      "env": {
+        "STABLE_GATEWAY_TOKEN": "(operator-minted sbk-… key)",
+        "STABLE_GATEWAY_BASE_URL": "https://stable.magicunicorn.dev"
+      }
     }
   }
 }`;
@@ -68,23 +81,42 @@ const TOOL_GROUPS: ToolGroup[] = [
       { name: "list_room_knowledge", desc: "See which KBs a room uses." },
     ],
   },
+  {
+    icon: Mic,
+    title: "Voice (TTS / STT)",
+    blurb: "Suite Orator (Kokoro) and Amanuensis / Parakeet through Stable proxies — no LAN access required on the client.",
+    tools: [
+      { name: "speak_text", desc: "Synthesize speech (Kokoro). Optional voice / agent preset; write mp3 via out_path." },
+      { name: "transcribe_audio", desc: "Transcribe a local audio file via suite STT." },
+    ],
+  },
+  {
+    icon: LogOut,
+    title: "Session lifecycle",
+    blurb: "Leave cleanly and kick stuck agents so the strip does not show ghosts after Bridge disconnects.",
+    tools: [
+      { name: "leave_room", desc: "Remove this bridge agent from a room." },
+      { name: "remove_room_agent", desc: "Kick a stuck Brigade agent membership." },
+      { name: "close_bridge_session", desc: "Kick optional agents, leave, then stop the MCP client." },
+    ],
+  },
 ];
 
 const STEPS = [
   {
     icon: Terminal,
     title: "Add the bridge to your MCP client",
-    body: "Drop the config below into your client (Claude Code: `~/.claude.json`; Claude Desktop: the MCP servers section), pointing `args` at the server.py your workspace operator gave you.",
+    body: "Drop the config below into your client (Claude Code: `~/.claude.json`; Claude Desktop: the MCP servers section), pointing `args` at `tools/stable-bridge-mcp/server.py` or `tools/stable-agent-mcp/server.py`.",
   },
   {
     icon: ArrowRight,
     title: "Reload the client",
-    body: "MCP servers load at startup — restart Claude Code / Claude Desktop so the `stable-bridge` tools appear.",
+    body: "MCP servers load at startup — restart Claude Code / Claude Desktop so the bridge tools appear. Set gateway env vars only for the SSH-free agent MCP.",
   },
   {
     icon: Bot,
-    title: "Start a session",
-    body: "Call `start_session` with a display name. The bridge joins your Stable workspace under that identity and the other tools light up.",
+    title: "Start a session — and close it",
+    body: "Call `start_session` (SSH bridge) or `send_message` (gateway agent). When done, call `close_bridge_session` / `leave_room` so agents leave the room strip cleanly.",
   },
 ];
 
@@ -95,10 +127,12 @@ const STEP_HUES = [
   "bg-stable-mint/15 text-emerald-300",
 ] as const;
 
-// Tool-group icon tiles alternate iris / aqua.
+// Tool-group icon tiles alternate iris / aqua / mint.
 const GROUP_HUES = [
   "bg-stable-purple/15 text-stable-purple-light",
   "bg-stable-cyan/10 text-stable-cyan-light",
+  "bg-stable-mint/15 text-emerald-300",
+  "bg-stable-purple/15 text-stable-purple-light",
 ] as const;
 
 export function BridgePage() {
@@ -144,8 +178,13 @@ export function BridgePage() {
               The Stable Bridge is a small{" "}
               <span className="text-slate-200">MCP server</span> that lets Claude
               Code — or any MCP-capable agent — read and post into your Stable
-              rooms, run as a room resident, and manage knowledge bases. Wire it
-              up once and your agent works alongside you in the workspace.
+              rooms, run as a room resident, manage knowledge bases, speak via
+              suite{" "}
+              <span className="text-slate-200">TTS (Orator / Kokoro)</span>,
+              transcribe via{" "}
+              <span className="text-slate-200">STT (Amanuensis / Parakeet)</span>
+              , and leave rooms cleanly when the session ends. Wire it up once
+              and your agent works alongside you in the workspace.
             </p>
           </div>
         </header>
@@ -209,13 +248,24 @@ export function BridgePage() {
             </pre>
           </div>
           <p className="mt-2.5 text-[12px] text-slate-500">
-            Ask your workspace operator for the{" "}
+            Two servers ship in-repo under{" "}
             <code className="rounded bg-white/[0.06] px-1 py-0.5 text-[11px] text-slate-300">
-              server.py
-            </code>{" "}
-            and the exact launch command for your environment — the bridge
-            authenticates against this workspace, so its setup is provisioned
-            per-operator rather than published here.
+              tools/
+            </code>
+            : <span className="text-slate-300">stable-bridge-mcp</span> (SSH
+            hop, no token on the client) and{" "}
+            <span className="text-slate-300">stable-agent-mcp</span> (public
+            gateway + scoped <span className="text-slate-300">sbk-…</span> key).
+            Operators mint gateway keys; never commit secrets. Backend voice
+            env:{" "}
+            <code className="rounded bg-white/[0.06] px-1 py-0.5 text-[11px] text-slate-300">
+              KOKORO_BASE_URL
+            </code>
+            ,{" "}
+            <code className="rounded bg-white/[0.06] px-1 py-0.5 text-[11px] text-slate-300">
+              WHISPER_BASE_URL
+            </code>
+            .
           </p>
         </section>
 

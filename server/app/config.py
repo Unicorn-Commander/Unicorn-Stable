@@ -195,6 +195,8 @@ class Settings(BaseSettings):
     rate_limit_agent_chat_per_min: int = 30
     # read-aloud TTS synthesis (GPU-bound upstream — keep this tight)
     rate_limit_tts_per_min: int = 20
+    # speech-to-text transcription (GPU-bound upstream — keep this tight)
+    rate_limit_stt_per_min: int = 20
     # Knowledge-Base abuse controls (GPU-embedding + disk are the scarce
     # resources; keep create/upload tight and cap total footprint per user).
     rate_limit_kb_create_per_min: int = 10
@@ -223,6 +225,13 @@ class Settings(BaseSettings):
     kokoro_base_url: str = "http://192.168.10.10:8883"
     # Suite default voice = Majik (af_heart).
     tts_default_voice: str = "af_heart"
+
+    # -- STT proxy (app/api/stt.py) --
+    # OpenAI-compatible transcription base (must include the /v1 suffix).
+    # Deployed default = Parakeet OpenAI shim on midboy1 (was Amanuensis on
+    # uc-1). Agents use the same WHISPER_BASE_URL env var.
+    whisper_base_url: str = "http://192.168.10.68:8011/v1"
+    whisper_model: str = "whisper-1"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
