@@ -473,6 +473,46 @@ function speechText(content: string): string {
 // owning bubble's button state.
 let activeSpeech: { stop: () => void } | null = null;
 
+/** Tiny silent MP3 — played synchronously inside the user gesture so later
+ * `audio.play()` after the async TTS fetch is still allowed on Safari/iOS
+ * (autoplay policy: unlock on gesture, then swap src). */
+const SILENT_MP3 =
+  "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwmHAAAAAAD/+1DEAAAGAAGn9AAAIggAJP8AAAATEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ==";
+
+/** Browser SpeechSynthesis fallback when kokoro is down or autoplay still
+ * blocked after unlock. Prefer suite TTS; this is the safety net so the
+ * button never looks dead. `stop()` is silent (no onEnd) so the owning
+ * handle can tear down without re-entrancy. */
+function speakWithBrowser(
+  text: string,
+  onEnd: () => void,
+): { stop: () => void } {
+  if (typeof window === "undefined" || !window.speechSynthesis) {
+    onEnd();
+    return { stop: () => undefined };
+  }
+  let finished = false;
+  const done = () => {
+    if (finished) return;
+    finished = true;
+    onEnd();
+  };
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1;
+  utter.onend = done;
+  utter.onerror = done;
+  window.speechSynthesis.speak(utter);
+  return {
+    stop() {
+      if (finished) return;
+      finished = true;
+      window.speechSynthesis.cancel();
+      // Intentional: caller already owns teardown; do not call onEnd.
+    },
+  };
+}
+
 /** GFM table separator row, e.g. `| --- | :--: |`. Requires at least one pipe
  * so a bare `---` horizontal rule can never start a table. */
 function isTableSeparator(line: string): boolean {
@@ -809,28 +849,59 @@ function ImageLightbox({
 
 function QuickReact({ onReact }: { onReact: (emoji: string) => void }) {
   const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside pointer (works for mouse + touch; onMouseLeave alone
+  // never fires on mobile so the tray used to stick or never open usefully).
+  useEffect(() => {
+    if (!open) return;
+    function onAway(e: PointerEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("pointerdown", onAway, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onAway, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
-        onClick={() => setOpen((v) => !v)}
-        className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
         aria-label="Add reaction"
+        aria-expanded={open}
       >
         <Smile className="h-3.5 w-3.5" />
       </button>
       {open && (
         <div
-          className="glass-heavy absolute bottom-full right-0 mb-1 flex gap-0.5 rounded-xl p-1 shadow-pop"
-          onMouseLeave={() => setOpen(false)}
+          className="glass-heavy absolute bottom-full right-0 z-20 mb-1 flex flex-wrap gap-0.5 rounded-xl p-1.5 shadow-pop"
+          role="listbox"
+          aria-label="Quick reactions"
         >
           {QUICK_EMOJI.map((e) => (
             <button
+              type="button"
               key={e}
-              onClick={() => {
+              onClick={(ev) => {
+                ev.stopPropagation();
                 setOpen(false);
                 onReact(e);
               }}
-              className="rounded-md px-1 py-0.5 text-base transition-colors hover:bg-white/[0.08] focus-ring"
+              className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md px-1.5 py-1 text-lg transition-colors hover:bg-white/[0.08] active:bg-white/[0.12] focus-ring touch-manipulation"
+              aria-label={`React with ${e}`}
             >
               {e}
             </button>
@@ -943,23 +1014,31 @@ function ReactionRow({
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   if (!reactions || Object.keys(reactions).length === 0) return null;
   return (
-    <div className="mt-1 flex flex-wrap gap-1">
+    <div className="mt-1.5 flex flex-wrap gap-1.5" role="group" aria-label="Reactions">
       {Object.entries(reactions).map(([emoji, users]) => {
         const mine = currentUserId ? users.includes(currentUserId) : false;
         return (
           <button
+            type="button"
             key={emoji}
-            onClick={() => onToggle(emoji)}
+            onClick={(e) => {
+              // Don't toggle the parent message "actions open" strip on mobile.
+              e.stopPropagation();
+              onToggle(emoji);
+            }}
             className={clsx(
-              "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors focus-ring",
+              "inline-flex min-h-9 min-w-9 items-center justify-center gap-1 rounded-full border px-2.5 py-1 text-sm transition-colors focus-ring touch-manipulation active:scale-95",
               mine
                 ? "border-stable-purple/40 bg-stable-purple/15 text-stable-purple-light"
-                : "border-line bg-white/[0.05] text-slate-300 hover:border-line-strong hover:bg-white/[0.08]",
+                : "border-line bg-white/[0.05] text-slate-300 hover:border-line-strong hover:bg-white/[0.08] active:bg-white/[0.1]",
             )}
-            aria-label={`${emoji} ${users.length}`}
+            aria-label={`${emoji} ${users.length}${mine ? ", your reaction" : ""}`}
+            aria-pressed={mine}
           >
-            <span>{emoji}</span>
-            <span className="text-[10px] tabular-nums">{users.length}</span>
+            <span className="text-base leading-none" aria-hidden="true">
+              {emoji}
+            </span>
+            <span className="text-[11px] tabular-nums leading-none">{users.length}</span>
           </button>
         );
       })}
@@ -1167,6 +1246,9 @@ export function MessageBubble({
   overrideModelLabel,
 }: MessageBubbleProps) {
   const [hovered, setHovered] = useState(false);
+  // Mobile has no hover — tap the bubble (or long-press via context menu) to
+  // pin the action toolbar open until the next outside tap.
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
@@ -1303,24 +1385,70 @@ export function MessageBubble({
   // activeSpeech singleton guarantees at most one voice app-wide.
   const [ttsState, setTtsState] = useState<"idle" | "loading" | "speaking">("idle");
   const ttsHandleRef = useRef<{ stop: () => void } | null>(null);
+  const browserSpeechRef = useRef<{ stop: () => void } | null>(null);
   // Unmount (room switch, delete) must not leak a playing Audio / object URL.
-  useEffect(() => () => ttsHandleRef.current?.stop(), []);
+  useEffect(
+    () => () => {
+      ttsHandleRef.current?.stop();
+      browserSpeechRef.current?.stop();
+    },
+    [],
+  );
 
   function handleReadAloud() {
     if (ttsHandleRef.current) {
       ttsHandleRef.current.stop();
       return;
     }
+    const text = speechText(message.content);
+    if (!text) {
+      pushToast({
+        title: "Nothing to read",
+        body: "This message has no speakable text.",
+      });
+      return;
+    }
+
     activeSpeech?.stop();
+    browserSpeechRef.current?.stop();
     setTtsState("loading");
     let cancelled = false;
-    let audio: HTMLAudioElement | null = null;
     let url: string | null = null;
+
+    // Create + unlock Audio INSIDE the click gesture. Fetching TTS is async;
+    // without this unlock, Safari/Chrome reject audio.play() after the
+    // network hop (NotAllowedError) — the classic "button does nothing" bug.
+    const audio = new Audio();
+    audio.setAttribute("playsinline", "true");
+    audio.preload = "auto";
+    try {
+      audio.src = SILENT_MP3;
+      void audio.play().then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+      }).catch(() => {
+        /* unlock is best-effort; real play below may still work */
+      });
+    } catch {
+      /* ignore */
+    }
+
     const handle = {
       stop() {
         cancelled = true;
-        audio?.pause();
-        if (url) URL.revokeObjectURL(url);
+        browserSpeechRef.current?.stop();
+        browserSpeechRef.current = null;
+        audio.pause();
+        audio.removeAttribute("src");
+        try {
+          audio.load();
+        } catch {
+          /* ignore */
+        }
+        if (url) {
+          URL.revokeObjectURL(url);
+          url = null;
+        }
         if (activeSpeech === handle) activeSpeech = null;
         if (ttsHandleRef.current === handle) ttsHandleRef.current = null;
         setTtsState("idle");
@@ -1328,27 +1456,61 @@ export function MessageBubble({
     };
     activeSpeech = handle;
     ttsHandleRef.current = handle;
+
+    const finishSpeaking = () => {
+      if (!cancelled) handle.stop();
+    };
+
+    const playBlob = (blob: Blob) => {
+      if (cancelled) return Promise.resolve();
+      url = URL.createObjectURL(blob);
+      audio.onended = finishSpeaking;
+      audio.onerror = () => {
+        // Decode/network error on the blob → browser fallback.
+        if (cancelled) return;
+        if (url) {
+          URL.revokeObjectURL(url);
+          url = null;
+        }
+        browserSpeechRef.current = speakWithBrowser(text, finishSpeaking);
+        if (!cancelled) setTtsState("speaking");
+      };
+      audio.src = url;
+      return audio
+        .play()
+        .then(() => {
+          if (!cancelled) setTtsState("speaking");
+        })
+        .catch(() => {
+          // Autoplay still blocked (or codec issue) → browser TTS.
+          if (cancelled) return;
+          browserSpeechRef.current = speakWithBrowser(text, finishSpeaking);
+          if (!cancelled) setTtsState("speaking");
+        });
+    };
+
     // Per-agent voice: the backend maps the agent identifier to that agent's
     // voice-call preset. Prefer an explicit brigade agent id stamped on the
     // message (stable slug like "majik"); fall back to the display name,
-    // which the backend normalizes.
+    // which the backend normalizes. Human senders use the suite default.
     const voiceAgent =
       (message.metadata as { brigade_agent_id?: string } | undefined)
-        ?.brigade_agent_id || message.sender_name;
+        ?.brigade_agent_id ||
+      (message.sender_type === "agent" ? message.sender_name : undefined);
+
     void api
-      .ttsSpeech(speechText(message.content), { agent: voiceAgent })
-      .then((blob) => {
-        if (cancelled) return;
-        url = URL.createObjectURL(blob);
-        audio = new Audio(url);
-        audio.onended = () => handle.stop();
-        audio.onerror = () => handle.stop();
-        return audio.play().then(() => {
-          if (!cancelled) setTtsState("speaking");
-        });
-      })
+      .ttsSpeech(text, voiceAgent ? { agent: voiceAgent } : undefined)
+      .then((blob) => playBlob(blob))
       .catch((err) => {
         if (cancelled) return;
+        // Kokoro down / 502 / empty phonemes → still speak via the browser
+        // so the control never feels dead. Toast only if browser TTS is also
+        // unavailable.
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+          browserSpeechRef.current = speakWithBrowser(text, finishSpeaking);
+          setTtsState("speaking");
+          return;
+        }
         handle.stop();
         pushToast({
           title: "Read-aloud failed",
@@ -1375,6 +1537,8 @@ export function MessageBubble({
       window.removeEventListener("keydown", onKey);
     };
   }, [ctxMenu]);
+
+  const bubbleRootRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
   const failed = Boolean(
     (message.metadata as { failed?: boolean } | undefined)?.failed,
@@ -1382,6 +1546,27 @@ export function MessageBubble({
   const failedError = (message.metadata as { failed_error?: string } | undefined)?.failed_error;
   const [editContent, setEditContent] = useState(message.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
+  const showActions = (hovered || actionsOpen || regenMenuOpen) && !editing;
+
+  // Outside-tap closes the mobile-pinned action strip (mirrors hover leave).
+  useEffect(() => {
+    if (!actionsOpen) return;
+    function onAway(e: PointerEvent) {
+      const root = bubbleRootRef.current;
+      if (root && !root.contains(e.target as Node)) {
+        setActionsOpen(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setActionsOpen(false);
+    }
+    window.addEventListener("pointerdown", onAway, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onAway, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [actionsOpen]);
 
   useEffect(() => {
     if (editing && editRef.current) {
@@ -1481,6 +1666,11 @@ export function MessageBubble({
   // Placeholder-only content (dots/ellipsis while the agent spins up) — the
   // shimmer goes on this, never on real streamed tokens.
   const isPlaceholder = isGenerating && /^[\s.…]*$/.test(message.content);
+  // Any non-empty speakable message can be read aloud (humans + agents +
+  // Stable Bridge Claude Code turns), not only agent replies.
+  const canReadAloud =
+    !isGenerating &&
+    Boolean(message.content && speechText(message.content).length > 0);
 
   if (message.content_type === "action") {
     const decision = (
@@ -1944,18 +2134,32 @@ export function MessageBubble({
 
   return (
     <div
+      ref={bubbleRootRef}
       className={clsx(
         "group relative flex gap-3 rounded-xl px-2 py-1 transition-colors",
         // Group rhythm: heads of a sender-group breathe, continuations tighten.
         showAvatar && "mt-2",
-        hovered && "bg-white/[0.03]",
+        (hovered || actionsOpen) && "bg-white/[0.03]",
         !showAvatar && "pl-12",
         failed && "border-l-2 border-rose-500/70 bg-rose-500/5",
       )}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={(e) => {
+        // Touch devices never fire mouseenter. Tapping the bubble pins the
+        // action toolbar; ignore clicks that originated on a nested control
+        // (reaction chip, link, toolbar button) so those keep their own job.
+        const target = e.target as HTMLElement;
+        if (target.closest("button, a, input, textarea, [role='listbox']")) return;
+        // Coarse pointer ≈ touch / stylus — don't fight mouse users who
+        // already get hover. Fine pointers still open via hover.
+        if (window.matchMedia("(hover: none), (pointer: coarse)").matches) {
+          setActionsOpen((v) => !v);
+        }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
+        setActionsOpen(true);
         setCtxMenu({ x: e.clientX, y: e.clientY });
       }}
       role="article"
@@ -2218,68 +2422,87 @@ export function MessageBubble({
         </div>
       </div>
 
-      {/* Toolbar stays mounted while the regenerate-model menu is open, even
-          if the pointer wanders off the bubble. */}
-      {(hovered || regenMenuOpen) && !editing && (
+      {/* Toolbar: desktop hover, mobile tap-to-pin (actionsOpen), or while
+          the regenerate-model menu is open. */}
+      {showActions && (
         <div className="glass-heavy absolute -top-3 right-2 z-10 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-lg p-1 shadow-pop animate-fade-in md:max-w-none md:flex-nowrap">
           <QuickReact onReact={handleToggleReaction} />
           <button
-            onClick={() => onReply(message.id)}
-            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReply(message.id);
+            }}
+            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Reply in thread"
           >
             <MessageSquare className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => {
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
               const quote = `> **${message.sender_name}:** ${message.content}\n\n`;
               useAppStore.getState().requestInsert(message.room_id, quote);
             }}
-            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Quote reply"
             title="Quote and reply"
           >
             <Quote className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={handleToggleSave}
-            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleToggleSave();
+            }}
+            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Save message"
             title="Save to your bookmarks"
           >
             <Bookmark className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => setPromoteOpen(true)}
-            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPromoteOpen(true);
+            }}
+            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Promote to Project Ops task"
             title="Promote to Project Ops task"
           >
             <BriefcaseBusiness className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={handleTogglePin}
-            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleTogglePin();
+            }}
+            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Pin / unpin message"
             title="Pin or unpin"
           >
             <Pin className="h-3.5 w-3.5" />
           </button>
-          {isAgent && !isGenerating && (
+          {canReadAloud && (
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 handleReadAloud();
               }}
               className={clsx(
-                "rounded-md p-1.5 transition-colors focus-ring",
+                "inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 transition-colors focus-ring touch-manipulation",
                 ttsState === "speaking"
                   ? "text-stable-mint hover:bg-stable-mint/15"
                   : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
                 ttsState === "loading" && "animate-pulse-soft",
               )}
               aria-label={ttsState === "idle" ? "Read aloud" : "Stop reading"}
-              title={ttsState === "idle" ? "Read this reply aloud" : "Stop reading"}
+              title={ttsState === "idle" ? "Read this message aloud" : "Stop reading"}
             >
               {ttsState === "speaking" ? (
                 <Square className="h-3.5 w-3.5 fill-current" />
@@ -2483,9 +2706,10 @@ export function MessageBubble({
               ↪ Reply / quote
             </button>
           </li>
-          {isAgent && !isGenerating && (
+          {canReadAloud && (
             <li>
               <button
+                type="button"
                 onClick={() => {
                   handleReadAloud();
                   setCtxMenu(null);
