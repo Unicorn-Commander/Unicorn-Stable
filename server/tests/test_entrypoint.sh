@@ -29,4 +29,8 @@ if [ -e "${sentinel}" ]; then
   echo "uvicorn started after a failed migration" >&2
   exit 1
 fi
+if ! grep -q -- "--no-access-log" "${server_root}/entrypoint.sh"; then
+  echo "uvicorn access logging is enabled and can expose WebSocket tokens" >&2
+  exit 1
+fi
 echo "PASS — migration failure prevents server startup"

@@ -17,4 +17,7 @@ else
 fi
 
 echo "[entrypoint] starting uvicorn"
-exec uvicorn app.main:app --host 0.0.0.0 --port 8400 --workers 4 --loop uvloop --http httptools
+# The application emits request-id-aware structured HTTP and WebSocket events.
+# Uvicorn's default access logger would duplicate those events and, critically,
+# includes the raw WebSocket query string where the browser join token lives.
+exec uvicorn app.main:app --host 0.0.0.0 --port 8400 --workers 4 --loop uvloop --http httptools --no-access-log
