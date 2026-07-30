@@ -171,7 +171,7 @@ services:
       - PROJECTOPS_MCP_URL=${PROJECTOPS_MCP_URL:-https://api.projectops.magicunicorn.dev/api/v1/mcp}
       - PROJECTOPS_DASHBOARD_URL=${PROJECTOPS_DASHBOARD_URL:-https://projectops.magicunicorn.dev}
       # Meeting-Ops call-transcript federation (optional). Empty URL = accept
-      # exports locally only; set URL (+ optional API key) to forward.
+      # exports locally only; URL + scoped PAT + org are required to forward.
       - MEETING_OPS_URL=${MEETING_OPS_URL:-}
       - MEETING_OPS_INGEST_PATH=${MEETING_OPS_INGEST_PATH:-/api/v1/sessions/ingest}
       - MEETING_OPS_API_KEY=${MEETING_OPS_API_KEY:-}

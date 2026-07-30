@@ -303,11 +303,11 @@ export function TranscriptPanel() {
             const isMe = currentUser?.id === line.participantId;
             const provenance: { label: string; verified: boolean } =
               line.source === "local_mic"
-                ? { label: "Verified · speaker mic", verified: true }
+                ? { label: "Identity matched · client caption", verified: false }
                 : line.source === "agent_stt"
-                  ? { label: "Inferred · room STT", verified: false }
+                  ? { label: "Identity matched · room STT", verified: false }
                   : line.source === "agent"
-                    ? { label: "Verified · agent audio", verified: true }
+                    ? { label: "Verified · agent caption", verified: true }
                     : { label: "Unverified · legacy source", verified: false };
             return (
               <div

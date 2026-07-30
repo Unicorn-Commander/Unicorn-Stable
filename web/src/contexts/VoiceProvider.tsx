@@ -19,6 +19,7 @@ import { useAppStore } from "@/stores/appStore";
 import {
   decodeRoomData,
   isAgentParticipant,
+  type TranscriptMessage,
 } from "@/lib/roomDataProtocol";
 import {
   useCallUiStore,
@@ -91,6 +92,72 @@ interface VoiceContextValue {
 }
 
 const VoiceContext = createContext<VoiceContextValue | null>(null);
+
+/**
+ * Bind a transcript packet to the LiveKit participant that actually sent it.
+ *
+ * Human peers may caption only themselves. Agent workers may caption
+ * themselves or a known human participant whose audio session they are linked
+ * to. The packet's claimed name/source never outranks LiveKit identity.
+ */
+function bindTranscriptSender(
+  room: Room,
+  sender: RemoteParticipant | undefined,
+  message: TranscriptMessage,
+): TranscriptMessage | null {
+  if (!sender) return null;
+
+  const senderIsAgent = isAgentParticipant(sender);
+  let speaker: RemoteParticipant | LocalParticipant = sender;
+  let source: TranscriptMessage["source"];
+
+  if (senderIsAgent) {
+    const claimedSource =
+      message.source ??
+      (message.participantId === sender.identity ? "agent" : "agent_stt");
+    if (claimedSource === "agent") {
+      speaker = sender;
+      source = "agent";
+    } else if (claimedSource === "agent_stt") {
+      const candidates: Array<RemoteParticipant | LocalParticipant> = [
+        room.localParticipant,
+        ...room.remoteParticipants.values(),
+      ];
+      const linkedHuman = candidates.find(
+        (candidate) =>
+          candidate.identity === message.participantId &&
+          !isAgentParticipant(candidate),
+      );
+      if (!linkedHuman) return null;
+      speaker = linkedHuman;
+      source = "agent_stt";
+    } else {
+      return null;
+    }
+  } else {
+    // A human data sender can only publish a caption for their own mic.
+    speaker = sender;
+    source = "local_mic";
+  }
+
+  const now = Date.now();
+  const ts =
+    Number.isFinite(message.ts) && Math.abs(message.ts - now) <= 5 * 60_000
+      ? message.ts
+      : now;
+  return {
+    ...message,
+    participantId: speaker.identity,
+    name: speaker.name || speaker.identity,
+    source,
+    ts,
+    // A producer-controlled segment ID must not collide with another
+    // participant's interim line.
+    segmentId: message.segmentId
+      ? `${speaker.identity}:${message.segmentId}`
+      : undefined,
+  };
+}
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
   const setVoiceActive = useAppStore((s) => s.setVoiceActive);
@@ -444,7 +511,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
               return;
             }
             if (msg.type === "transcript") {
-              useCallUiStore.getState().ingestTranscript(msg);
+              const bound = bindTranscriptSender(r, participant, msg);
+              if (!bound) return;
+              useCallUiStore.getState().ingestTranscript(bound);
               return;
             }
             if (msg.type === "ui_command") {
