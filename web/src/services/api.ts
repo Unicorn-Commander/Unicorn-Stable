@@ -163,6 +163,17 @@ export interface Message {
   streaming?: boolean;
 }
 
+export interface PendingApproval {
+  message: Message;
+  room_id: string;
+  room_name: string;
+}
+
+export interface PendingApprovalsResponse {
+  items: PendingApproval[];
+  has_more: boolean;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -901,6 +912,14 @@ class StableApiClient {
       "POST",
       `/api/v1/messages/${messageId}/decide`,
       { decision },
+    );
+  }
+
+  async getPendingApprovals(roomId?: string): Promise<PendingApprovalsResponse> {
+    const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+    return this.request<PendingApprovalsResponse>(
+      "GET",
+      `/api/v1/approvals/pending${query}`,
     );
   }
 

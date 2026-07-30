@@ -2,7 +2,15 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Bookmark, Settings, LogOut, Wifi, WifiOff } from "lucide-react";
+import {
+  Activity,
+  X,
+  Bookmark,
+  Settings,
+  LogOut,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
 import { login, logout } from "@/services/auth";
@@ -31,6 +39,7 @@ import { ToastStack } from "./ToastStack";
 import { CheatsheetModal } from "./CheatsheetModal";
 import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
+import { ActivityCenter } from "./ActivityCenter";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
 import { ServerRail } from "./ServerRail";
@@ -160,6 +169,7 @@ export function AppShell() {
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   // Federated multi-server: the active instance id keys the per-server
   // react-query caches; a switch clears the cache and returns to the home view.
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
@@ -576,6 +586,16 @@ export function AppShell() {
               </div>
               <button
                 onClick={() => {
+                  setActivityOpen(true);
+                  toggleSidebar();
+                }}
+                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+              >
+                <Activity className="h-4 w-4 text-slate-400" />
+                Activity Center
+              </button>
+              <button
+                onClick={() => {
                   setSavedOpen(true);
                   toggleSidebar();
                 }}
@@ -626,7 +646,10 @@ export function AppShell() {
       )}
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Header hideOnMobile={!!activeRoomId} />
+        <Header
+          hideOnMobile={!!activeRoomId}
+          onOpenActivity={() => setActivityOpen(true)}
+        />
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           <Suspense fallback={<SurfaceLoading />}>
             {activeRoomId ? (
@@ -662,6 +685,12 @@ export function AppShell() {
 
       <AnimatePresence>
         {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} />}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {activityOpen && (
+          <ActivityCenter onClose={() => setActivityOpen(false)} />
+        )}
       </AnimatePresence>
 
       <AnimatePresence>

@@ -9,12 +9,14 @@ import {
   Phone,
   PhoneOff,
   Users,
+  Activity,
   Bookmark,
   Settings,
   Keyboard,
   LogOut,
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
 import { useDirectCall } from "@/hooks/useDirectCall";
@@ -24,6 +26,8 @@ import { Avatar } from "@/components/Avatar";
 import { Tooltip } from "@/components/ui";
 import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
+import { api } from "@/services/api";
+import { useFederationStore } from "@/stores/federationStore";
 import {
   runScreenShareAction,
   windowShareGuidance,
@@ -33,7 +37,13 @@ import {
 // `hideOnMobile` lets AppShell collapse this top bar on phones when a room is
 // active — there the RoomView sub-header (with a hamburger) is the single bar,
 // so a second bar here would just waste vertical space. Desktop always shows it.
-export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
+export function Header({
+  hideOnMobile = false,
+  onOpenActivity,
+}: {
+  hideOnMobile?: boolean;
+  onOpenActivity: () => void;
+}) {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
@@ -50,6 +60,16 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
   const { startCall } = useDirectCall();
   // Identity hue for the signed-in resident — rings the avatar + menu header.
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
+  const activeInstanceId = useFederationStore((state) => state.activeInstanceId);
+  const { data: pendingApprovals } = useQuery({
+    queryKey: ["approvals", "pending", activeInstanceId],
+    queryFn: () => api.getPendingApprovals(),
+    refetchInterval: 15_000,
+  });
+  const pendingApprovalCount = pendingApprovals?.items.length ?? 0;
+  const pendingApprovalLabel = pendingApprovals?.has_more
+    ? `${pendingApprovalCount}+`
+    : String(pendingApprovalCount);
 
   // Shared call (VoiceProvider): connect/disconnect drive the one Room. Mic
   // publish + agent dispatch + audio playback all happen in the provider now.
@@ -308,6 +328,24 @@ export function Header({ hideOnMobile = false }: { hideOnMobile?: boolean }) {
 
         {/* On phones these fold into the avatar menu (below) to save space. */}
         <span className="hidden md:contents">
+          <Tooltip content="Activity Center" placement="bottom">
+            <button
+              onClick={onOpenActivity}
+              className="focus-ring relative rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
+              aria-label={`Activity Center${pendingApprovalCount ? `, ${pendingApprovalLabel} pending approvals` : ""}`}
+            >
+              <Activity className="h-4 w-4" />
+              {pendingApprovalCount > 0 && (
+                <span
+                  className="absolute -right-0.5 -top-0.5 flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-none text-white"
+                  aria-hidden="true"
+                >
+                  {pendingApprovalLabel}
+                </span>
+              )}
+            </button>
+          </Tooltip>
+
           <Tooltip content="Saved messages" placement="bottom">
             <button
               onClick={() => setSavedOpen(true)}

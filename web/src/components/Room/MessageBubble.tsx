@@ -27,13 +27,14 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict, format } from "date-fns";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiError, type Message, type ProjectOpsProject } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
+import { isRoomApprover } from "@/lib/approvals";
 
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -1262,7 +1263,18 @@ export function MessageBubble({
   const delegated = delegationMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
+  const queryClient = useQueryClient();
   const currentUserId = useAppStore((s) => s.currentUser?.id);
+  const canDecideAction = useAppStore((s) => {
+    const room = s.rooms.find((item) => item.id === message.room_id);
+    return isRoomApprover(
+      [...(s.participants[message.room_id] ?? []), ...(room?.members ?? [])],
+      s.currentUser?.id,
+    );
+  });
+  const [decisionPending, setDecisionPending] = useState<
+    "approved" | "rejected" | null
+  >(null);
   // Agent turns: resolve the sender in the roster so its emoji / portrait shows
   // in place of an interchangeable Bot glyph. Non-agent senders skip the lookup.
   const senderAgent = useAppStore((s) =>
@@ -1331,6 +1343,25 @@ export function MessageBubble({
         pushToast({ title });
       })
       .catch((err) => pushToast({ title: "Save failed", body: errorMessage(err) }));
+  }
+
+  async function handleActionDecision(decision: "approved" | "rejected") {
+    if (decisionPending) return;
+    setDecisionPending(decision);
+    try {
+      const updated = await api.decideAction(message.id, decision);
+      updateMessage(updated.room_id, updated.id, updated);
+      await queryClient.invalidateQueries({
+        queryKey: ["approvals", "pending"],
+      });
+    } catch (error) {
+      pushToast({
+        title: decision === "approved" ? "Approve failed" : "Reject failed",
+        body: errorMessage(error),
+      });
+    } finally {
+      setDecisionPending(null);
+    }
   }
 
   // Models for "regenerate with…" — same query key as ModelSwitcher so the
@@ -1712,32 +1743,28 @@ export function MessageBubble({
               {decision === "approved" ? "✓ Approved" : "✗ Rejected"}
               {decidedBy ? ` by ${decidedBy}` : ""}
             </div>
-          ) : (
+          ) : canDecideAction ? (
             <div className="flex gap-2">
               <button
-                onClick={() =>
-                  api
-                    .decideAction(message.id, "approved")
-                    .catch((e) =>
-                      pushToast({ title: "Approve failed", body: errorMessage(e) }),
-                    )
-                }
-                className="flex-1 rounded-lg bg-emerald-500/15 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 focus-ring"
+                type="button"
+                disabled={decisionPending !== null}
+                onClick={() => void handleActionDecision("approved")}
+                className="min-h-11 flex-1 rounded-lg bg-emerald-500/15 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 focus-ring disabled:cursor-wait disabled:opacity-50"
               >
-                Approve
+                {decisionPending === "approved" ? "Approving…" : "Approve"}
               </button>
               <button
-                onClick={() =>
-                  api
-                    .decideAction(message.id, "rejected")
-                    .catch((e) =>
-                      pushToast({ title: "Reject failed", body: errorMessage(e) }),
-                    )
-                }
-                className="flex-1 rounded-lg bg-rose-500/15 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 focus-ring"
+                type="button"
+                disabled={decisionPending !== null}
+                onClick={() => void handleActionDecision("rejected")}
+                className="min-h-11 flex-1 rounded-lg bg-rose-500/15 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 focus-ring disabled:cursor-wait disabled:opacity-50"
               >
-                Reject
+                {decisionPending === "rejected" ? "Rejecting…" : "Reject"}
               </button>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-line bg-white/[0.025] px-3 py-2 text-xs text-slate-400">
+              Waiting for a room owner or admin to decide.
             </div>
           )}
         </div>

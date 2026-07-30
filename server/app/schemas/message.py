@@ -77,3 +77,14 @@ class MessageListResponse(BaseModel):
     messages: list[MessageResponse]
     cursor: str | None = None
     has_more: bool
+
+
+class PendingApprovalItem(BaseModel):
+    message: MessageResponse
+    room_id: uuid.UUID
+    room_name: str
+
+
+class PendingApprovalsResponse(BaseModel):
+    items: list[PendingApprovalItem]
+    has_more: bool = False

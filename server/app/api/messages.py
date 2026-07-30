@@ -9,8 +9,9 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased, selectinload
 
 from app.api._internal_auth import verify_internal_bearer
 from app.config import get_settings
@@ -23,6 +24,8 @@ from app.deps import (
     require_room_member,
 )
 from app.schemas.message import (
+    PendingApprovalItem,
+    PendingApprovalsResponse,
     MessageCreate,
     MessageListResponse,
     MessageResponse,
@@ -1482,6 +1485,129 @@ class DecideBody(BaseModel):
     decision: str = Field(..., pattern=r"^(approved|rejected)$")
 
 
+_APPROVER_ROLES = frozenset({"owner", "admin"})
+
+
+async def _room_approver_role(
+    db: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    participant_id: uuid.UUID,
+) -> str | None:
+    """Return the caller's room role only when it can approve agent actions."""
+    from app.models.participant import Participant, ParticipantType
+    from app.models.room import MemberRole, RoomMember
+
+    role = (
+        await db.execute(
+            select(RoomMember.role)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id == room_id,
+                RoomMember.participant_id == participant_id,
+                RoomMember.role.in_([MemberRole.OWNER, MemberRole.ADMIN]),
+                Participant.participant_type == ParticipantType.HUMAN,
+            )
+        )
+    ).scalar_one_or_none()
+    if role is None:
+        return None
+    return role.value if hasattr(role, "value") else str(role)
+
+
+async def _require_room_approver(
+    db: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    participant_id: uuid.UUID,
+) -> str:
+    role = await _room_approver_role(
+        db,
+        room_id=room_id,
+        participant_id=participant_id,
+    )
+    if role not in _APPROVER_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a room owner or admin can decide agent action requests",
+        )
+    return role
+
+
+@router.get("/approvals/pending", response_model=PendingApprovalsResponse)
+async def list_pending_approvals(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    room_id: uuid.UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+) -> PendingApprovalsResponse:
+    """List genuine agent action requests the caller is allowed to decide.
+
+    The join to both ``participants`` and ``agent_configs`` is deliberate:
+    setting ``participant_type=agent`` alone does not make a sender a canonical
+    Stable agent. The room-role join is also part of the query, so requests from
+    rooms where the caller is merely a member never enter the result set.
+    """
+    from app.models.agent import AgentConfig
+    from app.models.message import ContentType, Message
+    from app.models.participant import Participant, ParticipantType
+    from app.models.room import MemberRole, Room, RoomMember
+
+    participant_id = uuid.UUID(str(user["participant_id"]))
+    approver = aliased(Participant, name="approval_actor")
+    if room_id is not None:
+        await _require_room_approver(
+            db,
+            room_id=room_id,
+            participant_id=participant_id,
+        )
+
+    statement = (
+        select(Message, Room.display_name)
+        .join(Room, Room.id == Message.room_id)
+        .join(
+            RoomMember,
+            (RoomMember.room_id == Message.room_id)
+            & (RoomMember.participant_id == participant_id)
+            & (RoomMember.role.in_([MemberRole.OWNER, MemberRole.ADMIN])),
+        )
+        .join(approver, approver.id == RoomMember.participant_id)
+        .join(Participant, Participant.id == Message.sender_id)
+        .join(AgentConfig, AgentConfig.participant_id == Participant.id)
+        .where(
+            Message.content_type == ContentType.AGENT_ACTION,
+            Message.is_deleted.is_(False),
+            approver.participant_type == ParticipantType.HUMAN,
+            Participant.participant_type == ParticipantType.AGENT,
+            or_(
+                Message.metadata_.is_(None),
+                Message.metadata_["decision"].as_string().is_(None),
+            ),
+        )
+        .options(selectinload(Message.sender))
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .limit(limit + 1)
+    )
+    if room_id is not None:
+        statement = statement.where(Message.room_id == room_id)
+
+    instance_org_id = get_settings().instance_org_id
+    if instance_org_id:
+        statement = statement.where(Room.org_id == uuid.UUID(instance_org_id))
+
+    rows = (await db.execute(statement)).all()
+    has_more = len(rows) > limit
+    items = [
+        PendingApprovalItem(
+            message=_msg_to_response(message),
+            room_id=message.room_id,
+            room_name=room_name,
+        )
+        for message, room_name in rows[:limit]
+    ]
+    return PendingApprovalsResponse(items=items, has_more=has_more)
+
+
 @router.post("/messages/{message_id}/decide", response_model=MessageResponse)
 async def decide_action(
     message_id: uuid.UUID,
@@ -1490,41 +1616,120 @@ async def decide_action(
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
 ) -> MessageResponse:
-    """Approve or reject an action_request message. Records the decision in
-    metadata and broadcasts so other clients (including the requesting agent)
-    can react.
+    """Approve or reject a canonical agent action request.
+
+    This records a human decision and broadcasts it. It does *not* claim the
+    requested action executed; AgentRun approval remains a separate 501 seam
+    until a real executor exists.
     """
     from datetime import datetime, timezone
 
-    from sqlalchemy import select as _select
-
-    from app.models.message import Message as _Msg
-    from app.models.room import Room as _Room
+    from app.models.agent import AgentConfig, AgentEvent
+    from app.models.message import ContentType, Message
+    from app.models.participant import Participant, ParticipantType
+    from app.models.room import Room
 
     msg = (
-        await db.execute(_select(_Msg).where(_Msg.id == message_id))
+        await db.execute(
+            select(Message)
+            .where(Message.id == message_id)
+            .options(selectinload(Message.sender))
+            .with_for_update(of=Message)
+        )
     ).scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    # Caller must be a member of the room this action lives in.
-    await ensure_room_member(db, msg.room_id, user)
+
+    # Authorization occurs while the message row is locked. A concurrent
+    # decision cannot pass the pending check using stale metadata.
+    approver_role = await _require_room_approver(
+        db,
+        room_id=msg.room_id,
+        participant_id=uuid.UUID(str(user["participant_id"])),
+    )
+
+    room = (
+        await db.execute(select(Room).where(Room.id == msg.room_id))
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    instance_org_id = get_settings().instance_org_id
+    if instance_org_id and room.org_id != uuid.UUID(instance_org_id):
+        # Do not reveal cross-tenant message existence.
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if msg.content_type != ContentType.AGENT_ACTION:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Message is not an agent action request",
+        )
+    sender_row = (
+        await db.execute(
+            select(Participant, AgentConfig)
+            .join(AgentConfig, AgentConfig.participant_id == Participant.id)
+            .where(Participant.id == msg.sender_id)
+        )
+    ).one_or_none()
+    if (
+        sender_row is None
+        or sender_row[0].participant_type != ParticipantType.AGENT
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Action request sender is not a canonical agent",
+        )
+    sender, agent_config = sender_row
+
     meta = dict(msg.metadata_ or {})
-    if "decision" in meta:
+    existing = meta.get("decision")
+    if existing == body.decision:
+        # Same-decision retries are safe after timeouts and double-clicks.
         return _msg_to_response(msg)
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Action request was already {existing}",
+        )
+
+    decided_at = datetime.now(timezone.utc)
     meta["decision"] = body.decision
     meta["decided_by"] = str(user["participant_id"])
     meta["decided_by_name"] = user.get("display_name") or user.get("username") or ""
-    # Real decision time — NOT the message's created_at (prior bug).
-    meta["decided_at"] = datetime.now(timezone.utc).isoformat()
+    meta["decided_at"] = decided_at.isoformat()
     msg.metadata_ = meta
+
+    # Append-only, same-transaction evidence. Do not copy the request content
+    # or arbitrary metadata into the audit stream: either may contain secrets.
+    db.add(
+        AgentEvent(
+            org_id=room.org_id,
+            agent_identity=sender.username,
+            agent_type=agent_config.agent_type.value,
+            event_type=f"action_request.{body.decision}",
+            room_ref=str(msg.room_id),
+            correlation_id=str(msg.id),
+            event_data={
+                "message_id": str(msg.id),
+                "room_id": str(msg.room_id),
+                "decision": body.decision,
+                "decided_by": str(user["participant_id"]),
+                "approver_role": approver_role,
+            },
+            occurred_at=decided_at,
+        )
+    )
     await db.commit()
     await db.refresh(msg)
+    logger.info(
+        "agent_action_decided",
+        message_id=str(msg.id),
+        room_id=str(msg.room_id),
+        decision=body.decision,
+        decided_by=str(user["participant_id"]),
+    )
 
     # Broadcast over LiveKit data so the requesting agent can react.
     try:
-        room = (
-            await db.execute(_select(_Room).where(_Room.id == msg.room_id))
-        ).scalar_one_or_none()
         if room and room.livekit_room_name:
             await livekit.send_data(
                 room_name=room.livekit_room_name,
