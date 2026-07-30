@@ -186,6 +186,9 @@ class TranscriptExport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     delivered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    payload_redacted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     remote_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     remote_session_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

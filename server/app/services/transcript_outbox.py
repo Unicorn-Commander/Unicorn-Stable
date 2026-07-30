@@ -38,6 +38,52 @@ def _backoff(settings: Settings, attempt: int) -> int:
     return min(maximum, base * (2 ** max(0, attempt - 1)))
 
 
+def payload_retention_cutoff(settings: Settings, *, now: datetime | None = None) -> datetime:
+    """Oldest delivered payload Stable may retain outside legal hold."""
+    reference = now or _now()
+    hours = max(1, settings.meeting_ops_outbox_payload_retention_hours)
+    return reference - timedelta(hours=hours)
+
+
+async def redact_expired_delivered_payloads(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> int:
+    """Redact delivered transcript content after the configured recovery window."""
+    if settings.meeting_ops_outbox_legal_hold:
+        return 0
+    now = _now()
+    async with session_factory() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(TranscriptExport)
+                    .where(
+                        TranscriptExport.status == "delivered",
+                        TranscriptExport.delivered_at
+                        <= payload_retention_cutoff(settings, now=now),
+                        TranscriptExport.payload_redacted_at.is_(None),
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(100)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            row.payload = {
+                "redacted": True,
+                "export_id": str(row.id),
+                "payload_sha256": row.payload_sha256,
+            }
+            row.payload_redacted_at = now
+        if rows:
+            await db.commit()
+            logger.info("transcript_outbox_payloads_redacted", count=len(rows))
+        return len(rows)
+
+
 async def _claim_one(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
@@ -161,8 +207,12 @@ async def run_transcript_outbox(
 ) -> None:
     """Continuously drain eligible rows; safe in every uvicorn worker."""
     poll = max(0.25, settings.meeting_ops_outbox_poll_seconds)
+    next_redaction_sweep = _now()
     while True:
         try:
+            if _now() >= next_redaction_sweep:
+                await redact_expired_delivered_payloads(session_factory, settings)
+                next_redaction_sweep = _now() + timedelta(minutes=5)
             claimed = await _claim_one(session_factory, settings)
             if claimed is None:
                 await asyncio.sleep(poll)

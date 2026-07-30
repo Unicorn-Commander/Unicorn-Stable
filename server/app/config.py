@@ -245,11 +245,16 @@ class Settings(BaseSettings):
     # this even when the PAT user's default org happens to be correct.
     meeting_ops_org_slug: str = ""
     # Master switch. When False, never forward even if URL is set.
-    meeting_ops_enabled: bool = True
+    meeting_ops_enabled: bool = False
     meeting_ops_outbox_poll_seconds: float = 2.0
     meeting_ops_outbox_max_attempts: int = 8
     meeting_ops_outbox_retry_base_seconds: int = 5
     meeting_ops_outbox_retry_max_seconds: int = 900
+    # Delivered payloads remain available for short recovery/audit inspection,
+    # then are irreversibly redacted from Stable. Legal hold disables redaction
+    # explicitly; Meeting-Ops remains the system of record after delivery.
+    meeting_ops_outbox_payload_retention_hours: int = 168
+    meeting_ops_outbox_legal_hold: bool = False
 
     # -- STT proxy (app/api/stt.py) --
     # OpenAI-compatible transcription base (must include the /v1 suffix).

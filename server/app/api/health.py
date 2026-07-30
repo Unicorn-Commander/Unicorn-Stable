@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.deps import get_db, get_livekit, get_redis, get_settings_dep
 from app.auth.keycloak import jwks_cache_ready
+from app.services.meeting_ops import meeting_ops_config_error
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
@@ -170,6 +171,8 @@ async def readiness(
     audit_ready = settings.environment != "production" or bool(
         settings.internal_agent_secret
     )
+    integration_error = meeting_ops_config_error(settings)
+    integration_ready = not settings.meeting_ops_enabled or not integration_error
 
     services: dict[str, Any] = {
         **database_states,
@@ -182,6 +185,13 @@ async def readiness(
             "required": observability_required,
         },
         "build": build,
+        "meeting_ops": (
+            "configured"
+            if settings.meeting_ops_enabled and integration_ready
+            else "invalid_configuration"
+            if settings.meeting_ops_enabled
+            else "disabled"
+        ),
     }
     ready = all(
         (
@@ -192,6 +202,7 @@ async def readiness(
             audit_ready,
             observability_ready,
             build_ready,
+            integration_ready,
         )
     )
     body = {

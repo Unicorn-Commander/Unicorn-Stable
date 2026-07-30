@@ -17,8 +17,9 @@ blocked and this adapter does not attempt a request.
 
 from __future__ import annotations
 
+import re
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 
 import httpx
 import structlog
@@ -28,27 +29,76 @@ from app.config import Settings
 logger = structlog.get_logger(__name__)
 
 
+def _safe_origin(parts: SplitResult) -> str:
+    host = parts.hostname or "invalid"
+    try:
+        parsed_port = parts.port
+    except ValueError:
+        parsed_port = None
+    port = f":{parsed_port}" if parsed_port else ""
+    return f"{parts.scheme or 'invalid'}://{host}{port}"
+
+
+def meeting_ops_config_error(settings: Settings) -> str | None:
+    """Return a non-secret configuration error, or None when safe to use."""
+    if not settings.meeting_ops_enabled:
+        return None
+    url = (settings.meeting_ops_url or "").strip()
+    api_key = (settings.meeting_ops_api_key or "").strip()
+    org_slug = (settings.meeting_ops_org_slug or "").strip()
+    if not url or not api_key or not org_slug:
+        return "Meeting-Ops enabled but URL, integration PAT, or organization is missing"
+    if not api_key.startswith("mops_pat_"):
+        return "Meeting-Ops credential must be a Personal Access Token"
+    if not re.fullmatch(r"[a-z0-9-]+", org_slug):
+        return "Meeting-Ops organization slug is invalid"
+    try:
+        base = urlsplit(url)
+        _ = base.port
+    except ValueError:
+        return "Meeting-Ops URL is malformed"
+    if base.scheme not in {"http", "https"} or not base.hostname:
+        return "Meeting-Ops URL must be an absolute HTTP(S) URL"
+    if settings.environment == "production" and base.scheme != "https":
+        return "Meeting-Ops URL must use HTTPS in production"
+    if base.username or base.password:
+        return "Meeting-Ops URL must not contain user information"
+    if base.query or base.fragment:
+        return "Meeting-Ops URL must not contain a query or fragment"
+    path_parts = urlsplit(settings.meeting_ops_ingest_path or "")
+    if (
+        not path_parts.path.startswith("/")
+        or path_parts.scheme
+        or path_parts.netloc
+        or path_parts.query
+        or path_parts.fragment
+    ):
+        return "Meeting-Ops ingest path must be a plain absolute path"
+    return None
+
+
 def trusted_remote_session_url(settings: Settings, value: Any) -> str | None:
     """Accept deep links only from the configured Meeting-Ops origin."""
     if not isinstance(value, str) or not value.strip():
+        return None
+    if meeting_ops_config_error(settings):
         return None
     base = urlsplit((settings.meeting_ops_url or "").strip())
     candidate_value = urljoin(f"{base.scheme}://{base.netloc}/", value.strip())
     candidate = urlsplit(candidate_value)
     if candidate.scheme not in {"http", "https"}:
         return None
-    if (
-        candidate.scheme,
-        candidate.hostname,
-        candidate.port,
-    ) != (
-        base.scheme,
-        base.hostname,
-        base.port,
-    ):
+    if candidate.username or candidate.password:
+        return None
+    try:
+        candidate_origin = (candidate.scheme, candidate.hostname, candidate.port)
+        base_origin = (base.scheme, base.hostname, base.port)
+    except ValueError:
+        return None
+    if candidate_origin != base_origin:
         logger.warning(
             "meeting_ops_untrusted_session_url",
-            candidate_origin=f"{candidate.scheme}://{candidate.netloc}",
+            candidate_origin=_safe_origin(candidate),
         )
         return None
     return candidate_value
@@ -56,14 +106,7 @@ def trusted_remote_session_url(settings: Settings, value: Any) -> str | None:
 
 def meeting_ops_configured(settings: Settings) -> bool:
     """True only when the complete authenticated tenant target is configured."""
-    url = (settings.meeting_ops_url or "").strip()
-    api_key = (settings.meeting_ops_api_key or "").strip()
-    org_slug = (settings.meeting_ops_org_slug or "").strip()
-    if not url or not api_key or not org_slug:
-        return False
-    if not settings.meeting_ops_enabled:
-        return False
-    return True
+    return settings.meeting_ops_enabled and meeting_ops_config_error(settings) is None
 
 
 def build_ingest_url(settings: Settings) -> str | None:
@@ -124,9 +167,8 @@ async def forward_transcript_to_meeting_ops(
         if resp.status_code >= 400:
             logger.warning(
                 "meeting_ops_forward_http_error",
-                url=url,
+                origin=_safe_origin(urlsplit(url)),
                 status=resp.status_code,
-                body=resp.text[:300],
             )
             return {
                 "forwarded": False,
@@ -137,7 +179,7 @@ async def forward_transcript_to_meeting_ops(
             }
         logger.info(
             "meeting_ops_forward_ok",
-            url=url,
+            origin=_safe_origin(urlsplit(url)),
             status=resp.status_code,
             lines=len(payload.get("lines") or []),
         )
@@ -168,7 +210,11 @@ async def forward_transcript_to_meeting_ops(
             "retryable": False,
         }
     except Exception as exc:
-        logger.warning("meeting_ops_forward_failed", url=url, error=str(exc), exc_info=True)
+        logger.warning(
+            "meeting_ops_forward_failed",
+            origin=_safe_origin(urlsplit(url)),
+            error_type=type(exc).__name__,
+        )
         return {
             "forwarded": False,
             "status": "error",

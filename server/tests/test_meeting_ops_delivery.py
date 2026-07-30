@@ -6,7 +6,12 @@ import httpx
 
 from app.config import Settings
 from app.services import meeting_ops
-from app.services.transcript_outbox import _backoff, scoped_idempotency_key
+from app.services.transcript_outbox import (
+    _backoff,
+    payload_retention_cutoff,
+    redact_expired_delivered_payloads,
+    scoped_idempotency_key,
+)
 
 
 class _FakeClient:
@@ -35,12 +40,14 @@ class _FakeClient:
 
 
 def _settings(**overrides):
-    return Settings(
-        meeting_ops_url="https://meetingops.test",
-        meeting_ops_api_key="mops_pat_secret",
-        meeting_ops_org_slug="magic-unicorn",
+    values = {
+        "meeting_ops_url": "https://meetingops.test",
+        "meeting_ops_api_key": "mops_pat_secret",
+        "meeting_ops_org_slug": "magic-unicorn",
+        "meeting_ops_enabled": True,
         **overrides,
-    )
+    }
+    return Settings(**values)
 
 
 def test_delivery_uses_pat_org_and_idempotency_headers(monkeypatch):
@@ -131,3 +138,40 @@ def test_caller_idempotency_keys_are_scoped_per_room():
     assert scoped_idempotency_key(room_a, "same-client-key") != scoped_idempotency_key(
         room_b, "same-client-key"
     )
+
+
+def test_production_url_policy_rejects_unsafe_targets():
+    assert meeting_ops.meeting_ops_config_error(
+        _settings(environment="production", meeting_ops_url="http://meetingops.test")
+    )
+    assert meeting_ops.meeting_ops_config_error(
+        _settings(meeting_ops_url="https://user:secret@meetingops.test")
+    )
+    assert meeting_ops.meeting_ops_config_error(
+        _settings(meeting_ops_url="https://meetingops.test?token=secret")
+    )
+    assert meeting_ops.meeting_ops_config_error(
+        _settings(meeting_ops_api_key="generic-secret")
+    )
+
+
+def test_delivered_payload_retention_cutoff_is_bounded():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    settings = _settings(meeting_ops_outbox_payload_retention_hours=72)
+    assert (now - payload_retention_cutoff(settings, now=now)).total_seconds() == 72 * 3600
+
+
+def test_legal_hold_suspends_payload_redaction_without_database_access():
+    class _MustNotOpen:
+        def __call__(self):
+            raise AssertionError("legal hold must short-circuit the retention sweep")
+
+    result = asyncio.run(
+        redact_expired_delivered_payloads(
+            _MustNotOpen(),
+            _settings(meeting_ops_outbox_legal_hold=True),
+        )
+    )
+    assert result == 0

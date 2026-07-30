@@ -128,6 +128,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Fail-safe: refuse to boot on a world-known default secret in production.
     _validate_production_secrets(settings)
+    from app.services.meeting_ops import meeting_ops_config_error
+
+    meeting_ops_error = meeting_ops_config_error(settings)
+    if settings.meeting_ops_enabled and meeting_ops_error:
+        logger.critical(
+            "meeting_ops_configuration_invalid",
+            detail=meeting_ops_error,
+        )
+        raise RuntimeError(meeting_ops_error)
 
     # Database engine
     engine = create_async_engine(

@@ -20,16 +20,21 @@ from typing import Annotated, Any, Literal
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.deps import get_current_user, get_db, get_settings_dep, rate_limit, require_room_member
-from app.models.room import Room, TranscriptExport
+from app.models.participant import Participant
+from app.models.room import Room, RoomMember, TranscriptExport
 from app.services.meeting_ops import meeting_ops_configured
 from app.services.transcript_outbox import deliver_export_now, scoped_idempotency_key
+from app.services.transcript_identity import (
+    TranscriptIdentityError,
+    authorize_transcript_line,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -40,7 +45,10 @@ class TranscriptLineIn(BaseModel):
     participant_id: str = Field(min_length=1, max_length=256)
     name: str = Field(default="", max_length=256)
     text: str = Field(min_length=1, max_length=8000)
-    ts: int = Field(description="Epoch milliseconds when the line was produced")
+    ts: int = Field(
+        ge=0,
+        description="Epoch milliseconds when the line was produced",
+    )
     is_final: bool = True
     segment_id: str | None = Field(default=None, max_length=256)
     source: Literal["local_mic", "agent_stt", "agent", "unknown"] = "unknown"
@@ -54,12 +62,11 @@ class TranscriptExportRequest(BaseModel):
     # interims — we filter unless include_interim is set.
     include_interim: bool = False
     room_name: str | None = Field(default=None, max_length=256)
-    call_started_at: str | None = Field(
+    call_started_at: datetime | None = Field(
         default=None,
         description="ISO-8601 when the call started, if known",
-        max_length=64,
     )
-    call_ended_at: str | None = Field(default=None, max_length=64)
+    call_ended_at: datetime | None = None
     # Optional correlation with a Meeting-Ops session (e.g. 77fd49a9-…).
     meeting_ops_session_id: str | None = Field(default=None, max_length=128)
     # Free-form label for humans browsing the export.
@@ -71,6 +78,13 @@ class TranscriptExportRequest(BaseModel):
     # room, call-start clock, and canonical transcript content.
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("call_started_at", "call_ended_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+        return value.astimezone(timezone.utc) if value is not None else None
 
 
 class TranscriptExportResponse(BaseModel):
@@ -143,6 +157,17 @@ async def export_room_transcript(
     if room is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
 
+    room_participants = (
+        (
+            await db.execute(
+                select(Participant)
+                .join(RoomMember, RoomMember.participant_id == Participant.id)
+                .where(RoomMember.room_id == room_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     lines_out: list[dict[str, Any]] = []
     for line in body.lines:
         if not body.include_interim and not line.is_final:
@@ -150,17 +175,18 @@ async def export_room_transcript(
         text = (line.text or "").strip()
         if not text:
             continue
-        lines_out.append(
-            {
-                "participant_id": line.participant_id,
-                "name": line.name or line.participant_id,
-                "text": text,
-                "ts": line.ts,
-                "is_final": line.is_final,
-                **({"segment_id": line.segment_id} if line.segment_id else {}),
-                "source": line.source,
-            }
-        )
+        try:
+            lines_out.append(
+                authorize_transcript_line(
+                    line,
+                    room_participants=room_participants,
+                )
+            )
+        except TranscriptIdentityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
 
     # Stable chronological order for consumers.
     lines_out.sort(key=lambda L: (L.get("ts") or 0, L.get("name") or ""))
@@ -181,8 +207,12 @@ async def export_room_transcript(
     canonical = {
         "room_id": str(room_id),
         "room_name": body.room_name,
-        "call_started_at": body.call_started_at,
-        "call_ended_at": body.call_ended_at,
+        "call_started_at": (
+            body.call_started_at.isoformat() if body.call_started_at else None
+        ),
+        "call_ended_at": (
+            body.call_ended_at.isoformat() if body.call_ended_at else None
+        ),
         "meeting_ops_session_id": body.meeting_ops_session_id,
         "label": body.label,
         "send_to_meeting_ops": body.send_to_meeting_ops,
@@ -226,8 +256,12 @@ async def export_room_transcript(
         "room_id": str(room_id),
         "room_name": room_label,
         "livekit_room_name": getattr(room, "livekit_room_name", None),
-        "call_started_at": body.call_started_at,
-        "call_ended_at": body.call_ended_at or exported_at,
+        "call_started_at": (
+            body.call_started_at.isoformat() if body.call_started_at else None
+        ),
+        "call_ended_at": (
+            body.call_ended_at.isoformat() if body.call_ended_at else exported_at
+        ),
         "label": body.label or f"Stable call · {room_label}",
         "meeting_ops_session_id": body.meeting_ops_session_id,
         "exporter": {
@@ -240,6 +274,7 @@ async def export_room_transcript(
         "metadata": {
             **(body.metadata or {}),
             "send_to_meeting_ops": body.send_to_meeting_ops,
+            "transcript_content_verification": "client_relay_unattested",
         },
     }
 
