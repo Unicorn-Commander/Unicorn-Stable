@@ -45,6 +45,28 @@ class PresenceService:
             return val.decode("utf-8")
         return str(val)
 
+    async def get_statuses(self, participant_ids: list[str]) -> dict[str, str]:
+        """Batch presence lookup for directory-sized rosters.
+
+        The people directory is server-wide rather than room-scoped. Reading
+        one Redis key at a time would turn a 50-person panel refresh into 50
+        network round trips, so resolve the whole page with one MGET.
+        """
+        if not participant_ids:
+            return {}
+        values = await self._redis.mget(
+            [f"presence:{participant_id}" for participant_id in participant_ids]
+        )
+        result: dict[str, str] = {}
+        for participant_id, value in zip(participant_ids, values, strict=True):
+            if value is None:
+                result[participant_id] = "offline"
+            elif isinstance(value, bytes):
+                result[participant_id] = value.decode("utf-8")
+            else:
+                result[participant_id] = str(value)
+        return result
+
     async def get_online_in_room(self, room_id: str) -> set[str]:
         """Get the set of online participant IDs in a room."""
         key = f"room_presence:{room_id}"

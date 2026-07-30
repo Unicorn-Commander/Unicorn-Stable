@@ -12,15 +12,16 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.deps import get_current_user, get_db, get_settings_dep
+from app.deps import get_current_user, get_db, get_presence, get_settings_dep
 from app.models.participant import Participant, ParticipantType
 from app.services.keycloak_admin import KeycloakAdmin
 from app.services.participant_identity import link_participant_by_email
+from app.services.presence_service import PresenceService
 
 logger = structlog.get_logger(__name__)
 
@@ -29,10 +30,35 @@ router = APIRouter()
 
 class UserPreferences(BaseModel):
     """Per-user preferences that follow the account across devices (stored on
-    the Participant's metadata). Currently just the default agent the
-    ChatGPT-style "New chat" button starts a conversation with."""
+    the Participant's metadata)."""
 
     default_agent_id: str | None = None
+    favorite_people_ids: list[UUID] = Field(default_factory=list)
+
+
+class UserPreferencesUpdate(BaseModel):
+    """Partial preference update. Missing fields stay untouched."""
+
+    default_agent_id: str | None = None
+    favorite_people_ids: list[UUID] | None = None
+
+
+def _favorite_people(meta: dict[str, Any]) -> list[UUID]:
+    """Read a bounded, deduplicated UUID list from untrusted JSON metadata."""
+    raw = meta.get("favorite_people_ids")
+    if not isinstance(raw, list):
+        return []
+    result: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in raw[:100]:
+        try:
+            participant_id = UUID(str(value))
+        except (TypeError, ValueError):
+            continue
+        if participant_id not in seen:
+            seen.add(participant_id)
+            result.append(participant_id)
+    return result
 
 
 @router.get("/users/me/preferences", response_model=UserPreferences)
@@ -47,30 +73,106 @@ async def get_my_preferences(
     meta = p.metadata_ if (p is not None and isinstance(p.metadata_, dict)) else {}
     val = meta.get("default_agent_id")
     return UserPreferences(
-        default_agent_id=val if isinstance(val, str) and val else None
+        default_agent_id=val if isinstance(val, str) and val else None,
+        favorite_people_ids=_favorite_people(meta),
     )
 
 
 @router.put("/users/me/preferences", response_model=UserPreferences)
 async def set_my_preferences(
-    body: UserPreferences,
+    body: UserPreferencesUpdate,
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserPreferences:
-    """Update the caller's preferences. Passing a null/empty default_agent_id
-    clears it (revert to the client's built-in default)."""
+    """Partially update preferences without clobbering settings from another
+    surface or device."""
     p = await db.get(Participant, user["participant_id"])
     if p is None:
         raise HTTPException(status_code=404, detail="Participant not found")
     meta = dict(p.metadata_ or {})
-    aid = (body.default_agent_id or "").strip()
-    if aid:
-        meta["default_agent_id"] = aid
-    else:
-        meta.pop("default_agent_id", None)
+    if "default_agent_id" in body.model_fields_set:
+        aid = (body.default_agent_id or "").strip()
+        if aid:
+            meta["default_agent_id"] = aid
+        else:
+            meta.pop("default_agent_id", None)
+    if body.favorite_people_ids is not None:
+        requested = list(dict.fromkeys(body.favorite_people_ids))[:100]
+        if requested:
+            valid_rows = (
+                await db.execute(
+                    select(Participant.id).where(
+                        Participant.id.in_(requested),
+                        Participant.participant_type == ParticipantType.HUMAN,
+                    )
+                )
+            ).scalars().all()
+            valid = {UUID(str(value)) for value in valid_rows}
+            requested = [value for value in requested if value in valid]
+        meta["favorite_people_ids"] = [str(value) for value in requested]
     p.metadata_ = meta  # reassign (not mutate) so SQLAlchemy tracks the JSONB change
     await db.commit()
-    return UserPreferences(default_agent_id=aid or None)
+    val = meta.get("default_agent_id")
+    return UserPreferences(
+        default_agent_id=val if isinstance(val, str) and val else None,
+        favorite_people_ids=_favorite_people(meta),
+    )
+
+
+class PeopleDirectoryEntry(BaseModel):
+    id: UUID
+    username: str
+    display_name: str
+    avatar_url: str | None
+    is_online: bool
+    last_seen_at: str | None = None
+
+
+@router.get("/users/directory", response_model=list[PeopleDirectoryEntry])
+async def people_directory(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+    q: str = Query("", min_length=0, max_length=100),
+    limit: int = Query(100, ge=1, le=100),
+) -> list[PeopleDirectoryEntry]:
+    """Internal people directory with live presence.
+
+    Only people who have a Stable participant identity are returned. Email and
+    Keycloak subject are deliberately absent: coworkers get the identity facts
+    needed for chat and presence, not a realm-wide identity export.
+    """
+    stmt = (
+        select(Participant)
+        .where(
+            Participant.participant_type == ParticipantType.HUMAN,
+            Participant.id != user["participant_id"],
+        )
+        .order_by(Participant.display_name.asc())
+        .limit(limit)
+    )
+    needle = q.strip()
+    if needle:
+        pattern = f"%{needle}%"
+        stmt = stmt.where(
+            Participant.display_name.ilike(pattern)
+            | Participant.username.ilike(pattern)
+        )
+    people = (await db.execute(stmt)).scalars().all()
+    statuses = await presence.get_statuses([str(person.id) for person in people])
+    return [
+        PeopleDirectoryEntry(
+            id=person.id,
+            username=person.username,
+            display_name=person.display_name,
+            avatar_url=person.avatar_url,
+            is_online=statuses.get(str(person.id)) == "online",
+            last_seen_at=person.last_seen_at.isoformat()
+            if person.last_seen_at is not None
+            else None,
+        )
+        for person in people
+    ]
 
 
 class UserResult(BaseModel):

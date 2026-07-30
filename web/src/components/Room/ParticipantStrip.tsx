@@ -5,14 +5,21 @@ import {
   Mic,
   MicOff,
   MoreVertical,
+  Star,
   UserMinus,
   X,
 } from "lucide-react";
 import clsx from "clsx";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
-import { api, type RoomMember, type ApiError } from "@/services/api";
+import {
+  api,
+  type RoomMember,
+  type ApiError,
+  type PeopleDirectoryEntry,
+  type UserPreferences,
+} from "@/services/api";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
@@ -79,7 +86,8 @@ function MemberMenu({
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("mousedown", onDoc);
@@ -94,7 +102,8 @@ function MemberMenu({
   const isOwner = myRole === "owner";
   // An admin can't act on an owner or another admin; an owner can act on anyone.
   const canAct =
-    isOwner || (myRole === "admin" && targetRole !== "owner" && targetRole !== "admin");
+    isOwner ||
+    (myRole === "admin" && targetRole !== "owner" && targetRole !== "admin");
   const pid = member.participant_id || member.user_id || "";
   if (!canAct || !pid) return null;
 
@@ -124,9 +133,9 @@ function MemberMenu({
     void run(() => api.setMemberRole(roomId, pid, role));
   }
 
-  const roleChoices: ModRole[] = (["owner", "admin", "member"] as ModRole[]).filter(
-    (r) => r !== targetRole,
-  );
+  const roleChoices: ModRole[] = (
+    ["owner", "admin", "member"] as ModRole[]
+  ).filter((r) => r !== targetRole);
 
   return (
     <div ref={ref} className="relative shrink-0">
@@ -209,12 +218,18 @@ function HumanMemberRow({
   online,
   roomId,
   myRole,
+  favorite,
+  onToggleFavorite,
 }: {
   member: RoomMember;
   online: boolean;
   roomId: string;
   myRole: ModRole | null;
+  favorite: boolean;
+  onToggleFavorite: (participantId: string) => void;
 }) {
+  const participantId =
+    member.participant_id || member.user_id || member.id || "";
   return (
     <li
       className={clsx(
@@ -238,6 +253,30 @@ function HumanMemberRow({
         </span>
       )}
       <RoleBadge role={member.role} />
+      {!member.is_self && participantId && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleFavorite(participantId);
+          }}
+          className={clsx(
+            "focus-ring inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md transition-colors",
+            favorite
+              ? "text-stable-gold hover:bg-stable-gold/10"
+              : "text-slate-600 hover:bg-white/[0.06] hover:text-slate-300",
+          )}
+          aria-label={
+            favorite
+              ? `Remove ${member.display_name} from favorites`
+              : `Add ${member.display_name} to favorites`
+          }
+          aria-pressed={favorite}
+          title={favorite ? "Remove favorite" : "Add to favorites"}
+        >
+          <Star className={clsx("h-3.5 w-3.5", favorite && "fill-current")} />
+        </button>
+      )}
       {myRole && !member.is_self && (
         <MemberMenu roomId={roomId} member={member} myRole={myRole} />
       )}
@@ -245,14 +284,68 @@ function HumanMemberRow({
   );
 }
 
+function DirectoryPersonRow({
+  person,
+  online,
+  favorite,
+  onToggleFavorite,
+}: {
+  person: PeopleDirectoryEntry;
+  online: boolean;
+  favorite: boolean;
+  onToggleFavorite: (participantId: string) => void;
+}) {
+  return (
+    <li className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 transition-colors hover:bg-white/[0.04]">
+      <div className={clsx("relative shrink-0", !online && "opacity-60")}>
+        <Avatar name={person.display_name} src={person.avatar_url} size="sm" />
+        <OnlineIndicator online={online} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium">{person.display_name}</p>
+        <p className="truncate text-[10px] text-slate-500">
+          {online ? "Available now" : `@${person.username}`}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onToggleFavorite(person.id)}
+        className={clsx(
+          "focus-ring inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md transition-colors",
+          favorite
+            ? "text-stable-gold hover:bg-stable-gold/10"
+            : "text-slate-600 hover:bg-white/[0.06] hover:text-slate-300",
+        )}
+        aria-label={
+          favorite
+            ? `Remove ${person.display_name} from favorites`
+            : `Add ${person.display_name} to favorites`
+        }
+        aria-pressed={favorite}
+        title={favorite ? "Remove favorite" : "Add to favorites"}
+      >
+        <Star className={clsx("h-3.5 w-3.5", favorite && "fill-current")} />
+      </button>
+    </li>
+  );
+}
+
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
-  const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
+  const participants =
+    useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const qc = useQueryClient();
-  // Global presence (server-wide). Meeting-Ops 77fd49a9: right-hand view of
-  // who is online even outside this room so you can call them into a room.
-  const onlineUserIds = useAppStore((s) => s.onlineUsers);
-  const participantsByRoom = useAppStore((s) => s.participants);
-  const agents = useAppStore((s) => s.agents);
+  const { data: directory = [] } = useQuery({
+    queryKey: ["people-directory"],
+    queryFn: () => api.getPeopleDirectory(),
+    refetchInterval: 30_000,
+  });
+  const { data: preferences } = useQuery({
+    queryKey: ["my-preferences"],
+    queryFn: () => api.getMyPreferences(),
+    staleTime: 60_000,
+  });
+  const favoriteIds = preferences?.favorite_people_ids ?? [];
+  const favoriteSet = new Set(favoriteIds);
 
   // The caller's own membership row (server-flagged is_self) decides whether to
   // show moderation controls at all. Only owners/admins moderate.
@@ -276,47 +369,53 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const onlineHumans = humanParticipants.filter((p) => p.is_online);
   const offlineHumans = humanParticipants.filter((p) => !p.is_online);
 
-  // Resolve global online ids → display names using every roster we've seen
-  // plus the agent list. Room-local members are skipped here (they already
-  // appear under Online/Agents below).
   const inThisRoom = new Set(
     participants
       .map((p) => p.participant_id || p.user_id || p.id)
       .filter(Boolean) as string[],
   );
-  const nameById = new Map<string, { name: string; avatar?: string | null; isAgent: boolean }>();
-  for (const list of Object.values(participantsByRoom)) {
-    for (const m of list) {
-      const id = m.participant_id || m.user_id || m.id;
-      if (!id || nameById.has(id)) continue;
-      nameById.set(id, {
-        name: m.display_name,
-        avatar: m.avatar_url,
-        isAgent: m.participant_type === "agent",
+  const isDirectoryPersonOnline = (person: PeopleDirectoryEntry) =>
+    person.is_online;
+  const favoritePeople = directory
+    .filter((person) => favoriteSet.has(person.id))
+    .sort((a, b) => {
+      const onlineDelta =
+        Number(isDirectoryPersonOnline(b)) - Number(isDirectoryPersonOnline(a));
+      return onlineDelta || a.display_name.localeCompare(b.display_name);
+    });
+  const peopleOnline = directory
+    .filter(
+      (person) =>
+        !favoriteSet.has(person.id) &&
+        !inThisRoom.has(person.id) &&
+        isDirectoryPersonOnline(person),
+    )
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+
+  async function toggleFavorite(participantId: string) {
+    const previous = preferences ?? {
+      default_agent_id: null,
+      favorite_people_ids: [],
+    };
+    const nextIds = favoriteSet.has(participantId)
+      ? favoriteIds.filter((id) => id !== participantId)
+      : [...favoriteIds, participantId];
+    const optimistic: UserPreferences = {
+      ...previous,
+      favorite_people_ids: nextIds,
+    };
+    qc.setQueryData(["my-preferences"], optimistic);
+    try {
+      const saved = await api.setFavoritePeople(nextIds);
+      qc.setQueryData(["my-preferences"], saved);
+    } catch (error) {
+      qc.setQueryData(["my-preferences"], previous);
+      useAppStore.getState().pushToast({
+        title: "Couldn't update favorites",
+        body: error instanceof Error ? error.message : "Request failed",
       });
     }
   }
-  for (const a of agents) {
-    if (!nameById.has(a.id)) {
-      nameById.set(a.id, {
-        name: a.name,
-        avatar: a.avatar_url,
-        isAgent: true,
-      });
-    }
-  }
-  const globalOnline = onlineUserIds
-    .filter((id) => !inThisRoom.has(id))
-    .map((id) => {
-      const known = nameById.get(id);
-      return {
-        id,
-        name: known?.name ?? "Someone",
-        avatar: known?.avatar ?? null,
-        isAgent: known?.isAgent ?? false,
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
 
   async function removeAgent(member: RoomMember) {
     // Username is "agent-<brigade_id>"; strip the prefix back out. Prefer an
@@ -394,40 +493,47 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
       className="flex h-full w-full flex-col overflow-y-auto bg-slate-900/50 px-3 py-4"
       aria-label="Room participants"
     >
-      {globalOnline.length > 0 && (
+      {favoritePeople.length > 0 && (
         <section className="mb-4">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-            Online on this server ({globalOnline.length})
+            Favorites ({favoritePeople.length})
           </h3>
-          <p className="mb-2 px-1 text-[10px] leading-snug text-slate-600">
-            Not in this room — start a DM or invite them in.
-          </p>
           <ul role="list" className="flex flex-col gap-1">
-            {globalOnline.slice(0, 24).map((p) => (
-              <li
-                key={p.id}
-                className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300"
-              >
-                <div className="relative shrink-0">
-                  <Avatar
-                    name={p.name}
-                    src={p.avatar}
-                    size="sm"
-                    isAgent={p.isAgent}
-                  />
-                  <span
-                    className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live"
-                    aria-label="Online"
-                  />
-                </div>
-                <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                  {p.name}
-                </span>
-              </li>
+            {favoritePeople.map((person) => (
+              <DirectoryPersonRow
+                key={person.id}
+                person={person}
+                online={isDirectoryPersonOnline(person)}
+                favorite
+                onToggleFavorite={(id) => void toggleFavorite(id)}
+              />
             ))}
           </ul>
         </section>
       )}
+
+      <section className="mb-4">
+        <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          People online ({peopleOnline.length})
+        </h3>
+        {peopleOnline.length === 0 ? (
+          <p className="px-2 text-xs italic text-slate-600">
+            No coworkers online outside this room
+          </p>
+        ) : (
+          <ul role="list" className="flex flex-col gap-1">
+            {peopleOnline.slice(0, 40).map((person) => (
+              <DirectoryPersonRow
+                key={person.id}
+                person={person}
+                online
+                favorite={false}
+                onToggleFavorite={(id) => void toggleFavorite(id)}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
 
       {presentMembers.length > 0 && (
         <div className="mb-4 flex items-center gap-2.5 px-1">
@@ -555,6 +661,10 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 online={true}
                 roomId={roomId}
                 myRole={myRole}
+                favorite={favoriteSet.has(
+                  member.participant_id || member.user_id || member.id || "",
+                )}
+                onToggleFavorite={(id) => void toggleFavorite(id)}
               />
             ))}
           </ul>
@@ -574,6 +684,10 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 online={false}
                 roomId={roomId}
                 myRole={myRole}
+                favorite={favoriteSet.has(
+                  member.participant_id || member.user_id || member.id || "",
+                )}
+                onToggleFavorite={(id) => void toggleFavorite(id)}
               />
             ))}
           </ul>

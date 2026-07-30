@@ -8,6 +8,8 @@ import { StageView } from "./StageView";
 import { VoiceVideoBar } from "./VoiceVideoBar";
 import { SplitPane } from "./SplitPane";
 import type { CallViewMode } from "@/lib/roomDataProtocol";
+import { MessageSquare, Smartphone } from "lucide-react";
+import clsx from "clsx";
 
 interface CallRoomLayoutProps {
   roomId: string;
@@ -56,6 +58,8 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const showVideo = useCallUiStore((s) => s.showVideo);
   const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
   const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
+  const setViewMode = useCallUiStore((s) => s.setViewMode);
+  const toggleVideo = useCallUiStore((s) => s.toggleVideo);
   const isDesktop = useIsDesktop();
 
   // The call PERSISTS across navigation, so "is there a call to show HERE?" is
@@ -100,6 +104,60 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     </ErrorBoundary>
   );
 
+  /**
+   * Phones get two named layouts instead of having to decode the desktop's
+   * icon-only view controls:
+   *   Portrait → video above chat (the SplitPane's vertical orientation)
+   *   Chat     → the call continues, but chat owns the usable viewport
+   */
+  const mobileLayoutBar = callIsHere ? (
+    <div
+      className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line bg-slate-950/85 px-3 md:hidden"
+      role="group"
+      aria-label="Mobile call layout"
+    >
+      <span className="truncate text-[10px] font-medium text-slate-500">
+        In call
+      </span>
+      <div className="flex items-center gap-1 rounded-lg border border-line bg-surface-2/80 p-0.5">
+        <button
+          type="button"
+          onClick={() => {
+            toggleVideo(true);
+            setChatCollapsed(false);
+            setViewMode(roomId, "grid");
+          }}
+          className={clsx(
+            "focus-ring flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+            showVideo
+              ? "bg-stable-purple/25 text-stable-purple-light"
+              : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
+          )}
+          aria-pressed={showVideo}
+          title="Portrait call — video above chat"
+        >
+          <Smartphone className="h-3.5 w-3.5" />
+          Portrait
+        </button>
+        <button
+          type="button"
+          onClick={() => toggleVideo(false)}
+          className={clsx(
+            "focus-ring flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+            !showVideo
+              ? "bg-stable-cyan/15 text-stable-cyan"
+              : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200",
+          )}
+          aria-pressed={!showVideo}
+          title="Chat focus — call continues while chat fills the screen"
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          Chat
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   // Video is the star: resizable [ video │ chat ]. Chat is collapsible so a
   // presenter can reclaim the full stage, then re-open chat with one click. The
   // collapse is CONTROLLED off the shared `chatCollapsed` flag so the in-call
@@ -107,19 +165,22 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   // lockstep — the chat pane stays mounted behind display:none either way.
   if (videoMain) {
     return (
-      <SplitPane
-        storageKey="call-chat"
-        orientation={isDesktop ? "horizontal" : "vertical"}
-        defaultSize={isDesktop ? 380 : 260}
-        min={isDesktop ? 280 : 180}
-        max={isDesktop ? 680 : 520}
-        collapsible
-        collapsed={chatCollapsed}
-        onCollapsedChange={setChatCollapsed}
-        secondaryLabel="chat"
-        primary={callSurface}
-        secondary={chatColumn}
-      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {mobileLayoutBar}
+        <SplitPane
+          storageKey="call-chat"
+          orientation={isDesktop ? "horizontal" : "vertical"}
+          defaultSize={isDesktop ? 380 : 260}
+          min={isDesktop ? 280 : 180}
+          max={isDesktop ? 680 : 520}
+          collapsible
+          collapsed={chatCollapsed}
+          onCollapsedChange={setChatCollapsed}
+          secondaryLabel="chat"
+          primary={callSurface}
+          secondary={chatColumn}
+        />
+      </div>
     );
   }
 
@@ -127,24 +188,30 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   // (in-flow + resizable — never the old fixed overlay that clipped chat).
   if (callDock) {
     return (
-      <SplitPane
-        storageKey="call-dock"
-        orientation={isDesktop ? "horizontal" : "vertical"}
-        defaultSize={isDesktop ? 300 : 220}
-        min={isDesktop ? 220 : 160}
-        max={isDesktop ? 460 : 420}
-        collapsible
-        secondaryLabel="call"
-        primary={chatColumn}
-        secondary={callSurface}
-      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {mobileLayoutBar}
+        <SplitPane
+          storageKey="call-dock"
+          orientation={isDesktop ? "horizontal" : "vertical"}
+          defaultSize={isDesktop ? 300 : 220}
+          min={isDesktop ? 220 : 160}
+          max={isDesktop ? 460 : 420}
+          collapsible
+          secondaryLabel="call"
+          primary={chatColumn}
+          secondary={callSurface}
+        />
+      </div>
     );
   }
 
   // Compact / audio / video-off, or no call: a slim call bar above full chat.
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {slimBar && <div className="shrink-0">{callSurface}</div>}
+      {mobileLayoutBar}
+      {slimBar && (isDesktop || showVideo) && (
+        <div className="shrink-0">{callSurface}</div>
+      )}
       {chatColumn}
     </div>
   );

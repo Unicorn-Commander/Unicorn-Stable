@@ -12,13 +12,18 @@ const TOKEN_MIN_VALIDITY_S = 60;
 const TOKEN_REFRESH_INTERVAL_MS = 30_000;
 
 function createClient(instance: StableInstance): KeycloakInstance {
-  const client = new Keycloak({ url: instance.keycloak.url, realm: instance.keycloak.realm, clientId: instance.keycloak.clientId });
+  const client = new Keycloak({
+    url: instance.keycloak.url,
+    realm: instance.keycloak.realm,
+    clientId: instance.keycloak.clientId,
+  });
   let endpointsStore: Record<string, unknown> | null = null;
   Object.defineProperty(client, "endpoints", {
     configurable: true,
     get: () => endpointsStore,
     set: (value: Record<string, unknown>) => {
-      if (value && typeof value === "object") value.thirdPartyCookiesIframe = null;
+      if (value && typeof value === "object")
+        value.thirdPartyCookiesIframe = null;
       endpointsStore = value;
     },
   });
@@ -31,14 +36,17 @@ function refreshFor(id: string): void {
   if (!client) return;
   const old = refreshers.get(id);
   if (old) clearInterval(old);
-  refreshers.set(id, setInterval(() => {
-    void client.updateToken(TOKEN_MIN_VALIDITY_S).catch(() => {
-      // A brief IdP/network failure must not permanently turn refresh off.
-      // keycloak-js clears `authenticated` when the refresh token itself is
-      // rejected; only that terminal state should stop the scheduler.
-      if (!client.authenticated) stopRefresh(id);
-    });
-  }, TOKEN_REFRESH_INTERVAL_MS));
+  refreshers.set(
+    id,
+    setInterval(() => {
+      void client.updateToken(TOKEN_MIN_VALIDITY_S).catch(() => {
+        // A brief IdP/network failure must not permanently turn refresh off.
+        // keycloak-js clears `authenticated` when the refresh token itself is
+        // rejected; only that terminal state should stop the scheduler.
+        if (!client.authenticated) stopRefresh(id);
+      });
+    }, TOKEN_REFRESH_INTERVAL_MS),
+  );
 }
 
 function stopRefresh(id: string): void {
@@ -47,9 +55,16 @@ function stopRefresh(id: string): void {
   refreshers.delete(id);
 }
 
-export async function initInstanceAuth(instance: StableInstance, onLoad: "login-required" | "check-sso"): Promise<boolean> {
+export async function initInstanceAuth(
+  instance: StableInstance,
+  onLoad: "login-required" | "check-sso",
+): Promise<boolean> {
   const client = clients.get(instance.id) ?? createClient(instance);
-  if (import.meta.env.DEV && !import.meta.env.VITE_KEYCLOAK_URL && onLoad === "login-required") {
+  if (
+    import.meta.env.DEV &&
+    !import.meta.env.VITE_KEYCLOAK_URL &&
+    onLoad === "login-required"
+  ) {
     throw new Error("dev: Keycloak disabled (no VITE_KEYCLOAK_URL)");
   }
   const authenticated = await client.init({
@@ -69,13 +84,40 @@ export async function initInstanceAuth(instance: StableInstance, onLoad: "login-
   return authenticated;
 }
 
-export function setActiveAuthInstance(id: string): void { activeInstanceId = id; }
-export function getInstanceToken(id: string): string | null { return clients.get(id)?.token ?? null; }
+export function setActiveAuthInstance(id: string): void {
+  activeInstanceId = id;
+}
+export function getInstanceToken(id: string): string | null {
+  return clients.get(id)?.token ?? null;
+}
+/** Small testable seam shared by normal and forced access-token refreshes. */
+export async function refreshClientAccessToken(
+  client: Pick<KeycloakInstance, "updateToken" | "token">,
+  minValidity: number,
+): Promise<string | null> {
+  await client.updateToken(minValidity);
+  return client.token ?? null;
+}
 export async function refreshInstanceToken(id: string): Promise<string | null> {
   const client = clients.get(id);
   if (!client?.authenticated) return null;
-  await client.updateToken(TOKEN_MIN_VALIDITY_S);
-  return client.token ?? null;
+  return refreshClientAccessToken(client, TOKEN_MIN_VALIDITY_S);
+}
+
+/**
+ * Force a real access-token refresh, even when keycloak-js believes its cached
+ * token is still valid. WebSocket reconnects use this stricter path because a
+ * rejected handshake is direct evidence that the cached access token cannot be
+ * trusted (sleeping/mobile tabs and client/server clock skew can otherwise
+ * resend the same expired token forever). keycloak-js documents a negative
+ * minValidity as the force-refresh sentinel.
+ */
+export async function forceRefreshInstanceToken(
+  id: string,
+): Promise<string | null> {
+  const client = clients.get(id);
+  if (!client?.authenticated) return null;
+  return refreshClientAccessToken(client, -1);
 }
 
 /**
@@ -123,11 +165,24 @@ export function login(): void {
 }
 export function logout(): void {
   if (activeInstanceId) stopRefresh(activeInstanceId);
-  void clients.get(activeInstanceId ?? "")?.logout({ redirectUri: window.location.origin });
+  void clients
+    .get(activeInstanceId ?? "")
+    ?.logout({ redirectUri: window.location.origin });
 }
-export function getToken(): string | null { return activeInstanceId ? getInstanceToken(activeInstanceId) : null; }
-export async function refreshToken(): Promise<string | null> { return activeInstanceId ? refreshInstanceToken(activeInstanceId) : null; }
-export function isAuthenticated(): boolean { return activeInstanceId ? clients.get(activeInstanceId)?.authenticated ?? false : false; }
+export function getToken(): string | null {
+  return activeInstanceId ? getInstanceToken(activeInstanceId) : null;
+}
+export async function refreshToken(): Promise<string | null> {
+  return activeInstanceId ? refreshInstanceToken(activeInstanceId) : null;
+}
+export async function forceRefreshToken(): Promise<string | null> {
+  return activeInstanceId ? forceRefreshInstanceToken(activeInstanceId) : null;
+}
+export function isAuthenticated(): boolean {
+  return activeInstanceId
+    ? (clients.get(activeInstanceId)?.authenticated ?? false)
+    : false;
+}
 
 /**
  * Why this exists and why `isAuthenticated()` is NOT enough.
@@ -146,7 +201,11 @@ export function isAuthenticated(): boolean { return activeInstanceId ? clients.g
  * 26.2.3). After that `refreshInstanceToken()` returns null WITHOUT throwing,
  * so a caller watching only for a rejection never learns the session is gone.
  */
-export type AuthSessionState = "no-session" | "initialising" | "authenticated" | "expired";
+export type AuthSessionState =
+  | "no-session"
+  | "initialising"
+  | "authenticated"
+  | "expired";
 export function getAuthSessionState(): AuthSessionState {
   if (!activeInstanceId) return "no-session";
   const client = clients.get(activeInstanceId);
@@ -155,12 +214,45 @@ export function getAuthSessionState(): AuthSessionState {
   return client.authenticated ? "authenticated" : "expired";
 }
 
-export interface UserProfile { id: string; username: string; email: string; firstName: string; lastName: string; displayName: string; roles: string[]; avatarUrl: string | null; }
-export function getUserProfile(): UserProfile | null {
-  const parsed = activeInstanceId ? clients.get(activeInstanceId)?.tokenParsed as Record<string, unknown> | undefined : undefined;
-  if (!parsed) return null;
-  const roles = ((parsed.realm_access as { roles?: string[] } | undefined)?.roles ?? []).filter((role) => !["offline_access", "uma_authorization"].includes(role));
-  return { id: String(parsed.sub ?? ""), username: String(parsed.preferred_username ?? ""), email: String(parsed.email ?? ""), firstName: String(parsed.given_name ?? ""), lastName: String(parsed.family_name ?? ""), displayName: String(parsed.name ?? parsed.preferred_username ?? "User"), roles, avatarUrl: typeof parsed.picture === "string" ? parsed.picture : null };
+export interface UserProfile {
+  id: string;
+  username: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  displayName: string;
+  roles: string[];
+  avatarUrl: string | null;
 }
-export function hasRole(role: string): boolean { const client = activeInstanceId ? clients.get(activeInstanceId) : undefined; return !!client && (client.hasRealmRole(role) || client.hasResourceRole(role)); }
-export const keycloak = { get token() { return getToken(); } };
+export function getUserProfile(): UserProfile | null {
+  const parsed = activeInstanceId
+    ? (clients.get(activeInstanceId)?.tokenParsed as
+        | Record<string, unknown>
+        | undefined)
+    : undefined;
+  if (!parsed) return null;
+  const roles = (
+    (parsed.realm_access as { roles?: string[] } | undefined)?.roles ?? []
+  ).filter((role) => !["offline_access", "uma_authorization"].includes(role));
+  return {
+    id: String(parsed.sub ?? ""),
+    username: String(parsed.preferred_username ?? ""),
+    email: String(parsed.email ?? ""),
+    firstName: String(parsed.given_name ?? ""),
+    lastName: String(parsed.family_name ?? ""),
+    displayName: String(parsed.name ?? parsed.preferred_username ?? "User"),
+    roles,
+    avatarUrl: typeof parsed.picture === "string" ? parsed.picture : null,
+  };
+}
+export function hasRole(role: string): boolean {
+  const client = activeInstanceId ? clients.get(activeInstanceId) : undefined;
+  return (
+    !!client && (client.hasRealmRole(role) || client.hasResourceRole(role))
+  );
+}
+export const keycloak = {
+  get token() {
+    return getToken();
+  },
+};

@@ -1,4 +1,4 @@
-import { getToken, refreshToken, getAuthSessionState } from "./auth";
+import { getToken, forceRefreshToken, getAuthSessionState } from "./auth";
 import { useFederationStore } from "@/stores/federationStore";
 
 type EventCallback = (data: WsEventPayload) => void;
@@ -432,20 +432,18 @@ class StableWebSocket {
   /**
    * Acquire a definitely-valid token, then open the socket.
    *
-   * `refreshToken()` wraps keycloak-js `updateToken(60)`, which returns
-   * immediately without any network call when the token is still good for 60s
-   * (verified in keycloak-js 26.2.3: it early-returns `false` unless
-   * `isTokenExpired(minValidity)`, and `checkLoginIframe` is disabled in
-   * auth.ts so there is no hidden iframe round-trip). Calling it on every
-   * connect is therefore cheap in the common case, and keycloak-js coalesces
-   * genuinely concurrent refreshes through its own internal queue.
+   * A reconnect is evidence that the cached access token may be unusable, even
+   * when keycloak-js's local clock says otherwise. Force-refresh here
+   * (`updateToken(-1)`) so a sleeping/mobile tab or clock skew cannot replay the
+   * exact token the backend already rejected. Reconnects are exceptional, and
+   * keycloak-js coalesces genuinely concurrent refreshes through its queue.
    */
   private async openWithValidToken(generation: number): Promise<void> {
     try {
       let token: string | null = null;
       try {
         const result = await this.withDeadline(
-          refreshToken(),
+          forceRefreshToken(),
           REFRESH_TIMEOUT_MS,
         );
         if (result === REFRESH_TIMED_OUT) {
@@ -486,7 +484,7 @@ class StableWebSocket {
 
       if (generation !== this.connectGeneration) return;
       if (!token) {
-        // refreshToken() resolved NULL rather than throwing. The original
+        // forceRefreshToken() resolved NULL rather than throwing. The original
         // author read this as "always transient" on the belief that
         // keycloak-js `clearToken()` leaves `authenticated` true, so a dead
         // session would converge on the throwing branch above within a tick.

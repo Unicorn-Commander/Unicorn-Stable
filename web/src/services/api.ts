@@ -142,6 +142,20 @@ export interface UserSearchResult {
   signed_in: boolean;
 }
 
+export interface PeopleDirectoryEntry {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+  is_online: boolean;
+  last_seen_at: string | null;
+}
+
+export interface UserPreferences {
+  default_agent_id: string | null;
+  favorite_people_ids: string[];
+}
+
 export interface Message {
   id: string;
   room_id: string;
@@ -524,23 +538,26 @@ class StableApiClient {
     return { ...room, brigade_agent_id: brigadeAgentId };
   }
 
-  /** The caller's server-side preferences (follow the account across devices).
-   * Currently just the default agent the "New chat" button uses. */
-  async getMyPreferences(): Promise<{ default_agent_id: string | null }> {
-    return this.request<{ default_agent_id: string | null }>(
-      "GET",
-      "/api/v1/users/me/preferences",
-    );
+  /** The caller's server-side preferences, shared across devices. */
+  async getMyPreferences(): Promise<UserPreferences> {
+    return this.request<UserPreferences>("GET", "/api/v1/users/me/preferences");
   }
 
   /** Set (or clear, with null) the user's default "New chat" agent. */
-  async setDefaultAgent(
-    agentId: string | null,
-  ): Promise<{ default_agent_id: string | null }> {
-    return this.request<{ default_agent_id: string | null }>(
+  async setDefaultAgent(agentId: string | null): Promise<UserPreferences> {
+    return this.request<UserPreferences>(
       "PUT",
       "/api/v1/users/me/preferences",
       { default_agent_id: agentId },
+    );
+  }
+
+  /** Replace the caller's durable people favorites (validated server-side). */
+  async setFavoritePeople(participantIds: string[]): Promise<UserPreferences> {
+    return this.request<UserPreferences>(
+      "PUT",
+      "/api/v1/users/me/preferences",
+      { favorite_people_ids: participantIds },
     );
   }
 
@@ -618,24 +635,27 @@ class StableApiClient {
   }
 
   async joinRoom(roomId: string): Promise<RoomMember> {
-    return this.request<RoomMember>(
-      "POST",
-      `/api/v1/rooms/${roomId}/join`,
-      {},
-    );
+    return this.request<RoomMember>("POST", `/api/v1/rooms/${roomId}/join`, {});
   }
 
   async leaveRoom(roomId: string): Promise<void> {
-    return this.request<void>(
-      "POST",
-      `/api/v1/rooms/${roomId}/leave`,
-      {},
-    );
+    return this.request<void>("POST", `/api/v1/rooms/${roomId}/leave`, {});
   }
 
   async searchUsers(q: string): Promise<UserSearchResult[]> {
     const query = q ? `?q=${encodeURIComponent(q)}` : "";
-    return this.request<UserSearchResult[]>("GET", `/api/v1/users/search${query}`);
+    return this.request<UserSearchResult[]>(
+      "GET",
+      `/api/v1/users/search${query}`,
+    );
+  }
+
+  async getPeopleDirectory(q = ""): Promise<PeopleDirectoryEntry[]> {
+    const query = q ? `?q=${encodeURIComponent(q)}` : "";
+    return this.request<PeopleDirectoryEntry[]>(
+      "GET",
+      `/api/v1/users/directory${query}`,
+    );
   }
 
   async inviteUserToRoom(
@@ -650,10 +670,7 @@ class StableApiClient {
   }
 
   async getRoomMembers(roomId: string): Promise<RoomMember[]> {
-    return this.request<RoomMember[]>(
-      "GET",
-      `/api/v1/rooms/${roomId}/members`,
-    );
+    return this.request<RoomMember[]>("GET", `/api/v1/rooms/${roomId}/members`);
   }
 
   /**
@@ -748,7 +765,9 @@ class StableApiClient {
       }
       xhr.onload = () => {
         if (xhr.status < 200 || xhr.status >= 300) {
-          reject(new Error(`Upload failed (${xhr.status}): ${xhr.responseText}`));
+          reject(
+            new Error(`Upload failed (${xhr.status}): ${xhr.responseText}`),
+          );
           return;
         }
         try {
@@ -853,7 +872,10 @@ class StableApiClient {
     return this.request<ChatModel[]>("GET", "/api/v1/models");
   }
 
-  async removeBrigadeAgent(roomName: string, brigadeAgentId: string): Promise<void> {
+  async removeBrigadeAgent(
+    roomName: string,
+    brigadeAgentId: string,
+  ): Promise<void> {
     await this.request<void>(
       "DELETE",
       `/api/v1/rooms/${encodeURIComponent(roomName)}/brigade-agents/${encodeURIComponent(brigadeAgentId)}`,
@@ -866,10 +888,13 @@ class StableApiClient {
     model?: string,
     opts?: { dispatch?: boolean },
   ): Promise<InviteBrigadeAgentResponse> {
-    const body: { brigade_agent_id: string; model?: string; dispatch?: boolean } =
-      {
-        brigade_agent_id: brigadeAgentId,
-      };
+    const body: {
+      brigade_agent_id: string;
+      model?: string;
+      dispatch?: boolean;
+    } = {
+      brigade_agent_id: brigadeAgentId,
+    };
     // Only send the override when the room has one set; absent = agent default.
     if (model) body.model = model;
     // dispatch: false binds the agent to the room (text responder + member
@@ -886,18 +911,13 @@ class StableApiClient {
   }
 
   async togglePin(roomId: string, messageId: string): Promise<string[]> {
-    return this.request<string[]>(
-      "POST",
-      `/api/v1/rooms/${roomId}/pins`,
-      { message_id: messageId },
-    );
+    return this.request<string[]>("POST", `/api/v1/rooms/${roomId}/pins`, {
+      message_id: messageId,
+    });
   }
 
   async getPins(roomId: string): Promise<Message[]> {
-    return this.request<Message[]>(
-      "GET",
-      `/api/v1/rooms/${roomId}/pins`,
-    );
+    return this.request<Message[]>("GET", `/api/v1/rooms/${roomId}/pins`);
   }
 
   async toggleSave(messageId: string): Promise<Message> {
@@ -915,7 +935,9 @@ class StableApiClient {
     );
   }
 
-  async getPendingApprovals(roomId?: string): Promise<PendingApprovalsResponse> {
+  async getPendingApprovals(
+    roomId?: string,
+  ): Promise<PendingApprovalsResponse> {
     const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
     return this.request<PendingApprovalsResponse>(
       "GET",
@@ -1001,19 +1023,14 @@ class StableApiClient {
     // Backend route is message-scoped (membership/authorship enforced
     // server-side); the roomId arg is kept for the optimistic-UI caller.
     void roomId;
-    return this.request<Message>(
-      "PATCH",
-      `/api/v1/messages/${messageId}`,
-      { content },
-    );
+    return this.request<Message>("PATCH", `/api/v1/messages/${messageId}`, {
+      content,
+    });
   }
 
   async deleteMessage(roomId: string, messageId: string): Promise<void> {
     void roomId;
-    return this.request<void>(
-      "DELETE",
-      `/api/v1/messages/${messageId}`,
-    );
+    return this.request<void>("DELETE", `/api/v1/messages/${messageId}`);
   }
 
   /** Ask an in-flight agent reply to stop streaming. `messageId` is the agent
@@ -1021,10 +1038,7 @@ class StableApiClient {
    * signals the responder (cross-worker via Redis) and finalizes whatever has
    * been produced so far. */
   async stopGenerating(messageId: string): Promise<void> {
-    return this.request<void>(
-      "POST",
-      `/api/v1/messages/${messageId}/stop`,
-    );
+    return this.request<void>("POST", `/api/v1/messages/${messageId}/stop`);
   }
 
   /** Regenerate an agent reply: the backend soft-deletes this reply and re-runs
@@ -1130,7 +1144,11 @@ class StableApiClient {
     exported_at: string;
     status_url: string;
   }> {
-    return this.request("POST", `/api/v1/rooms/${roomId}/transcripts/export`, body);
+    return this.request(
+      "POST",
+      `/api/v1/rooms/${roomId}/transcripts/export`,
+      body,
+    );
   }
 
   async getCallTranscriptExport(
@@ -1244,9 +1262,7 @@ class StableApiClient {
    */
 
   /** Create a new (empty) knowledge collection. */
-  async createCollection(
-    data: CreateCollectionRequest,
-  ): Promise<Collection> {
+  async createCollection(data: CreateCollectionRequest): Promise<Collection> {
     return this.request<Collection>(
       "POST",
       "/api/v1/knowledge/collections",
@@ -1362,10 +1378,7 @@ class StableApiClient {
    * collection, with a message naming them — surface that instead of retrying
    * blindly. Pass `force` only after the user has been shown what breaks.
    */
-  async deleteCollection(
-    collectionId: string,
-    force = false,
-  ): Promise<void> {
+  async deleteCollection(collectionId: string, force = false): Promise<void> {
     const qs = force ? "?force=true" : "";
     return this.request<void>(
       "DELETE",
@@ -1378,11 +1391,9 @@ class StableApiClient {
     roomId: string,
     collectionId: string,
   ): Promise<void> {
-    return this.request<void>(
-      "POST",
-      `/api/v1/rooms/${roomId}/knowledge`,
-      { collection_id: collectionId },
-    );
+    return this.request<void>("POST", `/api/v1/rooms/${roomId}/knowledge`, {
+      collection_id: collectionId,
+    });
   }
 
   /** Detach a collection from a room. */
