@@ -973,8 +973,8 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
   }
 
   return (
-    <div className="flex flex-1 items-center justify-center px-4">
-      <div className="max-w-md text-center animate-fade-in">
+    <div className="flex min-w-0 flex-1 items-center justify-center overflow-hidden px-4">
+      <div className="w-full max-w-md min-w-0 text-center animate-fade-in">
         <div className="relative mx-auto mb-4 h-12 w-12">
           <div
             aria-hidden="true"
@@ -985,15 +985,15 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
         <p className="font-display text-base font-semibold text-slate-100">
           The start of the conversation
         </p>
-        <p className="mt-1 text-xs text-slate-500">
+        <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-500">
           Be the first to say something — others see it the moment you hit enter.
         </p>
-        <div className="mt-5 flex flex-wrap justify-center gap-2">
+        <div className="mx-auto mt-5 grid w-full max-w-sm grid-cols-1 gap-2 min-[430px]:flex min-[430px]:flex-wrap min-[430px]:justify-center">
           {CHANNEL_CHIPS.map((chip) => (
             <button
               key={chip.action}
               onClick={() => runChip(chip.action)}
-              className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-slate-400 transition-colors hover:border-stable-purple/40 hover:bg-white/[0.06] hover:text-slate-200 focus-ring"
+              className="min-h-11 rounded-xl border border-line bg-white/[0.04] px-3 py-2 text-xs text-slate-400 transition-colors hover:border-stable-purple/40 hover:bg-white/[0.06] hover:text-slate-200 focus-ring min-[430px]:min-h-0 min-[430px]:rounded-full min-[430px]:py-1"
             >
               {chip.label}
             </button>

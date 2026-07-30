@@ -21,7 +21,6 @@ import type { Agent } from "@/services/api";
 import {
   AFFIL_META,
   affiliationOf,
-  agentIdentity,
   TIER_META,
   tierOf,
   prettyDomain,
@@ -31,6 +30,7 @@ import { StatusDot } from "./StatusDot";
 import { Tooltip } from "@/components/ui";
 import { buildOrgTree } from "./orgTree";
 import { useOrgLayout } from "./useOrgLayout";
+import { Avatar } from "@/components/ui/Avatar";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -56,7 +56,6 @@ function OrgGraphNode(props: NodeProps) {
     props.data as unknown as OrgNodeData;
   const affilMeta = AFFIL_META[affiliationOf(agent)];
   const tierMeta = TIER_META[tierOf(agent)];
-  const ident = agentIdentity(agent);
   return (
     <div
       title={`${affilMeta.label} · ${tierMeta.label} model — click to chat`}
@@ -73,17 +72,16 @@ function OrgGraphNode(props: NodeProps) {
         position={Position.Top}
         className="!h-1.5 !w-1.5 !border-0 !bg-slate-600"
       />
-      <span
-        className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg text-base text-white/90"
-        style={{ background: ident.gradient }}
-      >
-        {agent.avatar_url ? (
-          <img src={agent.avatar_url} alt="" className="h-full w-full object-cover" />
-        ) : agent.emoji ? (
-          <span aria-hidden="true">{agent.emoji}</span>
-        ) : (
-          <Bot className="h-4 w-4" />
-        )}
+      <span className="relative flex h-9 w-9 shrink-0">
+        <Avatar
+          avatarUrl={agent.avatar_url}
+          emoji={agent.emoji}
+          id={agent.id}
+          name={label(agent)}
+          size={36}
+          rounded="lg"
+          alt=""
+        />
         <StatusDot
           status={agent.status}
           className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 border-2 border-surface-2"

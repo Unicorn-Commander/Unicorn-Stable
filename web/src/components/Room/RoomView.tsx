@@ -357,12 +357,12 @@ export function RoomView({ roomId }: RoomViewProps) {
           clipping the agent-switcher's full-viewport click-away backdrop to
           the 48px strip (and trapping the z-50 menus in a header stacking
           context under root-level z-10 hover toolbars). */}
-      <div className="relative flex h-12 shrink-0 items-center justify-between border-b border-line px-4">
+      <div className="relative flex h-12 min-w-0 shrink-0 items-center justify-between gap-1 border-b border-line px-2 sm:px-4">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 bg-stable-glass backdrop-blur-xl"
         />
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {/* Phones: this sub-header is the single top bar, so it owns the
               drawer toggle. Hidden >= md (the AppShell Header's hamburger
               takes over there). */}
@@ -442,7 +442,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           )}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {/* Mid-conversation model switcher. Desktop: inline. Phones: folds
               into the ⋮ menu below (rendered there) so the single mobile header
               bar doesn't get re-crowded. */}

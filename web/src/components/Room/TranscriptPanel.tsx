@@ -17,6 +17,7 @@ import {
 } from "@/lib/devTranscript";
 import { isBrowserSttAvailable } from "@/lib/humanTranscript";
 import { api } from "@/services/api";
+import { Avatar } from "@/components/ui/Avatar";
 
 /**
  * Live call transcript. Renders speaker-labeled lines in near-real-time with
@@ -50,6 +51,10 @@ export function TranscriptPanel() {
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
+  const agents = useAppStore((s) => s.agents);
+  const participants = useAppStore((s) =>
+    activeCallRoomId ? s.participants[activeCallRoomId] ?? [] : [],
+  );
   const pushToast = useAppStore((s) => s.pushToast);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -279,8 +284,16 @@ export function TranscriptPanel() {
           </div>
         ) : (
           lines.map((line, index) => {
+            const agentId = line.participantId.replace(/^agent-/, "");
+            const agent = agents.find((candidate) => candidate.id === agentId);
+            const participant = participants.find(
+              (candidate) =>
+                candidate.participant_id === line.participantId ||
+                candidate.user_id === line.participantId ||
+                candidate.id === line.participantId,
+            );
             const ident = identityFor(
-              line.participantId.replace(/^agent-/, ""),
+              agentId,
               line.name,
             );
             const previous = lines[index - 1];
@@ -288,12 +301,14 @@ export function TranscriptPanel() {
               previous?.participantId === line.participantId &&
               line.ts - previous.ts < 60_000;
             const isMe = currentUser?.id === line.participantId;
-            const initials = line.name
-              .split(/\s+/)
-              .filter(Boolean)
-              .slice(0, 2)
-              .map((part) => part[0]?.toUpperCase())
-              .join("");
+            const provenance: { label: string; verified: boolean } =
+              line.source === "local_mic"
+                ? { label: "Verified · speaker mic", verified: true }
+                : line.source === "agent_stt"
+                  ? { label: "Inferred · room STT", verified: false }
+                  : line.source === "agent"
+                    ? { label: "Verified · agent audio", verified: true }
+                    : { label: "Unverified · legacy source", verified: false };
             return (
               <div
                 key={line.id}
@@ -301,13 +316,15 @@ export function TranscriptPanel() {
               >
                 <div className="w-7 shrink-0 pt-0.5">
                   {!continuation && (
-                    <div
-                      className="grid h-7 w-7 place-items-center rounded-lg text-[9px] font-bold text-white shadow-sm"
-                      style={{ background: ident.gradient }}
-                      aria-hidden="true"
-                    >
-                      {initials || "?"}
-                    </div>
+                    <Avatar
+                      avatarUrl={agent?.avatar_url ?? participant?.avatar_url}
+                      emoji={agent?.emoji}
+                      id={agentId}
+                      name={line.name}
+                      size={28}
+                      rounded="lg"
+                      alt=""
+                    />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -324,6 +341,15 @@ export function TranscriptPanel() {
                           You
                         </span>
                       )}
+                      <span
+                        className={
+                          provenance.verified
+                            ? "rounded-full border border-stable-mint/25 bg-stable-mint/[0.06] px-1.5 py-px text-[8px] font-medium text-stable-mint/80"
+                            : "rounded-full border border-amber-400/25 bg-amber-400/[0.06] px-1.5 py-px text-[8px] font-medium text-amber-300/80"
+                        }
+                      >
+                        {provenance.label}
+                      </span>
                       <time
                         className="ml-auto shrink-0 text-[9px] tabular-nums text-slate-600 opacity-0 transition-opacity group-hover:opacity-100"
                         dateTime={new Date(line.ts).toISOString()}

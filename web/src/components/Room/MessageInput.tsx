@@ -959,7 +959,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   return (
     <div
       className={clsx(
-        "relative shrink-0 px-3 pt-1.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6",
+        "relative min-w-0 shrink-0 px-2 pt-1.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-3 md:px-6",
         dragOver && "bg-stable-purple/5 ring-2 ring-inset ring-stable-purple/30",
       )}
       onDragOver={handleDragOver}
@@ -1176,8 +1176,8 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
         </div>
       )}
 
-      <div className="flex items-end gap-1 rounded-2xl border border-line bg-stable-glass px-1.5 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15">
-        <div className="flex shrink-0 items-center gap-0.5 pb-1">
+      <div className="flex min-w-0 items-end gap-0.5 rounded-2xl border border-line bg-stable-glass px-1 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15 sm:gap-1 sm:px-1.5">
+        <div className="flex shrink-0 items-center pb-0.5 sm:gap-0.5 sm:pb-1">
           <button
             onClick={handleFileSelect}
             className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5"
@@ -1222,7 +1222,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             onBlur={() => setFormatBar(null)}
             placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
             rows={1}
-            className="w-full resize-none bg-transparent px-2.5 py-2.5 pr-12 text-sm text-slate-100 placeholder:text-slate-500 outline-none md:pr-10"
+            className="w-full resize-none bg-transparent px-1.5 py-2.5 pr-11 text-base text-slate-100 placeholder:text-slate-500 outline-none sm:px-2.5 md:pr-10 md:text-sm"
             aria-label="Message input"
           />
 

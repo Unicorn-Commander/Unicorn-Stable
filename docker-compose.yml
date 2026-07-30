@@ -152,6 +152,9 @@ services:
       - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET:-}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-https://auth.unicorncommander.ai}
       - BRIGADE_BASE_URL=${BRIGADE_BASE_URL:-https://brigade.magicunicorn.dev/api/v1/openai/v1}
+      # Brigade owns agent portraits. Explicit roster avatarUrl wins; this
+      # convention fills every built-in agent safely from the same origin.
+      - BRIGADE_AVATAR_BASE_URL=${BRIGADE_AVATAR_BASE_URL:-https://brigade.magicunicorn.dev/avatars}
       - BRIGADE_API_KEY=${BRIGADE_API_KEY:-}
       - BRIGADE_WORKER_AGENT_NAME=${BRIGADE_WORKER_AGENT_NAME:-stable-brigade}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:8401,https://stable.magicunicorn.dev}

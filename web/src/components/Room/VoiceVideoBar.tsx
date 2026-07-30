@@ -23,7 +23,6 @@ import {
   PhoneOff,
   Volume2,
   VolumeX,
-  Bot,
   MonitorUp,
   MonitorOff,
   Eye,
@@ -64,6 +63,7 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { VoiceAgentStatus } from "./VoiceAgentStatus";
 import { VideoGrid } from "./VideoGrid";
 import { SplitPane } from "./SplitPane";
+import { Avatar } from "@/components/ui/Avatar";
 // ─────────────────────────────────────────────────────────────────────────────
 // Pop-out / Picture-in-Picture module (audit §4a) — web/src/components/Room/popout/.
 // Integrated and typechecked against the module's REAL exports (CONTRACT.md), no
@@ -366,9 +366,15 @@ function ParticipantTile({
 }: ParticipantTileProps) {
   const pip = usePipTile();
   const fs = useFullscreen();
-  const initial = p.name.charAt(0).toUpperCase();
   const showVideoEl = !!videoRef && !hidden;
   const ident = identityFor(p.id.replace(/^agent-/, ""), p.name);
+  const agent = useAppStore((s) =>
+    p.isAgent
+      ? s.agents.find(
+          (candidate) => candidate.id === p.id.replace(/^agent-/, ""),
+        )
+      : undefined,
+  );
   // Compose the LiveKit attach ref with the PiP ref on ONE <video> (audit §4a).
   // useMergedVideoRef memoizes internally (CONTRACT §3.1) so the track isn't
   // detached+reattached every render; safe to call unconditionally with an
@@ -408,25 +414,18 @@ function ParticipantTile({
           )}
         />
       ) : (
-        <div
+        <Avatar
+          avatarUrl={agent?.avatar_url}
+          emoji={agent?.emoji}
+          id={p.id.replace(/^agent-/, "")}
+          name={p.name}
+          size={size === "large" ? 96 : 64}
+          ring={speaking}
           className={clsx(
-            "flex items-center justify-center rounded-full font-semibold text-white/95",
-            size === "large"
-              ? "h-24 w-24 text-3xl"
-              : "h-14 w-14 text-lg sm:h-16 sm:w-16",
             speaking && !p.isMuted && "animate-pulse-soft",
           )}
-          style={{
-            background: ident.gradient,
-            boxShadow: speaking ? `0 0 0 2px ${ident.ring}` : undefined,
-          }}
-        >
-          {p.isAgent ? (
-            <Bot className={size === "large" ? "h-12 w-12" : "h-7 w-7"} />
-          ) : (
-            initial
-          )}
-        </div>
+          alt=""
+        />
       )}
 
       {/* Name plate. */}
@@ -734,8 +733,14 @@ interface AudioChipProps {
 }
 
 function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
-  const initial = name.charAt(0).toUpperCase();
   const ident = identityFor(id.replace(/^agent-/, ""), name);
+  const agent = useAppStore((s) =>
+    isAgent
+      ? s.agents.find(
+          (candidate) => candidate.id === id.replace(/^agent-/, ""),
+        )
+      : undefined,
+  );
   return (
     <div
       className={clsx(
@@ -746,15 +751,16 @@ function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
         isSpeaking ? { background: ident.faint, borderColor: ident.ring } : undefined
       }
     >
-      <div
-        className={clsx(
-          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white/95",
-          isSpeaking && !isMuted && "animate-pulse-soft",
-        )}
-        style={{ background: ident.gradient }}
-      >
-        {isAgent ? <Bot className="h-4 w-4" /> : initial}
-      </div>
+      <Avatar
+        avatarUrl={agent?.avatar_url}
+        emoji={agent?.emoji}
+        id={id.replace(/^agent-/, "")}
+        name={name}
+        size={32}
+        ring={isSpeaking}
+        className={clsx(isSpeaking && !isMuted && "animate-pulse-soft")}
+        alt=""
+      />
       <span className="max-w-[10ch] truncate text-xs font-medium text-slate-200">
         {name}
       </span>

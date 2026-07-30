@@ -16,6 +16,7 @@ import {
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
+import { Avatar } from "@/components/ui/Avatar";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -162,21 +163,16 @@ export function AgentChatModal({
             aria-hidden="true"
           />
           <div className="relative flex items-start gap-3">
-            <span
-              className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-2xl text-white/90 shadow-soft"
-              style={{ background: ident.gradient }}
-            >
-              {focusAgent.avatar_url ? (
-                <img
-                  src={focusAgent.avatar_url}
-                  alt=""
-                  className="h-full w-full object-cover"
-                />
-              ) : focusAgent.emoji ? (
-                <span aria-hidden="true">{focusAgent.emoji}</span>
-              ) : (
-                <Bot className="h-6 w-6" />
-              )}
+            <span className="relative flex h-14 w-14 shrink-0 shadow-soft">
+              <Avatar
+                avatarUrl={focusAgent.avatar_url}
+                emoji={focusAgent.emoji}
+                id={focusAgent.id}
+                name={label(focusAgent)}
+                size={56}
+                rounded="lg"
+                alt=""
+              />
               <StatusDot
                 status={focusAgent.status}
                 className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 border-2 border-slate-900"

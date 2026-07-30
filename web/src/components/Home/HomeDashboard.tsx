@@ -19,6 +19,7 @@ import clsx from "clsx";
 import { api, type Room, type Agent } from "@/services/api";
 import { identityFor } from "@/lib/identity";
 import { Avatar } from "@/components/Avatar";
+import { Avatar as ResidentAvatar } from "@/components/ui/Avatar";
 import { useAppStore } from "@/stores/appStore";
 import { resolveDefaultAgent } from "@/components/Sidebar/newChat";
 import { AgentChatModal } from "@/components/Agents/AgentChatModal";
@@ -667,21 +668,16 @@ function AgentsRail({
                       i > 0 && "border-t border-line",
                     )}
                   >
-                    <span
-                      className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg text-white"
-                      style={{ background: ident.gradient }}
-                    >
-                      {a.avatar_url ? (
-                        <img
-                          src={a.avatar_url}
-                          alt=""
-                          className="h-full w-full object-cover"
-                        />
-                      ) : a.emoji ? (
-                        <span aria-hidden="true">{a.emoji}</span>
-                      ) : (
-                        <Bot className="h-4 w-4" />
-                      )}
+                    <span className="relative flex h-9 w-9 shrink-0">
+                      <ResidentAvatar
+                        name={label}
+                        id={a.id}
+                        avatarUrl={a.avatar_url}
+                        emoji={a.emoji}
+                        size={36}
+                        rounded="lg"
+                        alt=""
+                      />
                       <StatusDot
                         status={a.status}
                         className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 border-2 border-slate-900"

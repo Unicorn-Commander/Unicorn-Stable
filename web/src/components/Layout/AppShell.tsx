@@ -452,7 +452,7 @@ export function AppShell() {
     // Transparent root: the page tone comes from body (surface-0) + the aurora
     // field behind it, so glass/translucent surfaces actually pick it up.
     <div
-      className="relative flex w-screen overflow-hidden"
+      className="relative flex w-full max-w-[100vw] flex-col overflow-hidden"
       style={{
         // Fill the visible viewport exactly (see useAppHeight). Reserve the
         // notch/status-bar inset up top so content clears it in standalone PWA
@@ -463,6 +463,8 @@ export function AppShell() {
         paddingTop: "env(safe-area-inset-top)",
       }}
     >
+      <ConnectionBanner />
+      <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
       {/* Discord-style server rail — 72px, far left, desktop only. Renders null
           unless the user can reach more than one federated instance. */}
       <ServerRail />
@@ -592,9 +594,9 @@ export function AppShell() {
         />
       )}
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header hideOnMobile={!!activeRoomId} />
-        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {activeRoomId ? (
             <ErrorBoundary key={activeRoomId}>
               <RoomView roomId={activeRoomId} />
@@ -656,10 +658,10 @@ export function AppShell() {
         </div>
       )}
 
-      <ConnectionBanner />
       <IncomingCallBanner />
       <OutgoingCallStatus />
       <ToastStack />
+      </div>
     </div>
   );
 }
@@ -807,12 +809,11 @@ function ConnectionBanner() {
           aria-live={
             phase === "expired" || phase === "stalled" ? "assertive" : "polite"
           }
-          className="fixed inset-x-0 top-0 z-[60]"
-          style={{ paddingTop: "env(safe-area-inset-top)" }}
+          className="relative z-[60] shrink-0"
         >
           <div
             className={clsx(
-              "flex items-center justify-center gap-2 border-b px-4 py-1.5 text-xs font-medium backdrop-blur-md",
+              "flex min-h-10 flex-wrap items-center justify-center gap-x-2 gap-y-1 border-b px-3 py-2 text-center text-xs font-medium backdrop-blur-md sm:px-4",
               phase === "expired"
                 ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
                 : phase === "lost" || phase === "stalled"
@@ -823,11 +824,11 @@ function ConnectionBanner() {
             {phase === "expired" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
-                Your session expired — live updates are paused.
+                <span>Your session expired. Live updates are paused.</span>
                 <button
                   type="button"
                   onClick={() => login()}
-                  className="ml-1 rounded px-2 py-0.5 font-semibold underline underline-offset-2 hover:bg-rose-500/20"
+                  className="focus-ring rounded-lg border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 font-semibold text-rose-100 hover:bg-rose-500/20"
                 >
                   Sign in again
                 </button>
@@ -835,23 +836,23 @@ function ConnectionBanner() {
             ) : phase === "stalled" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
-                Live updates paused — your account connection needs attention.
+                <span>Session refresh failed. Live updates are paused.</span>
                 <button
                   type="button"
                   onClick={() => login()}
-                  className="ml-1 rounded px-2 py-0.5 font-semibold underline underline-offset-2 hover:bg-amber-500/20"
+                  className="focus-ring rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/20"
                 >
-                  Reconnect account
+                  Sign in again
                 </button>
               </>
             ) : phase === "lost" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
-                Connection lost — reconnecting…
+                <span>Reconnecting to live updates…</span>
                 <button
                   type="button"
                   onClick={() => setDismissed(true)}
-                  className="ml-1 rounded px-2 py-0.5 text-amber-200/80 underline-offset-2 hover:bg-amber-500/15 hover:underline"
+                  className="focus-ring rounded px-2 py-1 text-amber-200/80 underline-offset-2 hover:bg-amber-500/15 hover:underline"
                   aria-label="Dismiss connection banner"
                 >
                   Dismiss
@@ -864,7 +865,7 @@ function ConnectionBanner() {
                 <button
                   type="button"
                   onClick={() => setDismissed(true)}
-                  className="ml-1 rounded px-2 py-0.5 text-stable-mint/80 underline-offset-2 hover:bg-stable-mint/15 hover:underline"
+                  className="focus-ring rounded px-2 py-1 text-stable-mint/80 underline-offset-2 hover:bg-stable-mint/15 hover:underline"
                   aria-label="Dismiss reconnected banner"
                 >
                   Dismiss

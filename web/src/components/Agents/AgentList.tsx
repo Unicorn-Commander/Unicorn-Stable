@@ -12,6 +12,7 @@ import {
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
+import { Avatar } from "@/components/ui/Avatar";
 
 /** The flat card grid (kept under "List"). Click a card to open the chat popup. */
 export function AgentList({
@@ -62,17 +63,16 @@ export function AgentList({
                 className={clsx("absolute inset-y-0 left-0 w-1", affilMeta.bar)}
               />
               <div className="flex items-start gap-3">
-                <span
-                  className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl text-lg text-white/90 shadow-soft"
-                  style={{ background: ident.gradient }}
-                >
-                  {agent.avatar_url ? (
-                    <img src={agent.avatar_url} alt="" className="h-full w-full object-cover" />
-                  ) : agent.emoji ? (
-                    <span aria-hidden="true">{agent.emoji}</span>
-                  ) : (
-                    <Bot className="h-5 w-5" />
-                  )}
+                <span className="relative flex h-11 w-11 shrink-0 shadow-soft">
+                  <Avatar
+                    avatarUrl={agent.avatar_url}
+                    emoji={agent.emoji}
+                    id={agent.id}
+                    name={name}
+                    size={44}
+                    rounded="lg"
+                    alt=""
+                  />
                   <StatusDot
                     status={agent.status}
                     className="absolute -bottom-0.5 -right-0.5 h-3 w-3 border-2 border-surface-1"

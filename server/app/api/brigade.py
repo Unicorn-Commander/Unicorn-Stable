@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Annotated, Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
@@ -37,10 +37,9 @@ class BrigadeRosterAgent(BaseModel):
     Sourced from Brigade's native ``/agents`` endpoint (the source of truth),
     flattened to the shape the Stable frontend's ``Agent`` type expects plus the
     extra org-chart fields (rank, title, domain, tools). ``emoji`` carries
-    Brigade's single-glyph avatar; ``avatar_url`` is the resolved image URL
-    (see _resolve_agent_avatar), null for agents that have no registered image
-    — which today is all of them, so ``emoji`` is the tier that actually
-    renders.
+    Brigade's single-glyph fallback; ``avatar_url`` is the resolved image URL
+    (see _resolve_agent_avatar), null only when the identity has no verified
+    image binding.
     """
 
     id: str
@@ -103,20 +102,12 @@ class InviteAgentResponse(BaseModel):
 #   3. the EMOJI GLYPH       (Brigade `avatar` — a single character)
 #   4. initials on the identity colour (client-side; see lib/avatar.ts)
 #
-# STATE OF THE WORLD, verified 2026-07-20 against the Brigade that Stable
-# actually reads (BRIGADE_BASE_URL=https://brigade.magicunicorn.dev, DB
-# `brigade_db`): tier 1 does not exist — that database has no `avatar_url`
-# column at all, only `avatar varchar(50)` holding an emoji, so `avatarUrl` is
-# null for all 17 agents. Tier 2 does not exist either: both
-# `/avatars/<id>.webp` and `/api/v1/avatars/<id>.webp` return 404. A DIFFERENT
-# database (`brigade_prod`) does have the column, with 0 of 6 rows populated.
-#
-# So today tier 3 is the only agent avatar that exists, and it was being thrown
-# away — the roster carried `emoji` but every agent render site fell through to
-# a generic Bot icon. Tiers 1 and 2 are implemented and inert, ready for the
-# day Brigade actually serves them; tier 2 stays OFF unless
-# BRIGADE_AVATAR_BASE_URL is set, because emitting a URL we know 404s would
-# replace a working emoji with a broken image.
+# CURRENT CONTRACT (verified 2026-07-29): Brigade serves its portrait catalog
+# at https://brigade.magicunicorn.dev/avatars/*.webp and its current database
+# has avatar_url populated for part of the roster. Stable therefore configures
+# BRIGADE_AVATAR_BASE_URL for the complete convention catalog while continuing
+# to let an explicit avatarUrl win. Relative explicit URLs are resolved against
+# the Brigade origin here — never against Stable's origin in the browser.
 # ---------------------------------------------------------------------------
 
 # Hosts we are willing to point an <img> at. An agent avatar URL comes from
@@ -130,12 +121,40 @@ _AVATAR_HOST_SUFFIXES = (
     "unicorncommander.ai",
 )
 
+# A convention URL is only useful when Brigade actually owns that filename.
+# Do not synthesize 404s for every dynamically registered runtime agent.
+_CONVENTION_AVATAR_IDS = frozenset(
+    {
+        "the-general",
+        "gunny",
+        "sgt-cipher",
+        "cpt-fullstack",
+        "maj-devops",
+        "col-finance",
+        "lt-taxstrat",
+        "judge-advocate",
+        "doc-medresearch",
+        "detective-holmes",
+        "prof-datasci",
+        "support-agent",
+        "code-reviewer",
+        "sql-analyst",
+        "sgt-scribe",
+        "maj-leadgen",
+        "lt-docanalyst",
+        "iris",
+        "perry",
+        "prudence",
+        "cpl.-colophon",
+    }
+)
+
 
 def _safe_avatar_url(raw: Any) -> str | None:
     """Accept a relative path or an https URL on one of our own hosts; else None.
 
-    Returning None is not a failure — it just drops to the next tier, which is
-    the emoji, which is what actually exists.
+    Returning None is not a failure — it drops to a verified convention image,
+    then emoji, then initials.
     """
     if not isinstance(raw, str):
         return None
@@ -157,19 +176,48 @@ def _safe_avatar_url(raw: Any) -> str | None:
 def _convention_avatar_url(agent_id: str) -> str | None:
     """Tier 2: the ``<base>/<id>.webp`` convention, only if configured.
 
-    Off by default and deliberately so — see the note above; Brigade does not
-    serve this yet. Set BRIGADE_AVATAR_BASE_URL once it does.
+    Set BRIGADE_AVATAR_BASE_URL to the Brigade-owned portrait directory.
     """
     base = (os.environ.get("BRIGADE_AVATAR_BASE_URL") or "").strip().rstrip("/")
-    if not base or not agent_id:
+    if not base or agent_id not in _CONVENTION_AVATAR_IDS:
         return None
     return _safe_avatar_url(f"{base}/{agent_id}.webp")
+
+
+def _registered_avatar_url(raw: Any) -> str | None:
+    """Resolve a Brigade ``avatarUrl`` into a browser-safe absolute URL.
+
+    Brigade stores portable same-origin paths for its built-in roster. If those
+    paths crossed the API unchanged, a Stable browser would request them from
+    Stable and render a broken image. Anchor them to Brigade's configured
+    public origin first; absolute trusted URLs are left unchanged.
+    """
+
+    if (
+        isinstance(raw, str)
+        and raw.startswith("/api/brands/")
+        and not raw.startswith("//")
+    ):
+        # Brand-Ops asset routes are relative to Brand-Ops, not Brigade or
+        # Stable. Brigade does not currently proxy them, and the Brand-Ops
+        # public host requires its own browser session. Passing the path
+        # through would make every Stable client request a guaranteed 404 from
+        # Stable. Preserve the emoji/initials fallback until Brigade imports an
+        # approved master or exposes an authenticated asset proxy.
+        logger.warning("brand_ops_relative_avatar_not_proxyable", url=raw)
+        return None
+    if isinstance(raw, str) and raw.startswith("/") and not raw.startswith("//"):
+        brigade_origin = get_settings().brigade_base_url.rstrip("/") + "/"
+        return _safe_avatar_url(urljoin(brigade_origin, raw))
+    return _safe_avatar_url(raw)
 
 
 def _resolve_agent_avatar(item: dict[str, Any]) -> tuple[str | None, str | None]:
     """Return (avatar_url, emoji) for one Brigade roster record."""
     agent_id = str(item.get("id") or "")
-    url = _safe_avatar_url(item.get("avatarUrl")) or _convention_avatar_url(agent_id)
+    url = _registered_avatar_url(
+        item.get("avatarUrl")
+    ) or _convention_avatar_url(agent_id)
     raw_emoji = item.get("avatar")
     emoji = raw_emoji.strip()[:8] if isinstance(raw_emoji, str) and raw_emoji.strip() else None
     return url, emoji

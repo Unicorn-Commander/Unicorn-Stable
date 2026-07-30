@@ -7,6 +7,7 @@ import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useAppStore } from "@/stores/appStore";
 import { api } from "@/services/api";
+import { Avatar } from "@/components/ui/Avatar";
 
 interface StageViewProps {
   agentId: string;
@@ -111,21 +112,15 @@ export function StageView({ agentId, roomId }: StageViewProps) {
         />
       ) : (
         <div className="flex animate-fade-in flex-col items-center gap-3">
-          <div
-            className="flex h-16 w-16 select-none items-center justify-center rounded-full leading-none text-white/95"
-            style={{
-              background: ident.gradient,
-              boxShadow: `0 0 32px ${ident.ring}`,
-            }}
-          >
-            {stageEmoji ? (
-              <span className="text-3xl" aria-hidden="true">
-                {stageEmoji}
-              </span>
-            ) : (
-              <Bot className="h-8 w-8" />
-            )}
-          </div>
+          <Avatar
+            avatarUrl={stageAgent?.avatar_url}
+            emoji={stageEmoji}
+            id={agentId.replace(/^agent-/, "")}
+            name={displayName}
+            size={64}
+            ring
+            alt=""
+          />
           <p className="font-display text-sm font-semibold text-slate-100">
             {displayName}
           </p>
