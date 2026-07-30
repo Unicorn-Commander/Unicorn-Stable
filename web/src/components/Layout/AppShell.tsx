@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
@@ -38,12 +38,43 @@ import { AddServerModal } from "./AddServerModal";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
-import { RoomView } from "@/components/Room/RoomView";
 import { IncomingCallBanner } from "@/components/Call/IncomingCallBanner";
 import { OutgoingCallStatus } from "@/components/Call/OutgoingCallStatus";
-import { HomeDashboard } from "@/components/Home/HomeDashboard";
-import { AgentsPage } from "@/components/Agents/AgentsPage";
-import { BridgePage } from "@/components/Bridge/BridgePage";
+
+// Keep route-specific surfaces out of the authenticated shell. In particular,
+// the call stack and org-chart renderer are substantial and are not needed on
+// the home or bridge views.
+const RoomView = lazy(() =>
+  import("@/components/Room/RoomView").then((module) => ({
+    default: module.RoomView,
+  })),
+);
+const HomeDashboard = lazy(() =>
+  import("@/components/Home/HomeDashboard").then((module) => ({
+    default: module.HomeDashboard,
+  })),
+);
+const AgentsPage = lazy(() =>
+  import("@/components/Agents/AgentsPage").then((module) => ({
+    default: module.AgentsPage,
+  })),
+);
+const BridgePage = lazy(() =>
+  import("@/components/Bridge/BridgePage").then((module) => ({
+    default: module.BridgePage,
+  })),
+);
+
+function SurfaceLoading() {
+  return (
+    <div
+      className="flex min-h-0 flex-1 items-center justify-center text-sm text-slate-500"
+      role="status"
+    >
+      Loading workspace…
+    </div>
+  );
+}
 
 /**
  * The sidebar's visible room order, flattened for Alt+↑/↓.
@@ -597,23 +628,25 @@ export function AppShell() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header hideOnMobile={!!activeRoomId} />
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-          {activeRoomId ? (
-            <ErrorBoundary key={activeRoomId}>
-              <RoomView roomId={activeRoomId} />
-            </ErrorBoundary>
-          ) : isAgentsView ? (
-            <ErrorBoundary>
-              <AgentsPage />
-            </ErrorBoundary>
-          ) : isBridgeView ? (
-            <ErrorBoundary>
-              <BridgePage />
-            </ErrorBoundary>
-          ) : (
-            <ErrorBoundary>
-              <HomeDashboard />
-            </ErrorBoundary>
-          )}
+          <Suspense fallback={<SurfaceLoading />}>
+            {activeRoomId ? (
+              <ErrorBoundary key={activeRoomId}>
+                <RoomView roomId={activeRoomId} />
+              </ErrorBoundary>
+            ) : isAgentsView ? (
+              <ErrorBoundary>
+                <AgentsPage />
+              </ErrorBoundary>
+            ) : isBridgeView ? (
+              <ErrorBoundary>
+                <BridgePage />
+              </ErrorBoundary>
+            ) : (
+              <ErrorBoundary>
+                <HomeDashboard />
+              </ErrorBoundary>
+            )}
+          </Suspense>
         </div>
       </main>
 

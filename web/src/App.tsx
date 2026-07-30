@@ -1,15 +1,43 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { MotionConfig } from "framer-motion";
 import { isAuthenticated, login, getUserProfile } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
-import { AppShell } from "@/components/Layout/AppShell";
 import { StableMark } from "@/components/StableMark";
-import { VoiceProvider } from "@/contexts/VoiceProvider";
-import { CallDock } from "@/components/Room/CallDock";
 import { Landing } from "@/components/Landing";
+
+// The public front door and authentication recovery path should not download the
+// full collaboration runtime. Load LiveKit, the room shell, and the persistent
+// call controls only after AuthGate admits the user.
+const AppShell = lazy(() =>
+  import("@/components/Layout/AppShell").then((module) => ({
+    default: module.AppShell,
+  })),
+);
+const VoiceProvider = lazy(() =>
+  import("@/contexts/VoiceProvider").then((module) => ({
+    default: module.VoiceProvider,
+  })),
+);
+const CallDock = lazy(() =>
+  import("@/components/Room/CallDock").then((module) => ({
+    default: module.CallDock,
+  })),
+);
+
+function AppLoading() {
+  return (
+    <div
+      className="flex min-h-dvh w-full items-center justify-center bg-slate-900"
+      role="status"
+      aria-label="Loading Stable workspace"
+    >
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-stable-purple border-t-transparent" />
+    </div>
+  );
+}
 
 function AuthGate({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
@@ -303,6 +331,7 @@ export function App() {
     <MotionConfig reducedMotion="user">
     <LandingGate>
     <AuthGate>
+      <Suspense fallback={<AppLoading />}>
       <VoiceProvider>
       <Routes>
         {/* Login is vestigial -- auth is a top-level Keycloak redirect, so just
@@ -328,6 +357,7 @@ export function App() {
           self-gates, so mounting it unconditionally here is safe. */}
       <CallDock />
       </VoiceProvider>
+      </Suspense>
     </AuthGate>
     </LandingGate>
     </MotionConfig>
