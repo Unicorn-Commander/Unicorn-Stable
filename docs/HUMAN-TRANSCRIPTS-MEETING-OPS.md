@@ -19,15 +19,16 @@ P-00115 / Meeting-Ops session `77fd49a9` — live human call captions + Send to 
 5. **Backend**  
    - `POST /api/v1/rooms/{room_id}/transcripts/export` — structured payload, room-member auth.  
    - `GET /api/v1/transcripts/meeting-ops/status` — whether a remote URL is configured (no secrets).  
-   - Optional forward via `MEETING_OPS_URL` + `MEETING_OPS_API_KEY` (see env). If URL is empty, export still **200** with `meeting_ops.status=skipped` (local accept).
+   - Durable forward via `MEETING_OPS_URL` + `MEETING_OPS_API_KEY` + `MEETING_OPS_ORG_SLUG`. Incomplete configuration returns `meeting_ops.status=blocked` and retains the export for later delivery.
 
 ## Env (no secrets committed)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MEETING_OPS_URL` | _(empty)_ | Base URL; empty = local-only accept |
+| `MEETING_OPS_URL` | _(empty)_ | Meeting-Ops base URL; required for delivery |
 | `MEETING_OPS_INGEST_PATH` | `/api/v1/sessions/ingest` | Path appended to base |
-| `MEETING_OPS_API_KEY` | _(empty)_ | Optional `Authorization: Bearer …` |
+| `MEETING_OPS_API_KEY` | _(empty)_ | Meeting-Ops PAT (`mops_pat_…`); required for delivery |
+| `MEETING_OPS_ORG_SLUG` | _(empty)_ | Explicit target Meeting-Ops organization; required for delivery |
 | `MEETING_OPS_ENABLED` | `true` | Master switch |
 
 Documented in `.env.example` and wired in `docker-compose.yml` for the backend service.
@@ -44,9 +45,9 @@ Documented in `.env.example` and wired in `docker-compose.yml` for the backend s
 ### Meeting-Ops toggle / export
 1. Settings → Notifications → confirm “Send call transcripts to Meeting-Ops by default” is on; toggle off/on and reload — preference persists.  
 2. Start a call; transcript panel shows the session checkbox seeded from that default.  
-3. With sample/final lines present, click **Send now** — expect toast “Transcript exported” / “Saved N lines (Meeting-Ops not configured)” when URL unset.  
+3. With sample/final lines present, click **Send now** — expect a delivered deep link, queued status, or a truthful blocked status when configuration is incomplete.
 4. Hang up with toggle on + final lines → network tab should show `POST …/transcripts/export` (200).  
-5. With Meeting-Ops configured on a deploy box: set `MEETING_OPS_URL` (+ key if needed), redeploy backend, re-export → response `meeting_ops.forwarded: true` when remote accepts.
+5. With Meeting-Ops configured on a deploy box: set URL, PAT, and organization, redeploy backend, re-export → status progresses to `delivered` and includes `remote_session_url`.
 
 ### Backend smoke (local)
 ```bash
@@ -62,10 +63,10 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 ## Still blocked / residual risks
 
-1. **Meeting-Ops ingest contract** is assumed (`POST {URL}{INGEST_PATH}` JSON body). Real Meeting-Ops may need a different path/schema once credentials and API docs are available — adapter is isolated in `server/app/services/meeting_ops.py`.  
+1. **Meeting-Ops ingest contract** is implemented at `POST /api/v1/sessions/ingest`. It uses PAT auth, `X-MeetingOps-Org`, and `Idempotency-Key`; the adapter is isolated in `server/app/services/meeting_ops.py`.
 2. **Web Speech API** quality/language depends on the browser; Safari/Firefox support is weaker than Chromium. No browser STT ⇒ human-only calls need an agent for captions.  
 3. **Remote humans** without this client build (or without speech recognition) are not captioned unless an agent is in the room running STT.  
-4. **No durable server-side transcript store** beyond the export POST and (when agent present) existing `voice-user-message` chat history — export is client-buffered for the live panel.  
+4. Stable persists finalized exports in `transcript_exports` before delivery. The outbox retries transient failures with bounded exponential backoff, recovers interrupted claims, and retains blocked exports until the complete Meeting-Ops target is configured.
 5. **Not deployed** by this branch; production roll-out is a separate step.
 
 ## Files changed (high level)

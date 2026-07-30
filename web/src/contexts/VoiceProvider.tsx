@@ -235,8 +235,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
     humanTranscriptRef.current = null;
 
-    // Best-effort Meeting-Ops / local export of final caption lines.
-    // Fire-and-forget so hang-up never blocks on the network.
+    // Submit final caption lines without blocking LiveKit teardown. Once the
+    // Stable API accepts this request its durable server outbox owns delivery,
+    // retries, and recovery; the browser never calls Meeting-Ops directly.
     void (async () => {
       try {
         const ui = useCallUiStore.getState();
@@ -254,6 +255,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             ts: l.ts,
             is_final: true,
             segment_id: l.id,
+            source: l.source || "unknown",
           })),
           room_name:
             roomMeta?.display_name || roomMeta?.name || null,

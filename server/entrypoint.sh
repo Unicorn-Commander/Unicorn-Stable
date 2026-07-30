@@ -5,9 +5,7 @@
 set -e
 
 echo "[entrypoint] running alembic upgrade head"
-alembic upgrade head || {
-  echo "[entrypoint] alembic failed (exit $?). Continuing anyway — DB may already be at head."
-}
+alembic upgrade head
 
 echo "[entrypoint] starting uvicorn"
 exec uvicorn app.main:app --host 0.0.0.0 --port 8400 --workers 4 --loop uvloop --http httptools

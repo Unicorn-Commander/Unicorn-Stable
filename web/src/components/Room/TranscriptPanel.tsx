@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Captions, Check, Loader2, Send, X, Sparkles } from "lucide-react";
+import {
+  Captions,
+  Check,
+  ExternalLink,
+  Loader2,
+  Send,
+  X,
+  Sparkles,
+} from "lucide-react";
 import { identityFor } from "@/lib/identity";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useAppStore } from "@/stores/appStore";
@@ -51,6 +59,7 @@ export function TranscriptPanel() {
   const [seeding, setSeeding] = useState(false);
   const [sending, setSending] = useState(false);
   const [lastExportNote, setLastExportNote] = useState<string | null>(null);
+  const [lastExportUrl, setLastExportUrl] = useState<string | null>(null);
 
   function onScroll() {
     const el = scrollRef.current;
@@ -87,6 +96,7 @@ export function TranscriptPanel() {
     }
     setSending(true);
     setLastExportNote(null);
+    setLastExportUrl(null);
     try {
       const roomMeta = rooms.find((rm) => rm.id === activeCallRoomId);
       const result = await api.exportCallTranscript(activeCallRoomId, {
@@ -97,6 +107,7 @@ export function TranscriptPanel() {
           ts: l.ts,
           is_final: true,
           segment_id: l.id,
+          source: l.source || "unknown",
         })),
         room_name: roomMeta?.display_name || roomMeta?.name || null,
         call_started_at: callStartedAt
@@ -108,16 +119,36 @@ export function TranscriptPanel() {
           ? `Stable call · ${roomMeta.display_name || roomMeta.name}`
           : "Stable call",
       });
-      const mo = result.meeting_ops;
+      let current = result;
+      // The export is durable as soon as POST returns. Give the server-side
+      // outbox a short window to complete so manual Send can surface the
+      // canonical Meeting-Ops link without pretending a queued row is sent.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        if (!["pending", "delivering"].includes(current.meeting_ops.status)) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+        current = await api.getCallTranscriptExport(
+          activeCallRoomId,
+          current.export_id,
+        );
+      }
+      const mo = current.meeting_ops;
       const note =
-        mo?.status === "ok"
-          ? `Sent ${result.line_count} line${result.line_count === 1 ? "" : "s"} to Meeting-Ops`
-          : mo?.status === "skipped"
-            ? `Saved ${result.line_count} line${result.line_count === 1 ? "" : "s"} (Meeting-Ops not configured)`
-            : `Export accepted (${mo?.detail || mo?.status || "unknown"})`;
+        mo?.status === "delivered"
+          ? `Sent ${current.line_count} line${current.line_count === 1 ? "" : "s"} to Meeting-Ops`
+          : mo?.status === "blocked"
+            ? `Saved ${current.line_count} line${current.line_count === 1 ? "" : "s"} in Stable; Meeting-Ops is not configured`
+            : mo?.status === "failed"
+              ? `Saved in Stable, but Meeting-Ops rejected delivery${mo.detail ? `: ${mo.detail}` : ""}`
+              : `Saved in Stable and queued for Meeting-Ops delivery`;
       setLastExportNote(note);
+      setLastExportUrl(mo.remote_session_url || null);
       pushToast({
-        title: mo?.status === "ok" ? "Sent to Meeting-Ops" : "Transcript exported",
+        title:
+          mo?.status === "delivered"
+            ? "Sent to Meeting-Ops"
+            : mo?.status === "failed"
+              ? "Delivery needs attention"
+              : "Transcript safely queued",
         body: note,
       });
     } catch (e) {
@@ -183,7 +214,7 @@ export function TranscriptPanel() {
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line/80 px-3 py-1.5">
         <label
           className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-300"
-          title="When on, hang-up posts this call's captions to Meeting-Ops (or accepts them locally if Meeting-Ops is not configured)."
+          title="When on, hang-up saves this call's captions in Stable's durable queue and delivers them to Meeting-Ops."
         >
           <input
             type="checkbox"
@@ -213,6 +244,17 @@ export function TranscriptPanel() {
           )}
           {sending ? "Sending…" : "Send now"}
         </button>
+        {lastExportUrl && (
+          <a
+            href={lastExportUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="focus-ring inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px] text-stable-cyan hover:bg-stable-cyan/10"
+          >
+            Open record
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
       </div>
 
       <div

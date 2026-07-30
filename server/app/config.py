@@ -228,15 +228,21 @@ class Settings(BaseSettings):
 
     # -- Meeting-Ops transcript federation (app/api/transcripts.py) --
     # Optional forward target for finalized call transcripts ("Send to
-    # Meeting-Ops"). Leave MEETING_OPS_URL empty to accept exports locally only
-    # (logged, 200) without attempting a remote POST. No secrets are shipped —
-    # set MEETING_OPS_API_KEY in the deploy environment when the remote requires
-    # a bearer. See server/app/services/meeting_ops.py.
+    # Meeting-Ops"). Incomplete URL/PAT/org configuration retains exports in
+    # the durable blocked queue without attempting a remote POST. No secrets
+    # are shipped. See server/app/services/meeting_ops.py.
     meeting_ops_url: str = ""
     meeting_ops_ingest_path: str = "/api/v1/sessions/ingest"
     meeting_ops_api_key: str = ""
+    # Explicit tenant selector sent as X-MeetingOps-Org. Production should set
+    # this even when the PAT user's default org happens to be correct.
+    meeting_ops_org_slug: str = ""
     # Master switch. When False, never forward even if URL is set.
     meeting_ops_enabled: bool = True
+    meeting_ops_outbox_poll_seconds: float = 2.0
+    meeting_ops_outbox_max_attempts: int = 8
+    meeting_ops_outbox_retry_base_seconds: int = 5
+    meeting_ops_outbox_retry_max_seconds: int = 900
 
     # -- STT proxy (app/api/stt.py) --
     # OpenAI-compatible transcription base (must include the /v1 suffix).

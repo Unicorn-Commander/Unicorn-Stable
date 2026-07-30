@@ -124,7 +124,7 @@ All runtime config is environment-driven. Copy [`.env.example`](.env.example) â†
 | Auth | `KEYCLOAK_URL`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET` |
 | Models | Brigade / OpenAI-compatible / provider keys as needed |
 | Voice | `WHISPER_BASE_URL`, `KOKORO_BASE_URL` |
-| Meeting-Ops export (optional) | `MEETING_OPS_URL`, `MEETING_OPS_API_KEY` |
+| Meeting-Ops durable export | `MEETING_OPS_URL`, `MEETING_OPS_API_KEY`, `MEETING_OPS_ORG_SLUG` |
 
 Generate strong secrets for production (`INTERNAL_AGENT_SECRET`, upload signing,
 gateway admin). Default placeholder credentials must not ship to the public

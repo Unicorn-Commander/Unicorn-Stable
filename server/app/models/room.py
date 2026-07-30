@@ -138,8 +138,62 @@ class RoomMember(Base, UUIDPrimaryKeyMixin):
     )
 
 
+class TranscriptExport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Durable Stable -> Meeting-Ops delivery outbox.
+
+    The transcript payload is committed here before any network request. A
+    process-wide worker claims rows with ``FOR UPDATE SKIP LOCKED`` so Stable's
+    multi-worker deployment can retry safely without duplicate deliveries.
+    Meeting-Ops also de-duplicates on ``export_id``.
+    """
+
+    __tablename__ = "transcript_exports"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_transcript_exports_idempotency_key",
+        ),
+    )
+
+    room_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rooms.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    requested_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("participants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    line_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # pending | delivering | blocked | delivered | failed | local_only
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'pending'"), index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    remote_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    remote_session_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 # Resolve forward references
 from app.models.message import Message  # noqa: E402
 from app.models.participant import Participant  # noqa: E402
 
-__all__ = ["Room", "RoomMember", "RoomType", "MemberRole"]
+__all__ = ["Room", "RoomMember", "RoomType", "MemberRole", "TranscriptExport"]

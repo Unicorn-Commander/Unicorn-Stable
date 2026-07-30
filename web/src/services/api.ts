@@ -1067,8 +1067,8 @@ class StableApiClient {
 
   /**
    * Finalize a call transcript and optionally forward it to Meeting-Ops.
-   * Backend accepts the payload even when Meeting-Ops is not configured
-   * (local-only accept + delivery report in the response).
+   * Backend durably queues the payload even when Meeting-Ops is not configured
+   * and reports blocked/pending/delivered/failed truthfully.
    */
   async exportCallTranscript(
     roomId: string,
@@ -1080,6 +1080,7 @@ class StableApiClient {
         ts: number;
         is_final: boolean;
         segment_id?: string;
+        source?: "local_mic" | "agent_stt" | "agent" | "unknown";
       }>;
       include_interim?: boolean;
       room_name?: string | null;
@@ -1088,6 +1089,7 @@ class StableApiClient {
       meeting_ops_session_id?: string | null;
       label?: string | null;
       send_to_meeting_ops?: boolean;
+      idempotency_key?: string | null;
       metadata?: Record<string, unknown>;
     },
   ): Promise<{
@@ -1102,10 +1104,24 @@ class StableApiClient {
       detail?: string;
       http_status?: number;
       remote_session_id?: string | null;
+      remote_session_url?: string | null;
+      attempt_count?: number;
+      next_attempt_at?: string | null;
     };
     exported_at: string;
+    status_url: string;
   }> {
     return this.request("POST", `/api/v1/rooms/${roomId}/transcripts/export`, body);
+  }
+
+  async getCallTranscriptExport(
+    roomId: string,
+    exportId: string,
+  ): ReturnType<StableApiClient["exportCallTranscript"]> {
+    return this.request(
+      "GET",
+      `/api/v1/rooms/${roomId}/transcripts/exports/${exportId}`,
+    );
   }
 
   /** Whether Meeting-Ops is wired on this instance (no secrets exposed). */
@@ -1113,6 +1129,8 @@ class StableApiClient {
     configured: boolean;
     enabled: boolean;
     has_url: boolean;
+    has_api_key: boolean;
+    has_org_slug: boolean;
   }> {
     return this.request("GET", "/api/v1/transcripts/meeting-ops/status");
   }

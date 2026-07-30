@@ -197,6 +197,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("kb_stranded_recovery_schedule_failed", exc_info=True)
     app.state.kb_recovery_task = kb_recovery_task
 
+    # Durable transcript delivery. Every uvicorn worker may run this loop:
+    # row claims use FOR UPDATE SKIP LOCKED and Meeting-Ops de-duplicates on
+    # export_id, so parallel workers improve recovery without duplicate records.
+    transcript_outbox_task = None
+    try:
+        from app.services.transcript_outbox import run_transcript_outbox
+
+        transcript_outbox_task = asyncio.create_task(
+            run_transcript_outbox(session_factory, settings)
+        )
+        logger.info(
+            "transcript_outbox_worker_started",
+            meeting_ops_configured=bool(
+                settings.meeting_ops_enabled
+                and settings.meeting_ops_url.strip()
+                and settings.meeting_ops_api_key.strip()
+                and settings.meeting_ops_org_slug.strip()
+            ),
+        )
+    except Exception:
+        logger.warning("transcript_outbox_worker_start_failed", exc_info=True)
+    app.state.transcript_outbox_task = transcript_outbox_task
+
     logger.info("application_startup_complete", environment=settings.environment)
 
     yield
@@ -209,6 +232,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if kb_recovery_task and not kb_recovery_task.done():
         kb_recovery_task.cancel()
+
+    if transcript_outbox_task and not transcript_outbox_task.done():
+        transcript_outbox_task.cancel()
+        try:
+            await transcript_outbox_task
+        except asyncio.CancelledError:
+            pass
 
     await lk_api.aclose()
     await redis.aclose()

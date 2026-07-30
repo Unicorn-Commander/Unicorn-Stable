@@ -364,7 +364,7 @@ function MeetingOpsTranscriptSection() {
           label="Send call transcripts to Meeting-Ops by default"
           hint={
             moConfigured === false
-              ? "On by default for new calls. This instance has no MEETING_OPS_URL configured — exports are still accepted by Stable (local-only) until Meeting-Ops is wired."
+              ? "On by default for new calls. Meeting-Ops is not fully configured, so exports remain safely blocked in Stable until URL, PAT, and organization are wired."
               : moConfigured === true
                 ? "New calls start with “Send to Meeting-Ops” on. You can still flip it per call in the live transcript panel."
                 : "New calls start with “Send to Meeting-Ops” on. You can still flip it per call in the live transcript panel."

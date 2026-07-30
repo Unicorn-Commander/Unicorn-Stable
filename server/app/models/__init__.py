@@ -15,7 +15,7 @@ from app.models.knowledge import (
 from app.models.message import ContentType, Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.push_subscription import PushSubscription
-from app.models.room import MemberRole, Room, RoomMember, RoomType
+from app.models.room import MemberRole, Room, RoomMember, RoomType, TranscriptExport
 
 __all__ = [
     "Base",
@@ -28,6 +28,7 @@ __all__ = [
     "RoomMember",
     "RoomType",
     "MemberRole",
+    "TranscriptExport",
     "PushSubscription",
     "Message",
     "ContentType",
