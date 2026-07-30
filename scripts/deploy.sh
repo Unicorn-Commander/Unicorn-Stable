@@ -137,6 +137,10 @@ for svc in "$@"; do
       echo "❌ server rail check failed — rollback tags are ${STAMP}." >&2
       exit 1
     }
+    python3 "$ROOT/scripts/check_landing_frame.py" "$EXTERNAL_URL" || {
+      echo "❌ landing frame check failed — rollback tags are ${STAMP}." >&2
+      exit 1
+    }
   fi
 done
 
