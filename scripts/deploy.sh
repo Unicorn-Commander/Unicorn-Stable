@@ -60,11 +60,15 @@ STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
 declare -A IMG=( [backend]="${PROJECT}-backend" [web]="${PROJECT}-web" [agents]="${PROJECT}-agent-runtime" )
 declare -A CTX=( [backend]="./server" [web]="./web" [agents]="./agents" )
+declare -A COMPOSE_SVC=( [backend]="backend" [web]="web" [agents]="agent-runtime" )
+compose_services=()
 
 for svc in "$@"; do
   img="${IMG[$svc]:-}"
   ctx="${CTX[$svc]:-}"
-  if [[ -z "$img" || -z "$ctx" ]]; then echo "unknown service: $svc" >&2; exit 2; fi
+  compose_svc="${COMPOSE_SVC[$svc]:-}"
+  if [[ -z "$img" || -z "$ctx" || -z "$compose_svc" ]]; then echo "unknown service: $svc" >&2; exit 2; fi
+  compose_services+=("$compose_svc")
 
   # 1) rollback-tag the currently-deployed image (if any)
   if docker image inspect "${img}:latest" >/dev/null 2>&1; then
@@ -86,7 +90,7 @@ done
 
 # 3) recreate the target services from the freshly-built :latest
 echo "  ♻ recreating: $*"
-docker compose -p "$PROJECT" up -d --no-deps --force-recreate "$@"
+docker compose -p "$PROJECT" up -d --no-deps --force-recreate "${compose_services[@]}"
 
 # 4) verify — docker health + external HTTP
 echo "  ⏳ waiting for containers to settle…"
@@ -136,4 +140,6 @@ for svc in "$@"; do
   fi
 done
 
-echo "✅ deploy OK (sha=$GIT_SHA). Rollback with: docker tag ${IMG[$1]}:rollback-${STAMP} ${IMG[$1]}:latest && docker compose -p $PROJECT up -d --no-deps --force-recreate $1"
+first_service="$1"
+first_compose_service="${COMPOSE_SVC[$first_service]}"
+echo "✅ deploy OK (sha=$GIT_SHA). Rollback with: docker tag ${IMG[$first_service]}:rollback-${STAMP} ${IMG[$first_service]}:latest && docker compose -p $PROJECT up -d --no-deps --force-recreate $first_compose_service"
