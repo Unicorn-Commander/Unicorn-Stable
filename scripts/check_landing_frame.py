@@ -32,6 +32,8 @@ def main() -> int:
             failures.append(f"{label}: CSP does not allow same-origin frame ancestors")
         if "frame-ancestors 'none'" in csp:
             failures.append(f"{label}: CSP still blocks every frame ancestor")
+        if "https://analytics.unicorncommander.ai" not in csp:
+            failures.append(f"{label}: CSP blocks the landing analytics script")
 
     if b"stable:enter" not in landing or b"Enter Stable" not in landing:
         failures.append("landing: expected entry contract is missing")
