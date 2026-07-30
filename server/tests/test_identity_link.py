@@ -33,7 +33,7 @@ from typing import Any
 
 sys.path.insert(0, "/home/stable/server")
 
-from sqlalchemy import delete, select  # noqa: E402
+from sqlalchemy import delete, select, text  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 
 from app.config import Settings  # noqa: E402
@@ -163,6 +163,7 @@ async def main() -> None:
 
     engine = create_async_engine(url)
     async with engine.begin() as conn:
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)

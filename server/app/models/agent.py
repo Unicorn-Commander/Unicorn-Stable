@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -140,8 +141,45 @@ class AgentRun(Base, UUIDPrimaryKeyMixin):
     )
 
 
+class AgentEvent(Base, UUIDPrimaryKeyMixin):
+    """Append-only audit record received from a Stable agent worker."""
+
+    __tablename__ = "agent_events"
+
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    agent_identity: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
+    agent_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    room_ref: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    event_data: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        index=True,
+    )
+
+
 # Resolve forward references
 from app.models.participant import Participant  # noqa: E402
 from app.models.room import Room  # noqa: E402
 
-__all__ = ["AgentConfig", "AgentRun", "AgentType", "AgentRunStatus"]
+__all__ = [
+    "AgentConfig",
+    "AgentRun",
+    "AgentEvent",
+    "AgentType",
+    "AgentRunStatus",
+]

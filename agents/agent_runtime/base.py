@@ -445,9 +445,17 @@ class StableAgent:
 
     async def _log_agent_event(self, event: str, data: dict[str, Any]) -> None:
         """Send an audit event to the Stable backend."""
+        secret = self._settings.internal_agent_secret
+        if not secret:
+            logger.warning(
+                "audit_log_skipped",
+                event=event,
+                reason="INTERNAL_AGENT_SECRET is required for audit delivery",
+            )
+            return
         try:
-            await self._backend_http.post(
-                "/api/agents/events",
+            response = await self._backend_http.post(
+                "/api/v1/internal/agent-events",
                 json={
                     "agent_identity": self._identity,
                     "agent_type": self.agent_type,
@@ -455,11 +463,13 @@ class StableAgent:
                     "data": data,
                     "room_id": self._room_id,
                 },
-                headers=(
-                    {"Authorization": f"Bearer {self._agent_token}"}
-                    if self._agent_token
-                    else {}
-                ),
+                headers={"Authorization": f"Bearer {secret}"},
             )
+            if response.status_code >= 300:
+                logger.warning(
+                    "audit_log_http_error",
+                    event=event,
+                    status_code=response.status_code,
+                )
         except Exception:
-            logger.debug("audit_log_failed", event=event, exc_info=True)
+            logger.warning("audit_log_failed", event=event, exc_info=True)

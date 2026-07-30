@@ -108,7 +108,10 @@ services:
   # Stable Backend — FastAPI: auth, rooms, messages, tokens, WebSocket
   # ==========================================================================
   backend:
-    image: unicorn-stable-backend:6b1df10dad29  # identity-link
+    # Deploy scripts build :latest with immutable source labels. Do not pin an
+    # old one-off tag here: `docker compose up --force-recreate` otherwise
+    # silently recreates the stale image even after a successful fresh build.
+    image: ${STABLE_BACKEND_IMAGE:-unicorn-stable-backend:latest}
     build:
       context: ./server
       dockerfile: Dockerfile
@@ -174,6 +177,8 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+      - READINESS_REQUIRE_OBSERVABILITY=${READINESS_REQUIRE_OBSERVABILITY:-false}
+      - READINESS_REQUIRE_BUILD_PROVENANCE=${READINESS_REQUIRE_BUILD_PROVENANCE:-true}
       # Voice proxies (browser + MCP cannot reach LAN-only GPU hosts).
       # TTS = kokoro-ha; STT = Parakeet OpenAI shim (Amanuensis-compatible).
       - KOKORO_BASE_URL=${KOKORO_BASE_URL:-http://192.168.10.10:8883}
@@ -227,7 +232,9 @@ services:
       - "traefik.http.routers.stable-internal-deny-http.service=stable-api"
       - "traefik.http.routers.stable-internal-deny-http.middlewares=stable-internal-denylist"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/health')"]
+      # Liveness controls restarts. Readiness is checked by the deploy gate;
+      # dependency outages must not create a restart loop.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/live')"]
       interval: 15s
       timeout: 10s
       retries: 3

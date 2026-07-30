@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
+from jose.exceptions import ExpiredSignatureError
 from redis.asyncio import Redis
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import select
@@ -29,6 +30,27 @@ router = APIRouter()
 # buggy or hostile client's word for how often that should happen. Comfortably
 # under TYPING_TTL so an honest keepalive is never swallowed.
 TYPING_REBROADCAST_FLOOR_S: float = 1.0
+
+
+def _jwt_failure_reason(exc: JWTError) -> str:
+    """Map auth failures to bounded operational labels.
+
+    Never put raw JWT exceptions in logs. Some jose errors include key ids,
+    claims, or token-derived values; operators need the failure class, not the
+    submitted credential.
+    """
+    if isinstance(exc, ExpiredSignatureError):
+        return "expired"
+    message = str(exc).lower()
+    if "audience" in message:
+        return "audience"
+    if "issuer" in message:
+        return "issuer"
+    if "signing key" in message or "signature" in message:
+        return "signature"
+    if "missing" in message:
+        return "malformed"
+    return "invalid"
 
 
 async def _safe_send(ws: WebSocket, data: dict[str, Any]) -> None:
@@ -203,7 +225,11 @@ async def _authenticate_ws(
         )
         return extract_user_identity(claims)
     except JWTError as exc:
-        logger.warning("ws_auth_failed", error=str(exc))
+        logger.warning(
+            "ws_auth_failed",
+            reason=_jwt_failure_reason(exc),
+            transport="websocket",
+        )
         return None
 
 

@@ -47,6 +47,9 @@ class FakeResult:
     def all(self) -> list[Any]:
         return self._rows
 
+    def first(self) -> Any | None:
+        return self._rows[0] if self._rows else None
+
 
 class FakeDB:
     """Dispatches on the table named in the compiled statement."""
@@ -62,7 +65,9 @@ class FakeDB:
         self.raise_on_messages = raise_on_messages
         self.queried: list[str] = []
 
-    async def execute(self, stmt: Any) -> FakeResult:
+    async def execute(
+        self, stmt: Any, _params: dict[str, Any] | None = None
+    ) -> FakeResult:
         sql = str(stmt)
         if "room_knowledge" in sql:
             self.queried.append("room_knowledge")
@@ -74,7 +79,23 @@ class FakeDB:
             self.queried.append("messages")
             if self.raise_on_messages:
                 raise RuntimeError("database hiccup")
-            return FakeResult(list(self.message_metadata))
+            # The production query returns a row only for attachment content
+            # types the indexer can actually search. Preserve that behavior in
+            # the fake instead of treating any attachment (for example a PNG)
+            # as a document surface.
+            searchable = []
+            for metadata in self.message_metadata:
+                attachments = (metadata or {}).get("attachments") or []
+                for attachment in attachments:
+                    content_type = str(attachment.get("content_type") or "").lower()
+                    if content_type.startswith("text/") or content_type in {
+                        "application/pdf",
+                        "application/json",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }:
+                        searchable.append((1,))
+                        break
+            return FakeResult(searchable)
         raise AssertionError(f"unexpected query: {sql}")
 
 

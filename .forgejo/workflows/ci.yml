@@ -24,7 +24,11 @@ jobs:
         with:
           node-version: '22'
       - name: install
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+      - name: lint
+        run: npm run lint
+      - name: production dependency audit
+        run: npm run audit:prod
       - name: typecheck + build
         # `npm run build` runs `tsc -b && vite build` — this is the type gate.
         run: npm run build
@@ -34,6 +38,20 @@ jobs:
     defaults:
       run:
         working-directory: server
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: stable
+          POSTGRES_PASSWORD: stable-test-password
+          POSTGRES_DB: stable_identity_link_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stable -d stable_identity_link_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,10 +63,29 @@ jobs:
         run: python -m compileall -q app
       - name: import smoke (config loads)
         run: python -c "import app.config; print('backend imports OK')"
-      - name: tests (if present)
+      - name: focused unit and behavior tests
         run: |
-          if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
-            pip install pytest && pytest -q || exit 1
-          else
-            echo "no tests dir — skipping (add tests to strengthen this gate)"
-          fi
+          python -m unittest -q tests/test_enterprise_trust.py
+          python tests/test_gather_grounding.py
+          bash tests/test_entrypoint.sh
+      - name: identity-link database integration test
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://stable:stable-test-password@localhost:5432/stable_identity_link_test
+        run: python tests/test_identity_link.py
+
+  agents:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agents
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install
+        run: pip install . pytest
+      - name: compile-check
+        run: python -m compileall -q agent_runtime brigade_backed triage plugins
+      - name: tests
+        run: pytest -q

@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     # Empty => disabled. GLITCHTIP_DSN env is honoured as a fallback.
     sentry_dsn: str = ""
     sentry_traces_sample_rate: float = 0.0
+    # Optional enterprise release gates. When enabled, /ready returns 503
+    # unless error reporting is active and/or the image carries a real source
+    # revision. They default off for self-hosted/dev compatibility, but the
+    # readiness body still reports either condition truthfully.
+    readiness_require_observability: bool = False
+    readiness_require_build_provenance: bool = False
+    health_check_timeout_seconds: float = 3.0
 
     # -- Backend hardening (appended; see feat/backend-hardening) --
 

@@ -1,4 +1,4 @@
-from app.models.agent import AgentConfig, AgentRun, AgentRunStatus, AgentType
+from app.models.agent import AgentConfig, AgentEvent, AgentRun, AgentRunStatus, AgentType
 from app.models.artifact import (
     Artifact,
     ArtifactAuthorKind,
@@ -34,6 +34,7 @@ __all__ = [
     "ContentType",
     "AgentConfig",
     "AgentRun",
+    "AgentEvent",
     "AgentType",
     "AgentRunStatus",
     "Artifact",

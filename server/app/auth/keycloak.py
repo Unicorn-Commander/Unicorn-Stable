@@ -15,6 +15,7 @@ _jwks_cache: dict[str, Any] = {}
 _oidc_config_cache: dict[str, Any] = {}
 _last_jwks_refresh: float = 0.0
 JWKS_REFRESH_INTERVAL: int = 3600  # seconds
+JWKS_RETRY_INTERVAL: int = 60
 
 
 async def fetch_oidc_config(keycloak_url: str, realm: str) -> dict[str, Any]:
@@ -168,22 +169,33 @@ def extract_user_identity(claims: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def start_jwks_refresh_task(keycloak_url: str, realm: str) -> asyncio.Task[None]:
+def jwks_cache_ready() -> bool:
+    """Return whether at least one signing key is currently cached."""
+    return bool(_jwks_cache.get("keys"))
+
+
+async def start_jwks_refresh_task(
+    keycloak_url: str, realm: str, *, refresh_immediately: bool = False
+) -> asyncio.Task[None]:
     """Start a background task that periodically refreshes the JWKS cache."""
 
     async def _refresh_loop() -> None:
+        delay = 0 if refresh_immediately else JWKS_REFRESH_INTERVAL
         while True:
             try:
-                await asyncio.sleep(JWKS_REFRESH_INTERVAL)
+                await asyncio.sleep(delay)
                 global _last_jwks_refresh
                 _last_jwks_refresh = 0.0
                 await fetch_jwks(keycloak_url, realm)
+                delay = JWKS_REFRESH_INTERVAL
             except asyncio.CancelledError:
                 logger.info("jwks_refresh_task_cancelled")
                 break
             except Exception:
                 logger.exception("jwks_refresh_failed")
-                await asyncio.sleep(60)
+                # Retry soon after an initial/bootstrap outage, then return to
+                # the normal hourly refresh cadence after the first success.
+                delay = JWKS_RETRY_INTERVAL
 
     task = asyncio.create_task(_refresh_loop(), name="jwks-refresh")
     return task

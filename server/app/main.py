@@ -3,17 +3,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from livekit.api import LiveKitAPI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.agents import router as agents_router
+from app.api.agent_events import router as agent_events_router
 from app.api.artifacts import router as artifacts_router
 from app.api.internal_artifacts import router as internal_artifacts_router
 from app.api.brigade import router as brigade_router
@@ -165,12 +168,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Fetch JWKS and start refresh task
     jwks_task = None
+    app.state.jwks_loaded = False
     try:
         await fetch_jwks(settings.keycloak_url, settings.keycloak_realm)
-        jwks_task = await start_jwks_refresh_task(settings.keycloak_url, settings.keycloak_realm)
+        app.state.jwks_loaded = True
         logger.info("keycloak_jwks_loaded")
     except Exception:
         logger.warning("keycloak_jwks_fetch_failed_on_startup", exc_info=True)
+    # Start the refresher even when bootstrap failed. The previous code only
+    # started it on success, making a transient Keycloak outage permanent until
+    # the backend container was manually restarted.
+    jwks_task = await start_jwks_refresh_task(
+        settings.keycloak_url,
+        settings.keycloak_realm,
+        refresh_immediately=not app.state.jwks_loaded,
+    )
 
     app.state.jwks_task = jwks_task
 
@@ -254,7 +266,7 @@ def create_app() -> FastAPI:
 
     # Error/perf observability (Sentry/GlitchTip) — no-op unless a DSN is set.
     from app.observability import init_observability
-    init_observability(settings)
+    observability_enabled = init_observability(settings)
 
     app = FastAPI(
         title="Stable",
@@ -262,6 +274,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.state.observability_enabled = observability_enabled
 
     # CORS middleware
     app.add_middleware(
@@ -277,12 +290,39 @@ def create_app() -> FastAPI:
     # safe: this backend serves JSON + attachment downloads only. Attachment
     # responses additionally carry their own locked-down CSP (see uploads.py).
     @app.middleware("http")
-    async def _security_headers(request, call_next):  # type: ignore[no-untyped-def]
-        response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        return response
+    async def _request_context_and_security(
+        request: Request, call_next  # type: ignore[no-untyped-def]
+    ):
+        """Correlate every request and emit one secret-free completion event."""
+        request_id = (request.headers.get("X-Request-ID") or "").strip()
+        if not request_id or len(request_id) > 128:
+            request_id = str(uuid.uuid4())
+        started = time.monotonic()
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        response = None
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            duration_ms = round((time.monotonic() - started) * 1000, 2)
+            # Do not log query strings, auth headers, cookies, request bodies,
+            # or exception text here. Route-level logs carry safe domain data.
+            structlog.get_logger("http").info(
+                "http_request_completed",
+                method=request.method,
+                path=request.url.path,
+                status_code=getattr(response, "status_code", 500),
+                duration_ms=duration_ms,
+            )
+            if response is not None:
+                response.headers.setdefault("X-Request-ID", request_id)
+                response.headers.setdefault("X-Content-Type-Options", "nosniff")
+                response.headers.setdefault("X-Frame-Options", "DENY")
+                response.headers.setdefault(
+                    "Referrer-Policy", "strict-origin-when-cross-origin"
+                )
+            structlog.contextvars.clear_contextvars()
 
     # Mount API routers under /api/v1
     app.include_router(health_router, tags=["Health"])
@@ -295,6 +335,7 @@ def create_app() -> FastAPI:
     app.include_router(transcripts_router, prefix="/api/v1", tags=["Transcripts"])
     app.include_router(stt_router, prefix="/api/v1", tags=["STT"])
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
+    app.include_router(agent_events_router, prefix="/api/v1", tags=["Agent Audit"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
     app.include_router(artifacts_router, prefix="/api/v1", tags=["Artifacts"])
     # Internal agent-surface routers (/api/v1/internal/*). Agents reach these

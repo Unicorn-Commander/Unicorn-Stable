@@ -27,4 +27,4 @@ requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent_runtime*", "triage*", "plugins*"]
+include = ["agent_runtime*", "brigade_backed*", "triage*", "plugins*"]

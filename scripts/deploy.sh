@@ -93,6 +93,29 @@ echo "  ⏳ waiting for containers to settle…"
 sleep 6
 docker compose -p "$PROJECT" ps
 
+# Container liveness only proves the process is running. A backend deploy is
+# not successful until its schema, database, Redis, LiveKit, identity keys,
+# audit credential, and configured release gates are ready.
+for svc in "$@"; do
+  if [[ "$svc" == "backend" ]]; then
+    backend_ready=""
+    for _attempt in $(seq 1 18); do
+      if docker compose -p "$PROJECT" exec -T backend \
+        python -c "import urllib.request; urllib.request.urlopen('http://localhost:8400/ready', timeout=5)" \
+        >/dev/null 2>&1; then
+        backend_ready="1"
+        break
+      fi
+      sleep 5
+    done
+    if [[ -z "$backend_ready" ]]; then
+      echo "❌ backend readiness failed — process is alive but cannot serve real traffic." >&2
+      exit 1
+    fi
+    echo "  ✓ backend readiness gate passed"
+  fi
+done
+
 code="$(curl -s -o /dev/null -w '%{http_code}' "$EXTERNAL_URL" || echo 000)"
 echo "  🌐 external ${EXTERNAL_URL} -> HTTP ${code}"
 if ! [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]]; then

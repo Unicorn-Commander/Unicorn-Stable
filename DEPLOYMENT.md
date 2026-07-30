@@ -149,7 +149,12 @@ docker compose pull
 docker compose up -d --build
 ```
 
-The backend entrypoint runs `alembic upgrade head` automatically before starting uvicorn, so fresh databases come up with the schema applied.
+The backend entrypoint runs `alembic upgrade head` automatically before starting
+uvicorn. A migration failure is fatal; the server will not advertise liveness
+against an unknown schema. Use `scripts/deploy.sh backend` for production so the
+image is stamped with its source revision and the post-start `/ready` gate is
+checked. `/live` is process-only and is intentionally used for container
+restart decisions.
 
 ## Smoke tests
 

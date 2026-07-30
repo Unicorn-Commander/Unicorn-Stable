@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Import all models so they are registered with Base.metadata
 from app.models import (  # noqa: F401
     AgentConfig,
+    AgentEvent,
     AgentRun,
     Artifact,
     ArtifactSuggestion,
