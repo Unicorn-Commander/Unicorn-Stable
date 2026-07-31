@@ -690,11 +690,14 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
           </div>
         ) : (
           <Virtuoso
-            key={roomId}
+            key={`${roomId}:${messages.length === 0 ? "empty" : "ready"}`}
             ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
-            initialTopMostItemIndex={{ index: messages.length - 1, align: "end" }}
+            initialTopMostItemIndex={{
+              index: Math.max(0, messages.length - 1),
+              align: "end",
+            }}
             computeItemKey={(_index, message) => message.id}
             followOutput={(atBottom) => (atBottom ? "smooth" : false)}
             atBottomStateChange={(atBottom) => {
