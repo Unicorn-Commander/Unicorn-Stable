@@ -426,12 +426,16 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     const startedAt = performance.now();
     let lastHeight = -1;
     let stableFrames = 0;
+    console.debug("[pin] start");
     const step = () => {
       pinTimersRef.current.raf = undefined;
       const scroller = listWrapRef.current?.querySelector<HTMLElement>(
         '[data-virtuoso-scroller="true"]',
       );
-      if (!scroller) return;
+      if (!scroller) {
+        console.debug("[pin] no scroller");
+        return;
+      }
       scroller.scrollTop = scroller.scrollHeight;
       if (scroller.scrollHeight === lastHeight) {
         stableFrames += 1;
@@ -441,6 +445,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
       }
       if (stableFrames < 6 && performance.now() - startedAt < 2500) {
         pinTimersRef.current.raf = requestAnimationFrame(step);
+      } else {
+        console.debug(
+          "[pin] done",
+          JSON.stringify({
+            ms: Math.round(performance.now() - startedAt),
+            scrollTop: scroller.scrollTop,
+            scrollHeight: scroller.scrollHeight,
+          }),
+        );
       }
     };
     pinTimersRef.current.raf = requestAnimationFrame(step);
