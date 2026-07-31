@@ -49,6 +49,8 @@ interface UIState {
   threadMessageId: string | null;
   stageAgentId: string | null;
   createRoomModalOpen: boolean;
+  /** Global People directory drawer (Header button; not the room participant panel). */
+  peopleDrawerOpen: boolean;
 }
 
 interface CurrentUser {
@@ -132,6 +134,8 @@ interface AppState {
   setStageAgentId: (id: string | null) => void;
   setCreateRoomModalOpen: (open: boolean) => void;
   setSavedOpen: (open: boolean) => void;
+  setPeopleDrawerOpen: (open: boolean) => void;
+  togglePeopleDrawer: () => void;
 
   incrementUnread: (roomId: string, by?: number) => void;
   clearUnread: (roomId: string) => void;
@@ -179,6 +183,7 @@ export const useAppStore = create<AppState>((set) => ({
     threadMessageId: null,
     stageAgentId: null,
     createRoomModalOpen: false,
+    peopleDrawerOpen: false,
   },
   voiceActive: false,
 
@@ -590,6 +595,14 @@ export const useAppStore = create<AppState>((set) => ({
   setSavedOpen: (open) =>
     set((state) => ({
       ui: { ...state.ui, savedOpen: open },
+    })),
+  setPeopleDrawerOpen: (open) =>
+    set((state) => ({
+      ui: { ...state.ui, peopleDrawerOpen: open },
+    })),
+  togglePeopleDrawer: () =>
+    set((state) => ({
+      ui: { ...state.ui, peopleDrawerOpen: !state.ui.peopleDrawerOpen },
     })),
 
   incrementUnread: (roomId, by = 1) =>

@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
+import { usePresenceStore } from "@/stores/presenceStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import { fetchInstanceLogo, fetchInstanceMeta, type InstanceMeta } from "@/lib/instances";
 
@@ -149,8 +150,11 @@ export const useFederationStore = create<FederationState>((set, get) => ({
     // id (folder identity is (instance, section, name)), so the next server sees
     // only its own folders — and wiping it would destroy the saved organization
     // for every server at once.
+    // Presence is instance-local by design (Redis presence:instance never
+    // federates). Drop it so server A's online set never paints on B's People.
     useCanvasStore.getState().resetForServer();
     useKnowledgeStore.getState().resetForServer();
+    usePresenceStore.getState().reset();
     useSidebarUi.getState().resetForServer();
     setActiveAuthInstance(id);
     // The instance you switch TO is now being viewed → clear its rail badge.

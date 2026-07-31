@@ -12,6 +12,7 @@ import {
   Search,
   Server,
   Settings,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
@@ -27,7 +28,7 @@ interface QuickSwitcherProps {
   onOpenGlobalSearch: () => void;
 }
 
-// No "user" kind: there is no single-call human-DM API (CreateDmModal owns the
+// No "user" kind in results: People drawer owns directory → ensure-DM (CreateDmModal owns the
 // multi-step create→invite flow), so user rows would be dead entries here.
 type Item =
   | { kind: "channel"; id: string; label: string; sub: string }
@@ -138,6 +139,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
     const actionItems: Item[] = [
       { kind: "action", id: "new-channel", label: "Create channel", sub: "Start a new room", icon: Plus, run: () => g().setCreateRoomModalOpen(true) },
       { kind: "action", id: "search-all", label: "Search all messages", sub: "Across every conversation", icon: Search, run: onOpenGlobalSearch },
+      { kind: "action", id: "people", label: "People", sub: "Directory, DMs, favorites", icon: Users, run: () => g().setPeopleDrawerOpen(true) },
       { kind: "action", id: "saved", label: "Saved messages", sub: "Your bookmarks", icon: Bookmark, run: () => g().setSavedOpen(true) },
       { kind: "action", id: "settings", label: "Settings", sub: "Preferences & appearance", icon: Settings, run: () => g().toggleSettings() },
       { kind: "action", id: "shortcuts", label: "Keyboard shortcuts", sub: "Cheatsheet", icon: Keyboard, run: () => g().toggleCheatsheet() },

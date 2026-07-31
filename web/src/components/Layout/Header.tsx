@@ -9,6 +9,7 @@ import {
   Phone,
   PhoneOff,
   Users,
+  UserRound,
   Activity,
   Bookmark,
   Settings,
@@ -48,11 +49,15 @@ export function Header({
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
   const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
+  const peopleDrawerOpen = useAppStore((s) => s.ui.peopleDrawerOpen);
+  const togglePeopleDrawer = useAppStore((s) => s.togglePeopleDrawer);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const toggleCheatsheet = useAppStore((s) => s.toggleCheatsheet);
   // SavedPanel is now rendered once at the AppShell level (so the mobile drawer
   // account section can open it); here we only need the opener.
   const setSavedOpen = useAppStore((s) => s.setSavedOpen);
+  // Stable ref so PeopleDrawer restores focus here on close (useModalA11y).
+  const peopleBtnRef = useRef<HTMLButtonElement>(null);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -218,6 +223,27 @@ export function Header({
       </div>
 
       <div className="flex items-center gap-1">
+        {/* Global People directory — always available (not the room participant panel). */}
+        <Tooltip content="People" placement="bottom">
+          <button
+            ref={peopleBtnRef}
+            type="button"
+            onClick={togglePeopleDrawer}
+            className={clsx(
+              "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
+              peopleDrawerOpen
+                ? "bg-white/[0.08] text-slate-100"
+                : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
+            )}
+            aria-label="People"
+            aria-haspopup="dialog"
+            aria-expanded={peopleDrawerOpen}
+            data-people-trigger
+          >
+            <UserRound className="h-4 w-4" />
+          </button>
+        </Tooltip>
+
         {activeRoomId && (
           <>
             {(lkConnected || lkConnecting) && (

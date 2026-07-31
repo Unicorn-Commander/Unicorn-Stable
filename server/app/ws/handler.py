@@ -18,7 +18,11 @@ from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import get_settings
 from app.models.participant import Participant, ParticipantType
 from app.models.room import RoomMember
-from app.services.presence_service import PresenceService, TYPING_TTL
+from app.services.presence_service import (
+    INSTANCE_PRESENCE_CHANNEL,
+    PresenceService,
+    TYPING_TTL,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -252,13 +256,19 @@ async def _subscribe_to_rooms(
     websocket: WebSocket,
     participant_id: str,
 ) -> None:
-    """Subscribe to Redis pub/sub channels for the user's rooms and forward events."""
-    if not room_ids:
-        return
+    """Subscribe to Redis pub/sub channels for the user's rooms and forward events.
 
+    Always includes the instance-local presence channel so directory / People
+    drawer UIs receive online/offline for everyone on THIS server, not only
+    peers in a shared room. That channel is Redis-local to this deployment —
+    it is never bridged to federated Stable instances.
+    """
     pubsub = redis.pubsub()
     channels = [f"room:{rid}" for rid in room_ids]
     channels.append(f"user:{participant_id}")
+    # Global (instance-scoped) presence — required even when the user has zero
+    # rooms so the People directory still receives live online/offline deltas.
+    channels.append(INSTANCE_PRESENCE_CHANNEL)
     known_rooms: set[str] = set(room_ids)
 
     await pubsub.subscribe(*channels)

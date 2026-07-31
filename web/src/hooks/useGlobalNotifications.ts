@@ -15,6 +15,7 @@ import { loadPrefs } from "@/components/Layout/SettingsModal";
 import { getNotifyLevel } from "@/utils/mute";
 import { playCue } from "@/lib/sounds";
 import { ensurePushSubscription } from "@/lib/webpush";
+import { useGlobalPresence } from "@/hooks/useGlobalPresence";
 
 /**
  * Hard ceilings for a server-asserted agent state held locally.
@@ -54,6 +55,9 @@ interface RoomInvitedEvent {
  * Mounted once at the app shell level so it runs regardless of active room.
  */
 export function useGlobalNotifications() {
+  // Instance-scoped presence for People directory / drawer (not room-only).
+  useGlobalPresence();
+
   const currentUser = useAppStore((s) => s.currentUser);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const incrementUnread = useAppStore((s) => s.incrementUnread);

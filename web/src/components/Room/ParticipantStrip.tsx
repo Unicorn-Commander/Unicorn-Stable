@@ -13,6 +13,7 @@ import clsx from "clsx";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
+import { usePresenceStore } from "@/stores/presenceStore";
 import {
   api,
   type RoomMember,
@@ -334,11 +335,20 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants =
     useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const qc = useQueryClient();
+  // Occasional snapshot for correctness; live WS presence patches presenceStore
+  // so the panel does not wait a full 30s for someone to go green/gray.
   const { data: directory = [] } = useQuery({
     queryKey: ["people-directory"],
     queryFn: () => api.getPeopleDirectory(),
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
   });
+  // Seed the instance presence store whenever directory snapshot refreshes.
+  useEffect(() => {
+    if (directory.length === 0) return;
+    usePresenceStore.getState().setFromDirectory(directory);
+  }, [directory]);
+  // Re-render when live presence patches land (sort / online sections).
+  const presenceById = usePresenceStore((s) => s.byId);
   const { data: preferences } = useQuery({
     queryKey: ["my-preferences"],
     queryFn: () => api.getMyPreferences(),
@@ -374,8 +384,13 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
       .map((p) => p.participant_id || p.user_id || p.id)
       .filter(Boolean) as string[],
   );
-  const isDirectoryPersonOnline = (person: PeopleDirectoryEntry) =>
-    person.is_online;
+  // Live store wins; directory poll is the cold-start / reconciling fallback.
+  // Reading presenceById keeps this component subscribed to applyEvent patches.
+  const isDirectoryPersonOnline = (person: PeopleDirectoryEntry) => {
+    const live = presenceById[person.id];
+    if (live) return live.isOnline;
+    return person.is_online;
+  };
   const favoritePeople = directory
     .filter((person) => favoriteSet.has(person.id))
     .sort((a, b) => {

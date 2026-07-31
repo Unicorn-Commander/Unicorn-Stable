@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import structlog
 from redis.asyncio import Redis
 
@@ -7,6 +9,12 @@ logger = structlog.get_logger(__name__)
 
 PRESENCE_TTL: int = 120  # seconds
 TYPING_TTL: int = 5  # seconds
+
+# Instance-local fanout for the People directory / global presence UI.
+# Every WebSocket on THIS Stable deployment subscribes; Redis is per-instance
+# so the channel never crosses federated peers. Do not rename without updating
+# server/app/ws/handler.py subscription list.
+INSTANCE_PRESENCE_CHANNEL: str = "presence:instance"
 
 
 class PresenceService:
@@ -23,17 +31,47 @@ class PresenceService:
         the ``presence:*`` keys (see services/agent_availability.py)."""
         return self._redis
 
+    async def publish_instance_presence(
+        self, participant_id: str, *, online: bool
+    ) -> None:
+        """Publish a presence delta to every connected client on this instance.
+
+        Payload is identity-minimal on purpose: Participant UUID + online flag
+        only. Never email, Keycloak sub, or display name — directory REST is
+        the snapshot for those facts; live events only patch the online bit.
+        """
+        payload = {
+            "type": "presence",
+            "participant_id": participant_id,
+            # Mirror id under user_id so older FE handlers that only read
+            # user_id still reconcile (same convention as room presence).
+            "user_id": participant_id,
+            "is_online": online,
+            "status": "online" if online else "offline",
+        }
+        await self._redis.publish(
+            INSTANCE_PRESENCE_CHANNEL, json.dumps(payload)
+        )
+        logger.debug(
+            "presence_instance_published",
+            participant_id=participant_id,
+            online=online,
+            channel=INSTANCE_PRESENCE_CHANNEL,
+        )
+
     async def set_online(self, participant_id: str, status: str = "online") -> None:
-        """Mark a participant as online with a TTL."""
+        """Mark a participant as online with a TTL and fan out instance-wide."""
         key = f"presence:{participant_id}"
         await self._redis.set(key, status, ex=PRESENCE_TTL)
         logger.debug("presence_set_online", participant_id=participant_id, status=status)
+        await self.publish_instance_presence(participant_id, online=True)
 
     async def set_offline(self, participant_id: str) -> None:
-        """Mark a participant as offline by removing their presence key."""
+        """Mark a participant as offline and fan out instance-wide."""
         key = f"presence:{participant_id}"
         await self._redis.delete(key)
         logger.debug("presence_set_offline", participant_id=participant_id)
+        await self.publish_instance_presence(participant_id, online=False)
 
     async def get_status(self, participant_id: str) -> str:
         """Get the current status of a participant."""
@@ -154,11 +192,17 @@ class PresenceService:
         return result
 
     async def heartbeat(self, participant_id: str) -> None:
-        """Refresh the presence TTL for a participant."""
+        """Refresh the presence TTL for a participant.
+
+        If the key already expired (TTL lapsed without a disconnect path),
+        recreate it and re-publish online so directory UIs recover without
+        waiting for the next snapshot poll.
+        """
         key = f"presence:{participant_id}"
         current = await self._redis.get(key)
         if current is None:
             await self._redis.set(key, "online", ex=PRESENCE_TTL)
+            await self.publish_instance_presence(participant_id, online=True)
         else:
             await self._redis.expire(key, PRESENCE_TTL)
         logger.debug("presence_heartbeat", participant_id=participant_id)

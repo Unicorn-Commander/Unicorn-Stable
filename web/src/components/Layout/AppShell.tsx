@@ -8,6 +8,7 @@ import {
   Bookmark,
   Settings,
   LogOut,
+  UserRound,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -39,6 +40,7 @@ import { ToastStack } from "./ToastStack";
 import { CheatsheetModal } from "./CheatsheetModal";
 import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
+import { PeopleDrawer } from "./PeopleDrawer";
 import { ActivityCenter } from "./ActivityCenter";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
@@ -156,6 +158,8 @@ export function AppShell() {
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const savedOpen = useAppStore((s) => s.ui.savedOpen);
   const setSavedOpen = useAppStore((s) => s.setSavedOpen);
+  const peopleDrawerOpen = useAppStore((s) => s.ui.peopleDrawerOpen);
+  const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const currentUser = useAppStore((s) => s.currentUser);
   // Palette is stored per user, so it can only be resolved once we know who is
   // signed in. Doing this here rather than in the settings modal matters: if it
@@ -586,6 +590,16 @@ export function AppShell() {
               </div>
               <button
                 onClick={() => {
+                  setPeopleDrawerOpen(true);
+                  toggleSidebar();
+                }}
+                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+              >
+                <UserRound className="h-4 w-4 text-slate-400" />
+                People
+              </button>
+              <button
+                onClick={() => {
                   setActivityOpen(true);
                   toggleSidebar();
                 }}
@@ -685,6 +699,12 @@ export function AppShell() {
 
       <AnimatePresence>
         {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} />}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {peopleDrawerOpen && (
+          <PeopleDrawer onClose={() => setPeopleDrawerOpen(false)} />
+        )}
       </AnimatePresence>
 
       <AnimatePresence>
