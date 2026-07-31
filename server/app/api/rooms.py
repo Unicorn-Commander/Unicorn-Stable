@@ -22,6 +22,8 @@ from app.deps import (
 from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageResponse
 from app.schemas.room import (
+    EnsureHumanDmBody,
+    EnsureHumanDmResponse,
     RoomCreate,
     RoomListResponse,
     RoomMemberResponse,
@@ -271,6 +273,39 @@ async def create_room(
         org_id=settings.instance_org_id,  # B6: stamp the instance org
     )
     return _room_to_response(room, member_count=1, online_count=1)
+
+
+@router.post("/dms/ensure", response_model=EnsureHumanDmResponse)
+async def ensure_human_dm(
+    body: EnsureHumanDmBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+    _rl: Annotated[
+        None, Depends(rate_limit("room_create", "rate_limit_room_create_per_min"))
+    ] = None,
+) -> EnsureHumanDmResponse:
+    """Idempotently ensure a 1:1 human DM with ``participant_id``.
+
+    Always returns 200. ``created`` is True only when this call inserted the
+    room. Concurrent double-clicks yield a single room (advisory lock + unique
+    ``dm_pair`` / deterministic name). Target must be a human, not self.
+    """
+    svc = _build_room_service(db, livekit, presence)
+    room, created = await svc.ensure_human_dm(
+        caller_id=user["participant_id"],
+        target_id=body.participant_id,
+        org_id=settings.instance_org_id,
+    )
+    info = await svc.get_room(room.id)
+    base = _room_to_response(
+        info["room"],
+        member_count=info["member_count"],
+        online_count=info["online_count"],
+    )
+    return EnsureHumanDmResponse(**base.model_dump(), created=created)
 
 
 @router.get("/rooms/browse", response_model=list[RoomResponse])

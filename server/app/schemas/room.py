@@ -16,6 +16,12 @@ class RoomCreate(BaseModel):
     max_participants: int = Field(50, ge=2, le=500)
 
 
+class EnsureHumanDmBody(BaseModel):
+    """Body for ``POST /api/v1/dms/ensure`` — idempotent 1:1 human DM."""
+
+    participant_id: uuid.UUID
+
+
 class RoomUpdate(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
@@ -73,6 +79,12 @@ class RoomResponse(BaseModel):
     # on cold load. Default to empty so other RoomResponse callers are unaffected.
     unread_count: int = 0
     last_message: MessageResponse | None = None
+
+
+class EnsureHumanDmResponse(RoomResponse):
+    """Room payload for ensure-DM; ``created`` is True when this call inserted it."""
+
+    created: bool = False
 
 
 class RoomListResponse(BaseModel):

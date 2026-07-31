@@ -5,7 +5,8 @@ from typing import Any
 
 import structlog
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,6 +19,23 @@ from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
 
 logger = structlog.get_logger(__name__)
+
+
+def dm_pair_key(a: uuid.UUID | str, b: uuid.UUID | str) -> str:
+    """Canonical 1:1 human-DM key: sorted participant UUIDs joined by ``:``.
+
+    Used as ``room.metadata_['dm_pair']`` and as the basis for the deterministic
+    room slug so concurrent ensures collide on the same unique index / name
+    instead of creating two rooms.
+    """
+    left, right = sorted((str(a), str(b)))
+    return f"{left}:{right}"
+
+
+def dm_room_slug(pair_key: str) -> str:
+    """Deterministic internal room name for a human DM pair (≤100 chars)."""
+    left, right = pair_key.split(":", 1)
+    return f"dm-{left}-{right}"
 
 
 class RoomService:
@@ -111,6 +129,234 @@ class RoomService:
 
         logger.info("room_created", room_id=str(room.id), name=name, creator=str(creator_id))
         return room
+
+    async def ensure_human_dm(
+        self,
+        caller_id: uuid.UUID,
+        target_id: uuid.UUID,
+        org_id: str | None = None,
+    ) -> tuple[Room, bool]:
+        """Idempotently get-or-create a 1:1 human DM between caller and target.
+
+        Race-safety strategy (all layers reinforce each other):
+        1. Canonical ``dm_pair`` key = sorted ``participant_id`` UUIDs.
+        2. Transaction-scoped ``pg_advisory_xact_lock(hashtext(dm_pair))`` so
+           concurrent ensures for the same pair serialize on one DB connection
+           set — double-check after lock sees the winner's room.
+        3. Deterministic room ``name`` (``dm-{uuid}-{uuid}``) hits the existing
+           unique constraint on ``rooms.name`` if two creators slip past the
+           lock (different DBs / failed advisory).
+        4. Durable partial unique index on ``metadata->>'dm_pair'`` for DM rooms
+           (migration 010) so IntegrityError is the final backstop.
+        5. Both memberships are written in the same transaction as the room row
+           so we never return a half-created DM missing the target.
+
+        Returns ``(room, created)`` where ``created`` is True only when this
+        call inserted the room.
+        """
+        if caller_id == target_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot start a DM with yourself",
+            )
+
+        target = (
+            await self._db.execute(select(Participant).where(Participant.id == target_id))
+        ).scalar_one_or_none()
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+        if target.participant_type != ParticipantType.HUMAN:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Target must be a human participant",
+            )
+
+        pair_key = dm_pair_key(caller_id, target_id)
+        slug = dm_room_slug(pair_key)
+
+        # Serialize concurrent ensures for this pair for the rest of the txn.
+        await self._db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"stable:dm_pair:{pair_key}"},
+        )
+
+        existing = await self._find_human_dm(caller_id, target_id, pair_key, slug)
+        if existing is not None:
+            await self._maybe_backfill_dm_pair(existing, pair_key)
+            return existing, False
+
+        display_name = f"DM with {target.display_name or target.username}"
+        lk_room_name = f"stable-{slug}"
+        try:
+            lk_room = await self._livekit.create_room(
+                name=lk_room_name,
+                max_participants=2,
+            )
+        except Exception:
+            # LiveKit may already have the room from a prior half-finished attempt.
+            logger.warning(
+                "ensure_human_dm_livekit_create_retry",
+                slug=slug,
+                exc_info=True,
+            )
+            try:
+                existing_lk = await self._livekit.list_rooms(names=[lk_room_name])
+                lk_room = existing_lk[0] if existing_lk else None
+            except Exception:
+                lk_room = None
+            if lk_room is None:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Could not provision DM media room",
+                )
+
+        room = Room(
+            name=slug,
+            display_name=display_name,
+            description=None,
+            room_type=RoomType.DM,
+            livekit_room_name=lk_room_name,
+            livekit_sid=getattr(lk_room, "sid", None) or None,
+            max_participants=2,
+            created_by=caller_id,
+            org_id=org_id,
+            metadata_={"dm_pair": pair_key},
+        )
+        self._db.add(room)
+        try:
+            await self._db.flush()
+        except IntegrityError:
+            # Lost a race on name / dm_pair unique constraint — return winner.
+            await self._db.rollback()
+            # Re-acquire lock after rollback (xact lock was released).
+            await self._db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                {"k": f"stable:dm_pair:{pair_key}"},
+            )
+            existing = await self._find_human_dm(caller_id, target_id, pair_key, slug)
+            if existing is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="DM already exists but could not be loaded",
+                )
+            return existing, False
+
+        # Both members in the same transaction — no half-created DM.
+        self._db.add(
+            RoomMember(
+                room_id=room.id,
+                participant_id=caller_id,
+                role=MemberRole.OWNER,
+            )
+        )
+        self._db.add(
+            RoomMember(
+                room_id=room.id,
+                participant_id=target_id,
+                role=MemberRole.MEMBER,
+            )
+        )
+
+        try:
+            await self._db.commit()
+        except IntegrityError:
+            await self._db.rollback()
+            await self._db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                {"k": f"stable:dm_pair:{pair_key}"},
+            )
+            existing = await self._find_human_dm(caller_id, target_id, pair_key, slug)
+            if existing is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="DM already exists but could not be loaded",
+                )
+            return existing, False
+
+        await self._db.refresh(room)
+        logger.info(
+            "human_dm_ensured",
+            room_id=str(room.id),
+            pair=pair_key,
+            created=True,
+            caller=str(caller_id),
+            target=str(target_id),
+        )
+        return room, True
+
+    async def _find_human_dm(
+        self,
+        caller_id: uuid.UUID,
+        target_id: uuid.UUID,
+        pair_key: str,
+        slug: str,
+    ) -> Room | None:
+        """Locate an existing true 1:1 human DM for this pair, if any."""
+        # 1. Canonical metadata key (post-ensure rooms + backfilled legacy).
+        by_pair = (
+            await self._db.execute(
+                select(Room).where(
+                    Room.room_type == RoomType.DM,
+                    Room.is_archived == False,  # noqa: E712
+                    Room.metadata_["dm_pair"].astext == pair_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if by_pair is not None:
+            return by_pair
+
+        # 2. Deterministic slug (unique rooms.name).
+        by_name = (
+            await self._db.execute(select(Room).where(Room.name == slug))
+        ).scalar_one_or_none()
+        if by_name is not None and by_name.room_type == RoomType.DM and not by_name.is_archived:
+            return by_name
+
+        # 3. Legacy membership: exactly two members, both caller and target.
+        both_members = (
+            select(RoomMember.room_id)
+            .where(RoomMember.participant_id.in_([caller_id, target_id]))
+            .group_by(RoomMember.room_id)
+            .having(func.count(func.distinct(RoomMember.participant_id)) == 2)
+        )
+        member_count = (
+            select(func.count())
+            .select_from(RoomMember)
+            .where(RoomMember.room_id == Room.id)
+            .correlate(Room)
+            .scalar_subquery()
+        )
+        legacy = (
+            await self._db.execute(
+                select(Room)
+                .where(
+                    Room.room_type == RoomType.DM,
+                    Room.is_archived == False,  # noqa: E712
+                    Room.id.in_(both_members),
+                    member_count == 2,
+                )
+                .order_by(Room.created_at.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return legacy
+
+    async def _maybe_backfill_dm_pair(self, room: Room, pair_key: str) -> None:
+        """Stamp dm_pair on a legacy 1:1 DM so future lookups hit the unique key."""
+        meta = dict(room.metadata_ or {})
+        if meta.get("dm_pair") == pair_key:
+            return
+        meta["dm_pair"] = pair_key
+        room.metadata_ = meta
+        try:
+            await self._db.commit()
+            await self._db.refresh(room)
+        except IntegrityError:
+            # Another room already owns this pair key — leave legacy alone.
+            await self._db.rollback()
 
     async def get_room(self, room_id: uuid.UUID) -> dict[str, Any]:
         """Get a room with member list and online status."""

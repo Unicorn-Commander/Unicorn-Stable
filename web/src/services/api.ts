@@ -500,6 +500,42 @@ class StableApiClient {
     };
   }
 
+  /**
+   * Idempotent 1:1 human DM: get-or-create the room for (me, participantId).
+   * Concurrent double-clicks return the same room. Prefer this over
+   * createRoom + inviteUserToRoom for single-human DMs.
+   */
+  async ensureHumanDm(participantId: string): Promise<Room> {
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+      created?: boolean;
+    };
+    const r = await this.request<Raw>("POST", "/api/v1/dms/ensure", {
+      participant_id: participantId,
+    });
+    return {
+      id: r.id,
+      name: r.display_name || r.name,
+      display_name: r.display_name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    };
+  }
+
   async updateRoom(
     roomId: string,
     patch: { display_name?: string; description?: string },

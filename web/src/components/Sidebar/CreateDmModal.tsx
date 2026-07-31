@@ -118,6 +118,19 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
     if (busy || picked.length === 0) return;
     setBusy(true);
     try {
+      // Single signed-in human → race-safe ensure (no duplicate 1:1 rooms).
+      if (
+        pickedUsers.length === 1 &&
+        pickedAgents.length === 0 &&
+        pickedUsers[0]!.id
+      ) {
+        const room = await api.ensureHumanDm(pickedUsers[0]!.id);
+        await qc.invalidateQueries({ queryKey: ["rooms"] });
+        onClose();
+        navigate(`/c/${room.id}`);
+        return;
+      }
+
       const memberCount = pickedUsers.length + pickedAgents.length;
       const isGroup = memberCount >= 2;
       const labelParts: string[] = [];
