@@ -405,9 +405,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // Double-tap scroll to the newest message that survives the variable-height
   // reflow: pin on the next frame, then again after a beat once real markdown
   // heights have settled.
-  const pinTimersRef = useRef<{ raf?: number }>({});
+  const pinTimersRef = useRef<{ interval?: number }>({});
   const clearPinTimers = useCallback(() => {
-    if (pinTimersRef.current.raf) cancelAnimationFrame(pinTimersRef.current.raf);
+    if (pinTimersRef.current.interval) {
+      window.clearInterval(pinTimersRef.current.interval);
+    }
     pinTimersRef.current = {};
   }, []);
   const pinToNewest = useCallback(() => {
@@ -425,38 +427,33 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // never fights a reader afterward.
     const startedAt = performance.now();
     let lastHeight = -1;
-    let stableFrames = 0;
-    console.debug("[pin] start");
-    const step = () => {
-      pinTimersRef.current.raf = undefined;
+    let stableTicks = 0;
+    // setInterval, NOT requestAnimationFrame: rAF is fully suspended in
+    // hidden tabs, and a room can legitimately need its pin while hidden
+    // (restored session in a background tab, automation, prerender). A 50ms
+    // tick is imperceptible when visible — each tick is a no-op once the list
+    // is anchored — and browsers clamp it to ~1s when hidden, which still
+    // lands the pin.
+    const timer = window.setInterval(() => {
       const scroller = listWrapRef.current?.querySelector<HTMLElement>(
         '[data-virtuoso-scroller="true"]',
       );
-      if (!scroller) {
-        console.debug("[pin] no scroller");
-        return;
-      }
+      if (!scroller) return;
       scroller.scrollTop = scroller.scrollHeight;
       if (scroller.scrollHeight === lastHeight) {
-        stableFrames += 1;
+        stableTicks += 1;
       } else {
-        stableFrames = 0;
+        stableTicks = 0;
         lastHeight = scroller.scrollHeight;
       }
-      if (stableFrames < 6 && performance.now() - startedAt < 2500) {
-        pinTimersRef.current.raf = requestAnimationFrame(step);
-      } else {
-        console.debug(
-          "[pin] done",
-          JSON.stringify({
-            ms: Math.round(performance.now() - startedAt),
-            scrollTop: scroller.scrollTop,
-            scrollHeight: scroller.scrollHeight,
-          }),
-        );
+      if (stableTicks >= 6 || performance.now() - startedAt > 2500) {
+        window.clearInterval(timer);
+        if (pinTimersRef.current.interval === timer) {
+          pinTimersRef.current.interval = undefined;
+        }
       }
-    };
-    pinTimersRef.current.raf = requestAnimationFrame(step);
+    }, 50);
+    pinTimersRef.current.interval = timer;
   }, [clearPinTimers]);
 
   // Keep the list pinned to the newest message when the scroller SHRINKS —
