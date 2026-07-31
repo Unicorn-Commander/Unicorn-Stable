@@ -223,7 +223,13 @@ services:
       # websocket as an h2 CONNECT stream, which stalls in traefik forever.
       # Classic h1.1 upgrade is the only path every hop handles correctly.
       - "traefik.http.routers.stable-ws.tls.options=ws-http1@file"
-      - "traefik.http.routers.stable-ws.service=stable-api"
+      # Route via the web nginx (service `stable`, port 80), NOT stable-api:
+      # nginx's /ws location proxies upgrades to the backend AND rejects an
+      # oversized request line with a fast 414. uvicorn answers one with
+      # silence — a legacy client that still puts its (huge) token in the URL
+      # would hang, and every hung handshake camps a slot in Chrome's per-host
+      # pending-WebSocket queue, starving the healthy frame-auth clients.
+      - "traefik.http.routers.stable-ws.service=stable"
       # B2: take the internal agent surface OFF the public edge. A higher-
       # priority router captures /api/v1/internal/* and runs it through an
       # ipAllowList that permits only loopback — so every request arriving via
