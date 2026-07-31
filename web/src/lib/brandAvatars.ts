@@ -13,8 +13,9 @@ const PACK: Record<string, string> = {
   // -v2: reference-conditioned rerolls in the chibi sticker style (the first
   // pass generated unreferenced neon emblems; new filenames also step around
   // the CDN's cache of the old bytes).
-  majik: "/agent-avatars/majik-v2.png",
-  sidekick: "/agent-avatars/sidekick-v2.png",
+  // majik + sidekick deliberately absent: Aaron rejected the first art
+  // pass for both; they fall back to the animated UnicornAvatar until the
+  // approved portraits land (Majik is decided LAST, per Aaron).
   "corporal qwen": "/agent-avatars/corporal-qwen-v2.png",
   "cpl. colophon": "/agent-avatars/cpl-colophon.png",
   "sgt. quill": "/agent-avatars/sgt-quill.png",
