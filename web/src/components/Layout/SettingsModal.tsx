@@ -20,6 +20,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
+import { brandAvatarFor } from "@/lib/brandAvatars";
 import { logout } from "@/services/auth";
 import { api } from "@/services/api";
 import { ensurePushSubscription } from "@/lib/webpush";
@@ -310,9 +311,23 @@ function AgentsPane() {
               saving === agent.id,
               () => void choose(agent.id),
               <>
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
-                  {agent.emoji || <Bot className="h-4 w-4 text-slate-400" />}
-                </span>
+                {(() => {
+                  const src =
+                    agent.avatar_url ||
+                    brandAvatarFor(agent.display_name || agent.name);
+                  return src ? (
+                    <img
+                      src={src}
+                      alt=""
+                      loading="lazy"
+                      className="h-8 w-8 shrink-0 rounded-lg object-cover ring-1 ring-white/10"
+                    />
+                  ) : (
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
+                      {agent.emoji || <Bot className="h-4 w-4 text-slate-400" />}
+                    </span>
+                  );
+                })()}
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium text-slate-100">
                     {agent.display_name || agent.name}

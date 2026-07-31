@@ -25,6 +25,7 @@ import {
   type Room,
 } from "@/services/api";
 import { identityFor } from "@/lib/identity";
+import { brandAvatarFor } from "@/lib/brandAvatars";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { Avatar } from "@/components/Avatar";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
@@ -946,9 +947,23 @@ export function HomeDashboard() {
                         "bg-stable-purple/[0.04]",
                       )}
                     >
-                      <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
-                        <Bot className="h-4 w-4" />
-                      </span>
+                      {(() => {
+                        const src = brandAvatarFor(
+                          room.display_name || room.name,
+                        );
+                        return src ? (
+                          <img
+                            src={src}
+                            alt=""
+                            loading="lazy"
+                            className="mt-0.5 h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-white/10"
+                          />
+                        ) : (
+                          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
+                            <Bot className="h-4 w-4" />
+                          </span>
+                        );
+                      })()}
                       <span className="min-w-0 flex-1">
                         <span className="flex items-baseline justify-between gap-2">
                           <span className="truncate text-sm font-semibold text-slate-50">
@@ -1124,18 +1139,36 @@ export function HomeDashboard() {
                       )}
                     >
                       <span className="relative shrink-0">
-                        <UnicornAvatar
-                          id={agent.id}
-                          name={agent.display_name || agent.name}
-                          size={32}
-                          state={
-                            unreachable || agent.status === "offline"
-                              ? "offline"
-                              : agent.status === "working"
-                                ? "working"
-                                : "idle"
-                          }
-                        />
+                        {(() => {
+                          const src =
+                            agent.avatar_url ||
+                            brandAvatarFor(agent.display_name || agent.name);
+                          return src ? (
+                            <img
+                              src={src}
+                              alt=""
+                              loading="lazy"
+                              className={clsx(
+                                "h-8 w-8 rounded-lg object-cover ring-1 ring-white/10",
+                                (unreachable || agent.status === "offline") &&
+                                  "opacity-50 saturate-50",
+                              )}
+                            />
+                          ) : (
+                            <UnicornAvatar
+                              id={agent.id}
+                              name={agent.display_name || agent.name}
+                              size={32}
+                              state={
+                                unreachable || agent.status === "offline"
+                                  ? "offline"
+                                  : agent.status === "working"
+                                    ? "working"
+                                    : "idle"
+                              }
+                            />
+                          );
+                        })()}
                         {agent.emoji && (
                           <span
                             className="absolute -bottom-1 -right-1 text-[10px]"
