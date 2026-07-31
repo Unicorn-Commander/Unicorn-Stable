@@ -1,4 +1,9 @@
-import { getToken, forceRefreshToken, getAuthSessionState } from "./auth";
+import {
+  getToken,
+  forceRefreshToken,
+  getAuthSessionState,
+  isAccessTokenUsable,
+} from "./auth";
 import { useFederationStore } from "@/stores/federationStore";
 
 type EventCallback = (data: WsEventPayload) => void;
@@ -181,7 +186,7 @@ const HANDSHAKE_TIMEOUT_MS = 15000;
  * ever armed: permanently, silently offline. That is the ORIGINAL bug, so the
  * refresh path gets an explicit bound.
  */
-const REFRESH_TIMEOUT_MS = 10000;
+const REFRESH_TIMEOUT_MS = 15000;
 /**
  * Backstop deadline on the `connecting` guard itself.
  *
@@ -314,6 +319,33 @@ class StableWebSocket {
    * resume handler and external callers all fire-and-forget it. The actual work
    * is async and guarded — see `connecting` and `connectGeneration`.
    */
+  /**
+   * User-initiated recovery from the stalled banner. Clears the stall latch,
+   * cancels a pending reconnect timer, and starts a fresh connect attempt
+   * with a forced token refresh — without a full page reload / login.
+   */
+  manualReconnect(): void {
+    this.authExpired = false;
+    this.stalled = false;
+    this.failedAttempts = 0;
+    this.reconnectAttempts = 0;
+    this.cancelReconnect();
+    // Force a new generation so any in-flight open is abandoned.
+    this.connectGeneration++;
+    this.endConnecting();
+    if (this.ws) {
+      try {
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {
+        /* ignore */
+      }
+      this.ws = null;
+    }
+    this._connected = false;
+    this.connect();
+  }
+
   connect(): void {
     this.bindLifecycle();
     // Dead session: retrying cannot help and would hammer Keycloak. The
@@ -447,42 +479,47 @@ class StableWebSocket {
           REFRESH_TIMEOUT_MS,
         );
         if (result === REFRESH_TIMED_OUT) {
-          // Keycloak accepted the connection and never answered. A hang is NOT
-          // evidence that the session is dead — treating it as terminal would
-          // strand a user whose IdP is merely slow behind an unrecoverable
-          // "sign in again". So fall back to the cached token: it may still be
-          // valid (or valid enough), and if the server rejects it, onclose
-          // routes us into normal backoff. With no cached token there is
-          // nothing to try, so back off and retry — visibly.
+          // Keycloak hung. ONLY reuse the cache if it is still usable — opening
+          // the socket with a known-expired access token is what produced the
+          // "Session refresh failed" stall loop (backend ws_auth_failed/expired
+          // every ~15s). Prefer backoff + retry over burning failedAttempts.
           token = getToken();
-          if (!token) {
+          if (!isAccessTokenUsable(token)) {
             this.retryLater(generation);
             return;
           }
         } else {
           token = result;
-          // A null resolution means "no active instance / not authenticated"
-          // rather than a failed refresh. Fall back to whatever is cached so we
-          // are never WORSE than the previous behaviour.
-          if (!token) token = getToken();
+          // Null from forceRefresh means not authenticated / unusable after
+          // refresh. Fall back to cache only when it still has life left.
+          if (!isAccessTokenUsable(token)) {
+            const cached = getToken();
+            token = isAccessTokenUsable(cached) ? cached : null;
+          }
         }
       } catch {
         // The refresh itself failed. keycloak-js clears the token on a 400
         // (invalid_grant) — i.e. the refresh token is genuinely dead — but
-        // leaves it in place for a transient network failure. Use that to tell
-        // the two apart rather than guessing.
-        token = getToken();
-        if (!token) {
+        // leaves it in place for a transient network failure.
+        if (getAuthSessionState() === "expired") {
           this.failSession(generation);
           return;
         }
-        // Transient: try the cached token. If the server rejects it, onclose
-        // routes us back through scheduleReconnect()'s exponential backoff
-        // with jitter, so we retry the refresh at a decaying rate (capped at
-        // one attempt per 30s) instead of hammering Keycloak.
+        const cached = getToken();
+        if (!isAccessTokenUsable(cached)) {
+          // No usable access token and refresh failed: back off, do NOT open
+          // a socket we know the server will reject as expired.
+          this.retryLater(generation);
+          return;
+        }
+        token = cached;
       }
 
       if (generation !== this.connectGeneration) return;
+      // Final gate: never attach a socket with an unusable access token.
+      if (!isAccessTokenUsable(token)) {
+        token = null;
+      }
       if (!token) {
         // forceRefreshToken() resolved NULL rather than throwing. The original
         // author read this as "always transient" on the belief that

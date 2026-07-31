@@ -10,6 +10,44 @@ const refreshers = new Map<string, ReturnType<typeof setInterval>>();
 let activeInstanceId: string | null = null;
 const TOKEN_MIN_VALIDITY_S = 60;
 const TOKEN_REFRESH_INTERVAL_MS = 30_000;
+/** Seconds of remaining life required before we will hand a token to the WS. */
+const ACCESS_TOKEN_MIN_REMAINING_S = 20;
+
+/**
+ * Decode a JWT payload without verifying the signature. Used only to decide
+ * whether a CACHED access token is still worth presenting to the server — the
+ * server re-verifies. Returns null if the token is unreadable.
+ */
+export function readAccessTokenExpMs(token: string): number | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2 || !parts[1]) return null;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    // Browser-only: Stable web never runs this path in Node.
+    const json = atob(padded);
+    const payload = JSON.parse(json) as { exp?: unknown };
+    if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) {
+      return null;
+    }
+    return payload.exp * 1000;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the access token is not yet near expiry (client clock). */
+export function isAccessTokenUsable(
+  token: string | null | undefined,
+  minRemainingS: number = ACCESS_TOKEN_MIN_REMAINING_S,
+): boolean {
+  if (!token) return false;
+  const expMs = readAccessTokenExpMs(token);
+  // Unreadable JWT: refuse to use it for WS reconnect (better to re-auth).
+  if (expMs == null) return false;
+  return expMs > Date.now() + minRemainingS * 1000;
+}
+
 
 function createClient(instance: StableInstance): KeycloakInstance {
   const client = new Keycloak({
@@ -117,7 +155,12 @@ export async function forceRefreshInstanceToken(
 ): Promise<string | null> {
   const client = clients.get(id);
   if (!client?.authenticated) return null;
-  return refreshClientAccessToken(client, -1);
+  const token = await refreshClientAccessToken(client, -1);
+  // keycloak-js can resolve "success" while still exposing a near-expired
+  // access token if the IdP response was odd. Never hand that to the WS —
+  // reconnect would just loop on 401-expired.
+  if (!isAccessTokenUsable(token)) return null;
+  return token;
 }
 
 /**

@@ -116,10 +116,16 @@ async def validate_token(
         options={
             "verify_aud": False,
             "verify_iss": True,
-            "verify_exp": True,
+            # Disable strict exp here and apply a 30s leeway ourselves so brief
+            # clock skew cannot reject a token that is still within refresh life.
+            "verify_exp": False,
             "verify_iat": True,
         },
     )
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)):
+        if float(exp) + 30 < time.time():
+            raise JWTError("Signature has expired.")
 
     token_aud = claims.get("aud")
     aud_list = [token_aud] if isinstance(token_aud, str) else list(token_aud or [])

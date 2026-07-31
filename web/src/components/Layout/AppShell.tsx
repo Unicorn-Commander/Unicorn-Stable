@@ -965,6 +965,16 @@ function ConnectionBanner() {
                 <span>Session refresh failed. Live updates are paused.</span>
                 <button
                   type="button"
+                  onClick={() => {
+                    setPhase("lost");
+                    ws.manualReconnect();
+                  }}
+                  className="focus-ring rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/20"
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
                   onClick={() => login()}
                   className="focus-ring rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/20"
                 >
