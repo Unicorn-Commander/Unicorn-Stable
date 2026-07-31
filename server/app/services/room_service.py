@@ -287,6 +287,63 @@ class RoomService:
         )
         return room, True
 
+    @staticmethod
+    def _is_pure_human_dm_room(room: Room) -> bool:
+        """Reject DMs that were agent chats or still carry agent residency.
+
+        Legacy "New chat with agent" and "invite Perry into this DM" rooms often
+        keep ``room_type=dm`` and exactly two *human* members after the agent
+        leaves, but ``metadata.brigade_agent_id`` still points at the agent.
+        Returning those from ensureHumanDm opens "DM with Shafen" that is really
+        an old agent thread — the bug dogfood hit for Shafen + Perrywinkle.
+        """
+        meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
+        if not meta and isinstance(getattr(room, "metadata", None), dict):
+            meta = room.metadata  # type: ignore[assignment]
+        if meta.get("brigade_agent_id"):
+            return False
+        if meta.get("agent_id"):
+            return False
+        return True
+
+    def _agent_member_room_ids(self):
+        """Subquery of room ids that currently have any agent member."""
+        return (
+            select(RoomMember.room_id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(Participant.participant_type == ParticipantType.AGENT)
+        )
+
+    def _accept_human_dm_candidate(self, room: Room | None) -> Room | None:
+        """Metadata + type gate (no extra round-trip). Agent members filtered in SQL."""
+        if room is None:
+            return None
+        if room.room_type != RoomType.DM or room.is_archived:
+            return None
+        if not self._is_pure_human_dm_room(room):
+            return None
+        return room
+
+    async def _clear_stale_dm_pair(self, room: Room, pair_key: str) -> None:
+        """Drop a dm_pair stamp that pointed at an agent-tainted room."""
+        meta = dict(room.metadata_ or {})
+        if meta.get("dm_pair") != pair_key:
+            return
+        meta.pop("dm_pair", None)
+        room.metadata_ = meta
+        try:
+            await self._db.commit()
+            await self._db.refresh(room)
+            logger.info(
+                "cleared_stale_dm_pair",
+                room_id=str(room.id),
+                pair=pair_key,
+                reason="agent_tainted_room",
+            )
+        except Exception:
+            await self._db.rollback()
+            logger.warning("clear_stale_dm_pair_failed", room_id=str(room.id), exc_info=True)
+
     async def _find_human_dm(
         self,
         caller_id: uuid.UUID,
@@ -294,28 +351,42 @@ class RoomService:
         pair_key: str,
         slug: str,
     ) -> Room | None:
-        """Locate an existing true 1:1 human DM for this pair, if any."""
+        """Locate an existing true 1:1 *human-only* DM for this pair, if any."""
         # 1. Canonical metadata key (post-ensure rooms + backfilled legacy).
+        agent_rooms = self._agent_member_room_ids()
         by_pair = (
             await self._db.execute(
                 select(Room).where(
                     Room.room_type == RoomType.DM,
                     Room.is_archived == False,  # noqa: E712
                     Room.metadata_["dm_pair"].astext == pair_key,
+                    Room.id.notin_(agent_rooms),
                 )
             )
         ).scalar_one_or_none()
+        accepted = self._accept_human_dm_candidate(by_pair)
+        if accepted is not None:
+            return accepted
         if by_pair is not None:
-            return by_pair
+            # Pair key was stamped on an agent-tainted room — free the key so a
+            # clean ensure can create (or find) a pure human DM.
+            await self._clear_stale_dm_pair(by_pair, pair_key)
 
         # 2. Deterministic slug (unique rooms.name).
         by_name = (
-            await self._db.execute(select(Room).where(Room.name == slug))
+            await self._db.execute(
+                select(Room).where(
+                    Room.name == slug,
+                    Room.id.notin_(agent_rooms),
+                )
+            )
         ).scalar_one_or_none()
-        if by_name is not None and by_name.room_type == RoomType.DM and not by_name.is_archived:
-            return by_name
+        accepted = self._accept_human_dm_candidate(by_name)
+        if accepted is not None:
+            return accepted
 
-        # 3. Legacy membership: exactly two members, both caller and target.
+        # 3. Legacy membership: exactly two members, both humans, both the pair,
+        #    no agent members, no agent metadata. Prefer most recently active.
         both_members = (
             select(RoomMember.room_id)
             .where(RoomMember.participant_id.in_([caller_id, target_id]))
@@ -329,7 +400,12 @@ class RoomService:
             .correlate(Room)
             .scalar_subquery()
         )
-        legacy = (
+        agent_member_rooms = (
+            select(RoomMember.room_id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(Participant.participant_type == ParticipantType.AGENT)
+        )
+        legacy_rows = (
             await self._db.execute(
                 select(Room)
                 .where(
@@ -337,19 +413,28 @@ class RoomService:
                     Room.is_archived == False,  # noqa: E712
                     Room.id.in_(both_members),
                     member_count == 2,
+                    Room.id.notin_(agent_member_rooms),
                 )
-                .order_by(Room.created_at.asc())
-                .limit(1)
+                .order_by(Room.updated_at.desc())
             )
-        ).scalar_one_or_none()
-        return legacy
+        ).scalars().all()
+        for candidate in legacy_rows:
+            accepted = self._accept_human_dm_candidate(candidate)
+            if accepted is not None:
+                return accepted
+        return None
 
     async def _maybe_backfill_dm_pair(self, room: Room, pair_key: str) -> None:
-        """Stamp dm_pair on a legacy 1:1 DM so future lookups hit the unique key."""
+        """Stamp dm_pair on a pure human 1:1 DM so future lookups hit the key."""
+        if not self._is_pure_human_dm_room(room):
+            return
         meta = dict(room.metadata_ or {})
         if meta.get("dm_pair") == pair_key:
             return
         meta["dm_pair"] = pair_key
+        # Ensure we never keep an agent residency flag on a "pure" human DM.
+        meta.pop("brigade_agent_id", None)
+        meta.pop("agent_id", None)
         room.metadata_ = meta
         try:
             await self._db.commit()

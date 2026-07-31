@@ -68,7 +68,13 @@ class EnsureHumanDmServiceTests(IsolatedAsyncioTestCase):
         *,
         pair_key: str | None = None,
         name: str | None = None,
+        brigade_agent_id: str | None = None,
     ) -> SimpleNamespace:
+        meta: dict = {}
+        if pair_key:
+            meta["dm_pair"] = pair_key
+        if brigade_agent_id:
+            meta["brigade_agent_id"] = brigade_agent_id
         return SimpleNamespace(
             id=room_id,
             name=name or "dm-existing",
@@ -78,7 +84,7 @@ class EnsureHumanDmServiceTests(IsolatedAsyncioTestCase):
             livekit_room_name="stable-dm-existing",
             livekit_sid="LK_1",
             max_participants=2,
-            metadata_={"dm_pair": pair_key} if pair_key else {},
+            metadata_=meta,
             is_archived=False,
             created_by=None,
             created_at=datetime.now(timezone.utc),
@@ -276,3 +282,29 @@ class EnsureHumanDmSchemaTests(IsolatedAsyncioTestCase):
         )
         self.assertTrue(resp.created)
         self.assertEqual(resp.room_type, "dm")
+
+
+class PureHumanDmRoomTests(IsolatedAsyncioTestCase):
+    def test_rejects_brigade_agent_metadata(self) -> None:
+        room = SimpleNamespace(
+            room_type=RoomType.DM,
+            is_archived=False,
+            metadata_={"brigade_agent_id": "perry", "dm_pair": "a:b"},
+        )
+        self.assertFalse(RoomService._is_pure_human_dm_room(room))  # type: ignore[arg-type]
+
+    def test_accepts_clean_human_dm(self) -> None:
+        room = SimpleNamespace(
+            room_type=RoomType.DM,
+            is_archived=False,
+            metadata_={"dm_pair": "a:b"},
+        )
+        self.assertTrue(RoomService._is_pure_human_dm_room(room))  # type: ignore[arg-type]
+
+    def test_accepts_empty_metadata(self) -> None:
+        room = SimpleNamespace(
+            room_type=RoomType.DM,
+            is_archived=False,
+            metadata_={},
+        )
+        self.assertTrue(RoomService._is_pure_human_dm_room(room))  # type: ignore[arg-type]

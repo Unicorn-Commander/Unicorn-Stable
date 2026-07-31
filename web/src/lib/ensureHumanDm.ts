@@ -58,6 +58,7 @@ async function ensureHumanDmFallback(person: {
   const rooms = useAppStore.getState().rooms;
   const existing = rooms.find((room) => {
     if (room.type !== "dm") return false;
+    // Agent-tagged threads are not human DMs even if the label says "DM with X".
     if (room.brigade_agent_id) return false;
     // Prefer true 1:1 (me + them). Group-ish DMs mis-typed as dm are rare.
     if (room.member_count > 2) return false;
