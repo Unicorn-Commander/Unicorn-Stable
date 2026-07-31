@@ -185,6 +185,15 @@ const HANDSHAKE_TIMEOUT_MS = 8000;
  * CDN path nor a broken bypass host can permanently strand the client.
  */
 const TRANSPORT_FLIP_AFTER_TIMEOUTS = 2;
+
+/**
+ * How long after `onopen` the server gets to answer the auth frame with
+ * `auth_ok`. The token now travels in the FIRST FRAME, not the URL: real
+ * uchub access tokens overflow a query string (uvicorn silently never answers
+ * a request line past ~8 KiB, so the handshake just hangs), and a frame also
+ * keeps the token out of URLs, access logs, and proxy buffers.
+ */
+const AUTH_ACK_TIMEOUT_MS = 8000;
 /**
  * Hard deadline on the token refresh.
  *
@@ -242,6 +251,8 @@ class StableWebSocket {
    * true thing — "Session refresh failed" over a healthy network sends the
    * user to re-login for a problem sign-in cannot fix. */
   private lastFailureCause: "auth" | "transport" = "transport";
+  /** Watchdog for an OPEN socket awaiting `auth_ok` — see AUTH_ACK_TIMEOUT_MS. */
+  private authAckTimer: ReturnType<typeof setTimeout> | null = null;
   /** Watchdog for a socket stuck in CONNECTING — see HANDSHAKE_TIMEOUT_MS. */
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
@@ -350,6 +361,7 @@ class StableWebSocket {
     this.failedAttempts = 0;
     this.reconnectAttempts = 0;
     this.cancelReconnect();
+    this.clearAuthAckTimeout();
     // Force a new generation so any in-flight open is abandoned.
     this.connectGeneration++;
     this.endConnecting();
@@ -600,10 +612,13 @@ class StableWebSocket {
       ) {
         base = sameOrigin;
       }
-      const url = `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+      // No token in the URL — it goes in the first frame (see
+      // AUTH_ACK_TIMEOUT_MS). Real access tokens are far past the size where
+      // query-string transport is survivable.
+      const url = base;
 
       try {
-        this.attach(new WebSocket(url), generation);
+        this.attach(new WebSocket(url), generation, token);
       } catch {
         // The WebSocket constructor throws on a malformed URL (a bad
         // instance.wsUrl). Previously this propagated out of a synchronous
@@ -684,22 +699,61 @@ class StableWebSocket {
     }
   }
 
-  private attach(socket: WebSocket, generation: number): void {
+  /** Abandon a socket whose auth frame the server never answered — a legacy
+   * backend that expects query-param tokens, or a middlebox that ate the
+   * frame. Without this the socket would sit OPEN-but-dead: no `auth_ok`
+   * ever emits "connected", yet nothing closes it or schedules a retry. */
+  private startAuthAckTimeout(socket: WebSocket, generation: number): void {
+    this.clearAuthAckTimeout();
+    this.authAckTimer = setTimeout(() => {
+      this.authAckTimer = null;
+      if (!this.owns(socket, generation)) return;
+      if (this._connected) return;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      try {
+        socket.close();
+      } catch {
+        /* already torn down */
+      }
+      this.ws = null;
+      this.lastFailureCause = "transport";
+      this.retryLater(generation);
+    }, AUTH_ACK_TIMEOUT_MS);
+  }
+
+  private clearAuthAckTimeout(): void {
+    if (this.authAckTimer) {
+      clearTimeout(this.authAckTimer);
+      this.authAckTimer = null;
+    }
+  }
+
+  private attach(socket: WebSocket, generation: number, token: string): void {
     this.ws = socket;
+    this.clearAuthAckTimeout();
     this.startHandshakeTimeout(socket, generation);
 
     socket.onopen = () => {
       if (!this.owns(socket, generation)) return;
       this.clearHandshakeTimeout();
-      this._connected = true;
-      this.reconnectAttempts = 0;
       this.handshakeTimeouts = 0;
-      // The outage is over: clear the escalation so a LATER outage gets the
-      // full grace period again instead of jumping straight to "sign in again".
-      this.failedAttempts = 0;
-      this.stalled = false;
-      this.startHeartbeat();
-      this.emit("connected", {} as WsEventPayload);
+      // The transport is up but the socket is NOT usable yet: the server has
+      // not judged the token. Send the auth frame and wait for `auth_ok` —
+      // everything that used to happen here happens there instead.
+      try {
+        socket.send(JSON.stringify({ type: "auth", token }));
+      } catch {
+        try {
+          socket.close();
+        } catch {
+          /* already torn down */
+        }
+        return;
+      }
+      this.startAuthAckTimeout(socket, generation);
     };
 
     socket.onmessage = (event: MessageEvent) => {
@@ -712,6 +766,21 @@ class StableWebSocket {
       try {
         parsed = JSON.parse(event.data as string) as WsMessage;
       } catch {
+        return;
+      }
+
+      if (parsed.type === "auth_ok") {
+        // NOW the connection is real: token judged, subscriptions armed
+        // server-side. This is the block that used to live in onopen.
+        this.clearAuthAckTimeout();
+        this._connected = true;
+        this.reconnectAttempts = 0;
+        // The outage is over: clear the escalation so a LATER outage gets the
+        // full grace period instead of jumping straight to "sign in again".
+        this.failedAttempts = 0;
+        this.stalled = false;
+        this.startHeartbeat();
+        this.emit("connected", {} as WsEventPayload);
         return;
       }
 
@@ -749,6 +818,7 @@ class StableWebSocket {
       // fires in, so guard it here rather than leave a known race in place.
       if (!this.owns(socket, generation)) return;
       this.clearHandshakeTimeout();
+      this.clearAuthAckTimeout();
       this._connected = false;
       this.stopHeartbeat();
       // Count a rejected handshake as a failed attempt too.
@@ -809,6 +879,7 @@ class StableWebSocket {
     this.authExpired = false;
     this.stopHeartbeat();
     this.clearHandshakeTimeout();
+    this.clearAuthAckTimeout();
     this.cancelReconnect();
     const old = this.ws;
     if (old) {
@@ -850,6 +921,11 @@ class StableWebSocket {
    * Existing callers ignoring the return value are unaffected.
    */
   send(type: string, payload: Record<string, unknown>): boolean {
+    // OPEN is necessary but no longer sufficient: between onopen and
+    // `auth_ok` the server accepts exactly ONE frame — the auth frame. Any
+    // other frame in that window (a resume ping, an eager typing event) would
+    // be judged as a bad auth frame and close the socket.
+    if (!this._connected) return false;
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify({ type, payload }));
     return true;

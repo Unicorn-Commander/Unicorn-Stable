@@ -7,6 +7,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from jose import JWTError
 from jose.exceptions import ExpiredSignatureError
 from redis.asyncio import Redis
@@ -34,6 +35,11 @@ router = APIRouter()
 # buggy or hostile client's word for how often that should happen. Comfortably
 # under TYPING_TTL so an honest keepalive is never swallowed.
 TYPING_REBROADCAST_FLOOR_S: float = 1.0
+
+# How long an accepted-but-unauthenticated socket may sit before we require
+# its auth frame. Generous enough for a slow mobile link to flush one frame,
+# tight enough that anonymous sockets cannot be parked as a resource drain.
+AUTH_FRAME_TIMEOUT_S: float = 6.0
 
 
 def _jwt_failure_reason(exc: JWTError) -> str:
@@ -84,7 +90,10 @@ class ConnectionManager:
         self._connections: dict[str, WebSocket] = {}  # participant_id -> WebSocket
 
     async def connect(self, participant_id: str, websocket: WebSocket) -> None:
-        await websocket.accept()
+        # Frame-auth sockets are accepted up in the endpoint (the auth frame
+        # cannot be received on an unaccepted socket); accepting twice raises.
+        if websocket.application_state == WebSocketState.CONNECTING:
+            await websocket.accept()
         self._connections[participant_id] = websocket
         logger.info("ws_connected", participant_id=participant_id)
 
@@ -578,19 +587,52 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     """
     WebSocket endpoint for real-time events.
 
-    Authenticates via token query param, subscribes to Redis pub/sub
-    for the user's rooms, and handles bidirectional communication.
+    Authenticates via a first-frame auth message (preferred) or a token query
+    param (legacy: agents / MCP clients with compact service tokens), then
+    subscribes to Redis pub/sub for the user's rooms and handles bidirectional
+    communication.
+
+    The frame path exists because real uchub access tokens overflow a query
+    string: uvicorn's parser answers a request line past ~8 KiB by never
+    responding at all, so the handshake hangs and the client shows an eternal
+    "reconnecting" state with nothing in any log. A token in the first frame
+    has no such ceiling — and never lands in a URL, access log, proxy buffer,
+    or browser history either.
     """
     token = websocket.query_params.get("token")
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
-
-    # Authenticate
-    user = await _authenticate_ws(websocket, token)
-    if user is None:
-        await websocket.close(code=4003, reason="Authentication failed")
-        return
+    if token:
+        # Legacy path: reject before accept so the handshake itself fails (403).
+        user = await _authenticate_ws(websocket, token)
+        if user is None:
+            await websocket.close(code=4003, reason="Authentication failed")
+            return
+    else:
+        # Frame path: accept, then require {"type": "auth", "token": …} as the
+        # very first frame, inside a hard deadline so an idle or probing
+        # connection cannot hold the socket open unauthenticated.
+        await websocket.accept()
+        try:
+            first = await asyncio.wait_for(
+                websocket.receive_json(), timeout=AUTH_FRAME_TIMEOUT_S
+            )
+        except (TimeoutError, asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+            await websocket.close(code=4001, reason="Expected auth frame")
+            return
+        frame_token = (
+            first.get("token")
+            if isinstance(first, dict) and first.get("type") == "auth"
+            else None
+        )
+        if not frame_token or not isinstance(frame_token, str):
+            await websocket.close(code=4001, reason="Expected auth frame")
+            return
+        user = await _authenticate_ws(websocket, frame_token)
+        if user is None:
+            await websocket.close(code=4003, reason="Authentication failed")
+            return
+        # Explicit ack: the client must not treat the socket as live until the
+        # server has judged the token — onopen alone no longer means that.
+        await _safe_send(websocket, {"type": "auth_ok"})
 
     # Look up participant
     app = websocket.app
