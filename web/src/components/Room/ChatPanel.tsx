@@ -405,39 +405,45 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // Double-tap scroll to the newest message that survives the variable-height
   // reflow: pin on the next frame, then again after a beat once real markdown
   // heights have settled.
-  const pinTimersRef = useRef<{ raf?: number; timeouts: number[] }>({
-    timeouts: [],
-  });
+  const pinTimersRef = useRef<{ raf?: number }>({});
   const clearPinTimers = useCallback(() => {
     if (pinTimersRef.current.raf) cancelAnimationFrame(pinTimersRef.current.raf);
-    for (const t of pinTimersRef.current.timeouts) window.clearTimeout(t);
-    pinTimersRef.current = { timeouts: [] };
+    pinTimersRef.current = {};
   }, []);
   const pinToNewest = useCallback(() => {
     clearPinTimers();
-    const tap = () => {
-      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
-      // Belt over the API call: drive the real scroller too. scrollToIndex
-      // resolves against Virtuoso's internal index math, which under
-      // firstItemIndex (reverse infinite scroll) has repeatedly landed at the
-      // top of the loaded page instead of the newest row; a native
-      // scrollTop=scrollHeight is unambiguous, and on an already-anchored
-      // list both are no-ops.
+    // Hold the list at the bottom, EVERY FRAME, until layout stops moving.
+    // Fixed-delay settle taps (150/400/800ms) all lost to reality: a first
+    // page of heavy markdown keeps re-measuring past any schedule, and each
+    // late reflow re-opened a gap above the fold — the room then showed the
+    // TOP of the page. So instead: drive the real scroller (scrollToIndex is
+    // not used here — under firstItemIndex reverse-scroll its LAST index math
+    // repeatedly landed on the top of the loaded page) and only stop once
+    // scrollHeight has been stable for ~6 frames, capped at 2.5s. While the
+    // loop runs the user cannot scroll away from the bottom; that window is
+    // typically ~300ms on room open and the pin fires once per room, so it
+    // never fights a reader afterward.
+    const startedAt = performance.now();
+    let lastHeight = -1;
+    let stableFrames = 0;
+    const step = () => {
+      pinTimersRef.current.raf = undefined;
       const scroller = listWrapRef.current?.querySelector<HTMLElement>(
         '[data-virtuoso-scroller="true"]',
       );
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      if (!scroller) return;
+      scroller.scrollTop = scroller.scrollHeight;
+      if (scroller.scrollHeight === lastHeight) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+        lastHeight = scroller.scrollHeight;
+      }
+      if (stableFrames < 6 && performance.now() - startedAt < 2500) {
+        pinTimersRef.current.raf = requestAnimationFrame(step);
+      }
     };
-    pinTimersRef.current.raf = requestAnimationFrame(tap);
-    // Re-tap on a decaying schedule: a first page full of heavy markdown can
-    // take several hundred ms to measure, and a single 150ms settle tap lands
-    // mid-reflow — the room then opens showing the top of the page. Re-tapping
-    // an already-anchored list is a no-op. The worst case is a user who opens
-    // a room and scrolls up within 800ms getting pulled back down once; the
-    // pin fires once per room, so after it settles it never fights a reader.
-    for (const delay of [150, 400, 800]) {
-      pinTimersRef.current.timeouts.push(window.setTimeout(tap, delay));
-    }
+    pinTimersRef.current.raf = requestAnimationFrame(step);
   }, [clearPinTimers]);
 
   // Keep the list pinned to the newest message when the scroller SHRINKS —
