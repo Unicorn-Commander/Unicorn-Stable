@@ -193,6 +193,12 @@ export interface PendingApprovalsResponse {
   has_more: boolean;
 }
 
+/** Shape of GET /api/v1/health — service states vary (strings or objects). */
+export interface InstanceHealth {
+  status: string;
+  services: Record<string, unknown>;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -905,6 +911,11 @@ class StableApiClient {
     // tools/emoji. Stable's own /api/v1/agents table is empty in practice, so
     // this is what populates the agents store, the home rail, and the org chart.
     return this.request<Agent[]>("GET", "/api/v1/brigade/roster");
+  }
+
+  /** Backend health/build summary — powers the Settings → Instance pane. */
+  async getInstanceHealth(): Promise<InstanceHealth> {
+    return this.request<InstanceHealth>("GET", "/api/v1/health");
   }
 
   async getBrigadeAgents(): Promise<BrigadeAgent[]> {

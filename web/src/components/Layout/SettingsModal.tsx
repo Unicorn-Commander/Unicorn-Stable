@@ -4,16 +4,20 @@ import {
   Bell,
   BellRing,
   BookOpen,
+  Bot,
   Captions,
   Check,
   LogOut,
   Mail,
   Palette,
+  ServerCog,
   UserCircle,
   X,
 } from "lucide-react";
 import clsx from "clsx";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
+import { useFederationStore } from "@/stores/federationStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { logout } from "@/services/auth";
@@ -84,12 +88,20 @@ const KEYCLOAK_BASE =
 const KEYCLOAK_REALM = import.meta.env.VITE_KEYCLOAK_REALM || "uchub";
 const ACCOUNT_URL = `${KEYCLOAK_BASE.replace(/\/+$/, "")}/realms/${KEYCLOAK_REALM}/account/`;
 
-export type PaneId = "account" | "appearance" | "notifications" | "help";
+export type PaneId =
+  | "account"
+  | "appearance"
+  | "notifications"
+  | "agents"
+  | "instance"
+  | "help";
 
 const PANES: { id: PaneId; label: string; icon: React.ReactNode }[] = [
   { id: "account", label: "Account", icon: <UserCircle className="h-4 w-4" /> },
   { id: "appearance", label: "Appearance", icon: <Palette className="h-4 w-4" /> },
   { id: "notifications", label: "Notifications", icon: <Bell className="h-4 w-4" /> },
+  { id: "agents", label: "Agents", icon: <Bot className="h-4 w-4" /> },
+  { id: "instance", label: "Instance", icon: <ServerCog className="h-4 w-4" /> },
   { id: "help", label: "Help", icon: <BookOpen className="h-4 w-4" /> },
 ];
 
@@ -166,12 +178,338 @@ export function SettingsModal({ onClose, initialPane = "account" }: SettingsModa
               </div>
             )}
             {pane === "notifications" && <NotificationsPane />}
+            {pane === "agents" && <AgentsPane />}
+            {pane === "instance" && <InstancePane />}
             {/* Help fills the pane and brings its own header/tabs/search. */}
             {pane === "help" && <HelpCenter />}
           </div>
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+function AgentsPane() {
+  const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const queryClient = useQueryClient();
+  const {
+    data: roster = [],
+    isPending,
+    isError,
+    refetch,
+  } = useQuery({
+    queryKey: ["brigade-roster", activeInstanceId],
+    queryFn: () => api.getAgents(),
+    staleTime: 60_000,
+  });
+  const { data: preferences } = useQuery({
+    queryKey: ["my-preferences", activeInstanceId],
+    queryFn: () => api.getMyPreferences(),
+    staleTime: 60_000,
+  });
+  const [saving, setSaving] = useState<string | null>(null);
+  const defaultAgentId = preferences?.default_agent_id ?? null;
+
+  const choose = async (id: string | null) => {
+    if (saving) return;
+    setSaving(id ?? "__none__");
+    try {
+      await api.setDefaultAgent(id);
+      await queryClient.invalidateQueries({ queryKey: ["my-preferences"] });
+    } catch {
+      useAppStore.getState().pushToast({
+        title: "Couldn't save default agent",
+        body: "Try again in a moment.",
+      });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const choiceRow = (
+    selected: boolean,
+    busy: boolean,
+    onClick: () => void,
+    body: React.ReactNode,
+    key: string,
+  ) => (
+    <li key={key}>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!!saving}
+        aria-pressed={selected}
+        className={clsx(
+          "focus-ring flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+          selected
+            ? "border-stable-purple/40 bg-stable-purple/10"
+            : "border-line bg-surface-2/40 hover:border-line-strong hover:bg-white/[0.04]",
+        )}
+      >
+        {body}
+        <span className="ml-auto shrink-0">
+          {busy ? (
+            <span className="text-[11px] text-slate-500">Saving…</span>
+          ) : selected ? (
+            <Check className="h-4 w-4 text-stable-purple-light" />
+          ) : null}
+        </span>
+      </button>
+    </li>
+  );
+
+  return (
+    <div className="h-full overflow-y-auto p-5">
+      <h3 className="font-display text-sm font-semibold text-slate-200">
+        Default agent
+      </h3>
+      <p className="mt-1 text-xs text-slate-500">
+        The agent Stable reaches for first — it fields new agent chats and
+        answers when no agent is named. Rooms can always invite anyone else.
+      </p>
+
+      {isPending ? (
+        <div className="mt-4 space-y-2" aria-hidden="true">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-12 animate-pulse-soft rounded-lg bg-white/[0.04]"
+            />
+          ))}
+        </div>
+      ) : isError ? (
+        <div className="mt-4 rounded-xl border border-dashed border-line px-3.5 py-4 text-center">
+          <p className="text-xs text-slate-500">Couldn't load the roster.</p>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="focus-ring mt-2 rounded-lg border border-line bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-line-strong"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <ul className="mt-4 space-y-2">
+          {choiceRow(
+            defaultAgentId === null,
+            saving === "__none__",
+            () => void choose(null),
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-slate-100">
+                No default
+              </span>
+              <span className="block text-xs text-slate-500">
+                Always pick an agent explicitly
+              </span>
+            </span>,
+            "none",
+          )}
+          {roster.map((agent) =>
+            choiceRow(
+              defaultAgentId === agent.id,
+              saving === agent.id,
+              () => void choose(agent.id),
+              <>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
+                  {agent.emoji || <Bot className="h-4 w-4 text-slate-400" />}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-slate-100">
+                    {agent.display_name || agent.name}
+                  </span>
+                  <span className="block truncate text-xs text-slate-500">
+                    {[agent.rank, agent.title, agent.model]
+                      .filter(Boolean)
+                      .join(" · ") || agent.description}
+                  </span>
+                </span>
+              </>,
+              agent.id,
+            ),
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Human-readable state for one entry of /api/v1/health's services map. */
+function serviceState(value: unknown): { label: string; ok: boolean } {
+  if (typeof value === "string") {
+    return {
+      label: value,
+      ok: ["ready", "configured", "current", "stamped"].includes(value),
+    };
+  }
+  if (value && typeof value === "object") {
+    const v = value as Record<string, unknown>;
+    const label = String(v.state ?? v.revision ?? "ok");
+    return { label, ok: v.state !== "error" };
+  }
+  return { label: String(value), ok: false };
+}
+
+function InstancePane() {
+  const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const instances = useFederationStore((s) => s.accessibleInstances);
+  const active = instances.find((i) => i.id === activeInstanceId);
+
+  const {
+    data: health,
+    isError: healthFailed,
+    refetch: refetchHealth,
+  } = useQuery({
+    queryKey: ["instance-health", activeInstanceId],
+    queryFn: () => api.getInstanceHealth(),
+    refetchInterval: 30_000,
+  });
+  const { data: webVersion } = useQuery({
+    queryKey: ["web-version"],
+    queryFn: async () => {
+      const res = await fetch("/version.txt", { cache: "no-store" });
+      return res.ok ? res.text() : "";
+    },
+    staleTime: 5 * 60_000,
+  });
+  const { data: roster = [] } = useQuery({
+    queryKey: ["brigade-roster", activeInstanceId],
+    queryFn: () => api.getAgents(),
+    staleTime: 60_000,
+  });
+
+  const build = health?.services?.build as
+    | { revision?: string; state?: string }
+    | undefined;
+  const webSha = webVersion?.match(/sha=([0-9a-f]+)/)?.[1];
+  const fleet = {
+    working: roster.filter((a) => a.status === "working").length,
+    active: roster.filter((a) => a.status === "active").length,
+    idle: roster.filter((a) => a.status === "idle").length,
+    offline: roster.filter((a) => a.status === "offline").length,
+  };
+  const unreachable = roster.filter((a) => a.availability === "unavailable");
+
+  return (
+    <div className="h-full overflow-y-auto p-5">
+      <h3 className="font-display text-sm font-semibold text-slate-200">
+        This instance
+      </h3>
+      <div className="mt-3 rounded-xl border border-line bg-surface-2/60 p-3.5 text-xs">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
+          <dt className="text-slate-500">Server</dt>
+          <dd className="truncate text-slate-200">
+            {active ? `${active.name} — ${active.apiBaseUrl}` : "This server"}
+          </dd>
+          <dt className="text-slate-500">Backend</dt>
+          <dd className="font-mono text-slate-200">
+            {build?.revision ?? (healthFailed ? "unreachable" : "…")}
+          </dd>
+          <dt className="text-slate-500">Web</dt>
+          <dd className="font-mono text-slate-200">{webSha ?? "…"}</dd>
+          <dt className="text-slate-500">Status</dt>
+          <dd
+            className={clsx(
+              "font-medium",
+              health?.status === "ready"
+                ? "text-stable-mint"
+                : healthFailed
+                  ? "text-rose-300"
+                  : "text-slate-200",
+            )}
+          >
+            {healthFailed ? "health check failed" : (health?.status ?? "…")}
+            {healthFailed && (
+              <button
+                type="button"
+                onClick={() => void refetchHealth()}
+                className="focus-ring ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-line-strong"
+              >
+                Retry
+              </button>
+            )}
+          </dd>
+        </dl>
+      </div>
+
+      <h3 className="mt-5 font-display text-sm font-semibold text-slate-200">
+        Services
+      </h3>
+      <ul className="mt-2 flex flex-wrap gap-1.5">
+        {Object.entries(health?.services ?? {})
+          .filter(([name]) => name !== "build")
+          .map(([name, value]) => {
+            const state = serviceState(value);
+            return (
+              <li
+                key={name}
+                className={clsx(
+                  "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]",
+                  state.ok
+                    ? "border-stable-mint/25 bg-stable-mint/10 text-stable-mint"
+                    : "border-amber-500/25 bg-amber-500/10 text-amber-300",
+                )}
+              >
+                <span
+                  className={clsx(
+                    "h-1.5 w-1.5 rounded-full",
+                    state.ok ? "bg-stable-mint" : "bg-amber-400",
+                  )}
+                />
+                {name} · {state.label}
+              </li>
+            );
+          })}
+        {!health && !healthFailed && (
+          <li className="text-[11px] text-slate-500">Loading…</li>
+        )}
+      </ul>
+
+      <h3 className="mt-5 font-display text-sm font-semibold text-slate-200">
+        Agent fleet
+      </h3>
+      <p className="mt-1 text-xs text-slate-500">
+        {roster.length} agents — {fleet.working} working · {fleet.active} active
+        · {fleet.idle} idle · {fleet.offline} offline
+      </p>
+      {unreachable.length > 0 && (
+        <p className="mt-1.5 text-xs text-amber-300/90">
+          Unreachable:{" "}
+          {unreachable
+            .slice(0, 5)
+            .map((a) => a.display_name || a.name)
+            .join(", ")}
+          {unreachable.length > 5 ? ` +${unreachable.length - 5} more` : ""}
+        </p>
+      )}
+
+      <h3 className="mt-5 font-display text-sm font-semibold text-slate-200">
+        Federation
+      </h3>
+      <ul className="mt-2 space-y-1.5">
+        {instances.map((inst) => (
+          <li
+            key={inst.id}
+            className="flex items-center gap-2 rounded-lg border border-line bg-surface-2/40 px-3 py-2 text-xs"
+          >
+            <span
+              className={clsx(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                inst.id === activeInstanceId
+                  ? "animate-live bg-stable-mint"
+                  : "bg-slate-500",
+              )}
+            />
+            <span className="font-medium text-slate-200">{inst.name}</span>
+            <span className="truncate text-slate-500">{inst.apiBaseUrl}</span>
+            {inst.id === activeInstanceId && (
+              <span className="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide text-stable-mint">
+                active
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

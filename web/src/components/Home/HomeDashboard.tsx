@@ -301,6 +301,37 @@ export function HomeDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, unreadCounts]);
 
+  // Agent fleet snapshot for the command grid — same roster the Agents page
+  // uses (shared query key), so this costs nothing extra when both are warm.
+  const { data: agentRoster = [] } = useQuery({
+    queryKey: ["brigade-roster", activeInstanceId],
+    queryFn: () => api.getAgents(),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+  });
+  const fleetAgents = useMemo(() => {
+    const order: Record<string, number> = {
+      working: 0,
+      active: 1,
+      idle: 2,
+      offline: 3,
+    };
+    return [...agentRoster]
+      .sort(
+        (a, b) =>
+          (order[a.status] ?? 9) - (order[b.status] ?? 9) ||
+          (a.display_name || a.name).localeCompare(b.display_name || b.name),
+      )
+      .slice(0, 8);
+  }, [agentRoster]);
+  const fleetActiveCount = useMemo(
+    () =>
+      agentRoster.filter(
+        (a) => a.status === "working" || a.status === "active",
+      ).length,
+    [agentRoster],
+  );
+
   // Everyone online (favorites first) — the People column should carry the
   // whole roster's presence, not go dark for users who never starred anyone.
   const peopleOnline = useMemo(() => {
@@ -1039,6 +1070,100 @@ export function HomeDashboard() {
                         </span>
                       </span>
                       <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {/* ── Agent fleet ──────────────────────────────────────────────── */}
+        <section aria-labelledby="home-fleet-heading">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-stable-purple-light" />
+              <h2
+                id="home-fleet-heading"
+                className="font-display text-sm font-semibold text-slate-200"
+              >
+                Agents
+              </h2>
+              {agentRoster.length > 0 && (
+                <span className="text-[11px] tabular-nums text-slate-500">
+                  {fleetActiveCount}/{agentRoster.length} active
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/agents")}
+              className="focus-ring rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+            >
+              Browse all
+            </button>
+          </div>
+
+          {fleetAgents.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
+              No agents registered on this instance yet.
+            </p>
+          ) : (
+            <ul className="card overflow-hidden">
+              {fleetAgents.map((agent, i) => {
+                const unreachable = agent.availability === "unavailable";
+                return (
+                  <li key={agent.id}>
+                    <button
+                      type="button"
+                      onClick={() => navigate("/agents")}
+                      className={clsx(
+                        "focus-ring flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.04]",
+                        i > 0 && "border-t border-line",
+                      )}
+                    >
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
+                        {agent.emoji || (
+                          <Bot className="h-4 w-4 text-slate-400" />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-slate-100">
+                          {agent.display_name || agent.name}
+                        </span>
+                        <span className="block truncate text-xs text-slate-500">
+                          {[agent.rank, agent.title].filter(Boolean).join(" · ") ||
+                            agent.model}
+                        </span>
+                      </span>
+                      <span
+                        className={clsx(
+                          "flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                          unreachable
+                            ? "border-rose-500/25 bg-rose-500/10 text-rose-300"
+                            : agent.status === "working"
+                              ? "border-stable-mint/25 bg-stable-mint/10 text-stable-mint"
+                              : agent.status === "active"
+                                ? "border-stable-cyan/25 bg-stable-cyan/10 text-stable-cyan"
+                                : "border-line bg-white/[0.03] text-slate-400",
+                        )}
+                      >
+                        <span
+                          className={clsx(
+                            "h-1.5 w-1.5 rounded-full",
+                            unreachable
+                              ? "bg-rose-400"
+                              : agent.status === "working"
+                                ? "animate-live bg-stable-mint"
+                                : agent.status === "active"
+                                  ? "bg-stable-cyan"
+                                  : agent.status === "idle"
+                                    ? "bg-slate-400"
+                                    : "bg-slate-600",
+                          )}
+                        />
+                        {unreachable ? "unreachable" : agent.status}
+                      </span>
                     </button>
                   </li>
                 );
