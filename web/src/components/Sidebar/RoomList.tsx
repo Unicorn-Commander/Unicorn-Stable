@@ -17,6 +17,7 @@ import {
   MessageSquare,
   MoreVertical,
   Pencil,
+  Phone,
   Plug,
   Plus,
   Search,
@@ -46,6 +47,7 @@ import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { identityFor } from "@/lib/identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
+import { useCallUiStore } from "@/stores/callUiStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
@@ -58,6 +60,7 @@ import {
   foldersFor,
   type FolderSection,
 } from "@/stores/categoryStore";
+import { useVoice } from "@/contexts/VoiceProvider";
 import {
   buildSidebarModel,
   isPrivateChannel,
@@ -93,6 +96,9 @@ export function RoomList() {
   const rememberRoom = useNavStore((s) => s.rememberRoom);
   const setActiveView = useNavStore((s) => s.setActiveView);
   const scope = useFederationStore((s) => s.activeInstanceId);
+  // Live call rejoin (Meetings empty/rail) — same source as Home.
+  const { isConnected } = useVoice();
+  const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   // Model view: classic mode always builds the full tree.
   const modelView: SidebarView = navV1 ? activeView : "all";
   // The agent the "New chat" button + the primary conversation section key off
@@ -281,6 +287,20 @@ export function RoomList() {
     staleTime: 5 * 60_000,
     enabled: navV1 && activeView === "meetings",
   });
+  // Hide catalog entries the user already joined (matched by display label).
+  const unjoinedConferenceCatalog = useMemo(() => {
+    if (conferenceCatalog.length === 0) return conferenceCatalog;
+    const joinedLabels = new Set(
+      rooms
+        .filter((r) => r.is_conference)
+        .flatMap((r) =>
+          [r.display_name, r.name].filter(Boolean).map((s) => s!.toLowerCase()),
+        ),
+    );
+    return conferenceCatalog.filter(
+      (c) => !joinedLabels.has(c.display_name.toLowerCase()),
+    );
+  }, [conferenceCatalog, rooms]);
   const [enteringConference, setEnteringConference] = useState<string | null>(
     null,
   );
@@ -1522,10 +1542,48 @@ export function RoomList() {
     );
   }
 
-  /** Meetings: joined conference rooms + catalog entry points. */
+  /** Meetings: live rejoin + joined conference rooms + catalog entry points. */
   function renderMeetingsBody() {
+    const hasActiveCall = Boolean(isConnected && activeCallRoomId);
+    const activeCallRoom = hasActiveCall
+      ? rooms.find((r) => r.id === activeCallRoomId) ?? null
+      : null;
+    const showCatalog = unjoinedConferenceCatalog.length > 0;
+    const showEmpty = channelCount === 0 && !hasActiveCall;
+
     return (
       <section>
+        {hasActiveCall && activeCallRoomId && (
+          <div className="mx-2 mb-2">
+            <button
+              type="button"
+              onClick={() => openRoom(activeCallRoomId)}
+              className="focus-ring flex w-full items-center gap-2.5 rounded-lg border border-stable-mint/35 bg-stable-mint/10 px-2.5 py-2 text-left transition-colors hover:border-stable-mint/55 hover:bg-stable-mint/15"
+            >
+              <Phone className="h-4 w-4 shrink-0 text-stable-mint" />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-slate-100">
+                    Return to call
+                  </span>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-stable-mint/30 bg-stable-mint/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-mint">
+                    <span className="h-1 w-1 animate-pulse rounded-full bg-stable-mint" />
+                    live
+                  </span>
+                </span>
+                <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+                  {activeCallRoom?.display_name ||
+                    activeCallRoom?.name ||
+                    "Your active call"}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs font-semibold text-stable-mint">
+                Rejoin
+              </span>
+            </button>
+          </div>
+        )}
+
         {renderSectionHeader(
           SECTION_KEYS.channels,
           "Standing rooms",
@@ -1535,22 +1593,23 @@ export function RoomList() {
           <>
             {channelCount > 0 && renderSectionBody(channelSection)}
 
-            {channelCount === 0 && (
+            {showEmpty && (
               <div className="mx-2 mb-2 rounded-lg border border-dashed border-line-strong px-3 py-3 text-xs text-slate-500">
                 <p className="font-medium text-slate-400">No meetings yet</p>
                 <p className="mt-1 leading-relaxed">
-                  Standing conference rooms appear here once you enter them.
-                  You can also start a call from any chat.
+                  {showCatalog
+                    ? "Enter a standing conference room below, or start a call from any chat. Hang-up auto-exports captions to Meeting-Ops when enabled."
+                    : "Standing conference rooms appear here once you enter them. You can also start a call from any chat."}
                 </p>
               </div>
             )}
 
-            {conferenceCatalog.length > 0 && (
+            {showCatalog && (
               <div className="mx-2 mt-2 space-y-1">
                 <p className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                  Enter a room
+                  {channelCount > 0 ? "More rooms" : "Enter a room"}
                 </p>
-                {conferenceCatalog.map((c) => (
+                {unjoinedConferenceCatalog.map((c) => (
                   <button
                     key={c.slug}
                     type="button"
