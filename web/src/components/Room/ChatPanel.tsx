@@ -405,22 +405,28 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // Double-tap scroll to the newest message that survives the variable-height
   // reflow: pin on the next frame, then again after a beat once real markdown
   // heights have settled.
-  const pinTimersRef = useRef<{ raf?: number; timeout?: number }>({});
+  const pinTimersRef = useRef<{ raf?: number; timeouts: number[] }>({
+    timeouts: [],
+  });
   const clearPinTimers = useCallback(() => {
     if (pinTimersRef.current.raf) cancelAnimationFrame(pinTimersRef.current.raf);
-    if (pinTimersRef.current.timeout) window.clearTimeout(pinTimersRef.current.timeout);
-    pinTimersRef.current = {};
+    for (const t of pinTimersRef.current.timeouts) window.clearTimeout(t);
+    pinTimersRef.current = { timeouts: [] };
   }, []);
   const pinToNewest = useCallback(() => {
     clearPinTimers();
-    pinTimersRef.current.raf = requestAnimationFrame(() =>
-      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" }),
-    );
-    pinTimersRef.current.timeout = window.setTimeout(
-      () =>
-        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" }),
-      150,
-    );
+    const tap = () =>
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+    pinTimersRef.current.raf = requestAnimationFrame(tap);
+    // Re-tap on a decaying schedule: a first page full of heavy markdown can
+    // take several hundred ms to measure, and a single 150ms settle tap lands
+    // mid-reflow — the room then opens showing the top of the page. Re-tapping
+    // an already-anchored list is a no-op. The worst case is a user who opens
+    // a room and scrolls up within 800ms getting pulled back down once; the
+    // pin fires once per room, so after it settles it never fights a reader.
+    for (const delay of [150, 400, 800]) {
+      pinTimersRef.current.timeouts.push(window.setTimeout(tap, delay));
+    }
   }, [clearPinTimers]);
 
   // Keep the list pinned to the newest message when the scroller SHRINKS —
