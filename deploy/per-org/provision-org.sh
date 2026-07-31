@@ -113,7 +113,12 @@ echo "  ✓ rendered $ENV_OUT (mode 600)"
 python3 "$HERE/render_compose.py" \
   "$BASE_COMPOSE" "$ORG_DIR/docker-compose.yml" \
   "$SLUG" "$SLUG.$DOMAIN_BASE" "$SLUG-livekit.$DOMAIN_BASE" "$SLUG-turn.$DOMAIN_BASE" \
-  "$LK_API" "$LK_TCP" "$LK_UDP"
+  "$LK_API" "$LK_TCP" "$LK_UDP" "$SLUG-ws.$DOMAIN_BASE"
+
+# Reminder printed in the runbook below: $SLUG-ws.$DOMAIN_BASE must be a
+# DNS-only (grey) A record straight to this box — the websocket host exists
+# precisely to bypass the CDN (h3/h2 extended-CONNECT stalls websockets), so
+# proxying it would defeat the point.
 
 # --- 4b) seed this org's federation server-rail list -----------------------
 # The web service mounts $ORG_DIR/instances.json over the image's baked list.

@@ -80,7 +80,7 @@ def _rewrite_web_mounts(svc, base_dir, out_dir):
     svc["volumes"] = fixed
 
 
-def _rewrite_labels(labels, slug, dom, lkdom, turndom):
+def _rewrite_labels(labels, slug, dom, lkdom, turndom, wsdom):
     """Rewrite Traefik router names + host rules in a service's label list.
 
     Traefik router/service/middleware NAMES are global (Traefik sees every
@@ -97,7 +97,11 @@ def _rewrite_labels(labels, slug, dom, lkdom, turndom):
     for lb in labels or []:
         s = str(lb)
         s = name_ctx.sub(rf"\1stable-{slug}", s)
-        # Host rules → the org's domains.
+        # Host rules → the org's domains. The ws host FIRST: it contains no
+        # other domain as a substring, but "stable.magicunicorn.dev" IS a
+        # suffix-overlap risk if a future host embeds it, so replace the most
+        # specific names before the generic one.
+        s = s.replace("stable-ws.magicunicorn.dev", wsdom)
         s = s.replace("stable.magicunicorn.dev", dom)
         s = s.replace("livekit.magicunicorn.dev", lkdom)
         s = s.replace("turn.magicunicorn.dev", turndom)
@@ -107,6 +111,10 @@ def _rewrite_labels(labels, slug, dom, lkdom, turndom):
 
 def main() -> int:
     (base, out, slug, dom, lkdom, turndom, lk_api, lk_tcp, lk_udp) = sys.argv[1:10]
+    # Optional 10th arg (older callers omit it): the org's websocket bypass
+    # host. Default derives from the app domain the same way provision-org.sh
+    # does, so a stale caller still renders a working (if unregistered) host.
+    wsdom = sys.argv[10] if len(sys.argv) > 10 else f"{slug}-ws.{dom.split('.', 1)[1]}"
     with open(base) as f:
         c = yaml.safe_load(f)
 
@@ -118,7 +126,7 @@ def main() -> int:
             svc["container_name"] = svc["container_name"].replace("stable-", f"{pfx}-", 1)
         # traefik labels
         if isinstance(svc.get("labels"), list):
-            svc["labels"] = _rewrite_labels(svc["labels"], slug, dom, lkdom, turndom)
+            svc["labels"] = _rewrite_labels(svc["labels"], slug, dom, lkdom, turndom, wsdom)
         # networks: rename the private net; keep external `web`
         if isinstance(svc.get("networks"), list):
             svc["networks"] = [
