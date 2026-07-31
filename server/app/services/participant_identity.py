@@ -95,6 +95,18 @@ def _stamp_email(participant: Participant, email: str | None) -> bool:
     return True
 
 
+def _is_gravatar_url(url: str | None) -> bool:
+    """True when a URL points at gravatar.com (host-suffix matched)."""
+    if not url:
+        return False
+    try:
+        host = url.split("//", 1)[1].split("/", 1)[0].lower()
+    except IndexError:
+        return False
+    host = host.split("@")[-1]  # strip any userinfo
+    return host == "gravatar.com" or host.endswith(".gravatar.com")
+
+
 def _sync_mutable_fields(
     participant: Participant, identity: dict[str, Any], email: str | None
 ) -> bool:
@@ -109,6 +121,17 @@ def _sync_mutable_fields(
         # Hybrid setter: writes land on the Keycloak mirror, never on a
         # Stable-local override (see models/participant.py).
         participant.avatar_url = new_avatar
+        changed = True
+    elif not new_avatar and _is_gravatar_url(participant.keycloak_avatar_url):
+        # Stale fallback cleanup: the old identity spine minted gravatar.com
+        # URLs keyed by email MD5 (d=404, so they only ever rendered broken
+        # images and leaked an email hash to a third party). The newer spine
+        # mints none, so once a token stops carrying a `picture` claim there
+        # is nothing left to mirror — the stale URL must not survive it.
+        # Guarded to the gravatar class on purpose: a real Ops-Center picture
+        # (unicorncommander.ai) is never blanked by a transiently-absent
+        # claim, and a Stable-local override is untouched by design.
+        participant.avatar_url = None
         changed = True
     if _stamp_email(participant, email):
         changed = True

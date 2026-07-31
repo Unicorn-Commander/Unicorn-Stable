@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { MotionConfig } from "framer-motion";
 import { isAuthenticated, login, getUserProfile } from "@/services/auth";
+import { syncMyAvatar } from "@/lib/avatar";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -69,6 +70,13 @@ function AuthGate({ children }: { children: ReactNode }) {
               email: profile.email,
               avatarUrl: profile.avatarUrl,
               roles: profile.roles,
+            });
+            // Header/roster parity: the claim is minted at login, so reconcile
+            // against the server's effective picture in the background (an
+            // override uploaded here, or a photo added in Ops-Center since the
+            // token was minted). Never blocks the shell; see lib/avatar.ts.
+            void syncMyAvatar((url) => {
+              if (mounted) setCurrentUser({ ...profile, avatarUrl: url });
             });
           }
           ws.connect();

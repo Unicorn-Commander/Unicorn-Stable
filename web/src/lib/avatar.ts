@@ -242,6 +242,41 @@ export function refreshMyOpsCenterAvatar(): Promise<AvatarState> {
   );
 }
 
+/**
+ * Reconcile the header avatar with the server's effective picture, in the
+ * background, once per login.
+ *
+ * Why this exists: the header renders `currentUser.avatarUrl`, which is the
+ * raw `picture` CLAIM from the access token — minted at login and stale the
+ * moment anything changes server-side:
+ *
+ *   1. An override uploaded here (Settings) lives only in the Participant's
+ *      metadata; the claim never carries it, so the header kept showing
+ *      initials while every roster row showed the override.
+ *   2. A photo added in Ops-Center after the last sign-in is invisible until
+ *      the next token carries the `picture` claim — which can be the full
+ *      token lifetime away.
+ *
+ * So on login we fetch the effective state once; when there is no effective
+ * picture yet, we additionally ask for a Keycloak re-pull (the refresh
+ * endpoint is quiet when there is nothing new). Any resulting URL is pushed
+ * into the store, and the two render sites agree again. Never awaited by the
+ * shell: a failure here must not block (or visibly error) the app.
+ */
+export async function syncMyAvatar(
+  onUpdate: (effectiveUrl: string) => void,
+): Promise<void> {
+  try {
+    let state = await fetchMyAvatar();
+    if (!state.effective_url) {
+      state = await refreshMyOpsCenterAvatar();
+    }
+    if (state.effective_url) onUpdate(state.effective_url);
+  } catch {
+    /* background sync — the initials fallback always renders */
+  }
+}
+
 /** Client-side guard mirroring the server's. Kept in sync with
  *  `MAX_AVATAR_BYTES` / `_MAGIC` in api/participants.py. */
 export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
