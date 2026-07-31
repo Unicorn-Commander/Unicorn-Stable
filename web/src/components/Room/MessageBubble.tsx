@@ -35,6 +35,7 @@ import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { isRoomApprover } from "@/lib/approvals";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -749,7 +750,7 @@ function CodeBlock({ lang, content }: { lang: string | null; content: string }) 
         >
           {copied ? (
             <>
-              <Check className="h-3 w-3 text-emerald-400" />
+              <Check className="h-3 w-3 text-stable-mint" />
               Copied
             </>
           ) : (
@@ -792,19 +793,14 @@ function ImageLightbox({
   // Mount at scale-95, release to scale-100 on the next frame — a subtle
   // scale-in from existing transition utilities, no bespoke keyframe needed.
   const [entered, setEntered] = useState(false);
+  const panelRef = useModalA11y(true, onClose);
   useEffect(() => {
     const raf = requestAnimationFrame(() => setEntered(true));
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+    return () => cancelAnimationFrame(raf);
+  }, []);
   return (
     <div
+      ref={panelRef}
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur animate-fade-in"
       onClick={onClose}
       role="dialog"
@@ -976,7 +972,7 @@ function PollCard({
           return (
             <li key={i}>
               <button
-                onClick={() => api.toggleReaction(messageId, emoji).catch(() => {})}
+                onClick={() => api.toggleReaction(messageId, emoji).catch((err) => useAppStore.getState().pushToast({ title: "Vote failed", body: errorMessage(err) }))}
                 className={clsx(
                   "relative flex w-full items-center gap-2 overflow-hidden rounded-lg border px-2 py-1.5 text-left text-xs transition-colors focus-ring",
                   mine
@@ -1113,7 +1109,7 @@ function PromoteToProjectOpsModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
       <div className="glass-heavy w-full max-w-xl overflow-hidden rounded-2xl shadow-pop animate-slide-up">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <div className="flex items-center gap-2.5">
@@ -2313,7 +2309,7 @@ export function MessageBubble({
                 </button>
                 <button
                   onClick={handleEditSubmit}
-                  className="rounded-md p-1 text-emerald-400 transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 focus-ring"
+                  className="rounded-md p-1 text-stable-mint transition-colors hover:bg-stable-mint/10 focus-ring"
                   aria-label="Save edit"
                 >
                   <Check className="h-3.5 w-3.5" />

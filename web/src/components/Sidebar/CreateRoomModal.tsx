@@ -118,7 +118,7 @@ export function CreateRoomModal() {
       }}
       role="dialog"
       aria-modal="true"
-      aria-label="Create room"
+      aria-label="Create a room"
     >
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}

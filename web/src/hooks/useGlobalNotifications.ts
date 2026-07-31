@@ -92,8 +92,18 @@ export function useGlobalNotifications() {
         .getState()
         .updateRoom(event.room_id, { last_message: event.message });
 
-      // Ignore messages from self (for unread/toast purposes)
-      if (event.message.sender_id && event.message.sender_id === currentUser?.id) {
+      // Ignore messages from self (for unread/toast purposes). sender_id is a
+      // PARTICIPANT id, so compare against the participant identity learned
+      // from the websocket auth_ok ack; the Keycloak-sub comparison is kept as
+      // a harmless fallback but never matched on its own (different id space —
+      // that mismatch is exactly how self-messages used to toast and bump
+      // unread counts).
+      const selfParticipantId = useAppStore.getState().currentParticipantId;
+      if (
+        event.message.sender_id &&
+        (event.message.sender_id === selfParticipantId ||
+          event.message.sender_id === currentUser?.id)
+      ) {
         return;
       }
 
@@ -180,7 +190,7 @@ export function useGlobalNotifications() {
       playCue("notify");
       if (loadPrefs().inAppToasts) {
         pushToast({
-          title: "You were added to a channel",
+          title: "You were added to a room",
           body: event.inviter_name
             ? `${event.inviter_name} invited you.`
             : "Click here to open it.",

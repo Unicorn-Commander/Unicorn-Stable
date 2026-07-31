@@ -141,7 +141,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       : [];
     const g = useAppStore.getState;
     const actionItems: Item[] = [
-      { kind: "action", id: "new-channel", label: "Create channel", sub: "Start a new room", icon: Plus, run: () => g().setCreateRoomModalOpen(true) },
+      { kind: "action", id: "new-channel", label: "Create a room", sub: "Channel, group, or direct message", icon: Plus, run: () => g().setCreateRoomModalOpen(true) },
       { kind: "action", id: "search-all", label: "Search all messages", sub: "Across every conversation", icon: Search, run: onOpenGlobalSearch },
       { kind: "action", id: "people", label: "People", sub: "Directory, DMs, favorites", icon: Users, run: () => g().setPeopleDrawerOpen(true) },
       { kind: "action", id: "saved", label: "Saved messages", sub: "Your bookmarks", icon: Bookmark, run: () => g().setSavedOpen(true) },
@@ -169,7 +169,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
         kind: "action",
         id: "browse-servers",
         label: "Browse servers",
-        sub: "Switch Stables, see descriptions",
+        sub: "Switch servers, see descriptions",
         icon: Server,
         run: () => useFederationStore.getState().setSwitcherOpen(true),
       });

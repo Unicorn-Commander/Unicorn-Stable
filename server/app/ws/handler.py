@@ -630,9 +630,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if user is None:
             await websocket.close(code=4003, reason="Authentication failed")
             return
-        # Explicit ack: the client must not treat the socket as live until the
-        # server has judged the token — onopen alone no longer means that.
-        await _safe_send(websocket, {"type": "auth_ok"})
+        # The explicit auth_ok ack is sent AFTER participant resolution below,
+        # so it can carry participant_id — the client needs its own participant
+        # identity (a different id space than the Keycloak sub it already has)
+        # to recognise its own messages in room events.
 
     # Look up participant
     app = websocket.app
@@ -661,6 +662,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # endpoint (not the event task) so the teardown below can retract them even
     # when that task is the one that died.
     typing_rooms: set[str] = set()
+
+    if token is None:
+        # Frame-auth ack: the first frame the client receives, and the signal
+        # it treats as "actually connected". Carries the participant id so the
+        # client can recognise its own messages in room events (sender_id is a
+        # participant UUID — a different id space than the Keycloak sub the
+        # client already knows). Legacy query-token clients get no ack; they
+        # never waited for one.
+        await _safe_send(
+            websocket, {"type": "auth_ok", "participant_id": participant_id}
+        )
 
     # Connect and set presence
     await manager.connect(participant_id, websocket)

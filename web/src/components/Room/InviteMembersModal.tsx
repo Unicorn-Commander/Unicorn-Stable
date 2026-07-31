@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Search, UserPlus, X } from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
+import { useAppStore } from "@/stores/appStore";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { Avatar } from "@/components/Avatar";
 
 interface InviteMembersModalProps {
@@ -21,6 +23,7 @@ export function InviteMembersModal({
   const [invitedIds, setInvitedIds] = useState<Set<string>>(new Set());
   const [copiedLink, setCopiedLink] = useState(false);
   const queryClient = useQueryClient();
+  const panelRef = useModalA11y(true, onClose);
 
   const { data: users = [] } = useQuery({
     queryKey: ["users-search", query],
@@ -39,6 +42,8 @@ export function InviteMembersModal({
   async function invite(u: {
     id: string | null;
     keycloak_sub: string;
+    display_name?: string | null;
+    username?: string | null;
   }) {
     const key = u.id || u.keycloak_sub;
     try {
@@ -52,6 +57,11 @@ export function InviteMembersModal({
       await queryClient.invalidateQueries({ queryKey: ["room-members", roomId] });
     } catch (e) {
       console.error("invite failed", e);
+      const err = e as { detail?: unknown; message?: string };
+      useAppStore.getState().pushToast({
+        title: `Couldn't invite ${u.display_name || u.username || "that person"}`,
+        body: (typeof err.detail === "string" && err.detail) || err.message || "Try again in a moment.",
+      });
     }
   }
 
@@ -63,14 +73,6 @@ export function InviteMembersModal({
     setTimeout(() => setCopiedLink(false), 2000);
   }
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -80,6 +82,10 @@ export function InviteMembersModal({
       onClick={onClose}
     >
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Invite people"
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}

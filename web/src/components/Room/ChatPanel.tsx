@@ -103,7 +103,7 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
-  const { messages, hasMore, loading, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
+  const { messages, hasMore, loading, error, retryInitial, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
     useChat(roomId);
   const { typingUsers, sendTypingIndicator, clearTypingIndicator } =
     usePresence(roomId);
@@ -247,8 +247,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
       unreadAnchorRef.current = { roomId, resolved: false };
       setUnreadAnchorId(null);
     }
-    if (unreadAnchorRef.current.resolved || loading || messages.length === 0)
+    if (messages.length === 0) {
+      // List wiped for refetch — recompute the anchor from the fresh page.
+      if (unreadAnchorRef.current.resolved) {
+        unreadAnchorRef.current.resolved = false;
+        setUnreadAnchorId(null);
+      }
       return;
+    }
+    if (unreadAnchorRef.current.resolved || loading) return;
     unreadAnchorRef.current.resolved = true;
 
     const state = useAppStore.getState();
@@ -290,11 +297,22 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // Mirror of isAtBottomRef: the ref drives scroll decisions without
   // re-rendering, but the jump pill needs a render when it flips.
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [pageVisible, setPageVisible] = useState(
+    () => document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    const onVis = () => setPageVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
   // Others' messages that landed while scrolled up — the pill's count.
   const [newWhileScrolledUp, setNewWhileScrolledUp] = useState(0);
   const prevLastMessageIdRef = useRef<string | null>(null);
   // Which room we've already force-pinned to newest after its first render.
   const didInitialPinRef = useRef<string | null>(null);
+  // Which room:message deep-link we've already centered — so live arrivals
+  // don't re-scroll the permalink target on every list change.
+  const handledDeepLinkRef = useRef<string | null>(null);
 
   // Send mark_read for the newest message whenever (a) the room becomes
   // active, (b) a new message arrives while we're at bottom + visible.
@@ -334,6 +352,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         at: Date.now(),
       };
       ws.send("mark_read", { room_id: roomId, message_id: newestMessageId });
+      useAppStore.getState().clearUnread(roomId);
     };
 
     // A room switch is a fresh subject: never make the user wait out the
@@ -351,7 +370,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // which is the intended coalescing, not a lost update.
     const timer = setTimeout(send, MARK_READ_THROTTLE_MS - since);
     return () => clearTimeout(timer);
-  }, [roomId, newestMessageId]);
+  }, [roomId, newestMessageId, isAtBottom, pageVisible]);
 
   // Prepend anchor for Virtuoso: decremented by exactly the number of older
   // messages prepended on each loadMore so the viewport doesn't jump.
@@ -436,14 +455,21 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // (do NOT stamp the ref) and let the visibilitychange handler below finish it
   // once the tab is focused.
   useEffect(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) {
+      // fetchInitial wiped the list — the Virtuoso instance the pin was armed
+      // against is gone. Re-arm so the fresh page pins again.
+      if (didInitialPinRef.current === roomId) didInitialPinRef.current = null;
+      return;
+    }
     if (didInitialPinRef.current === roomId) return;
     if (document.visibilityState !== "visible") return;
     didInitialPinRef.current = roomId;
     if (new URLSearchParams(window.location.search).get("message")) return;
     pinToNewest();
-    return clearPinTimers;
-  }, [roomId, messages.length, pinToNewest, clearPinTimers]);
+  }, [roomId, messages.length, pinToNewest]);
+  // Pin timers must survive list growth (a message landing <150ms after the pin
+  // must not cancel the settle tap); clear only on unmount.
+  useEffect(() => clearPinTimers, [roomId, clearPinTimers]);
 
   // Finish a pin that couldn't run while the tab was hidden: when the tab
   // becomes visible and the initial pin is still PENDING for this room, pin to
@@ -491,8 +517,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   useEffect(() => {
     const messageId = new URLSearchParams(window.location.search).get("message");
     if (!messageId) return;
+    const key = `${roomId}:${messageId}`;
+    if (messages.length === 0) {
+      if (handledDeepLinkRef.current === key) handledDeepLinkRef.current = null;
+      return;
+    }
+    if (handledDeepLinkRef.current === key) return;
     const arrayIndex = messages.findIndex((m) => m.id === messageId);
     if (arrayIndex === -1) return;
+    handledDeepLinkRef.current = key;
     virtuosoRef.current?.scrollToIndex({
       index: arrayIndex,
       align: "center",
@@ -628,6 +661,21 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                   </div>
                 ))}
               </div>
+            ) : error ? (
+              <div className="m-auto flex max-w-xs flex-col items-center gap-3 text-center">
+                <p className="font-display text-sm font-semibold text-slate-200">
+                  Couldn't load messages
+                </p>
+                <p className="text-xs text-slate-500">
+                  Check your connection and try again.
+                </p>
+                <button
+                  onClick={() => void retryInitial()}
+                  className="focus-ring rounded-lg border border-line bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:border-line-strong hover:text-white"
+                >
+                  Try again
+                </button>
+              </div>
             ) : (
               <EmptyChannel
                 roomId={roomId}
@@ -646,7 +694,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
             ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
-            initialTopMostItemIndex={messages.length - 1}
+            initialTopMostItemIndex={{ index: messages.length - 1, align: "end" }}
             computeItemKey={(_index, message) => message.id}
             followOutput={(atBottom) => (atBottom ? "smooth" : false)}
             atBottomStateChange={(atBottom) => {

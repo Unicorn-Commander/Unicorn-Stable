@@ -36,6 +36,8 @@ interface RoomMessages {
   nextCursor: string | null;
   hasMore: boolean;
   loading: boolean;
+  /** Initial page failed; ChatPanel offers a retry. */
+  error?: boolean;
 }
 
 interface UIState {
@@ -72,6 +74,11 @@ export interface Toast {
 
 interface AppState {
   currentUser: CurrentUser | null;
+  /** The signed-in user's PARTICIPANT id — the id space room events use for
+   * sender_id. Distinct from currentUser.id (the Keycloak sub); comparing the
+   * two silently never matches, which is how self-messages once toasted and
+   * bumped unread. Learned from the websocket auth_ok ack. */
+  currentParticipantId: string | null;
   rooms: Room[];
   activeRoomId: string | null;
   messages: Record<string, RoomMessages>;
@@ -101,6 +108,7 @@ interface AppState {
   voiceActive: boolean;
 
   setCurrentUser: (user: CurrentUser | null) => void;
+  setCurrentParticipantId: (id: string | null) => void;
   setRooms: (rooms: Room[]) => void;
   updateRoom: (roomId: string, updates: Partial<Room>) => void;
   removeRoom: (roomId: string) => void;
@@ -161,6 +169,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   currentUser: null,
+  currentParticipantId: null,
   rooms: [],
   activeRoomId: null,
   messages: {},
@@ -196,6 +205,7 @@ export const useAppStore = create<AppState>((set) => ({
   voiceActive: false,
 
   setCurrentUser: (user) => set({ currentUser: user }),
+  setCurrentParticipantId: (id) => set({ currentParticipantId: id }),
 
   setRooms: (rooms) =>
     set((state) => {

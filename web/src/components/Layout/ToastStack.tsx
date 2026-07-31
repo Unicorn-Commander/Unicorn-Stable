@@ -22,7 +22,7 @@ function toneFor(title: string): { bar: string; chip: string; icon: string } {
     return {
       bar: "bg-emerald-400",
       chip: "bg-emerald-500/15",
-      icon: "text-emerald-400",
+      icon: "text-stable-mint",
     };
   }
   return { bar: "bg-sky-400", chip: "bg-sky-500/15", icon: "text-sky-400" };
@@ -42,7 +42,11 @@ export function ToastStack() {
   }, [toasts, dismissToast]);
 
   return (
-    <div className="pointer-events-none fixed right-4 top-[max(1rem,env(safe-area-inset-top))] z-[100] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+    <div
+      role="status"
+      aria-live="polite"
+      className="pointer-events-none fixed right-4 top-[max(1rem,env(safe-area-inset-top))] z-[100] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
+    >
       <AnimatePresence initial={false}>
         {toasts.slice(-5).map((t) => {
           const tone = toneFor(t.title);
@@ -65,7 +69,7 @@ export function ToastStack() {
                   if (t.roomId) navigate(`/c/${t.roomId}`);
                   dismissToast(t.id);
                 }}
-                className="flex w-full items-start gap-2.5 p-3 pl-4 text-left transition-colors hover:bg-white/[0.04]"
+                className="flex w-full items-start gap-2.5 p-3 pl-4 pr-9 text-left transition-colors hover:bg-white/[0.04]"
               >
                 <div className={`mt-0.5 rounded-md p-1.5 ${tone.chip}`}>
                   <Bell className={`h-3.5 w-3.5 ${tone.icon}`} />
@@ -80,15 +84,14 @@ export function ToastStack() {
                     </p>
                   )}
                 </div>
-                <span
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    dismissToast(t.id);
-                  }}
-                  className="shrink-0 rounded-md p-2.5 -m-1.5 text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-slate-200"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => dismissToast(t.id)}
+                aria-label="Dismiss notification"
+                className="focus-ring absolute right-1.5 top-1.5 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-slate-200"
+              >
+                <X className="h-3.5 w-3.5" />
               </button>
             </motion.div>
           );

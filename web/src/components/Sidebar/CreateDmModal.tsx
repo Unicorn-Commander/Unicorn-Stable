@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, X, Check, Bot, User as UserIcon } from "lucide-react";
 import { api, type Room, type BrigadeAgent } from "@/services/api";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { identityFor } from "@/lib/identity";
 import { Avatar } from "@/components/Avatar";
 
@@ -43,6 +44,7 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
   const [picked, setPicked] = useState<Picked[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const panelRef = useModalA11y(true, onClose);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -51,13 +53,6 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
     const t = setTimeout(() => setDebounced(q.trim()), 200);
     return () => clearTimeout(t);
   }, [q]);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const { data: users = [] } = useQuery({
     queryKey: ["dm-search", debounced],
@@ -216,6 +211,10 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
       onClick={onClose}
     >
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Start a chat"
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.96, y: 8 }}

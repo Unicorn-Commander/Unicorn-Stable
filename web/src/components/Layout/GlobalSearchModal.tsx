@@ -38,7 +38,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
     return () => clearTimeout(t);
   }, [q]);
 
-  const { data: results = [], isFetching } = useQuery({
+  const { data: results = [], isFetching, isError, refetch } = useQuery({
     queryKey: ["global-search", debounced],
     queryFn: () => api.searchAllMessages(debounced),
     enabled: debounced.length > 0,
@@ -114,6 +114,18 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
             <p className="animate-pulse-soft px-3 py-8 text-center text-xs text-slate-500">
               Searching…
             </p>
+          ) : isError ? (
+            <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-8 text-center">
+              <p className="font-display text-sm font-semibold text-slate-200">
+                Search failed
+              </p>
+              <button
+                onClick={() => refetch()}
+                className="focus-ring rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
+              >
+                Try again
+              </button>
+            </div>
           ) : results.length === 0 ? (
             <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-10 text-center">
               <div className="grid h-11 w-11 place-items-center rounded-2xl bg-stable-cyan/10 text-stable-cyan/80">

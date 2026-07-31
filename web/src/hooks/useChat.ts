@@ -9,6 +9,10 @@ interface UseChatReturn {
   messages: Message[];
   hasMore: boolean;
   loading: boolean;
+  /** Initial page failed to load — the room may not actually be empty. */
+  error: boolean;
+  /** Re-run the initial page fetch after a failure. */
+  retryInitial: () => Promise<void>;
   sendMessage: (
     content: string,
     threadId?: string,
@@ -38,48 +42,45 @@ export function useChat(roomId: string | null): UseChatReturn {
   const hasMore = messagesState?.hasMore ?? true;
   const loading = messagesState?.loading ?? false;
 
-  useEffect(() => {
-    if (!roomId || initialLoadDone.current.has(roomId)) return;
+  // Hoisted so ChatPanel's error state can offer a manual retry. No cancelled
+  // flag: writes are keyed by roomId, so a late resolution only fills that
+  // room's own cache slot.
+  const fetchInitialPage = useCallback(async () => {
+    if (!roomId) return;
+    setMessages(roomId, {
+      items: [],
+      nextCursor: null,
+      hasMore: true,
+      loading: true,
+    });
 
-    let cancelled = false;
-
-    async function fetchInitial() {
-      if (!roomId) return;
+    try {
+      const response = await api.getMessages(roomId);
+      const reversed = [...response.items].reverse();
+      setMessages(roomId, {
+        items: reversed,
+        nextCursor: response.next_cursor,
+        hasMore: response.has_more,
+        loading: false,
+      });
+      initialLoadDone.current.add(roomId);
+    } catch {
+      // NOT stamped in initialLoadDone, so a remount auto-retries; hasMore
+      // stays true because the failure says nothing about the room's history.
       setMessages(roomId, {
         items: [],
         nextCursor: null,
         hasMore: true,
-        loading: true,
+        loading: false,
+        error: true,
       });
-
-      try {
-        const response = await api.getMessages(roomId);
-        if (cancelled) return;
-
-        const reversed = [...response.items].reverse();
-        setMessages(roomId, {
-          items: reversed,
-          nextCursor: response.next_cursor,
-          hasMore: response.has_more,
-          loading: false,
-        });
-        initialLoadDone.current.add(roomId);
-      } catch {
-        if (cancelled) return;
-        setMessages(roomId, {
-          items: [],
-          nextCursor: null,
-          hasMore: false,
-          loading: false,
-        });
-      }
     }
-
-    fetchInitial();
-    return () => {
-      cancelled = true;
-    };
   }, [roomId, setMessages]);
+
+  useEffect(() => {
+    if (!roomId || initialLoadDone.current.has(roomId)) return;
+    void fetchInitialPage();
+  }, [roomId, fetchInitialPage]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -421,6 +422,8 @@ export function useChat(roomId: string | null): UseChatReturn {
     messages,
     hasMore,
     loading,
+    error: messagesState?.error ?? false,
+    retryInitial: fetchInitialPage,
     sendMessage,
     loadMore,
     editMessage,

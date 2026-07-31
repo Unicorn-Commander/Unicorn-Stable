@@ -518,7 +518,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               onClick={() => setSearchOpen(true)}
               className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
               aria-label="Search messages"
-              title="Search this channel"
+              title="Search this room"
             >
               <Search className="h-4 w-4" />
             </button>
@@ -576,8 +576,8 @@ export function RoomView({ roomId }: RoomViewProps) {
             <button
               onClick={() => setMuted(toggleMute(roomId))}
               className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${muted ? "text-amber-300" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
-              aria-label={muted ? "Unmute channel" : "Mute channel"}
-              title={muted ? "Channel muted — click to unmute" : "Mute notifications for this channel"}
+              aria-label={muted ? "Unmute room" : "Mute room"}
+              title={muted ? "Room muted — click to unmute" : "Mute notifications for this room"}
             >
               {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
             </button>
@@ -695,7 +695,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
                 >
                   {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-                  {muted ? "Unmute channel" : "Mute channel"}
+                  {muted ? "Unmute room" : "Mute room"}
                 </button>
                 {/* Phones: rename lives here (the inline title tap is gated
                     to desktop pointers so it can't summon the keyboard). */}

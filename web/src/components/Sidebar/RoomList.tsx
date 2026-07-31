@@ -1622,7 +1622,7 @@ export function RoomList() {
             <button
               onClick={() => setCreateRoomModalOpen(true)}
               className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-              aria-label="Create channel"
+              aria-label="Create a room"
             >
               <Plus className="h-3.5 w-3.5" />
             </button>

@@ -301,7 +301,7 @@ function NotificationsPane() {
           />
           <Toggle
             label="Email me when @mentioned"
-            hint="Not wired up yet — the backend hook doesn't exist, so this is left switched off rather than pretending to work."
+            hint="Not available yet — this server can't send @mention emails."
             checked={prefs.emailOnMention}
             onChange={(v) => set("emailOnMention", v)}
             disabled

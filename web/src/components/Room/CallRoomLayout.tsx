@@ -445,10 +445,10 @@ function MobileCallLayout({
             mode === "video" && sheet === null && "hidden",
             mode === "video" &&
               sheet === "half" &&
-              "absolute inset-x-0 bottom-0 z-40 h-[50dvh] overflow-hidden rounded-t-2xl border-t border-line bg-surface-0 shadow-pop",
+              "absolute inset-x-0 bottom-0 z-40 h-[50dvh] max-h-full overflow-hidden rounded-t-2xl border-t border-line bg-surface-0 shadow-pop",
             mode === "video" &&
               sheet === "full" &&
-              "absolute inset-x-0 bottom-0 z-40 h-[92dvh] overflow-hidden rounded-t-2xl border-t border-line bg-surface-0 shadow-pop",
+              "absolute inset-x-0 bottom-0 z-40 h-[92dvh] max-h-full overflow-hidden rounded-t-2xl border-t border-line bg-surface-0 shadow-pop",
           )}
           role={mode === "video" && sheet ? "dialog" : undefined}
           aria-modal={mode === "video" && sheet ? true : undefined}

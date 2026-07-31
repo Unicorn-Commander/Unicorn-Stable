@@ -310,6 +310,15 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const emojiPanelRef = useRef<HTMLDivElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => {
+    // Same guard as ThreadPanel.tsx:31-37 — focus only on pointer devices so
+    // touch doesn't pop the keyboard on room open. Remounts per room via
+    // AppShell's keyed boundary, so [] deps fire on every room switch.
+    if (window.matchMedia("(hover: hover)").matches) {
+      textareaRef.current?.focus();
+    }
+  }, []);
+
   // Close the emoji picker on click-outside (clicks on the toggle button are
   // its own concern — it flips the state itself).
   useEffect(() => {

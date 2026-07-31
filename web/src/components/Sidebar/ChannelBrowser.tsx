@@ -28,7 +28,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
     return () => clearTimeout(t);
   }, [q]);
 
-  const { data: channels = [], refetch } = useQuery({
+  const { data: channels = [], refetch, isPending, isError } = useQuery({
     queryKey: ["browse-channels", debounced],
     queryFn: () => api.browseChannels(debounced),
   });
@@ -90,7 +90,23 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
         </div>
 
         <ul className="max-h-96 divide-y divide-line overflow-y-auto">
-          {channels.length === 0 ? (
+          {isPending ? (
+            <li className="animate-pulse-soft px-3 py-10 text-center text-xs text-slate-500">
+              Loading channels…
+            </li>
+          ) : isError ? (
+            <li className="flex flex-col items-center gap-2 px-3 py-10 text-center">
+              <p className="font-display text-sm font-semibold text-slate-200">
+                Couldn't load channels
+              </p>
+              <button
+                onClick={() => refetch()}
+                className="focus-ring rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
+              >
+                Try again
+              </button>
+            </li>
+          ) : channels.length === 0 ? (
             <li className="flex flex-col items-center gap-2 px-3 py-10 text-center">
               <span className="glow-iris flex h-10 w-10 items-center justify-center rounded-xl bg-stable-purple/15">
                 <Hash className="h-5 w-5 text-stable-purple-light" />

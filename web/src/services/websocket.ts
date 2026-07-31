@@ -5,6 +5,7 @@ import {
   isAccessTokenUsable,
 } from "./auth";
 import { useFederationStore } from "@/stores/federationStore";
+import { useAppStore } from "@/stores/appStore";
 
 type EventCallback = (data: WsEventPayload) => void;
 
@@ -772,6 +773,12 @@ class StableWebSocket {
       if (parsed.type === "auth_ok") {
         // NOW the connection is real: token judged, subscriptions armed
         // server-side. This is the block that used to live in onopen.
+        // The ack carries our PARTICIPANT id — the id space room events use
+        // for sender_id, distinct from the Keycloak sub — so the app can
+        // recognise its own messages (self-toast / self-unread suppression).
+        const pid = (parsed as unknown as { participant_id?: string })
+          .participant_id;
+        if (pid) useAppStore.getState().setCurrentParticipantId(pid);
         this.clearAuthAckTimeout();
         this._connected = true;
         this.reconnectAttempts = 0;

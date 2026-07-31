@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { X, Search, Check, MessageSquarePlus, Users, Bot, Star } from "lucide-react";
 import clsx from "clsx";
 import { api, type Agent } from "@/services/api";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import {
   AFFIL_META,
   affiliationOf,
@@ -47,6 +48,7 @@ export function AgentChatModal({
   );
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+  const panelRef = useModalA11y(true, onClose);
 
   const tierMeta = TIER_META[tierOf(focusAgent)];
   const affilMeta = AFFIL_META[affiliationOf(focusAgent)];
@@ -143,6 +145,7 @@ export function AgentChatModal({
       aria-label="Start a chat with agents"
     >
       <motion.div
+        ref={panelRef}
         initial={{ scale: 0.96, y: 8, opacity: 0 }}
         animate={{ scale: 1, y: 0, opacity: 1 }}
         exit={{ scale: 0.96, y: 8, opacity: 0 }}

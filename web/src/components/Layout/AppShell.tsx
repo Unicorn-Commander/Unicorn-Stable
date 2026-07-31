@@ -588,7 +588,7 @@ export function AppShell() {
                   }}
                   className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
                   title="Home — Unicorn Stable"
-                  aria-label="Go to home"
+                  aria-label="Go to Home"
                 >
                   <StableMark className="h-7 w-7 shrink-0" />
                   <span className="gradient-text font-display text-lg font-bold tracking-tight">
@@ -657,7 +657,7 @@ export function AppShell() {
                   setSavedOpen(true);
                   toggleSidebar();
                 }}
-                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
               >
                 <Bookmark className="h-4 w-4 text-slate-400" />
                 Saved messages
@@ -667,14 +667,14 @@ export function AppShell() {
                   toggleSettings();
                   toggleSidebar();
                 }}
-                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
               >
                 <Settings className="h-4 w-4 text-slate-400" />
                 Settings
               </button>
               <button
                 onClick={() => logout()}
-                className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
+                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
               >
                 <LogOut className="h-4 w-4" />
                 Sign out
