@@ -415,8 +415,19 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   }, []);
   const pinToNewest = useCallback(() => {
     clearPinTimers();
-    const tap = () =>
+    const tap = () => {
       virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+      // Belt over the API call: drive the real scroller too. scrollToIndex
+      // resolves against Virtuoso's internal index math, which under
+      // firstItemIndex (reverse infinite scroll) has repeatedly landed at the
+      // top of the loaded page instead of the newest row; a native
+      // scrollTop=scrollHeight is unambiguous, and on an already-anchored
+      // list both are no-ops.
+      const scroller = listWrapRef.current?.querySelector<HTMLElement>(
+        '[data-virtuoso-scroller="true"]',
+      );
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    };
     pinTimersRef.current.raf = requestAnimationFrame(tap);
     // Re-tap on a decaying schedule: a first page full of heavy markdown can
     // take several hundred ms to measure, and a single 150ms settle tap lands
