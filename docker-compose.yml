@@ -218,6 +218,11 @@ services:
       - "traefik.http.routers.stable-ws.rule=Host(`stable-ws.magicunicorn.dev`) && PathPrefix(`/ws`)"
       - "traefik.http.routers.stable-ws.entrypoints=websecure"
       - "traefik.http.routers.stable-ws.tls.certresolver=letsencrypt"
+      # http/1.1-only ALPN (ws-http1 tls option, traefik dynamic dir): Go 1.24
+      # h2 advertises RFC 8441 extended CONNECT and Chrome then sends the
+      # websocket as an h2 CONNECT stream, which stalls in traefik forever.
+      # Classic h1.1 upgrade is the only path every hop handles correctly.
+      - "traefik.http.routers.stable-ws.tls.options=ws-http1@file"
       - "traefik.http.routers.stable-ws.service=stable-api"
       # B2: take the internal agent surface OFF the public edge. A higher-
       # priority router captures /api/v1/internal/* and runs it through an
