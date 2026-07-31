@@ -10,9 +10,12 @@
  * back to the animated procedural unicorn (UnicornAvatar).
  */
 const PACK: Record<string, string> = {
-  majik: "/agent-avatars/majik.png",
-  sidekick: "/agent-avatars/sidekick.png",
-  "corporal qwen": "/agent-avatars/corporal-qwen.png",
+  // -v2: reference-conditioned rerolls in the chibi sticker style (the first
+  // pass generated unreferenced neon emblems; new filenames also step around
+  // the CDN's cache of the old bytes).
+  majik: "/agent-avatars/majik-v2.png",
+  sidekick: "/agent-avatars/sidekick-v2.png",
+  "corporal qwen": "/agent-avatars/corporal-qwen-v2.png",
   "cpl. colophon": "/agent-avatars/cpl-colophon.png",
   "sgt. quill": "/agent-avatars/sgt-quill.png",
   "prudence finch": "/agent-avatars/prudence-finch.png",
