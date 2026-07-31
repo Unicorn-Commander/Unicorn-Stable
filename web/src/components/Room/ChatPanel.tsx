@@ -690,14 +690,19 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
           </div>
         ) : (
           <Virtuoso
-            key={`${roomId}:${messages.length === 0 ? "empty" : "ready"}`}
+            key={roomId}
             ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
-            initialTopMostItemIndex={{
-              index: Math.max(0, messages.length - 1),
-              align: "end",
-            }}
+            // Deliberately NO initialTopMostItemIndex: combined with
+            // firstItemIndex (reverse infinite scroll) it parks Virtuoso in
+            // its pending-initial-location state — item list visibility:hidden
+            // with a full-height padding placeholder, zero rows ever rendered,
+            // and scrollToIndex silently ignored, so the room looks
+            // permanently blank and even "Jump to latest" is dead. Mounting
+            // visible-at-top and letting the pin effect below scroll to the
+            // newest message (rAF + settle tap) lands identically and cannot
+            // wedge.
             computeItemKey={(_index, message) => message.id}
             followOutput={(atBottom) => (atBottom ? "smooth" : false)}
             atBottomStateChange={(atBottom) => {
