@@ -4,24 +4,24 @@ import { useAppStore } from "@/stores/appStore";
 /**
  * Open or create the canonical 1:1 human DM with a directory person.
  *
- * Prefers a server-side idempotent ensure when present (`api.ensureHumanDm`).
- * Until that lands, falls back to client-side discovery + create+invite.
- *
- * TODO(slice-1d sibling): replace the fallback once POST ensure-human-dm (or
- * equivalent) is available on the API client — name/id matching on room
- * display names is best-effort and can collide if two people share a name.
+ * Uses server `POST /api/v1/dms/ensure` (idempotent, race-safe). The client
+ * fallback remains only as a last resort if the endpoint is missing at
+ * runtime (older servers during a rolling deploy).
  */
 export async function ensureHumanDm(
   person: Pick<PeopleDirectoryEntry, "id" | "username" | "display_name">,
 ): Promise<Room> {
-  const client = api as typeof api & {
-    ensureHumanDm?: (participantId: string) => Promise<Room>;
-  };
-  if (typeof client.ensureHumanDm === "function") {
-    return client.ensureHumanDm(person.id);
+  try {
+    return await api.ensureHumanDm(person.id);
+  } catch (err) {
+    // Older dogfood nodes may not have /dms/ensure yet during a rolling deploy.
+    const status = (err as { status?: number }).status;
+    if (status === 404 || status === 405) {
+      console.warn("ensureHumanDm: server ensure missing, using fallback", err);
+      return ensureHumanDmFallback(person);
+    }
+    throw err;
   }
-
-  return ensureHumanDmFallback(person);
 }
 
 function nameCandidates(person: {
