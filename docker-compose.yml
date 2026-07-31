@@ -209,6 +209,16 @@ services:
       - "traefik.http.routers.stable-api.entrypoints=websecure"
       - "traefik.http.routers.stable-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.stable-api.loadbalancer.server.port=8400"
+      # WebSocket bypass host. stable-ws.magicunicorn.dev is a DNS-only (grey)
+      # record straight to this box: Cloudflare's proxy stalls browser WebSocket
+      # upgrades once Chrome moves the origin to HTTP/3 (extended CONNECT hangs
+      # in CONNECTING forever, 2026-07-31), so the web client's wsUrl points
+      # here and the socket never transits the CDN. Scoped to /ws only — no
+      # other backend surface is exposed on this host.
+      - "traefik.http.routers.stable-ws.rule=Host(`stable-ws.magicunicorn.dev`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.stable-ws.entrypoints=websecure"
+      - "traefik.http.routers.stable-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.stable-ws.service=stable-api"
       # B2: take the internal agent surface OFF the public edge. A higher-
       # priority router captures /api/v1/internal/* and runs it through an
       # ipAllowList that permits only loopback — so every request arriving via

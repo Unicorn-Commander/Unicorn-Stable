@@ -813,6 +813,12 @@ function ConnectionBanner() {
   // Brief reconnect/recovery notices are dismissible. A stalled or expired
   // account session is actionable and stays visible until it is resolved.
   const [dismissed, setDismissed] = useState(false);
+  // Why the stall happened. "auth" = token/session problems a re-login can
+  // fix; "transport" = the socket path itself is unreachable, where telling
+  // the user their session failed sends them to a fix that cannot work.
+  const [stallCause, setStallCause] = useState<"auth" | "transport">(
+    "transport",
+  );
 
   useEffect(() => {
     let lostTimer: number | null = null;
@@ -859,7 +865,10 @@ function ConnectionBanner() {
     // enough that "reconnecting…" alone leaves the user with no way out. This
     // upgrades the SAME banner with a sign-in action; it is not terminal, and
     // a socket that comes back on its own still clears it.
-    const offStalled = ws.on("auth_stalled", () => {
+    const offStalled = ws.on("auth_stalled", (payload) => {
+      const cause = (payload as unknown as { cause?: "auth" | "transport" })
+        ?.cause;
+      setStallCause(cause === "auth" ? "auth" : "transport");
       if (lostTimer !== null) {
         window.clearTimeout(lostTimer);
         lostTimer = null;
@@ -962,7 +971,11 @@ function ConnectionBanner() {
             ) : phase === "stalled" ? (
               <>
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
-                <span>Session refresh failed. Live updates are paused.</span>
+                <span>
+                  {stallCause === "auth"
+                    ? "Session refresh failed. Live updates are paused."
+                    : "Live updates can't get through right now. Still retrying…"}
+                </span>
                 <button
                   type="button"
                   onClick={() => {
@@ -971,15 +984,17 @@ function ConnectionBanner() {
                   }}
                   className="focus-ring rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/20"
                 >
-                  Retry
+                  Retry now
                 </button>
-                <button
-                  type="button"
-                  onClick={() => login()}
-                  className="focus-ring rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/20"
-                >
-                  Sign in again
-                </button>
+                {stallCause === "auth" && (
+                  <button
+                    type="button"
+                    onClick={() => login()}
+                    className="focus-ring rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/20"
+                  >
+                    Sign in again
+                  </button>
+                )}
               </>
             ) : phase === "lost" ? (
               <>

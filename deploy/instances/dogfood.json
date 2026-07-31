@@ -9,7 +9,8 @@
       "url": "https://auth.unicorncommander.ai",
       "realm": "uchub",
       "clientId": "stable-web"
-    }
+    },
+    "wsUrl": "wss://stable-ws.unicorncommander.ai/ws"
   },
   {
     "id": "dogfood",
@@ -21,6 +22,7 @@
       "url": "https://auth.unicorncommander.ai",
       "realm": "uchub",
       "clientId": "stable-web"
-    }
+    },
+    "wsUrl": "wss://stable-ws.magicunicorn.dev/ws"
   }
 ]

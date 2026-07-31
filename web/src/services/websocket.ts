@@ -172,7 +172,19 @@ const HEARTBEAT_TIMEOUT_MS = 35000;
  * startHeartbeat() only runs on onopen, so the heartbeat cannot watchdog this.
  * Nothing else would. Hence an explicit handshake deadline.
  */
-const HANDSHAKE_TIMEOUT_MS = 15000;
+const HANDSHAKE_TIMEOUT_MS = 8000;
+
+/**
+ * After this many consecutive handshake timeouts, alternate between the
+ * configured wsUrl and the same-origin `/ws` fallback on every further pair of
+ * attempts. This exists because a CDN/proxy in front of ONE of the two paths
+ * can stall WebSocket upgrades indefinitely while the other path is healthy —
+ * observed 2026-07-31: Chrome switched to HTTP/3 via Alt-Svc and Cloudflare
+ * then hung every WS extended-CONNECT in CONNECTING forever, while a direct
+ * (non-proxied) host completed instantly. Alternating means neither a broken
+ * CDN path nor a broken bypass host can permanently strand the client.
+ */
+const TRANSPORT_FLIP_AFTER_TIMEOUTS = 2;
 /**
  * Hard deadline on the token refresh.
  *
@@ -222,6 +234,14 @@ class StableWebSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Consecutive CONNECTING-state timeouts; drives the transport alternation
+   * (see TRANSPORT_FLIP_AFTER_TIMEOUTS). Reset the moment any socket opens. */
+  private handshakeTimeouts = 0;
+  /** What actually failed most recently: token acquisition ("auth") or the
+   * socket/transport ("transport"). The stalled banner uses this to say the
+   * true thing — "Session refresh failed" over a healthy network sends the
+   * user to re-login for a problem sign-in cannot fix. */
+  private lastFailureCause: "auth" | "transport" = "transport";
   /** Watchdog for a socket stuck in CONNECTING — see HANDSHAKE_TIMEOUT_MS. */
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
@@ -456,7 +476,9 @@ class StableWebSocket {
     if (this.failedAttempts >= STALL_ESCALATION_ATTEMPTS && !this.stalled) {
       // Upgrade the message, do NOT stop retrying — see STALL_ESCALATION_ATTEMPTS.
       this.stalled = true;
-      this.emit("auth_stalled", {} as WsEventPayload);
+      this.emit("auth_stalled", {
+        cause: this.lastFailureCause,
+      } as unknown as WsEventPayload);
     }
     this.scheduleReconnect();
   }
@@ -564,9 +586,21 @@ class StableWebSocket {
         .accessibleInstances.find(
           (item) => item.id === useFederationStore.getState().activeInstanceId,
         );
-      const url = instance?.wsUrl
-        ? `${instance.wsUrl}${instance.wsUrl.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
-        : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+      const sameOrigin = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+      const configured = instance?.wsUrl || sameOrigin;
+      // Normally use the configured endpoint. Once handshakes have timed out
+      // TRANSPORT_FLIP_AFTER_TIMEOUTS times in a row, alternate between the
+      // two candidate paths every further pair of attempts so one stalled
+      // middlebox path cannot strand the client (see the constant's comment).
+      let base = configured;
+      if (
+        configured !== sameOrigin &&
+        this.handshakeTimeouts >= TRANSPORT_FLIP_AFTER_TIMEOUTS &&
+        Math.floor(this.handshakeTimeouts / TRANSPORT_FLIP_AFTER_TIMEOUTS) % 2 === 1
+      ) {
+        base = sameOrigin;
+      }
+      const url = `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
 
       try {
         this.attach(new WebSocket(url), generation);
@@ -621,6 +655,8 @@ class StableWebSocket {
       this.handshakeTimer = null;
       if (!this.owns(socket, generation)) return;
       if (socket.readyState !== WebSocket.CONNECTING) return;
+      this.handshakeTimeouts++;
+      this.lastFailureCause = "transport";
       // Detach BEFORE closing: a frozen socket may fire onclose much later (or
       // never). Doing the recovery here rather than relying on close() means
       // we are not depending on an event from a socket we know is wedged.
@@ -657,6 +693,7 @@ class StableWebSocket {
       this.clearHandshakeTimeout();
       this._connected = true;
       this.reconnectAttempts = 0;
+      this.handshakeTimeouts = 0;
       // The outage is over: clear the escalation so a LATER outage gets the
       // full grace period again instead of jumping straight to "sign in again".
       this.failedAttempts = 0;
@@ -694,7 +731,15 @@ class StableWebSocket {
       this.emit(parsed.type, payload);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
+      // 4001/4003/4004 are the server's explicit auth/identity rejections
+      // (missing token / auth failed / participant not found) — a re-login can
+      // fix those. Anything else (1006 handshake refusal, network drop, proxy
+      // stall) is transport: "sign in again" would be a lie.
+      this.lastFailureCause =
+        event.code === 4001 || event.code === 4003 || event.code === 4004
+          ? "auth"
+          : "transport";
       // Identity + generation guard. Previously onclose mutated SHARED state
       // (_connected, the 'disconnected' emit, scheduleReconnect) with no check
       // at all, so a superseded socket sitting in CLOSING could fire and
@@ -719,7 +764,9 @@ class StableWebSocket {
       this.failedAttempts++;
       if (this.failedAttempts >= STALL_ESCALATION_ATTEMPTS && !this.stalled) {
         this.stalled = true;
-        this.emit("auth_stalled", {} as WsEventPayload);
+        this.emit("auth_stalled", {
+          cause: this.lastFailureCause,
+        } as unknown as WsEventPayload);
       }
       this.emit("disconnected", {} as WsEventPayload);
 
