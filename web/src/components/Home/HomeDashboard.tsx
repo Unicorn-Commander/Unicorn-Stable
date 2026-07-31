@@ -15,6 +15,7 @@ import {
   UserRound,
   Users,
   Video,
+  type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -35,6 +36,57 @@ import { roomsForView } from "@/components/Sidebar/sidebarModel";
 
 /** Recent enough last activity to treat a conference room as "live-ish". */
 const LIVE_MEETING_MS = 2 * 60 * 60 * 1000;
+
+/** One tile in the command-center stat strip. */
+type HomeStat = {
+  key: string;
+  label: string;
+  value: string;
+  icon: LucideIcon;
+  /** Icon text-color class. */
+  tone: string;
+  /** Ring the tile when it demands attention (mentions/approvals > 0). */
+  attention?: boolean;
+  onClick?: () => void;
+};
+
+function StatTile({ stat }: { stat: HomeStat }) {
+  const Icon = stat.icon;
+  const inner = (
+    <>
+      <span
+        className={clsx(
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04]",
+          stat.tone,
+        )}
+      >
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block font-display text-lg font-bold leading-none tabular-nums text-slate-50">
+          {stat.value}
+        </span>
+        <span className="mt-1 block truncate text-[11px] font-medium text-slate-500">
+          {stat.label}
+        </span>
+      </span>
+    </>
+  );
+  const cls = clsx(
+    "card flex w-full items-center gap-3 px-3.5 py-3",
+    stat.attention && "border-stable-purple/30",
+    stat.onClick &&
+      "card-hover focus-ring text-left transition active:scale-[0.98]",
+  );
+  if (stat.onClick) {
+    return (
+      <button type="button" onClick={stat.onClick} className={cls}>
+        {inner}
+      </button>
+    );
+  }
+  return <div className={cls}>{inner}</div>;
+}
 
 function greetingFor(hour: number): string {
   if (hour < 5) return "Good evening";
@@ -249,6 +301,26 @@ export function HomeDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, unreadCounts]);
 
+  // Everyone online (favorites first) — the People column should carry the
+  // whole roster's presence, not go dark for users who never starred anyone.
+  const peopleOnline = useMemo(() => {
+    if (directory.length === 0) return [];
+    const favs = new Set(favoriteIds);
+    return directory
+      .filter((p) => {
+        if (p.id === currentUser?.id) return false;
+        const live = presenceById[p.id];
+        return live ? live.isOnline : p.is_online;
+      })
+      .sort(
+        (a, b) =>
+          Number(favs.has(b.id)) - Number(favs.has(a.id)) ||
+          a.display_name.localeCompare(b.display_name),
+      )
+      .slice(0, 10);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [directory, presenceById, favoriteIds, currentUser?.id]);
+
   const openPersonDm = useCallback(
     async (person: PeopleDirectoryEntry) => {
       if (openingPersonId) return;
@@ -299,11 +371,79 @@ export function HomeDashboard() {
     );
   }
 
+  const liveMeetingCount =
+    liveConferenceRooms.length + (hasActiveCall ? 1 : 0);
+  const firstMention = mentionRooms[0];
+  const firstDmUnread = dmUnreadRooms[0];
+  const firstApproval = approvalItems[0];
+  const firstConference = liveConferenceRooms[0];
+  const firstAgentItem = actionableAgentItems[0];
+  const stats: HomeStat[] = [
+    {
+      key: "mentions",
+      label: "Mentions",
+      value: String(mentionRooms.length),
+      icon: AtSign,
+      tone: "text-stable-purple-light",
+      attention: mentionRooms.length > 0,
+      onClick: firstMention ? () => openRoom(firstMention.id) : undefined,
+    },
+    {
+      key: "dms",
+      label: "Unread DMs",
+      value: String(dmUnreadRooms.length),
+      icon: MessageSquare,
+      tone: "text-stable-cyan",
+      attention: dmUnreadRooms.length > 0,
+      onClick: firstDmUnread ? () => openRoom(firstDmUnread.id) : undefined,
+    },
+    {
+      key: "approvals",
+      label: "Approvals",
+      value: approvalLabel,
+      icon: ShieldCheck,
+      tone: "text-rose-300",
+      attention: approvalCount > 0,
+      onClick: firstApproval
+        ? () => openRoom(firstApproval.room_id)
+        : undefined,
+    },
+    {
+      key: "meetings",
+      label: "Live meetings",
+      value: String(liveMeetingCount),
+      icon: Video,
+      tone: "text-stable-mint",
+      onClick:
+        hasActiveCall && activeCallRoomId
+          ? () => openRoom(activeCallRoomId)
+          : firstConference
+            ? () => openRoom(firstConference.id)
+            : undefined,
+    },
+    {
+      key: "agents",
+      label: "Agents waiting",
+      value: String(actionableAgentItems.length),
+      icon: Bot,
+      tone: "text-stable-purple-light",
+      onClick: firstAgentItem ? () => openRoom(firstAgentItem.id) : undefined,
+    },
+    {
+      key: "people",
+      label: "People online",
+      value: String(peopleOnline.length),
+      icon: UserRound,
+      tone: "text-stable-mint",
+      onClick: () => setPeopleDrawerOpen(true),
+    },
+  ];
+
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="animate-fade-in mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
-        {/* ── Greeting ─────────────────────────────────────────────────── */}
-        <header className="card relative mb-6 overflow-hidden px-6 py-7 sm:px-8 sm:py-8">
+      <div className="animate-fade-in mx-auto w-full max-w-[1720px] px-4 py-6 sm:px-6 lg:px-8">
+        {/* ── Greeting + quick actions ─────────────────────────────────── */}
+        <header className="card relative mb-4 overflow-hidden px-5 py-5 sm:px-6">
           <div
             className="pointer-events-none absolute inset-0 bg-[radial-gradient(110%_150%_at_100%_0%,rgba(139,92,246,0.14),transparent_55%)]"
             aria-hidden="true"
@@ -312,132 +452,79 @@ export function HomeDashboard() {
             className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_120%_at_82%_100%,rgba(34,211,238,0.10),transparent_60%)]"
             aria-hidden="true"
           />
-          <div className="relative">
-            <div className="mb-3 flex items-center gap-2.5">
-              <span className="gradient-bg glow-iris flex h-7 w-7 items-center justify-center rounded-lg">
-                <Sparkles className="h-4 w-4 text-white" />
-              </span>
-              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                Unicorn Stable
-              </span>
-            </div>
-            <h1 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
-              <span className="text-slate-50">{greetingFor(hour)}, </span>
-              <span className="gradient-text-aurora">{firstName}</span>
-            </h1>
-            <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
-              {statusBits.map((bit, i) => (
-                <span key={bit} className="flex items-center gap-2">
-                  {i > 0 && (
-                    <span className="text-slate-600" aria-hidden="true">
-                      ·
-                    </span>
-                  )}
-                  {bit === "You're in a call" ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="animate-live h-1.5 w-1.5 rounded-full bg-stable-mint" />
-                      {bit}
-                    </span>
-                  ) : (
-                    bit
-                  )}
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="mb-2 flex items-center gap-2.5">
+                <span className="gradient-bg glow-iris flex h-7 w-7 items-center justify-center rounded-lg">
+                  <Sparkles className="h-4 w-4 text-white" />
                 </span>
-              ))}
-            </p>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Unicorn Stable
+                </span>
+              </div>
+              <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
+                <span className="text-slate-50">{greetingFor(hour)}, </span>
+                <span className="gradient-text-aurora">{firstName}</span>
+              </h1>
+              <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
+                {statusBits.map((bit, i) => (
+                  <span key={bit} className="flex items-center gap-2">
+                    {i > 0 && (
+                      <span className="text-slate-600" aria-hidden="true">
+                        ·
+                      </span>
+                    )}
+                    {bit === "You're in a call" ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="animate-live h-1.5 w-1.5 rounded-full bg-stable-mint" />
+                        {bit}
+                      </span>
+                    ) : (
+                      bit
+                    )}
+                  </span>
+                ))}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPeopleDrawerOpen(true)}
+                className="focus-ring flex items-center gap-1.5 rounded-lg border border-line bg-white/[0.03] px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-line-strong hover:bg-white/[0.06]"
+              >
+                <UserRound className="h-3.5 w-3.5 text-stable-mint" />
+                Message someone
+              </button>
+              <button
+                type="button"
+                onClick={() => setCreateRoomModalOpen(true)}
+                className="gradient-bg glow-iris focus-ring flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white transition hover:opacity-95 active:scale-[0.98]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New room
+              </button>
+            </div>
           </div>
         </header>
 
-        {/* ── 1. Active meeting / rejoin ───────────────────────────────── */}
-        <section className="mb-6" aria-labelledby="home-meetings-heading">
-          <div className="mb-2 flex items-center gap-2">
-            <Video className="h-4 w-4 text-stable-cyan" />
-            <h2
-              id="home-meetings-heading"
-              className="font-display text-sm font-semibold text-slate-200"
-            >
-              Meetings
-            </h2>
-          </div>
+        {/* ── Stat strip — the pulse of the whole workspace ────────────── */}
+        <div
+          className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6"
+          role="group"
+          aria-label="Workspace overview"
+        >
+          {stats.map((stat) => (
+            <StatTile key={stat.key} stat={stat} />
+          ))}
+        </div>
 
-          {hasActiveCall && activeCallRoomId && (
-            <button
-              type="button"
-              onClick={() => openRoom(activeCallRoomId)}
-              className="card card-hover focus-ring group relative mb-3 flex w-full items-center gap-3 overflow-hidden border-stable-mint/40 px-4 py-4 text-left hover:glow-mint active:scale-[0.99]"
-            >
-              <span
-                className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(52,211,153,0.14),transparent_70%)]"
-                aria-hidden="true"
-              />
-              <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-stable-mint/15 text-stable-mint">
-                <Phone className="h-5 w-5" />
-              </span>
-              <span className="relative min-w-0 flex-1">
-                <span className="flex items-center gap-2">
-                  <span className="truncate text-sm font-semibold text-slate-50">
-                    Return to call
-                  </span>
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-stable-mint/30 bg-stable-mint/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-mint">
-                    <span className="animate-live h-1 w-1 rounded-full bg-stable-mint" />
-                    live
-                  </span>
-                </span>
-                <span className="mt-0.5 block truncate text-xs text-slate-400">
-                  {activeCallRoom?.display_name ||
-                    activeCallRoom?.name ||
-                    "Your active call"}
-                </span>
-              </span>
-              <span className="relative shrink-0 rounded-lg border border-stable-mint/30 bg-stable-mint/10 px-3 py-1.5 text-xs font-semibold text-stable-mint transition-colors group-hover:bg-stable-mint/20">
-                Rejoin
-              </span>
-            </button>
-          )}
+        {/* ── Command grid: attention | meetings+agents | people ───────── */}
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2 2xl:grid-cols-4">
+          <div className="min-w-0 space-y-6 2xl:col-span-2">
+            {/* Column A: what needs the human, then the human's threads. */}
 
-          {liveConferenceRooms.length > 0 && (
-            <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {liveConferenceRooms.map((room) => (
-                <li key={room.id}>
-                  <button
-                    type="button"
-                    onClick={() => openRoom(room.id)}
-                    className="card card-hover focus-ring group relative flex w-full items-center gap-3 overflow-hidden px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98]"
-                  >
-                    <span
-                      className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(34,211,238,0.08),transparent_70%)]"
-                      aria-hidden="true"
-                    />
-                    <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan">
-                      <Video className="h-5 w-5" />
-                    </span>
-                    <span className="relative min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold">
-                        {room.display_name || room.name}
-                      </span>
-                      <span className="mt-0.5 block truncate text-xs text-slate-400">
-                        {room.last_message
-                          ? `Active ${timestamp(room.last_message.created_at)} ago`
-                          : "Conference room"}
-                      </span>
-                    </span>
-                    <span className="relative shrink-0 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors group-hover:border-line-strong group-hover:bg-surface-3">
-                      Open
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {showMeetingEmpty && (
-            <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-              No live meetings
-            </p>
-          )}
-        </section>
-
-        {/* ── 2. Mentions & priority ───────────────────────────────────── */}
-        <section className="mb-6" aria-labelledby="home-priority-heading">
+        {/* ── Mentions & priority ──────────────────────────────────────── */}
+        <section aria-labelledby="home-priority-heading">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Inbox className="h-4 w-4 text-stable-purple-light" />
@@ -578,82 +665,8 @@ export function HomeDashboard() {
           )}
         </section>
 
-        {/* ── 3. Favorite people online ────────────────────────────────── */}
-        <section className="mb-6" aria-labelledby="home-favorites-heading">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <UserRound className="h-4 w-4 text-stable-mint" />
-              <h2
-                id="home-favorites-heading"
-                className="font-display text-sm font-semibold text-slate-200"
-              >
-                Favorite people online
-              </h2>
-            </div>
-            <button
-              type="button"
-              onClick={() => setPeopleDrawerOpen(true)}
-              className="focus-ring rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
-            >
-              Open People
-            </button>
-          </div>
-
-          {favoriteIds.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-              Star people from the People drawer to see them here when online.
-            </p>
-          ) : favoritePeopleOnline.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-              None of your favorites are online right now.
-            </p>
-          ) : (
-            <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {favoritePeopleOnline.map((person) => {
-                const label =
-                  person.display_name?.trim() ||
-                  person.username?.trim() ||
-                  "Person";
-                const busy = openingPersonId === person.id;
-                return (
-                  <li key={person.id}>
-                    <button
-                      type="button"
-                      onClick={() => void openPersonDm(person)}
-                      disabled={!!openingPersonId}
-                      className="card card-hover focus-ring flex w-full items-center gap-3 px-3.5 py-3 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <span className="relative shrink-0">
-                        <Avatar
-                          id={person.id}
-                          name={label}
-                          src={person.avatar_url}
-                          size="md"
-                        />
-                        <span
-                          className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live"
-                          aria-label="Online"
-                        />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-slate-100">
-                          {label}
-                        </span>
-                        <span className="block truncate text-xs text-slate-500">
-                          {busy ? "Opening…" : "Message"}
-                        </span>
-                      </span>
-                      <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        {/* ── 4. Recent human conversations ────────────────────────────── */}
-        <section className="mb-6" aria-labelledby="home-chats-heading">
+        {/* ── Recent human conversations ───────────────────────────────── */}
+        <section aria-labelledby="home-chats-heading">
           <div className="mb-2 flex items-center gap-2">
             <Users className="h-4 w-4 text-stable-cyan" />
             <h2
@@ -775,9 +788,102 @@ export function HomeDashboard() {
           )}
         </section>
 
-        {/* ── 5. Agent items only when actionable ──────────────────────── */}
-        {actionableAgentItems.length > 0 && (
-          <section className="mb-6" aria-labelledby="home-agents-heading">
+          </div>
+
+          <div className="min-w-0 space-y-6">
+            {/* Column B: realtime surfaces — meetings, then agent work. */}
+
+        {/* ── Meetings ─────────────────────────────────────────────────── */}
+        <section aria-labelledby="home-meetings-heading">
+          <div className="mb-2 flex items-center gap-2">
+            <Video className="h-4 w-4 text-stable-cyan" />
+            <h2
+              id="home-meetings-heading"
+              className="font-display text-sm font-semibold text-slate-200"
+            >
+              Meetings
+            </h2>
+          </div>
+
+          {hasActiveCall && activeCallRoomId && (
+            <button
+              type="button"
+              onClick={() => openRoom(activeCallRoomId)}
+              className="card card-hover focus-ring group relative mb-3 flex w-full items-center gap-3 overflow-hidden border-stable-mint/40 px-4 py-4 text-left hover:glow-mint active:scale-[0.99]"
+            >
+              <span
+                className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(52,211,153,0.14),transparent_70%)]"
+                aria-hidden="true"
+              />
+              <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-stable-mint/15 text-stable-mint">
+                <Phone className="h-5 w-5" />
+              </span>
+              <span className="relative min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-slate-50">
+                    Return to call
+                  </span>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-stable-mint/30 bg-stable-mint/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-mint">
+                    <span className="animate-live h-1 w-1 rounded-full bg-stable-mint" />
+                    live
+                  </span>
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-slate-400">
+                  {activeCallRoom?.display_name ||
+                    activeCallRoom?.name ||
+                    "Your active call"}
+                </span>
+              </span>
+              <span className="relative shrink-0 rounded-lg border border-stable-mint/30 bg-stable-mint/10 px-3 py-1.5 text-xs font-semibold text-stable-mint transition-colors group-hover:bg-stable-mint/20">
+                Rejoin
+              </span>
+            </button>
+          )}
+
+          {liveConferenceRooms.length > 0 && (
+            <ul className="grid grid-cols-1 gap-3">
+              {liveConferenceRooms.map((room) => (
+                <li key={room.id}>
+                  <button
+                    type="button"
+                    onClick={() => openRoom(room.id)}
+                    className="card card-hover focus-ring group relative flex w-full items-center gap-3 overflow-hidden px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98]"
+                  >
+                    <span
+                      className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(34,211,238,0.08),transparent_70%)]"
+                      aria-hidden="true"
+                    />
+                    <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan">
+                      <Video className="h-5 w-5" />
+                    </span>
+                    <span className="relative min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {room.display_name || room.name}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs text-slate-400">
+                        {room.last_message
+                          ? `Active ${timestamp(room.last_message.created_at)} ago`
+                          : "Conference room"}
+                      </span>
+                    </span>
+                    <span className="relative shrink-0 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors group-hover:border-line-strong group-hover:bg-surface-3">
+                      Open
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {showMeetingEmpty && (
+            <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
+              No live meetings
+            </p>
+          )}
+        </section>
+
+        {/* ── Agent work waiting on the human ──────────────────────────── */}
+          <section aria-labelledby="home-agents-heading">
             <div className="mb-2 flex items-center gap-2">
               <Bot className="h-4 w-4 text-slate-400" />
               <h2
@@ -788,6 +894,11 @@ export function HomeDashboard() {
               </h2>
               <span className="text-[11px] text-slate-500">agents</span>
             </div>
+            {actionableAgentItems.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
+                No agents waiting on you
+              </p>
+            ) : (
             <ul className="card overflow-hidden">
               {actionableAgentItems.map((room, i) => {
                 const unread = unreadFor(room);
@@ -848,41 +959,94 @@ export function HomeDashboard() {
                 );
               })}
             </ul>
+            )}
           </section>
-        )}
+          </div>
 
-        {/* ── Subtle quick actions (not hero agent metrics) ────────────── */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setPeopleDrawerOpen(true)}
-            className="card card-hover focus-ring group relative flex items-center gap-3 overflow-hidden border-stable-mint/25 px-4 py-3.5 text-left text-slate-200 hover:glow-mint active:scale-[0.98]"
-          >
-            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-mint/15 text-stable-mint transition-colors group-hover:bg-stable-mint/25">
-              <UserRound className="h-5 w-5" />
-            </span>
-            <span className="relative min-w-0">
-              <span className="block text-sm font-semibold">Message someone</span>
-              <span className="block truncate text-xs text-slate-400">
-                Open People to start a DM or call
-              </span>
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setCreateRoomModalOpen(true)}
-            className="card card-hover focus-ring group relative flex items-center gap-3 overflow-hidden border-stable-cyan/25 px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98]"
-          >
-            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan transition-colors group-hover:bg-stable-cyan/25">
-              <Plus className="h-5 w-5" />
-            </span>
-            <span className="relative min-w-0">
-              <span className="block text-sm font-semibold">New channel</span>
-              <span className="block truncate text-xs text-slate-400">
-                Spin up a room for the team
-              </span>
-            </span>
-          </button>
+          <div className="min-w-0 space-y-6">
+            {/* Column C: who's around right now. */}
+
+        {/* ── People online ────────────────────────────────────────────── */}
+        <section aria-labelledby="home-people-heading">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <UserRound className="h-4 w-4 text-stable-mint" />
+              <h2
+                id="home-people-heading"
+                className="font-display text-sm font-semibold text-slate-200"
+              >
+                People online
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPeopleDrawerOpen(true)}
+              className="focus-ring rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+            >
+              Open People
+            </button>
+          </div>
+
+          {peopleOnline.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
+              {favoriteIds.length === 0
+                ? "No one is online right now. Star people in the People drawer to keep them at the top here."
+                : "No one is online right now."}
+            </p>
+          ) : (
+            <ul className="grid grid-cols-1 gap-2">
+              {peopleOnline.map((person) => {
+                const label =
+                  person.display_name?.trim() ||
+                  person.username?.trim() ||
+                  "Person";
+                const busy = openingPersonId === person.id;
+                const starred = favoriteIds.includes(person.id);
+                return (
+                  <li key={person.id}>
+                    <button
+                      type="button"
+                      onClick={() => void openPersonDm(person)}
+                      disabled={!!openingPersonId}
+                      className="card card-hover focus-ring flex w-full items-center gap-3 px-3.5 py-3 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <span className="relative shrink-0">
+                        <Avatar
+                          id={person.id}
+                          name={label}
+                          src={person.avatar_url}
+                          size="md"
+                        />
+                        <span
+                          className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live"
+                          aria-label="Online"
+                        />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-sm font-medium text-slate-100">
+                            {label}
+                          </span>
+                          {starred && (
+                            <Sparkles
+                              className="h-3 w-3 shrink-0 text-stable-purple-light"
+                              aria-label="Favorite"
+                            />
+                          )}
+                        </span>
+                        <span className="block truncate text-xs text-slate-500">
+                          {busy ? "Opening…" : "Message"}
+                        </span>
+                      </span>
+                      <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+          </div>
         </div>
       </div>
     </div>
