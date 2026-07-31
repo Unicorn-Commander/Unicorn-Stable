@@ -6,6 +6,7 @@ import {
   type FolderSection,
   type PersonThreads,
 } from "@/stores/categoryStore";
+import type { NavView } from "@/stores/navStore";
 
 /**
  * The sidebar's structure, computed once and consumed by everything that needs
@@ -23,7 +24,47 @@ import {
  * That is also why the search query and the per-person expand state live in a
  * store (useSidebarUi) rather than in RoomList's local state: they change what
  * is on screen, so keyboard navigation has to see them too.
+ *
+ * View-based nav (Slice 2) filters rooms through `view` before building the
+ * sections. Classic mode uses `view: "all"`. Home yields an empty tree (the
+ * UI shows a short home rail instead).
  */
+
+/** Which rooms land in which destination. `"all"` = classic single list. */
+export type SidebarView = NavView | "all";
+
+/**
+ * Pre-filter the room list for a sidebar destination. Shared by RoomList and
+ * Alt+↑/↓ so keyboard order always matches the visible rows.
+ */
+export function roomsForView(rooms: Room[], view: SidebarView): Room[] {
+  switch (view) {
+    case "all":
+      return rooms;
+    case "home":
+      // Home does not show the conversation tree.
+      return [];
+    case "chats":
+      // Human 1:1 DMs + private groups — never agents or channels.
+      return rooms.filter(
+        (r) =>
+          (r.type === "dm" || r.type === "group_dm") && !r.brigade_agent_id,
+      );
+    case "channels":
+      // Joined public channels, excluding standing conference rooms.
+      return rooms.filter((r) => r.type === "channel" && !r.is_conference);
+    case "agents":
+      return rooms.filter(
+        (r) =>
+          (r.type === "dm" || r.type === "group_dm") && !!r.brigade_agent_id,
+      );
+    case "meetings":
+      // Standing conference / call rooms when the server tags them.
+      return rooms.filter((r) => r.is_conference === true);
+    default:
+      return rooms;
+  }
+}
 
 /** Section-level collapse keys. Bare on purpose — a section is the same concept
  *  on every instance. Distinct from categoryStore's folder keys, which are
@@ -122,11 +163,17 @@ export interface SidebarModelInput {
   folders: Record<string, FolderDef[]>;
   collapsed: Record<string, boolean>;
   expandedPeople: Record<string, boolean>;
+  /**
+   * Destination filter. Defaults to `"all"` (classic full tree). When a
+   * specific view is set, only matching rooms appear — Alt+↑/↓ flattens the
+   * same filtered model, so keyboard order stays consistent with the list.
+   */
+  view?: SidebarView;
 }
 
 export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
   const {
-    rooms,
+    rooms: allRooms,
     searchQuery,
     scope,
     categories,
@@ -134,14 +181,20 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
     folders,
     collapsed,
     expandedPeople,
+    view = "all",
   } = input;
 
+  // View filter first so both search and section builders see the same set.
+  // allPersonThreads (people-folder migration) still reads the unfiltered list
+  // so filing is not lost when a view hides half the people.
+  const rooms = roomsForView(allRooms, view);
+
   const roomKinds: Record<string, boolean> = {};
-  for (const r of rooms) roomKinds[r.id] = r.type === "channel";
+  for (const r of allRooms) roomKinds[r.id] = r.type === "channel";
 
   // Every person on this instance, from the unfiltered list (see the field doc).
   const threadsByPerson = new Map<string, string[]>();
-  for (const room of rooms) {
+  for (const room of allRooms) {
     const key = personKeyOf(room);
     if (!key) continue;
     const ids = threadsByPerson.get(key);

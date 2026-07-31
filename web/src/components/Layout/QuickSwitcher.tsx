@@ -4,7 +4,9 @@ import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bookmark,
+  Bot,
   Hash,
+  Home,
   Keyboard,
   Loader2,
   MessageSquare,
@@ -13,6 +15,7 @@ import {
   Server,
   Settings,
   Users,
+  Video,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
@@ -20,6 +23,7 @@ import { api } from "@/services/api";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { isNavV1Enabled, type NavView, useNavStore } from "@/stores/navStore";
 import { displayName, instanceHost } from "@/lib/instances";
 import { useModalA11y } from "@/hooks/useModalA11y";
 
@@ -144,6 +148,20 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       { kind: "action", id: "settings", label: "Settings", sub: "Preferences & appearance", icon: Settings, run: () => g().toggleSettings() },
       { kind: "action", id: "shortcuts", label: "Keyboard shortcuts", sub: "Cheatsheet", icon: Keyboard, run: () => g().toggleCheatsheet() },
     ];
+    // Jump to primary destinations when the view-based shell is on.
+    if (isNavV1Enabled()) {
+      const goView = (view: NavView) => {
+        useNavStore.getState().setActiveView(view);
+        if (view === "home") navigate("/");
+      };
+      actionItems.unshift(
+        { kind: "action", id: "view-home", label: "Go to Home", sub: "Dashboard", icon: Home, run: () => goView("home") },
+        { kind: "action", id: "view-chats", label: "Go to Chats", sub: "People and private groups", icon: MessageSquare, run: () => goView("chats") },
+        { kind: "action", id: "view-channels", label: "Go to Channels", sub: "Joined channels", icon: Hash, run: () => goView("channels") },
+        { kind: "action", id: "view-meetings", label: "Go to Meetings", sub: "Conference rooms", icon: Video, run: () => goView("meetings") },
+        { kind: "action", id: "view-agents", label: "Go to Agents", sub: "Agent conversations", icon: Bot, run: () => goView("agents") },
+      );
+    }
     if (multiServer) {
       // The full directory (descriptions, add-a-server, admin identity) still
       // lives in ServerSwitcher; this row is the keyboard-only way to reach it.
@@ -179,6 +197,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
     activeInstanceId,
     metaByInstance,
     multiServer,
+    navigate,
   ]);
 
   useEffect(() => {

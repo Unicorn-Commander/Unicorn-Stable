@@ -13,6 +13,7 @@ import {
 } from "@/services/websocket";
 import { loadPrefs } from "@/components/Layout/SettingsModal";
 import { getNotifyLevel } from "@/utils/mute";
+import { messageMentionsUser } from "@/utils/unreadModel";
 import { playCue } from "@/lib/sounds";
 import { ensurePushSubscription } from "@/lib/webpush";
 import { useGlobalPresence } from "@/hooks/useGlobalPresence";
@@ -28,22 +29,6 @@ import { useGlobalPresence } from "@/hooks/useGlobalPresence";
  */
 const AGENT_THINKING_MAX_MS = 120_000;
 const AGENT_RELAY_MAX_MS = 300_000;
-
-/**
- * Does this message @-mention the current user? Matches @here / @channel
- * (broad) or @<username> (word-boundary, case-insensitive). Used to gate
- * pings for rooms set to the "mentions only" notification level.
- */
-function messageMentionsUser(
-  content: string | undefined,
-  username: string | undefined,
-): boolean {
-  if (!content) return false;
-  if (/@channel\b|@here\b/i.test(content)) return true;
-  if (!username) return false;
-  const esc = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`@${esc}\\b`, "i").test(content);
-}
 
 interface RoomInvitedEvent {
   room_id: string;
@@ -61,6 +46,7 @@ export function useGlobalNotifications() {
   const currentUser = useAppStore((s) => s.currentUser);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const incrementUnread = useAppStore((s) => s.incrementUnread);
+  const markMentionUnread = useAppStore((s) => s.markMentionUnread);
   const pushToast = useAppStore((s) => s.pushToast);
   const rooms = useAppStore((s) => s.rooms);
   const queryClient = useQueryClient();
@@ -127,10 +113,16 @@ export function useGlobalNotifications() {
 
       incrementUnread(event.room_id);
 
+      const mentioned = messageMentionsUser(
+        event.message.content,
+        currentUser?.username,
+      );
+      if (mentioned) {
+        markMentionUnread(event.room_id);
+      }
+
       // For "mentions only" rooms, a ping requires the message to mention us.
-      const mentionOk =
-        level === "all" ||
-        messageMentionsUser(event.message.content, currentUser?.username);
+      const mentionOk = level === "all" || mentioned;
 
       // Notify (toast + sound) only if the room isn't the active one (or the
       // tab is hidden). The sound cue rides the same mute/self/active checks
@@ -400,9 +392,11 @@ export function useGlobalNotifications() {
     };
   }, [
     currentUser?.id,
+    currentUser?.username,
     activeRoomId,
     rooms,
     incrementUnread,
+    markMentionUnread,
     pushToast,
     queryClient,
   ]);

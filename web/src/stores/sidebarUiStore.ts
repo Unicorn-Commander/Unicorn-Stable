@@ -1,4 +1,9 @@
 import { create } from "zustand";
+import {
+  loadFocusMode,
+  saveFocusMode,
+  type FocusMode,
+} from "@/utils/unreadModel";
 
 /**
  * Sidebar view state that changes WHICH ROWS ARE ON SCREEN.
@@ -10,9 +15,9 @@ import { create } from "zustand";
  * the keyboard too. Anything that only affects appearance — hover, menus, draft
  * text — stays local to the component.
  *
- * Deliberately NOT persisted: like scroll position, a search box and an opened
- * thread history are session-local. Folder collapse state, which the user does
- * mean to keep, lives in categoryStore instead.
+ * Search + expanded people are session-local (not persisted). Focused/All is
+ * light localStorage so the preference survives a refresh (slice 3). Folder
+ * collapse state lives in categoryStore.
  */
 interface SidebarUiState {
   searchQuery: string;
@@ -20,10 +25,16 @@ interface SidebarUiState {
   /** personKey -> is the thread history open. Collapsed by default. */
   expandedPeople: Record<string, boolean>;
   togglePersonExpanded: (key: string) => void;
+  /**
+   * Focused = DMs with unread + rooms with unread mentions (mentions-first).
+   * All = full list. Shared with AppShell keyboard order via this store.
+   */
+  focusMode: FocusMode;
+  setFocusMode: (mode: FocusMode) => void;
   /** Wipe on a server switch. Person keys are NAMES, not server-unique ids, so
    *  an expanded "person:Dana" would otherwise arrive pre-expanded on the next
    *  backend's unrelated Dana; a search for the old server's rooms is just as
-   *  stale. Both are ephemeral, so dropping them is free. */
+   *  stale. Focused/All is a user preference, not instance data — kept. */
   resetForServer: () => void;
 }
 
@@ -38,5 +49,10 @@ export const useSidebarUi = create<SidebarUiState>((set) => ({
       else next[key] = true;
       return { expandedPeople: next };
     }),
+  focusMode: loadFocusMode(),
+  setFocusMode: (mode) => {
+    saveFocusMode(mode);
+    set({ focusMode: mode });
+  },
   resetForServer: () => set({ searchQuery: "", expandedPeople: {} }),
 }));

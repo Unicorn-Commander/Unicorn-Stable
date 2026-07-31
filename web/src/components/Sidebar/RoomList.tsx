@@ -23,10 +23,11 @@ import {
   Sparkles,
   Trash2,
   Users,
+  Video,
 } from "lucide-react";
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Room } from "@/services/api";
 import { ws } from "@/services/websocket";
 import {
@@ -36,12 +37,22 @@ import {
   onMutedChange,
   type NotifyLevel,
 } from "@/utils/mute";
+import {
+  badgeCount,
+  prepareRoomsForSidebar,
+  roomsNeedingMarkRead,
+} from "@/utils/unreadModel";
 import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { identityFor } from "@/lib/identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
+import {
+  isNavV1Enabled,
+  useNavStore,
+  viewForRoom,
+} from "@/stores/navStore";
 import {
   useChannelCategories,
   foldersFor,
@@ -50,14 +61,17 @@ import {
 import {
   buildSidebarModel,
   isPrivateChannel,
+  roomsForView,
   SECTION_KEYS,
   type PersonEntry,
   type SidebarGroup,
   type SidebarRow,
+  type SidebarView,
 } from "./sidebarModel";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { NewChatButton } from "./NewChatButton";
+import { ViewSwitcher } from "./ViewSwitcher";
 import { resolveDefaultAgent } from "./newChat";
 
 export function RoomList() {
@@ -67,11 +81,20 @@ export function RoomList() {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
+  const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   const agents = useAppStore((s) => s.agents);
   const defaultAgentId = useAppStore((s) => s.defaultAgentId);
   const setDefaultAgentId = useAppStore((s) => s.setDefaultAgentId);
+  // View-based shell (Slice 2). Flag defaults on; classic list when off.
+  const navV1 = isNavV1Enabled();
+  const activeView = useNavStore((s) => s.activeView);
+  const rememberRoom = useNavStore((s) => s.rememberRoom);
+  const setActiveView = useNavStore((s) => s.setActiveView);
+  const scope = useFederationStore((s) => s.activeInstanceId);
+  // Model view: classic mode always builds the full tree.
+  const modelView: SidebarView = navV1 ? activeView : "all";
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
@@ -82,12 +105,24 @@ export function RoomList() {
   // cold-load snapshot and is NEVER cleared by opening a room — rows that read
   // it directly (the DM/person and private-group rows) showed a badge that
   // clearUnread could not touch, so it sat there until the next refetch.
-  const unreadFor = (room: Room) => unreadCounts[room.id] ?? room.unread_count ?? 0;
+  // Muted rooms always report 0 so badges never shout for silenced channels
+  // (mute.ts "muted" level; matches rail + Focused filter).
+  const rawUnreadFor = (room: Room) =>
+    unreadCounts[room.id] ?? room.unread_count ?? 0;
+  const unreadFor = (room: Room) => badgeCount(room.id, rawUnreadFor(room));
 
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
+  // lastRoom memory is keyed by the room's own destination, not the UI view
+  // the user happened to open it from (deep links / cross-view clicks).
   const openRoom = (id: string) => {
     clearUnread(id);
+    const room = useAppStore.getState().rooms.find((r) => r.id === id);
+    if (room && scope) {
+      const view = viewForRoom(room);
+      rememberRoom(scope, view, id);
+      if (navV1) setActiveView(view);
+    }
     navigate(`/c/${id}`);
     // On mobile the sidebar is an overlay drawer; close it after selecting a
     // room so the chat is visible. Desktop (>=768px) keeps it open.
@@ -108,8 +143,11 @@ export function RoomList() {
   const setSearchQuery = useSidebarUi((s) => s.setSearchQuery);
   const expandedPeople = useSidebarUi((s) => s.expandedPeople);
   const togglePersonExpanded = useSidebarUi((s) => s.togglePersonExpanded);
+  const focusMode = useSidebarUi((s) => s.focusMode);
+  const setFocusMode = useSidebarUi((s) => s.setFocusMode);
   const [seeding, setSeeding] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
+  const [markingAllRead, setMarkingAllRead] = useState(false);
   const queryClient = useQueryClient();
 
   // Hydrate the server-side default-agent preference once (it follows the user
@@ -163,7 +201,6 @@ export function RoomList() {
   // Personal folders (client-side; see categoryStore). Folder identity is
   // (instance, section, name), so everything here is scoped by the active
   // instance id — one server's folders must never reach another's.
-  const scope = useFederationStore((s) => s.activeInstanceId);
   const categories = useChannelCategories((s) => s.categories);
   const peopleByScope = useChannelCategories((s) => s.people);
   const collapsed = useChannelCategories((s) => s.collapsed);
@@ -181,12 +218,40 @@ export function RoomList() {
     (s) => s.adoptLegacyPeopleFolders,
   );
 
+  // mute.ts persists to localStorage outside React — bump so Focused filter /
+  // badgeCount re-read getNotifyLevel after a mute change.
+  const [mutedVersion, setMutedVersion] = useState(0);
+  useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
+
+  // Focused mode filter/sort (slice 3) before view filter so classic + nav-v1
+  // share the same attention rules. AppShell mirrors this for Alt+↑/↓.
+  const preparedRooms = useMemo(
+    () =>
+      prepareRoomsForSidebar(rooms, focusMode, (room) => ({
+        unread: unreadCounts[room.id] ?? room.unread_count ?? 0,
+        hasMention: mentionUnreads[room.id] === true,
+        notifyLevel: getNotifyLevel(room.id),
+        isActive: room.id === activeRoomId,
+      })),
+    // mutedVersion forces recompute when notify levels change outside React.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+    [
+      rooms,
+      focusMode,
+      unreadCounts,
+      mentionUnreads,
+      activeRoomId,
+      mutedVersion,
+    ],
+  );
+
   // THE sidebar structure. RoomList renders it; AppShell flattens the same
-  // model for Alt+↑/↓. There is no second model to keep in sync.
+  // model for Alt+↑/↓. There is no second model to keep in sync. `modelView`
+  // filters rooms so keyboard order matches the visible list per destination.
   const model = useMemo(
     () =>
       buildSidebarModel({
-        rooms,
+        rooms: preparedRooms,
         searchQuery,
         scope,
         categories,
@@ -194,9 +259,10 @@ export function RoomList() {
         folders: folderDefs,
         collapsed,
         expandedPeople,
+        view: modelView,
       }),
     [
-      rooms,
+      preparedRooms,
       searchQuery,
       scope,
       categories,
@@ -204,8 +270,37 @@ export function RoomList() {
       folderDefs,
       collapsed,
       expandedPeople,
+      modelView,
     ],
   );
+
+  // Standing conference catalog for the Meetings empty state / entry points.
+  const { data: conferenceCatalog = [] } = useQuery({
+    queryKey: ["conference-catalog", scope],
+    queryFn: () => api.getConferenceCatalog(),
+    staleTime: 5 * 60_000,
+    enabled: navV1 && activeView === "meetings",
+  });
+  const [enteringConference, setEnteringConference] = useState<string | null>(
+    null,
+  );
+  async function enterConference(slug: string) {
+    if (enteringConference) return;
+    setEnteringConference(slug);
+    try {
+      const room = await api.enterConferenceRoom(slug);
+      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
+      openRoom(room.id);
+    } catch (err) {
+      console.error("enter conference failed", err);
+      useAppStore.getState().pushToast({
+        title: "Couldn't open the meeting room",
+        body: (err as Error).message,
+      });
+    } finally {
+      setEnteringConference(null);
+    }
+  }
 
   // Attribute channel folders saved before `categories` was per-instance to the
   // server that actually owns those rooms. Convergent and self-limiting: it
@@ -266,11 +361,6 @@ export function RoomList() {
   const [newFolderFor, setNewFolderFor] = useState<FolderSection | null>(null);
   const [newFolderDraft, setNewFolderDraft] = useState("");
 
-  // mute.ts persists to localStorage outside React — bump on its change event
-  // so isMuted() is re-read and muted badges/menu labels stay in sync.
-  const [, setMutedVersion] = useState(0);
-  useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
-
   function commitHeaderFolder() {
     const name = newFolderDraft.trim();
     if (name && newFolderFor && scope) ensureFolder(scope, name, newFolderFor);
@@ -305,6 +395,35 @@ export function RoomList() {
     }
     clearUnread(room.id);
     setMenuKey(null);
+  }
+
+  /**
+   * Mark every room in the current Focused/All + view slice as read.
+   * Uses sequential mark_read WS frames (no batch API yet) + local clear.
+   */
+  function markVisibleSectionRead() {
+    if (markingAllRead) return;
+    // preparedRooms already applies Focused; roomsForView matches the on-screen
+    // destination so we never clear unreads for rooms another view is hiding.
+    const targets = roomsNeedingMarkRead(
+      roomsForView(preparedRooms, modelView),
+      rawUnreadFor,
+    );
+    if (targets.length === 0) return;
+    setMarkingAllRead(true);
+    try {
+      for (const room of targets) {
+        if (room.last_message) {
+          ws.send("mark_read", {
+            room_id: room.id,
+            message_id: room.last_message.id,
+          });
+        }
+        clearUnread(room.id);
+      }
+    } finally {
+      setMarkingAllRead(false);
+    }
   }
 
   /** The "Move to folder" block, shared by the channel and people menus.
@@ -1186,124 +1305,126 @@ export function RoomList() {
   );
   const groupCount = groupsSection.groups.reduce((n, g) => n + g.rows.length, 0);
 
-  return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="shrink-0 space-y-2 px-3 py-3">
-        <NewChatButton onStarted={openRoom} />
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-          <input
-            type="text"
-            placeholder="Search rooms…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
-            aria-label="Search rooms"
-          />
-        </div>
-      </div>
+  // Online favorites hint for the Home rail (best-effort count of human DMs
+  // with recent activity — not a second presence system).
+  const humanDmCount = useMemo(
+    () =>
+      rooms.filter((r) => r.type === "dm" && !r.brigade_agent_id).length,
+    [rooms],
+  );
 
-      <nav
-        className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4"
-        aria-label="Room navigation"
+  function closeMobileSidebar() {
+    if (
+      window.matchMedia("(max-width: 767px)").matches &&
+      useAppStore.getState().ui.sidebarOpen
+    ) {
+      useAppStore.getState().toggleSidebar();
+    }
+  }
+
+  function renderBrowseAgentsLink() {
+    return (
+      <button
+        onClick={() => {
+          navigate("/agents");
+          closeMobileSidebar();
+        }}
+        className={clsx(
+          "focus-ring group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+          location.pathname === "/agents"
+            ? "bg-white/[0.06] font-semibold text-slate-50"
+            : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+        )}
+        aria-current={location.pathname === "/agents" ? "page" : undefined}
       >
-        {/* Top-level: the agent roster / org-chart page. */}
-        <button
-          onClick={() => {
-            navigate("/agents");
-            if (
-              window.matchMedia("(max-width: 767px)").matches &&
-              useAppStore.getState().ui.sidebarOpen
-            ) {
-              useAppStore.getState().toggleSidebar();
-            }
-          }}
+        {location.pathname === "/agents" && (
+          <span
+            aria-hidden="true"
+            className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+          />
+        )}
+        <Bot
           className={clsx(
-            "focus-ring group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+            "h-4 w-4 shrink-0 text-stable-purple-light transition-opacity",
             location.pathname === "/agents"
-              ? "bg-white/[0.06] font-semibold text-slate-50"
-              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+              ? "opacity-100"
+              : "opacity-75 group-hover:opacity-100",
           )}
-          aria-current={location.pathname === "/agents" ? "page" : undefined}
-        >
-          {location.pathname === "/agents" && (
-            <span
-              aria-hidden="true"
-              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
-            />
-          )}
-          <Bot
-            className={clsx(
-              "h-4 w-4 shrink-0 text-stable-purple-light transition-opacity",
-              location.pathname === "/agents"
-                ? "opacity-100"
-                : "opacity-75 group-hover:opacity-100",
-            )}
-          />
-          <span className="truncate text-sm font-medium">Browse all agents</span>
-        </button>
+        />
+        <span className="truncate text-sm font-medium">Browse all agents</span>
+      </button>
+    );
+  }
 
-        {/* Top-level: the Bridge / Connect (MCP) page. */}
-        <button
-          onClick={() => {
-            navigate("/bridge");
-            if (
-              window.matchMedia("(max-width: 767px)").matches &&
-              useAppStore.getState().ui.sidebarOpen
-            ) {
-              useAppStore.getState().toggleSidebar();
-            }
-          }}
+  function renderBridgeLink() {
+    return (
+      <button
+        onClick={() => {
+          navigate("/bridge");
+          closeMobileSidebar();
+        }}
+        className={clsx(
+          "focus-ring group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+          location.pathname === "/bridge"
+            ? "bg-white/[0.06] font-semibold text-slate-50"
+            : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+        )}
+        aria-current={location.pathname === "/bridge" ? "page" : undefined}
+      >
+        {location.pathname === "/bridge" && (
+          <span
+            aria-hidden="true"
+            className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+          />
+        )}
+        <Plug
           className={clsx(
-            "focus-ring group relative -mt-2 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors md:py-1.5",
+            "h-4 w-4 shrink-0 text-stable-mint transition-opacity",
             location.pathname === "/bridge"
-              ? "bg-white/[0.06] font-semibold text-slate-50"
-              : "text-slate-300 hover:bg-white/[0.04] hover:text-slate-100",
+              ? "opacity-100"
+              : "opacity-75 group-hover:opacity-100",
           )}
-          aria-current={location.pathname === "/bridge" ? "page" : undefined}
-        >
-          {location.pathname === "/bridge" && (
-            <span
-              aria-hidden="true"
-              className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
-            />
-          )}
-          <Plug
-            className={clsx(
-              "h-4 w-4 shrink-0 text-stable-mint transition-opacity",
-              location.pathname === "/bridge"
-                ? "opacity-100"
-                : "opacity-75 group-hover:opacity-100",
-            )}
-          />
-          <span className="truncate text-sm font-medium">Bridge &amp; connect</span>
-        </button>
+        />
+        <span className="truncate text-sm font-medium">Bridge &amp; connect</span>
+      </button>
+    );
+  }
 
-        {/* People / DMs first (Meeting-Ops 77fd49a9 + product ask). Channels
-            are still a first-class section — they just sit below DMs. */}
-        <section>
-          {renderSectionHeader(
-            SECTION_KEYS.people,
-            "Direct messages",
-            "Private — people and agents you talk to one-on-one",
-            <>
-              {renderNewFolderButton("people")}
-              <button
-                onClick={() => setCreateDmOpen(true)}
-                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-                aria-label="New direct message"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </>,
-          )}
+  function renderPeopleSection(opts?: {
+    title?: string;
+    hint?: string;
+    emptyAgentCta?: boolean;
+  }) {
+    const title = opts?.title ?? "Direct messages";
+    const hint =
+      opts?.hint ?? "Private — people and agents you talk to one-on-one";
+    return (
+      <section>
+        {renderSectionHeader(
+          SECTION_KEYS.people,
+          title,
+          hint,
+          <>
+            {renderNewFolderButton("people")}
+            <button
+              onClick={() => setCreateDmOpen(true)}
+              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+              aria-label="New direct message"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </>,
+        )}
 
-          {!peopleSection.collapsed && (
-            <>
-              {renderNewFolderInput("people")}
+        {!peopleSection.collapsed && (
+          <>
+            {renderNewFolderInput("people")}
 
-              {peopleCount === 0 && groupCount === 0 && (
-                <div className="mx-2 mb-1 flex flex-col gap-1">
+            {peopleCount === 0 &&
+              groupCount === 0 &&
+              focusMode !== "focused" && (
+              <div className="mx-2 mb-1 flex flex-col gap-1">
+                {opts?.emptyAgentCta !== false && (
                   <button
                     onClick={startDefaultChat}
                     disabled={startingChat}
@@ -1316,79 +1437,359 @@ export function RoomList() {
                         : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
                     </span>
                   </button>
-                  <button
-                    onClick={() => setCreateDmOpen(true)}
-                    className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
-                  >
-                    …or message a person
-                  </button>
-                </div>
-              )}
-
-              {renderSectionBody(peopleSection)}
-            </>
-          )}
-        </section>
-
-        {/* Private groups only exist once you are in one — no stray header. */}
-        {groupCount > 0 && (
-          <section>
-            {renderSectionHeader(
-              SECTION_KEYS.groups,
-              "Private groups",
-              "Invite only — these never appear in Browse channels",
+                )}
+                <button
+                  onClick={() => setCreateDmOpen(true)}
+                  className="focus-ring w-full rounded-lg px-3 py-1 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                >
+                  {opts?.emptyAgentCta === false
+                    ? "Message a person"
+                    : "…or message a person"}
+                </button>
+              </div>
             )}
-            {!groupsSection.collapsed && renderSectionBody(groupsSection)}
-          </section>
+
+            {renderSectionBody(peopleSection)}
+          </>
+        )}
+      </section>
+    );
+  }
+
+  function renderGroupsSection() {
+    if (groupCount === 0) return null;
+    return (
+      <section>
+        {renderSectionHeader(
+          SECTION_KEYS.groups,
+          "Private groups",
+          "Invite only — these never appear in Browse channels",
+        )}
+        {!groupsSection.collapsed && renderSectionBody(groupsSection)}
+      </section>
+    );
+  }
+
+  function renderChannelsSection() {
+    return (
+      <section>
+        {renderSectionHeader(
+          SECTION_KEYS.channels,
+          "Channels",
+          "Public — anyone on this server can find and join these",
+          <>
+            {renderNewFolderButton("channels")}
+            <button
+              onClick={() => setBrowseOpen(true)}
+              className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+              aria-label="Browse channels"
+              title="Browse channels you can join"
+            >
+              Browse
+            </button>
+            <button
+              onClick={() => setCreateRoomModalOpen(true)}
+              className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
+              aria-label="Create channel"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </>,
         )}
 
-        <section>
-          {renderSectionHeader(
-            SECTION_KEYS.channels,
-            "Channels",
-            "Public — anyone on this server can find and join these",
-            <>
-              {renderNewFolderButton("channels")}
-              <button
-                onClick={() => setBrowseOpen(true)}
-                className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
-                aria-label="Browse channels"
-                title="Browse channels you can join"
-              >
-                Browse
-              </button>
-              <button
-                onClick={() => setCreateRoomModalOpen(true)}
-                className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
-                aria-label="Create channel"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </>,
-          )}
+        {!channelSection.collapsed && (
+          <>
+            {renderNewFolderInput("channels")}
 
-          {!channelSection.collapsed && (
-            <>
-              {renderNewFolderInput("channels")}
+            {channelCount === 0 && focusMode !== "focused" && (
+              <div className="px-2.5 py-2">
+                <p className="mb-2 text-xs text-slate-500">No channels yet</p>
+                <button
+                  onClick={handleSeedDefaults}
+                  disabled={seeding}
+                  className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {seeding ? "Creating…" : "Seed business channels"}
+                </button>
+              </div>
+            )}
 
-              {channelCount === 0 && (
-                <div className="px-2.5 py-2">
-                  <p className="mb-2 text-xs text-slate-500">No channels yet</p>
+            {renderSectionBody(channelSection)}
+          </>
+        )}
+      </section>
+    );
+  }
+
+  /** Meetings: joined conference rooms + catalog entry points. */
+  function renderMeetingsBody() {
+    return (
+      <section>
+        {renderSectionHeader(
+          SECTION_KEYS.channels,
+          "Standing rooms",
+          "Always-on conference rooms and call spaces",
+        )}
+        {!channelSection.collapsed && (
+          <>
+            {channelCount > 0 && renderSectionBody(channelSection)}
+
+            {channelCount === 0 && (
+              <div className="mx-2 mb-2 rounded-lg border border-dashed border-line-strong px-3 py-3 text-xs text-slate-500">
+                <p className="font-medium text-slate-400">No meetings yet</p>
+                <p className="mt-1 leading-relaxed">
+                  Standing conference rooms appear here once you enter them.
+                  You can also start a call from any chat.
+                </p>
+              </div>
+            )}
+
+            {conferenceCatalog.length > 0 && (
+              <div className="mx-2 mt-2 space-y-1">
+                <p className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                  Enter a room
+                </p>
+                {conferenceCatalog.map((c) => (
                   <button
-                    onClick={handleSeedDefaults}
-                    disabled={seeding}
-                    className="focus-ring flex w-full items-center gap-1.5 rounded-lg border border-stable-purple/30 bg-stable-purple/10 px-2.5 py-1.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/20 disabled:opacity-50"
+                    key={c.slug}
+                    type="button"
+                    onClick={() => void enterConference(c.slug)}
+                    disabled={enteringConference === c.slug}
+                    className="focus-ring flex w-full items-start gap-2.5 rounded-lg border border-line px-2.5 py-2 text-left transition-colors hover:border-stable-purple/40 hover:bg-white/[0.04] disabled:opacity-50"
                   >
-                    <Sparkles className="h-3 w-3" />
-                    {seeding ? "Creating…" : "Seed business channels"}
+                    <Video className="mt-0.5 h-4 w-4 shrink-0 text-stable-cyan/80" />
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-slate-200">
+                        {enteringConference === c.slug
+                          ? "Opening…"
+                          : c.display_name}
+                      </span>
+                      {c.description && (
+                        <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">
+                          {c.description}
+                        </span>
+                      )}
+                    </span>
                   </button>
-                </div>
-              )}
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    );
+  }
 
-              {renderSectionBody(channelSection)}
-            </>
+  /** Home: no conversation tree — short jumps only. */
+  function renderHomeBody() {
+    return (
+      <div className="mx-2 space-y-2">
+        <p className="px-0.5 text-xs leading-relaxed text-slate-500">
+          Pick a destination above. Your conversations live under Chats,
+          Channels, Meetings, and Agents — not in one long list.
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveView("chats");
+            closeMobileSidebar();
+          }}
+          className="focus-ring flex w-full items-center gap-2.5 rounded-lg border border-line px-3 py-2.5 text-left transition-colors hover:border-stable-purple/40 hover:bg-white/[0.04]"
+        >
+          <MessageSquare className="h-4 w-4 shrink-0 text-stable-purple-light" />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-slate-100">
+              Go to Chats
+            </span>
+            <span className="block text-[11px] text-slate-500">
+              {humanDmCount > 0
+                ? `${humanDmCount} direct message${humanDmCount === 1 ? "" : "s"}`
+                : "People and private groups"}
+            </span>
+          </span>
+        </button>
+        {renderBrowseAgentsLink()}
+        {renderBridgeLink()}
+      </div>
+    );
+  }
+
+  /** Classic (flag off) or view-filtered (flag on) body. */
+  function renderNavBody() {
+    if (!navV1) {
+      return (
+        <>
+          {renderBrowseAgentsLink()}
+          <div className="-mt-2">{renderBridgeLink()}</div>
+          {renderPeopleSection()}
+          {renderGroupsSection()}
+          {renderChannelsSection()}
+        </>
+      );
+    }
+
+    switch (activeView) {
+      case "home":
+        return renderHomeBody();
+      case "chats":
+        return (
+          <>
+            {renderPeopleSection({
+              title: "People",
+              hint: "Human direct messages",
+              emptyAgentCta: false,
+            })}
+            {renderGroupsSection()}
+            {peopleCount === 0 && groupCount === 0 && null}
+          </>
+        );
+      case "channels":
+        return renderChannelsSection();
+      case "meetings":
+        return renderMeetingsBody();
+      case "agents":
+        return (
+          <>
+            {renderBrowseAgentsLink()}
+            {renderPeopleSection({
+              title: "Agent conversations",
+              hint: "DMs with resident agents",
+              emptyAgentCta: true,
+            })}
+          </>
+        );
+      default:
+        return null;
+    }
+  }
+
+  // Search + New chat: hide on Home (minimal rail). Show on other views and classic.
+  const showToolbar = !navV1 || activeView !== "home";
+  const searchPlaceholder =
+    activeView === "agents"
+      ? "Search agents…"
+      : activeView === "channels"
+        ? "Search channels…"
+        : activeView === "meetings"
+          ? "Search meetings…"
+          : activeView === "chats"
+            ? "Search chats…"
+            : "Search rooms…";
+
+  const visibleUnreadTargets = roomsNeedingMarkRead(
+    roomsForView(preparedRooms, modelView),
+    rawUnreadFor,
+  );
+  const focusedEmpty =
+    focusMode === "focused" &&
+    showToolbar &&
+    peopleCount === 0 &&
+    groupCount === 0 &&
+    channelCount === 0;
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {navV1 && <ViewSwitcher />}
+
+      {showToolbar && (
+        <div className="shrink-0 space-y-2 px-3 py-3">
+          {/* New chat is most useful for agents / chats; keep on classic too. */}
+          {(!navV1 ||
+            activeView === "agents" ||
+            activeView === "chats") && (
+            <NewChatButton onStarted={openRoom} />
           )}
-        </section>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+            <input
+              type="text"
+              placeholder={searchPlaceholder}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+              aria-label={searchPlaceholder}
+            />
+          </div>
+          {/* Slice 3: Focused (mentions + DM unreads) vs All + mark section read. */}
+          <div className="flex items-center gap-1.5">
+            <div
+              role="group"
+              aria-label="Unread filter"
+              className="flex min-w-0 flex-1 rounded-lg border border-line bg-slate-950/40 p-0.5"
+            >
+              <button
+                type="button"
+                onClick={() => setFocusMode("focused")}
+                aria-pressed={focusMode === "focused"}
+                aria-label="Focused: show direct messages with unread and rooms with unread mentions"
+                className={clsx(
+                  "focus-ring flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  focusMode === "focused"
+                    ? "bg-white/[0.08] text-slate-50"
+                    : "text-slate-500 hover:text-slate-300",
+                )}
+              >
+                Focused
+              </button>
+              <button
+                type="button"
+                onClick={() => setFocusMode("all")}
+                aria-pressed={focusMode === "all"}
+                aria-label="All: show every room in this list"
+                className={clsx(
+                  "focus-ring flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  focusMode === "all"
+                    ? "bg-white/[0.08] text-slate-50"
+                    : "text-slate-500 hover:text-slate-300",
+                )}
+              >
+                All
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={markVisibleSectionRead}
+              disabled={markingAllRead || visibleUnreadTargets.length === 0}
+              className="focus-ring shrink-0 rounded-lg border border-line px-2 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={
+                visibleUnreadTargets.length === 0
+                  ? "No unread rooms to mark as read"
+                  : `Mark ${visibleUnreadTargets.length} visible room${visibleUnreadTargets.length === 1 ? "" : "s"} as read`
+              }
+              title="Mark all visible as read"
+            >
+              <span className="inline-flex items-center gap-1">
+                <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Mark read</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      <nav
+        className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4"
+        aria-label="Room navigation"
+      >
+        {focusedEmpty && (
+          <div className="mx-2 rounded-lg border border-dashed border-line px-3 py-3 text-xs text-slate-500">
+            <p className="font-medium text-slate-400">Nothing needs attention</p>
+            <p className="mt-1">
+              Focused shows DMs with unread and rooms where you were @-mentioned.
+              Switch to{" "}
+              <button
+                type="button"
+                onClick={() => setFocusMode("all")}
+                className="focus-ring font-medium text-stable-purple-light underline-offset-2 hover:underline"
+              >
+                All
+              </button>{" "}
+              to browse every room.
+            </p>
+          </div>
+        )}
+        {renderNavBody()}
       </nav>
 
       {createDmOpen && (

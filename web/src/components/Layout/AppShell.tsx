@@ -20,14 +20,22 @@ import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
+  isNavV1Enabled,
+  useNavStore,
+  viewForRoom,
+} from "@/stores/navStore";
+import {
   buildSidebarModel,
   flattenSidebarOrder,
+  type SidebarView,
 } from "@/components/Sidebar/sidebarModel";
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
+import { getNotifyLevel } from "@/utils/mute";
+import { prepareRoomsForSidebar } from "@/utils/unreadModel";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import {
@@ -99,14 +107,26 @@ function SurfaceLoading() {
  * by hand is the bug, so there is no copy.
  */
 function sidebarRoomOrder(): string[][] {
-  const { rooms } = useAppStore.getState();
+  const { rooms, activeRoomId, unreadCounts, mentionUnreads } =
+    useAppStore.getState();
   const { categories, people, folders, collapsed } =
     useChannelCategories.getState();
-  const { searchQuery, expandedPeople } = useSidebarUi.getState();
+  const { searchQuery, expandedPeople, focusMode } = useSidebarUi.getState();
   const scope = useFederationStore.getState().activeInstanceId;
+  // Same filter/sort as RoomList so Alt+↑/↓ walks what is on screen.
+  const prepared = prepareRoomsForSidebar(rooms, focusMode, (room) => ({
+    unread: unreadCounts[room.id] ?? room.unread_count ?? 0,
+    hasMention: mentionUnreads[room.id] === true,
+    notifyLevel: getNotifyLevel(room.id),
+    isActive: room.id === activeRoomId,
+  }));
+  // View-based shell: same destination filter RoomList applies.
+  const view: SidebarView = isNavV1Enabled()
+    ? useNavStore.getState().activeView
+    : "all";
   return flattenSidebarOrder(
     buildSidebarModel({
-      rooms,
+      rooms: prepared,
       searchQuery,
       scope,
       categories,
@@ -114,6 +134,7 @@ function sidebarRoomOrder(): string[][] {
       folders,
       collapsed,
       expandedPeople,
+      view,
     }),
   );
 }
@@ -466,6 +487,24 @@ export function AppShell() {
     setActiveRoomId(routeRoomId ?? null);
   }, [routeRoomId, setActiveRoomId]);
 
+  // Deep-link / room open → select the matching nav destination and remember
+  // last room for that view×server. Rooms may not be loaded yet on first paint
+  // (hard refresh on /c/:id); re-run when the rooms list arrives.
+  // Do NOT force Home when routeRoomId is null: the user may be on Chats with
+  // no room open (URL still `/`) after clicking the view switcher.
+  useEffect(() => {
+    if (!isNavV1Enabled()) return;
+    if (!routeRoomId) return;
+    const room = storeRooms.find((r) => r.id === routeRoomId);
+    if (!room) return;
+    const view = viewForRoom(room);
+    const nav = useNavStore.getState();
+    nav.setActiveView(view);
+    if (activeInstanceId) {
+      nav.rememberRoom(activeInstanceId, view, routeRoomId);
+    }
+  }, [routeRoomId, storeRooms, activeInstanceId]);
+
   useEffect(() => {
     if (agents) {
       setAgents(agents);
@@ -541,7 +580,12 @@ export function AppShell() {
               <h1 className="flex min-w-0 items-center">
                 <button
                   type="button"
-                  onClick={() => navigate("/")}
+                  onClick={() => {
+                    if (isNavV1Enabled()) {
+                      useNavStore.getState().setActiveView("home");
+                    }
+                    navigate("/");
+                  }}
                   className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
                   title="Home — Unicorn Stable"
                   aria-label="Go to home"

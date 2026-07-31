@@ -8,7 +8,9 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
+import { useNavStore } from "@/stores/navStore";
 import { fetchInstanceLogo, fetchInstanceMeta, type InstanceMeta } from "@/lib/instances";
+import { badgeCount } from "@/utils/unreadModel";
 
 export type InstanceAuthStatus = "pending" | "authenticated" | "unauthenticated" | "error";
 export interface InstanceAuthState { status: InstanceAuthStatus; token: string | null; }
@@ -156,6 +158,9 @@ export const useFederationStore = create<FederationState>((set, get) => ({
     useKnowledgeStore.getState().resetForServer();
     usePresenceStore.getState().reset();
     useSidebarUi.getState().resetForServer();
+    // View shell: last-room is keyed by server so it can stay; activeView
+    // resets to Home because the URL is already forced to `/`.
+    useNavStore.getState().resetForServer();
     setActiveAuthInstance(id);
     // The instance you switch TO is now being viewed → clear its rail badge.
     set((state) => ({ activeInstanceId: id, unreadByInstance: { ...state.unreadByInstance, [id]: 0 } }));
@@ -257,8 +262,16 @@ export const useFederationStore = create<FederationState>((set, get) => ({
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!res.ok) return [inst.id, prior] as const;
-          const data = (await res.json()) as { rooms?: Array<{ unread_count?: number }> };
-          const total = (data.rooms ?? []).reduce((sum, r) => sum + (r.unread_count ?? 0), 0);
+          const data = (await res.json()) as {
+            rooms?: Array<{ id?: string; unread_count?: number }>;
+          };
+          // Mute is client-local (mute.ts) and keyed by room id — skip muted
+          // rooms so rail badges match sidebar semantics and never shout for
+          // channels the user silenced.
+          const total = (data.rooms ?? []).reduce((sum, r) => {
+            if (!r.id) return sum + (r.unread_count ?? 0);
+            return sum + badgeCount(r.id, r.unread_count ?? 0);
+          }, 0);
           return [inst.id, total] as const;
         } catch {
           return [inst.id, prior] as const;

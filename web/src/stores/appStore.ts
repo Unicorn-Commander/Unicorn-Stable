@@ -86,6 +86,11 @@ interface AppState {
   agentActivity: Record<string, AgentActivity[]>;
   onlineUsers: string[];
   unreadCounts: Record<string, number>;
+  /**
+   * Rooms where at least one unread message @-mentioned me. Client-tracked
+   * (WS path); cleared with clearUnread. Feeds Focused sidebar mode.
+   */
+  mentionUnreads: Record<string, boolean>;
   // Per-room: { participant_id → last_read_at iso }
   readReceipts: Record<string, Record<string, string>>;
   // Per-room LLM override for the mid-conversation model switcher:
@@ -139,6 +144,8 @@ interface AppState {
 
   incrementUnread: (roomId: string, by?: number) => void;
   clearUnread: (roomId: string) => void;
+  /** Flag room as having an unread @-mention (Focused mode + sort). */
+  markMentionUnread: (roomId: string) => void;
   setReadReceipt: (roomId: string, participantId: string, at: string) => void;
   // Set (modelId) or clear (null) the per-room LLM override.
   setModelOverride: (roomId: string, modelId: string | null) => void;
@@ -164,6 +171,7 @@ export const useAppStore = create<AppState>((set) => ({
   agentActivity: {},
   onlineUsers: [],
   unreadCounts: {},
+  mentionUnreads: {},
   readReceipts: {},
   modelOverrides: {},
   toasts: [],
@@ -548,6 +556,7 @@ export const useAppStore = create<AppState>((set) => ({
         agentActivity: {},
         onlineUsers: [],
         unreadCounts: {},
+        mentionUnreads: {},
         readReceipts: {},
         modelOverrides: {},
         toasts: [],
@@ -617,8 +626,23 @@ export const useAppStore = create<AppState>((set) => ({
       // Set to 0 (not delete) so the count stays authoritatively cleared: the
       // display reads `unreadCounts[id] ?? room.unread_count`, and deleting
       // would let it fall back to a stale backend cold-load seed.
-      if (state.unreadCounts[roomId] === 0) return {} as Partial<AppState>;
-      return { unreadCounts: { ...state.unreadCounts, [roomId]: 0 } };
+      const next: Partial<AppState> = {};
+      if (state.unreadCounts[roomId] !== 0) {
+        next.unreadCounts = { ...state.unreadCounts, [roomId]: 0 };
+      }
+      if (state.mentionUnreads[roomId]) {
+        const mentions = { ...state.mentionUnreads };
+        delete mentions[roomId];
+        next.mentionUnreads = mentions;
+      }
+      return next;
+    }),
+  markMentionUnread: (roomId) =>
+    set((state) => {
+      if (state.mentionUnreads[roomId]) return {} as Partial<AppState>;
+      return {
+        mentionUnreads: { ...state.mentionUnreads, [roomId]: true },
+      };
     }),
   setReadReceipt: (roomId, participantId, at) =>
     set((state) => ({

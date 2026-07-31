@@ -62,6 +62,11 @@ export interface Room {
    * into a voice call. null for human-only rooms.
    */
   brigade_agent_id?: string | null;
+  /**
+   * Standing conference / always-on call room (metadata.conference). Used by
+   * the Meetings nav view; plain channels leave this false/undefined.
+   */
+  is_conference?: boolean;
 }
 
 export interface RoomMember {
@@ -455,6 +460,7 @@ class StableApiClient {
         typeof r.metadata_?.brigade_agent_id === "string"
           ? (r.metadata_.brigade_agent_id as string)
           : null,
+      is_conference: r.metadata_?.conference === true,
     }));
   }
 
@@ -638,6 +644,7 @@ class StableApiClient {
       last_message: null,
       members: [],
       agents: [],
+      is_conference: true,
     };
   }
 
@@ -853,6 +860,7 @@ class StableApiClient {
       members: [],
       agents: [],
       brigade_agent_id: brigadeAgentId,
+      is_conference: r.metadata_?.conference === true,
     };
   }
 
