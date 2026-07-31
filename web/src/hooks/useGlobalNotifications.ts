@@ -215,35 +215,55 @@ export function useGlobalNotifications() {
 
     // CALLER feedback. Without this the caller's card would ring until its
     // own backstop fired, no matter what the callee actually did.
-    const unsubRingState = ws.on("call_ring_state", (data: WsEventPayload) => {
-      const e = data as unknown as WsCallRingStateEvent;
-      if (!e?.call_id || !e?.state) return;
-      const who = e.by?.display_name || "They";
+    const settleOutgoingFromResolution = (
+      callId: string,
+      state: string,
+      byName?: string | null,
+    ) => {
+      const who = byName || "They";
       const settle = useOutgoingCallStore.getState().settle;
-      switch (e.state) {
+      switch (state) {
         case "accepted":
-          settle("accepted", `${who} answered.`, { callId: e.call_id });
+          settle("accepted", `${who} answered.`, { callId });
+          playCue("call-join");
           break;
         case "declined":
-          settle("declined", `${who} declined the call.`, { callId: e.call_id });
+          settle("declined", `${who} declined the call.`, { callId });
           playCue("notify");
           break;
         case "timeout":
-          settle("no_answer", "They didn't pick up.", { callId: e.call_id });
+          settle("no_answer", "They didn't pick up.", { callId });
           break;
         case "canceled":
-          settle("canceled", "The call was cancelled.", { callId: e.call_id });
+          settle("canceled", "The call was cancelled.", { callId });
+          break;
+        default:
           break;
       }
+    };
+
+    const unsubRingState = ws.on("call_ring_state", (data: WsEventPayload) => {
+      const e = data as unknown as WsCallRingStateEvent;
+      if (!e?.call_id || !e?.state) return;
+      settleOutgoingFromResolution(
+        String(e.call_id),
+        e.state,
+        e.by?.display_name,
+      );
     });
 
     // CALLEE side, EVERY device of this identity: the call is over, whoever
     // ended it. This is what makes "answer on the phone, laptop stops ringing"
     // work — both sockets subscribe to the same `user:{id}` Redis channel.
+    // ALSO delivered to the CALLER (server dual-publish) as a backup for
+    // call_ring_state — settle is idempotent once the phase is terminal.
     const unsubCallResolved = ws.on("call_resolved", (data: WsEventPayload) => {
       const e = data as unknown as WsCallResolvedEvent;
       if (!e?.call_id) return;
-      useIncomingCallStore.getState().resolve(e.call_id);
+      useIncomingCallStore.getState().resolve(String(e.call_id));
+      if (e.reason) {
+        settleOutgoingFromResolution(String(e.call_id), e.reason, null);
+      }
     });
 
     const unsubRead = ws.on("read_receipt", (data: WsEventPayload) => {

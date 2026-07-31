@@ -102,7 +102,15 @@ export const useOutgoingCallStore = create<OutgoingCallState>((set, get) => ({
     // A resolution for a call we are no longer making must not overwrite the
     // one we ARE making — the caller redialling immediately after a decline is
     // the ordinary way to produce that race.
-    if (opts?.callId && cur.callId && opts.callId !== cur.callId) return;
+    // Coerce ids to strings: Redis/JSON sometimes rehydrate UUID-like values
+    // with different string forms; a strict !== left "Calling…" stuck forever.
+    if (
+      opts?.callId != null &&
+      cur.callId != null &&
+      String(opts.callId) !== String(cur.callId)
+    ) {
+      return;
+    }
     if (opts?.roomId && !cur.callId && opts.roomId !== cur.roomId) return;
     if (isTerminalPhase(cur.phase)) return;
     set({ call: { ...cur, phase, detail } });

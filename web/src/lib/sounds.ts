@@ -7,8 +7,8 @@
  *   call-join   rising two-note chime  (sine 520Hz -> 660Hz)
  *   call-leave  falling two-note chime (sine 660Hz -> 520Hz)
  *   notify      single soft "pop"      (triangle 880Hz, fast decay)
- *   ring        gentle two-tone chirp  (sine 660Hz -> 880Hz) — the incoming-
- *               call banner repeats this while it is ringing
+ *   ring        phone-like dual-tone     (sine 440+480Hz) — incoming banner
+ *   ring-out    soft outgoing pulse       — caller status while still ringing
  *
  * Callers stay dumb: playCue() itself checks the `soundCues` preference in
  * the shared "stable.notification.prefs.v1" localStorage blob (missing key ==
@@ -17,7 +17,12 @@
  * handler or the call path.
  */
 
-export type CueName = "call-join" | "call-leave" | "notify" | "ring";
+export type CueName =
+  | "call-join"
+  | "call-leave"
+  | "notify"
+  | "ring"
+  | "ring-out";
 
 // Same key SettingsModal owns; read defensively rather than importing so this
 // module stays dependency-free (usable from non-React code paths).
@@ -140,7 +145,7 @@ export function playCue(name: CueName): void {
     // ("call cues only make sense with the tab in use") is right for
     // join/leave chimes and exactly backwards for a ring: a call arriving
     // while you are in another tab is precisely the one you need to hear.
-    if (name !== "notify" && name !== "ring" && document.hidden) return;
+    if (name !== "notify" && name !== "ring" && name !== "ring-out" && document.hidden) return;
     const ctx = getContext();
     if (!ctx) return;
 
@@ -161,10 +166,18 @@ export function playCue(name: CueName): void {
         tone(ctx, { type: "triangle", freq: 880, at: 0, dur: 0.14, peak: 0.09, attack: 0.008 });
         break;
       case "ring":
-        // Gentle two-tone chirp — repeated by the incoming-call banner while
-        // ringing, so keep it soft and short. Total ~360ms.
-        tone(ctx, { type: "sine", freq: 660, at: 0, dur: 0.15, peak: 0.09, attack: 0.012 });
-        tone(ctx, { type: "sine", freq: 880, at: 0.16, dur: 0.2, peak: 0.09, attack: 0.012 });
+        // Phone-like dual-tone ring (approx US ring interval, soft). ~450ms.
+        // Classic pair ~440+480Hz; we use slightly brighter notes so laptop
+        // speakers still carry them.
+        tone(ctx, { type: "sine", freq: 440, at: 0, dur: 0.42, peak: 0.1, attack: 0.02 });
+        tone(ctx, { type: "sine", freq: 480, at: 0, dur: 0.42, peak: 0.08, attack: 0.02 });
+        break;
+      case "ring-out":
+        // Outgoing "still ringing them" pulse — lower and shorter than the
+        // incoming ring so the caller doesn't feel like *they* are being
+        // called. Repeated by OutgoingCallStatus while phase === ringing.
+        tone(ctx, { type: "sine", freq: 520, at: 0, dur: 0.12, peak: 0.07, attack: 0.01 });
+        tone(ctx, { type: "sine", freq: 620, at: 0.14, dur: 0.16, peak: 0.07, attack: 0.01 });
         break;
     }
   } catch {

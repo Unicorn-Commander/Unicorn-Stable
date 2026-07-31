@@ -329,14 +329,28 @@ class CallService:
 
         # Caller feedback. `state` is the word their UI shows; "timeout" is
         # rendered as "No answer".
+        #
+        # Publish BOTH shapes to the caller: call_ring_state (primary UI) and
+        # call_resolved (same frame every other device already understands). A
+        # lost/garbled ring_state used to leave the caller stuck on "Calling…"
+        # after the callee had answered — dual delivery makes that a non-event.
+        caller_id = str(call["caller_id"])
+        ring_state = {
+            "type": "call_ring_state",
+            "call_id": call_id,
+            "room_id": call["room_id"],
+            "state": resolution,
+            "by": {"id": by_id, "display_name": by_name} if by_id else None,
+        }
+        await self._publish_user(caller_id, ring_state)
         await self._publish_user(
-            str(call["caller_id"]),
+            caller_id,
             {
-                "type": "call_ring_state",
+                "type": "call_resolved",
                 "call_id": call_id,
                 "room_id": call["room_id"],
-                "state": resolution,
-                "by": {"id": by_id, "display_name": by_name} if by_id else None,
+                "reason": resolution,
+                "by_participant_id": by_id,
             },
         )
 

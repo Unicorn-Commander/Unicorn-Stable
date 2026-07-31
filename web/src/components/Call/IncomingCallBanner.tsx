@@ -17,7 +17,7 @@ import { cueBlockedReason, playCue } from "@/lib/sounds";
  */
 const RING_TIMEOUT_MS = 45_000;
 /** Cadence of the gentle ring chirp while the banner is up. */
-const RING_CUE_INTERVAL_MS = 2_000;
+const RING_CUE_INTERVAL_MS = 2_500;
 
 /**
  * Incoming-call ringing banner — mounted ONCE in AppShell (beside ToastStack)
