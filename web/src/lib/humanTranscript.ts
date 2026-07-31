@@ -114,6 +114,9 @@ export class HumanTranscriptSession {
   private stopped = false;
   private interimSegId: string | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True when a remote human is the active speaker and we are not — pause
+   *  recognition so far-end audio from speakers is not captioned as "me". */
+  private remoteDominant = false;
 
   constructor(room: Room) {
     this.room = room;
@@ -154,8 +157,25 @@ export class HumanTranscriptSession {
     this.ensureRunning();
   }
 
+  /**
+   * Pause local captions when a remote human is clearly the active speaker.
+   * Web Speech listens to the system mic path and often hears the other
+   * person through speakers, which re-labels their words as ours.
+   */
+  setRemoteDominant(dominant: boolean): void {
+    if (this.remoteDominant === dominant) return;
+    this.remoteDominant = dominant;
+    if (!this.wanted || this.stopped) return;
+    this.ensureRunning();
+  }
+
   private ensureRunning(): void {
-    if (this.stopped || !this.wanted || !this.micEnabled) {
+    if (
+      this.stopped ||
+      !this.wanted ||
+      !this.micEnabled ||
+      this.remoteDominant
+    ) {
       this.teardownRec();
       return;
     }

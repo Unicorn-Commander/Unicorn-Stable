@@ -19,10 +19,21 @@ def room_with(*participants):
     )
 
 
-def test_linked_participant_wins_when_speaker_id_is_null_in_group_call():
+def test_linked_participant_not_used_when_multiple_humans_without_speaker_id():
+    """Linked session must NOT re-label every turn in a multi-human call."""
     aaron = participant("person-aaron", "Aaron Stransky", "PA_1", "TR_1")
     shafen = participant("person-shafen", "Shafen Khan", "PA_2", "TR_2")
     room = room_with(aaron, shafen)
+
+    assert resolve_human(room, None, shafen) == (
+        "human",
+        "Unidentified speaker",
+    )
+
+
+def test_linked_participant_ok_when_only_one_remote_human():
+    shafen = participant("person-shafen", "Shafen Khan", "PA_2", "TR_2")
+    room = room_with(shafen)
 
     assert resolve_human(room, None, shafen) == (
         "person-shafen",

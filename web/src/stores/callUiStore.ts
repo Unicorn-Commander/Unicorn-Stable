@@ -324,6 +324,16 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
 
   ingestTranscript: (msg) =>
     set((state) => {
+      // Drop agent STT that could not name a real LiveKit participant.
+      if (
+        msg.source === "agent_stt" &&
+        (msg.participantId === "human" ||
+          msg.name === "Unidentified speaker" ||
+          msg.name === "Speaker")
+      ) {
+        return state;
+      }
+
       const id = msg.segmentId ?? `${msg.participantId}:${msg.ts}`;
       const line: TranscriptLine = {
         id,
@@ -340,9 +350,55 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       // it in place; a final line for that speaker supersedes their interim.
       let lines = state.transcript.slice();
 
-      // The local-mic producer is authoritative for WHO spoke. The agent STT
-      // is retained as a fallback when a browser cannot caption, but matching
-      // copies should never render twice or make one person look like another.
+      const within = (a: number, b: number) =>
+        Math.abs(a - b) <= TRANSCRIPT_DEDUPE_WINDOW_MS;
+
+      // ── Authority rules ─────────────────────────────────────────────
+      // 1. local_mic is authoritative for WHO spoke (browser owns its mic).
+      // 2. agent_stt is fallback only — never override or re-label a matching
+      //    local_mic line, even when the agent guessed a DIFFERENT speaker
+      //    (linked-session / no-diarization dump is the classic failure).
+      // 3. Acoustic echo: Web Speech often captions far-end audio as "local".
+      //    If another participant already published the same local_mic words,
+      //    drop the later echo copy.
+
+      if (msg.source === "agent_stt") {
+        const localWins = lines.some(
+          (c) =>
+            c.source === "local_mic" &&
+            within(c.ts, msg.ts) &&
+            sameUtterance(c.text, msg.text),
+        );
+        if (localWins) return state;
+      }
+
+      if (msg.source === "local_mic") {
+        // Strip matching agent_stt from ANY speaker (wrong diarization).
+        lines = lines.filter(
+          (c) =>
+            !(
+              c.source === "agent_stt" &&
+              within(c.ts, msg.ts) &&
+              sameUtterance(c.text, msg.text)
+            ),
+        );
+        // Echo: another human's local_mic already claimed this utterance.
+        const earlierRemote = lines.find(
+          (c) =>
+            c.source === "local_mic" &&
+            c.participantId !== msg.participantId &&
+            within(c.ts, msg.ts) &&
+            sameUtterance(c.text, msg.text) &&
+            c.ts <= msg.ts,
+        );
+        if (earlierRemote) return state;
+        // Echo late-comer: we already have this as local_mic for us; if a
+        // later remote copy arrives it is handled when THEY ingest. If we
+        // already have our own line and remote tries... handled on their
+        // client. Locally, drop our echo when remote's line arrived first.
+      }
+
+      // Same-participant counterpart dedupe (local_mic ↔ agent_stt).
       const counterpartSource =
         msg.source === "agent_stt"
           ? "local_mic"
@@ -356,7 +412,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
             ({ candidate }) =>
               candidate.participantId === msg.participantId &&
               candidate.source === counterpartSource &&
-              Math.abs(candidate.ts - msg.ts) <= TRANSCRIPT_DEDUPE_WINDOW_MS &&
+              within(candidate.ts, msg.ts) &&
               sameUtterance(candidate.text, msg.text),
           )
           .map(({ index }) => index);

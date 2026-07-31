@@ -97,12 +97,23 @@ def resolve_human(
     except Exception:
         remotes = []
 
+    humans = [
+        p
+        for p in remotes
+        if not (getattr(p, "identity", "") or "").startswith("agent-")
+    ]
+
     if speaker_id:
         for p in remotes:
             if _participant_matches(p, speaker_id):
                 return _participant_label(p)
 
-    if linked_participant is not None:
+    # Linked-session fallback is ONLY safe when there is at most one remote
+    # human. With two humans (e.g. Aaron + Shafen), dumping every STT frame
+    # onto the linked participant is what makes captions flip speakers while
+    # one person is talking — browser local_mic labels correctly and agent_stt
+    # re-labels the same words as the other person.
+    if linked_participant is not None and len(humans) <= 1:
         if isinstance(linked_participant, str):
             for p in remotes:
                 if _participant_matches(p, linked_participant):
@@ -115,19 +126,13 @@ def resolve_human(
                         return _participant_label(p)
                 return _participant_label(linked_participant)
 
-    humans = [
-        p
-        for p in remotes
-        if not (getattr(p, "identity", "") or "").startswith("agent-")
-    ]
     if len(humans) == 1:
         return _participant_label(humans[0])
 
-    # A provider diarization label ("speaker_0") is not a LiveKit identity.
-    # Never publish it as if it named a person in a multi-human room.
-    if speaker_id:
-        return "human", "Unidentified speaker"
-    return "human", "Speaker"
+    # Multi-human, no track/identity match: refuse to invent a speaker.
+    # The web client drops agent_stt lines for "Unidentified speaker" / id
+    # "human", and relies on each browser's local_mic captions instead.
+    return "human", "Unidentified speaker"
 
 
 def _now_ms() -> int:
@@ -252,6 +257,12 @@ class TranscriptPublisher:
             # Rolling interim lines collapse per participantId on the frontend,
             # so a stable segmentId across an utterance's interims isn't needed;
             # for finals we give a unique id to avoid key collisions.
+            # Multi-human rooms without diarization must not invent a speaker.
+            if participant_id == "human" or name in (
+                "Unidentified speaker",
+                "Speaker",
+            ):
+                return
             segment_id = (
                 f"{participant_id}-{_now_ms()}" if is_final else None
             )

@@ -550,6 +550,24 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       humanSession.start();
       r.on(RoomEvent.ParticipantConnected, () => humanSession.reevaluate());
       r.on(RoomEvent.ParticipantDisconnected, () => humanSession.reevaluate());
+      // Pause local Web Speech when a remote human is the active speaker so
+      // their audio through speakers is not captioned as the local user.
+      r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        try {
+          const localId = r.localParticipant?.identity;
+          const localSpeaking = speakers.some((s) => s.identity === localId);
+          const remoteHumanSpeaking = speakers.some(
+            (s) =>
+              s.identity !== localId &&
+              !isAgentParticipant(s),
+          );
+          humanSession.setRemoteDominant(
+            remoteHumanSpeaking && !localSpeaking,
+          );
+        } catch {
+          /* ignore */
+        }
+      });
 
       // Publish the human's mic so the agent can hear them. Do NOT await — the
       // mic-permission prompt would otherwise block the agent dispatch below

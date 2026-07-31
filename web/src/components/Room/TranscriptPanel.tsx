@@ -300,7 +300,16 @@ export function TranscriptPanel() {
             const continuation =
               previous?.participantId === line.participantId &&
               line.ts - previous.ts < 60_000;
-            const isMe = currentUser?.id === line.participantId;
+            const isMe = !!(
+              currentUser &&
+              (currentUser.id === line.participantId ||
+                currentUser.username === line.participantId ||
+                // LiveKit identity is often the Stable participant UUID or
+                // a "user-<uuid>" form — also match member row.
+                participant?.is_self === true ||
+                (participant?.participant_id &&
+                  participant.participant_id === currentUser.id))
+            );
             const provenance: { label: string; verified: boolean } =
               line.source === "local_mic"
                 ? { label: "Identity matched · client caption", verified: false }
