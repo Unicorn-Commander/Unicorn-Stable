@@ -866,6 +866,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
   const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
   const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
+  const mobileCallMode = useCallUiStore((s) => s.mobileCallMode);
+  const mobileCallModeUserOverride = useCallUiStore(
+    (s) => s.mobileCallModeUserOverride,
+  );
+  const setMobileCallMode = useCallUiStore((s) => s.setMobileCallMode);
+  const setMobileChatSheet = useCallUiStore((s) => s.setMobileChatSheet);
   const hiddenTileIds = useCallUiStore((s) => s.hiddenTileIds);
   const setTileHidden = useCallUiStore((s) => s.setTileHidden);
   const focusedParticipantId = useCallUiStore((s) => s.focusedParticipantId);
@@ -1107,6 +1113,33 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Whole-stage pop-out (human-only; window.open needs a user gesture + desktop).
   // Gate on BOTH desktop and the module's feature-detect (CONTRACT §3.5).
   const isDesktop = useIsDesktop();
+  // Mobile Video intent: fade non-essential chrome after inactivity. Safe
+  // controls (mic / cam / leave) stay reachable. Reduced-motion keeps chrome up.
+  const mobileVideoChrome = !isDesktop && mobileCallMode === "video";
+  const mobilePipSurface = !isDesktop && mobileCallMode === "chat";
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const bumpChrome = useCallback(() => {
+    setChromeVisible(true);
+    if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current);
+    if (!mobileVideoChrome || prefersReducedMotion) return;
+    chromeTimerRef.current = setTimeout(() => setChromeVisible(false), 3200);
+  }, [mobileVideoChrome, prefersReducedMotion]);
+
+  useEffect(() => {
+    if (!mobileVideoChrome || prefersReducedMotion) {
+      setChromeVisible(true);
+      if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current);
+      return;
+    }
+    bumpChrome();
+    return () => {
+      if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current);
+    };
+  }, [mobileVideoChrome, prefersReducedMotion, bumpChrome]);
+
   const popoutSupported = isDesktop && isPopoutSupported();
   // Per-tile pop-out controls carry the SAME gate (DESKTOP_QUERY min-width
   // 768px + feature detect), so they never render on touch. The tile control
@@ -1210,6 +1243,22 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     }
   }, [hasAnyVideo, viewMode, videoPrompted, setVideoPrompted]);
 
+  // Presentation bias: when a screen share *appears*, prefer Presentation
+  // stage + mobile Video intent (once). User can still switch Gallery/Split
+  // afterward without being yanked back every render.
+  const prevShareCountRef = useRef(0);
+  useEffect(() => {
+    const prev = prevShareCountRef.current;
+    prevShareCountRef.current = screenShares.length;
+    if (screenShares.length === 0 || screenShares.length <= prev) return;
+    setViewMode(roomId, "screen");
+    toggleVideo(true);
+    if (!isDesktop && !mobileCallModeUserOverride) {
+      setMobileCallMode("video");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenShares.length, isDesktop, mobileCallModeUserOverride, roomId]);
+
   // Screen-share menu (stop / replace / add) — hooks must stay above early returns.
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
   const shareMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1269,8 +1318,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     setShareMenuOpen(false);
     // Lift into Presentation when starting a share so the stage is useful.
     if (mode !== "toggle" || !isScreenSharing) {
-      if (viewMode === "compact") setViewMode(roomId, "screen");
+      setViewMode(roomId, "screen");
       toggleVideo(true);
+      // Mobile: prefer edge-to-edge Video intent for presentation (unless the
+      // user already locked Split/Chat).
+      if (!isDesktop && !mobileCallModeUserOverride) {
+        setMobileCallMode("video");
+      }
     }
     const result = await runScreenShareAction(room.localParticipant, mode);
     if (!result.ok) {
@@ -1625,12 +1679,18 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     </div>
   );
 
-  const controls = (
+  // Safe chrome: mic / cam / leave always visible in mobile Video (even when
+  // the extended control cluster fades). Extended chrome includes share, hide
+  // video/chat, pop-out, and the view-mode switcher.
+  const safeControls = (
     <div className="glass flex shrink-0 items-center justify-center gap-1.5 rounded-2xl p-1.5">
       <button
-        onClick={toggleMic}
+        onClick={() => {
+          bumpChrome();
+          void toggleMic();
+        }}
         className={clsx(
-          "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
+          "focus-ring flex h-11 w-11 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
           isMicOn
             ? "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
             : "border-rose-500/30 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
@@ -1640,9 +1700,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
       </button>
       <button
-        onClick={toggleCam}
+        onClick={() => {
+          bumpChrome();
+          void toggleCam();
+        }}
         className={clsx(
-          "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
+          "focus-ring flex h-11 w-11 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
           isCamOn
             ? "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
             : "border-rose-500/30 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
@@ -1651,6 +1714,47 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       >
         {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
       </button>
+      <button
+        onClick={disconnect}
+        className="focus-ring flex h-11 w-11 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
+        aria-label="End call"
+      >
+        <PhoneOff className="h-5 w-5" />
+      </button>
+    </div>
+  );
+
+  const controls = (
+    <div className="glass flex shrink-0 items-center justify-center gap-1.5 rounded-2xl p-1.5">
+      {/* Mic/cam/leave live in safeControls when mobile Video chrome-fades. */}
+      {!mobileVideoChrome && (
+        <>
+          <button
+            onClick={toggleMic}
+            className={clsx(
+              "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
+              isMicOn
+                ? "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+                : "border-rose-500/30 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
+            )}
+            aria-label={isMicOn ? "Mute" : "Unmute"}
+          >
+            {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+          </button>
+          <button
+            onClick={toggleCam}
+            className={clsx(
+              "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border transition-colors active:scale-[0.98]",
+              isCamOn
+                ? "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+                : "border-rose-500/30 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
+            )}
+            aria-label={isCamOn ? "Turn off camera" : "Turn on camera"}
+          >
+            {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+          </button>
+        </>
+      )}
 
       {/* Screen share — in-call control (Header also has one). When already
           sharing, a small menu offers Stop / Replace / Share another display
@@ -1766,22 +1870,41 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
       {/* Hide / show the CHAT section. Hidden ⇒ the video fills the screen. Only
           in the video-stage arrangement, where chat is the collapsible side
-          pane (mirrors the divider's collapse chevron via `chatCollapsed`). */}
+          pane (mirrors the divider's collapse chevron via `chatCollapsed`).
+          On mobile Video intent, open the chat bottom sheet instead. */}
       {!showChips && viewMode !== "sidebar" && (
         <button
-          onClick={() => setChatCollapsed()}
+          onClick={() => {
+            if (!isDesktop && mobileCallMode === "video") {
+              setMobileChatSheet("half");
+              return;
+            }
+            if (!isDesktop && mobileCallMode === "chat") {
+              setMobileCallMode("video", { user: true });
+              return;
+            }
+            setChatCollapsed();
+          }}
           className={clsx(
             "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-transparent transition-colors active:scale-[0.98]",
             !chatCollapsed
               ? "text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
               : "bg-stable-purple/20 text-stable-purple-light hover:bg-stable-purple/30",
           )}
-          aria-label={chatCollapsed ? "Show chat" : "Hide chat"}
+          aria-label={
+            !isDesktop && mobileCallMode === "video"
+              ? "Open chat"
+              : chatCollapsed
+                ? "Show chat"
+                : "Hide chat"
+          }
           aria-pressed={chatCollapsed}
           title={
-            chatCollapsed
-              ? "Show the chat"
-              : "Hide the chat — video fills the screen"
+            !isDesktop && mobileCallMode === "video"
+              ? "Open chat as a sheet"
+              : chatCollapsed
+                ? "Show the chat"
+                : "Hide the chat — video fills the screen"
           }
         >
           <MessageSquare className="h-5 w-5" />
@@ -1825,13 +1948,16 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         </button>
       )}
 
-      <button
-        onClick={disconnect}
-        className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
-        aria-label="End call"
-      >
-        <PhoneOff className="h-5 w-5" />
-      </button>
+      {/* Leave is duplicated into safeControls for mobile Video chrome-fade. */}
+      {!(mobileVideoChrome) && (
+        <button
+          onClick={disconnect}
+          className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
+          aria-label="End call"
+        >
+          <PhoneOff className="h-5 w-5" />
+        </button>
+      )}
     </div>
   );
 
@@ -1844,8 +1970,28 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // class of bug as the websocket "live updates paused" banner).
   const showLkReconnect = isConnecting && !!room && !isConnected;
 
+  // Mobile PiP surface: stage only — no chrome (tap returns to Video).
+  if (mobilePipSurface) {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-surface-1">
+        {showChips ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-1">
+            {chipsRow}
+          </div>
+        ) : poppedOut ? (
+          <PoppedOutPlaceholder onBringBack={bringBackPopout} />
+        ) : (
+          <div className="min-h-0 flex-1 p-0.5">{stageSurface}</div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="flex h-full flex-col"
+      onPointerDown={mobileVideoChrome ? () => bumpChrome() : undefined}
+    >
       {showLkReconnect && (
         <div
           role="status"
@@ -2103,19 +2249,68 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
         <div
           className={clsx(
-            "flex shrink-0 items-center gap-2",
+            "flex shrink-0 items-center gap-2 transition-opacity duration-300",
             slim ? "" : "justify-between pt-1",
+            mobileVideoChrome &&
+              !chromeVisible &&
+              !prefersReducedMotion &&
+              "pointer-events-none opacity-0",
           )}
         >
-          <ViewModeSwitcher
-            roomId={roomId}
-            compact={slim}
-            activeParticipantId={focused?.id ?? null}
-            screenShareActive={screenShares.length > 0}
-          />
-          {controls}
+          {/* Desktop / Split keep the full switcher; mobile Video hides it so
+              intent modes (Video/Split/Chat) own the mental model. */}
+          {(isDesktop || mobileCallMode === "split") && (
+            <ViewModeSwitcher
+              roomId={roomId}
+              compact={slim || !isDesktop}
+              activeParticipantId={focused?.id ?? null}
+              screenShareActive={screenShares.length > 0}
+            />
+          )}
+          {mobileVideoChrome ? (
+            // Extended chrome only while visible; safe strip is always below.
+            <div
+              className={clsx(
+                "flex min-w-0 flex-1 items-center justify-end gap-1.5",
+                !chromeVisible && !prefersReducedMotion && "invisible",
+              )}
+            >
+              {controls}
+            </div>
+          ) : (
+            controls
+          )}
         </div>
+
+        {/* Always-reachable safe chrome in mobile Video mode */}
+        {mobileVideoChrome && (
+          <div
+            className={clsx(
+              "flex shrink-0 justify-center pt-1 transition-opacity duration-300",
+              // When extended chrome is visible, Leave is in the extended row
+              // already for desktop-style bars — here safeControls is the
+              // permanent dock for mic/cam/leave.
+            )}
+          >
+            {safeControls}
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+/** True when the user prefers reduced motion (no aggressive chrome auto-fade). */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  });
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return reduced;
 }

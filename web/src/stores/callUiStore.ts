@@ -7,6 +7,16 @@ import type {
 import { getSendByDefault } from "@/lib/meetingOpsPrefs";
 
 /**
+ * Mobile intent modes for in-call layout (phones / narrow viewports).
+ * Separate from desktop {@link CallViewMode} (grid/focus/sidebar/…) so the
+ * human-first switcher (Video / Split / Chat) never fights Gallery/Speaker.
+ */
+export type MobileCallMode = "video" | "split" | "chat";
+
+/** Bottom-sheet snap points for chat while in mobile Video mode. */
+export type MobileChatSheetSnap = "half" | "full";
+
+/**
  * Call-UI store — modular, agent-drivable call surface state.
  *
  * Kept SEPARATE from the big {@link useAppStore} so that:
@@ -30,6 +40,8 @@ import { getSendByDefault } from "@/lib/meetingOpsPrefs";
  *      AGENTS both call.
  *   5. Transcript ingest: interim lines update in place per speaker; final
  *      lines commit. Cheap to keep empty when the panel is closed.
+ *   6. Mobile intent mode (`mobileCallMode`: video | split | chat) + optional
+ *      chat bottom sheet — session-scoped, not persisted; resets with the call.
  */
 
 const VIEW_MODE_KEY = "stable.call-view-modes.v1";
@@ -131,6 +143,22 @@ interface CallUiState {
    * chevron stay in sync. `showVideo=false` is the mirror-image "hide video".
    */
   chatCollapsed: boolean;
+  /**
+   * Mobile intent mode for how video + chat coexist on phones. Independent of
+   * desktop `viewModes` (grid/focus/sidebar). Session-scoped; default "video".
+   */
+  mobileCallMode: MobileCallMode;
+  /**
+   * Once the user picks Video/Split/Chat, auto-defaults (video presence,
+   * screen-share presentation bias) stop overwriting their choice until the
+   * call ends / {@link resetMobileCallUi}.
+   */
+  mobileCallModeUserOverride: boolean;
+  /**
+   * Chat bottom-sheet snap while `mobileCallMode === "video"`. `null` = closed
+   * (edge-to-edge video). Half/full overlays chat without leaving Video mode.
+   */
+  mobileChatSheet: MobileChatSheetSnap | null;
   /** Participant identities whose video tile the user hid individually. */
   hiddenTileIds: Set<string>;
   /**
@@ -168,6 +196,17 @@ interface CallUiState {
   toggleVideo: (on?: boolean) => void;
   toggleTranscript: (on?: boolean) => void;
   setChatCollapsed: (v?: boolean) => void;
+  /**
+   * Set the mobile intent mode. Pass `{ user: true }` for explicit UI picks so
+   * auto presentation / video defaults won't clobber the choice.
+   */
+  setMobileCallMode: (
+    mode: MobileCallMode,
+    opts?: { user?: boolean },
+  ) => void;
+  setMobileChatSheet: (snap: MobileChatSheetSnap | null) => void;
+  /** Clear mobile intent + sheet (call end, room leave, server switch). */
+  resetMobileCallUi: () => void;
   setTileHidden: (participantId: string, hidden: boolean) => void;
   focusParticipant: (participantId: string | null) => void;
   setPopoutOpen: (roomId: string, open: boolean) => void;
@@ -191,6 +230,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   // button in the call controls still toggles it off per session.
   showTranscript: true,
   chatCollapsed: false,
+  mobileCallMode: "video",
+  mobileCallModeUserOverride: false,
+  mobileChatSheet: null,
   hiddenTileIds: new Set(),
   focusedParticipantId: null,
   popout: { open: false, ownerRoomId: null },
@@ -233,6 +275,25 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
     set((state) => ({
       chatCollapsed: v === undefined ? !state.chatCollapsed : v,
     })),
+
+  setMobileCallMode: (mode, opts) =>
+    set((state) => ({
+      mobileCallMode: mode,
+      mobileCallModeUserOverride:
+        opts?.user === true ? true : state.mobileCallModeUserOverride,
+      // Leaving Video mode closes the overlay sheet; entering Chat is full chat.
+      mobileChatSheet:
+        mode === "video" ? state.mobileChatSheet : null,
+    })),
+
+  setMobileChatSheet: (snap) => set({ mobileChatSheet: snap }),
+
+  resetMobileCallUi: () =>
+    set({
+      mobileCallMode: "video",
+      mobileCallModeUserOverride: false,
+      mobileChatSheet: null,
+    }),
 
   setTileHidden: (participantId, hidden) =>
     set((state) => {
@@ -343,6 +404,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       transcript: [],
       callStartedAt: null,
       sendToMeetingOps: getSendByDefault(),
+      mobileCallMode: "video",
+      mobileCallModeUserOverride: false,
+      mobileChatSheet: null,
     }),
 }));
 
@@ -357,8 +421,14 @@ export function setActiveCallRoom(roomId: string | null): void {
   // Also mirror into reactive store state so React surfaces (the floating
   // CallDock, the call-is-here gate in CallRoomLayout) can subscribe. Guarded
   // against a redundant set so this is a no-op when the room is unchanged.
-  if (useCallUiStore.getState().activeCallRoomId !== roomId) {
+  const prev = useCallUiStore.getState().activeCallRoomId;
+  if (prev !== roomId) {
     useCallUiStore.setState({ activeCallRoomId: roomId });
+    // Fresh call (or hang-up) resets mobile intent so the next join starts in
+    // Video without inheriting the previous session's Split/Chat override.
+    if (roomId !== prev) {
+      useCallUiStore.getState().resetMobileCallUi();
+    }
   }
 }
 
