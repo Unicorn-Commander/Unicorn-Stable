@@ -4,6 +4,7 @@ import { ArrowDown, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
+import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
 import { ws } from "@/services/websocket";
@@ -178,13 +179,6 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
           p.display_name === leadAgent.label,
       )
     : undefined;
-  const thinkingIdent = identityFor(
-    leadAgent?.participant_id ||
-      leadMember?.participant_id ||
-      leadMember?.user_id ||
-      leadAgent?.agent_id,
-    leadAgent?.label ?? leadMember?.display_name,
-  );
 
   // Safety net for a MISSED reply, not a claim about agent activity: for a
   // bounded window after YOU send INTO A ROOM THAT CONTAINS AN AGENT, poll a
@@ -891,10 +885,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
             )}
             {thinkingAgents.length > 0 && (
               <div className="flex items-center gap-2">
-                <span
-                  aria-hidden="true"
-                  className="h-1.5 w-1.5 shrink-0 animate-pulse-soft rounded-full"
-                  style={{ background: thinkingIdent.color }}
+                <UnicornAvatar
+                  name={leadAgent?.label ?? "Agent"}
+                  id={
+                    leadAgent?.participant_id ||
+                    leadMember?.participant_id ||
+                    leadAgent?.agent_id
+                  }
+                  size={20}
+                  state="talking"
                 />
                 <p className="animate-shimmer text-xs font-medium">
                   {describeAgents(thinkingAgents)}

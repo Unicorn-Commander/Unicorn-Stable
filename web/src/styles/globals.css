@@ -1207,6 +1207,66 @@
   }
 }
 
+/* Procedural unicorn-avatar micro-motion (see components/Agents/UnicornAvatar). */
+@utility animate-unicorn-blink {
+  animation: unicornBlink 4.6s ease-in-out infinite;
+}
+@utility animate-unicorn-ear {
+  animation: unicornEar 5.2s ease-in-out infinite;
+}
+@utility animate-unicorn-talk {
+  animation: unicornTalk 0.28s ease-in-out infinite;
+}
+@utility animate-unicorn-bob {
+  animation: unicornBob 1.6s ease-in-out infinite;
+}
+
+@keyframes unicornBlink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  94%,
+  96% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes unicornEar {
+  0%,
+  86%,
+  100% {
+    transform: rotate(0deg);
+  }
+  90% {
+    transform: rotate(-14deg);
+  }
+  94% {
+    transform: rotate(6deg);
+  }
+}
+
+@keyframes unicornTalk {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes unicornBob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.5px);
+  }
+}
+
 @keyframes auroraDrift {
   from {
     transform: translate3d(-2%, -1%, 0) scale(1);
@@ -1229,7 +1289,11 @@
   .animate-pulse-soft,
   .animate-shimmer,
   .animate-breathe,
-  .animate-live {
+  .animate-live,
+  .animate-unicorn-blink,
+  .animate-unicorn-ear,
+  .animate-unicorn-talk,
+  .animate-unicorn-bob {
     animation: none;
   }
 }

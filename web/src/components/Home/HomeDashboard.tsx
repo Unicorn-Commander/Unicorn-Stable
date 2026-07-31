@@ -27,6 +27,7 @@ import {
 import { identityFor } from "@/lib/identity";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { Avatar } from "@/components/Avatar";
+import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -1122,9 +1123,26 @@ export function HomeDashboard() {
                         i > 0 && "border-t border-line",
                       )}
                     >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
-                        {agent.emoji || (
-                          <Bot className="h-4 w-4 text-slate-400" />
+                      <span className="relative shrink-0">
+                        <UnicornAvatar
+                          id={agent.id}
+                          name={agent.display_name || agent.name}
+                          size={32}
+                          state={
+                            unreachable || agent.status === "offline"
+                              ? "offline"
+                              : agent.status === "working"
+                                ? "working"
+                                : "idle"
+                          }
+                        />
+                        {agent.emoji && (
+                          <span
+                            className="absolute -bottom-1 -right-1 text-[10px]"
+                            aria-hidden="true"
+                          >
+                            {agent.emoji}
+                          </span>
                         )}
                       </span>
                       <span className="min-w-0 flex-1">
