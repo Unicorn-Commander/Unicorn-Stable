@@ -63,6 +63,12 @@ jobs:
         run: python -m compileall -q app
       - name: import smoke (config loads)
         run: python -c "import app.config; print('backend imports OK')"
+      - name: websocket handshake regression gate
+        # Browser-shaped upgrade probe against an ephemeral uvicorn server:
+        # the 2026-07-31 outage class (bloated Cookie block on /ws). The
+        # 16KiB canary WARNs on the known uvicorn websockets-sansio upgrade
+        # cliff (> ~8KiB headers silently swallowed, h11 HTTP path fine).
+        run: python ../scripts/ws_handshake_probe.py --serve
       - name: focused unit and behavior tests
         run: |
           python -m unittest -q tests/test_enterprise_trust.py
