@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
@@ -54,6 +54,7 @@ export function RoomView({ roomId }: RoomViewProps) {
     edge: "left",
   });
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const threadMessageId = useAppStore((s) => s.ui.threadMessageId);
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   // Canvas (co-working artifacts) right-drawer. Open state is global (single
@@ -372,6 +373,15 @@ export function RoomView({ roomId }: RoomViewProps) {
             aria-label="Open sidebar"
           >
             <PanelLeftOpen className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeopleDrawerOpen(true)}
+            className="shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
+            aria-label="People"
+            title="People"
+          >
+            <UserRound className="h-5 w-5" />
           </button>
           <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />
           {editingName ? (

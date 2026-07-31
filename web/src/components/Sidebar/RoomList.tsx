@@ -76,9 +76,13 @@ import { ChannelBrowser } from "./ChannelBrowser";
 import { NewChatButton } from "./NewChatButton";
 import { ViewSwitcher } from "./ViewSwitcher";
 import { resolveDefaultAgent } from "./newChat";
+import { ensureHumanDm } from "@/lib/ensureHumanDm";
+import { usePresenceStore } from "@/stores/presenceStore";
+import type { PeopleDirectoryEntry } from "@/services/api";
 
 export function RoomList() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const location = useLocation();
   const rooms = useAppStore((s) => s.rooms);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
@@ -150,6 +154,114 @@ export function RoomList() {
   const expandedPeople = useSidebarUi((s) => s.expandedPeople);
   const togglePersonExpanded = useSidebarUi((s) => s.togglePersonExpanded);
   const focusMode = useSidebarUi((s) => s.focusMode);
+
+  const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
+  const pushToast = useAppStore((s) => s.pushToast);
+  const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
+  const presenceById = usePresenceStore((s) => s.byId);
+  const { data: myPreferences } = useQuery({
+    queryKey: ["my-preferences", scope],
+    queryFn: () => api.getMyPreferences(),
+    staleTime: 60_000,
+    enabled: navV1 && activeView === "chats",
+  });
+  const { data: peopleDirectory = [] } = useQuery({
+    queryKey: ["people-directory", scope, ""],
+    queryFn: () => api.getPeopleDirectory(""),
+    staleTime: 30_000,
+    enabled: navV1 && activeView === "chats",
+  });
+  const favoritePeople: PeopleDirectoryEntry[] = (() => {
+    const ids = myPreferences?.favorite_people_ids ?? [];
+    if (!ids.length) return [];
+    const set = new Set(ids);
+    return peopleDirectory
+      .filter((p) => set.has(p.id))
+      .sort((a, b) => {
+        const ao = presenceById[a.id]?.isOnline ?? a.is_online;
+        const bo = presenceById[b.id]?.isOnline ?? b.is_online;
+        return Number(bo) - Number(ao) || a.display_name.localeCompare(b.display_name);
+      });
+  })();
+
+  async function openFavoritePerson(person: PeopleDirectoryEntry) {
+    try {
+      const room = await ensureHumanDm(person);
+      await qc.invalidateQueries({ queryKey: ["rooms"] });
+      const state = useAppStore.getState();
+      if (!state.rooms.some((r) => r.id === room.id)) {
+        state.setRooms([room, ...state.rooms]);
+      }
+      setActiveRoomId(room.id);
+      navigate(`/c/${room.id}`);
+    } catch (e) {
+      pushToast({
+        title: "Couldn't open chat",
+        body: e instanceof Error ? e.message : "Request failed",
+      });
+    }
+  }
+
+  function renderFavoritePeopleStrip() {
+    if (!navV1 || activeView !== "chats") return null;
+    return (
+      <div className="mb-3 px-1">
+        <div className="mb-1.5 flex items-center justify-between px-1.5">
+          <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            Favorites
+          </h3>
+          <button
+            type="button"
+            onClick={() => setPeopleDrawerOpen(true)}
+            className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-medium text-stable-cyan hover:bg-stable-cyan/10"
+          >
+            People
+          </button>
+        </div>
+        {favoritePeople.length === 0 ? (
+          <button
+            type="button"
+            onClick={() => setPeopleDrawerOpen(true)}
+            className="focus-ring w-full rounded-xl border border-dashed border-line px-3 py-3 text-left text-xs text-slate-500 transition-colors hover:border-stable-cyan/40 hover:text-slate-300"
+          >
+            Star coworkers in People — they show up here for one-tap DMs.
+          </button>
+        ) : (
+          <ul className="flex gap-2 overflow-x-auto px-0.5 pb-1" role="list">
+            {favoritePeople.map((person) => {
+              const online = presenceById[person.id]?.isOnline ?? person.is_online;
+              return (
+                <li key={person.id} className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => void openFavoritePerson(person)}
+                    className="focus-ring flex w-14 flex-col items-center gap-1 rounded-lg p-1 text-center transition-colors hover:bg-white/[0.04]"
+                    title={person.display_name}
+                  >
+                    <span className="relative">
+                      <span className="flex h-9 w-9 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-slate-200">
+                        {(person.display_name || "?").slice(0, 1).toUpperCase()}
+                      </span>
+                      <span
+                        className={
+                          "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-0 " +
+                          (online ? "bg-stable-mint" : "bg-slate-600")
+                        }
+                      />
+                    </span>
+                    <span className="w-full truncate text-[10px] text-slate-400">
+                      {person.display_name.split(" ")[0]}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
   const setFocusMode = useSidebarUi((s) => s.setFocusMode);
   const [seeding, setSeeding] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
@@ -1694,13 +1806,28 @@ export function RoomList() {
       case "chats":
         return (
           <>
+            {renderFavoritePeopleStrip()}
             {renderPeopleSection({
-              title: "People",
+              title: "Direct messages",
               hint: "Human direct messages",
               emptyAgentCta: false,
             })}
             {renderGroupsSection()}
-            {peopleCount === 0 && groupCount === 0 && null}
+            {peopleCount === 0 && groupCount === 0 && focusMode !== "focused" && (
+              <div className="mx-3 mt-2 rounded-xl border border-line bg-surface-2/40 px-3 py-4 text-center">
+                <p className="text-xs text-slate-400">
+                  No chats yet. Open{" "}
+                  <button
+                    type="button"
+                    onClick={() => setPeopleDrawerOpen(true)}
+                    className="focus-ring font-medium text-stable-cyan underline-offset-2 hover:underline"
+                  >
+                    People
+                  </button>{" "}
+                  or start a new chat above.
+                </p>
+              </div>
+            )}
           </>
         );
       case "channels":

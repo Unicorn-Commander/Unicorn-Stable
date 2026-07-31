@@ -7,6 +7,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -14,6 +15,8 @@ import {
   type NavView,
   useNavStore,
 } from "@/stores/navStore";
+import { roomsForView } from "@/components/Sidebar/sidebarModel";
+import { sumBadgeCounts } from "@/utils/unreadModel";
 
 const DESTINATIONS: {
   id: NavView;
@@ -30,10 +33,7 @@ const DESTINATIONS: {
 
 /**
  * Primary destination switcher for the view-based sidebar (Slice 2).
- *
- * Lives above RoomList so both desktop and the mobile drawer get the same
- * control. Home clears the active room; other views filter the list and
- * optionally restore the last room for that view×server when nothing is open.
+ * Shows per-view unread badges so noise is scannable without opening each list.
  */
 export function ViewSwitcher() {
   const navigate = useNavigate();
@@ -42,8 +42,19 @@ export function ViewSwitcher() {
   const lastRoomFor = useNavStore((s) => s.lastRoomFor);
   const serverId = useFederationStore((s) => s.activeInstanceId);
   const rooms = useAppStore((s) => s.rooms);
+  const unreadCounts = useAppStore((s) => s.unreadCounts);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
+
+  const badges = useMemo(() => {
+    const out: Partial<Record<NavView, number>> = {};
+    for (const id of ["chats", "channels", "meetings", "agents"] as NavView[]) {
+      const list = roomsForView(rooms, id);
+      const n = sumBadgeCounts(list, unreadCounts);
+      if (n > 0) out[id] = n;
+    }
+    return out;
+  }, [rooms, unreadCounts]);
 
   function selectView(view: NavView) {
     setActiveView(view);
@@ -53,9 +64,6 @@ export function ViewSwitcher() {
       return;
     }
 
-    // Already looking at a room: only change the filtered list — do not yank
-    // the user out of their conversation. Restore last-room only when the
-    // main pane is on Home (no active room).
     if (activeRoomId) return;
 
     const lastId = lastRoomFor(serverId, view);
@@ -73,28 +81,43 @@ export function ViewSwitcher() {
       <ul className="grid grid-cols-5 gap-0.5" role="list">
         {DESTINATIONS.map(({ id, label, short, Icon }) => {
           const isActive = activeView === id;
+          const badge = badges[id] ?? 0;
+          const badgeLabel =
+            badge > 0
+              ? `${label}, ${badge > 99 ? "99+" : badge} unread`
+              : label;
           return (
             <li key={id}>
               <button
                 type="button"
                 onClick={() => selectView(id)}
                 className={clsx(
-                  "focus-ring flex w-full flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[10px] font-medium transition-colors",
+                  "focus-ring relative flex w-full flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[10px] font-medium transition-colors",
                   isActive
                     ? "bg-white/[0.08] text-slate-50"
                     : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200",
                 )}
-                aria-label={label}
+                aria-label={badgeLabel}
                 aria-current={isActive ? "page" : undefined}
-                title={label}
+                title={badgeLabel}
               >
-                <Icon
-                  className={clsx(
-                    "h-4 w-4 shrink-0",
-                    isActive ? "text-stable-purple-light" : "opacity-80",
+                <span className="relative">
+                  <Icon
+                    className={clsx(
+                      "h-4 w-4 shrink-0",
+                      isActive ? "text-stable-purple-light" : "opacity-80",
+                    )}
+                    aria-hidden="true"
+                  />
+                  {badge > 0 && (
+                    <span
+                      className="absolute -right-2.5 -top-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-stable-purple px-0.5 text-[9px] font-semibold leading-none text-white tabular-nums"
+                      aria-hidden="true"
+                    >
+                      {badge > 99 ? "99+" : badge}
+                    </span>
                   )}
-                  aria-hidden="true"
-                />
+                </span>
                 <span className="truncate">{short}</span>
               </button>
             </li>
