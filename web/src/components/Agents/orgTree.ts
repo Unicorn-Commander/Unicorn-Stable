@@ -27,9 +27,20 @@ export function buildOrgTree(agents: Agent[]): OrgTree {
   const byId = new Map(list.map((a) => [a.id, a]));
 
   // Apex = highest-rank orchestrator; fall back to the highest-rank agent.
+  //
+  // The orchestrator tier is a TIE (every one of them is a Field Marshal), and
+  // an alphabetical tie-break put a *personal* orchestrator for another org at
+  // the head of the whole company. So break the tie on supremacy first: the
+  // agent whose title claims the org-wide role outranks the per-person ones.
+  const isSupreme = (a: Agent): boolean =>
+    /supreme/i.test(a.title || "") || a.id === "the-general";
   const orchestrators = list.filter(isOrchestrator).sort(byRankThenName);
   const root =
-    orchestrators[0] || [...list].sort(byRankThenName)[0] || null;
+    [...orchestrators].sort(
+      (a, b) => Number(isSupreme(b)) - Number(isSupreme(a)),
+    )[0] ||
+    [...list].sort(byRankThenName)[0] ||
+    null;
 
   const parentOf = new Map<string, string>();
   if (root) {
