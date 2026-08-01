@@ -233,6 +233,18 @@ export function tierOf(agent: Agent): Tier {
 const RANK_WEIGHT: Record<string, number> = {
   "field marshal": 11,
   general: 11,
+  // C-suite: domain leads that head a function or an Ops app. Deliberately
+  // below the orchestrator tier (11) — a chief runs a domain, the apex runs
+  // the org — and above every specialist rank so a chief always leads its
+  // own domain in the org chart.
+  "chief medical officer": 10,
+  "chief financial officer": 10,
+  "chief marketing officer": 10,
+  "chief technology officer": 10,
+  "chief operating officer": 10,
+  "chief of staff": 10,
+  "general counsel": 10,
+  "domain lead": 9,
   commander: 9,
   colonel: 8,
   "lieutenant colonel": 7,
@@ -303,12 +315,23 @@ export function prettyDomain(domain?: string | null): string {
 export function isOrchestrator(agent: Agent): boolean {
   const n = (agent.display_name || agent.name || "").toLowerCase();
   const id = (agent.id || "").toLowerCase();
+  // "General Counsel" is a LAWYER, not a general. Matching the bare substring
+  // "general" promoted Perry to the apex tier and left Legal to be led by a
+  // Senior Counsel — so require the standalone word, and never let a counsel
+  // title qualify. Same for a domain's "Crisis Ops Orchestrator", who leads a
+  // domain rather than the org: an explicit orchestration domain or the
+  // orchestrator rank tier is what makes an apex-tier agent.
+  const isCounsel = /counsel/.test(n);
+  const saysGeneral = /\bgeneral\b/.test(n) || /(^|-)general(-|$)/.test(id);
+  const saysOrchestrator =
+    id.includes("orchestrat") || n.includes("orchestrat");
+  const orchestrationDomain =
+    (agent.domain || "").toLowerCase() === "orchestration";
   return (
     id === "majik" ||
-    id.includes("general") ||
-    id.includes("orchestrat") ||
-    n.includes("general") ||
-    n.includes("orchestrat") ||
+    orchestrationDomain ||
+    (saysGeneral && !isCounsel) ||
+    (saysOrchestrator && !isCounsel && orchestrationDomain) ||
     rankWeight(agent.rank) >= 11
   );
 }
