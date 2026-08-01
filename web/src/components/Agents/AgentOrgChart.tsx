@@ -10,6 +10,7 @@ import {
   Position,
   MarkerType,
   useReactFlow,
+  useNodesInitialized,
   type Node,
   type Edge,
   type NodeProps,
@@ -161,12 +162,19 @@ const FIT_OPTIONS = { padding: 0.12, minZoom: FIT_MIN_ZOOM, maxZoom: 0.85 };
 // has the flow context.
 function FitOnChange({ token }: { token: string }) {
   const rf = useReactFlow();
+  // fitView is a no-op until ReactFlow has measured every node, and a bare
+  // setTimeout raced that: the fit silently did nothing and the graph kept
+  // whatever transform it mounted with (~0.96 — above our own maxZoom, which is
+  // the tell), leaving the apex off-screen and the tier running off the edge.
+  // Gate on measurement instead of guessing at a delay.
+  const initialized = useNodesInitialized();
   useEffect(() => {
+    if (!initialized) return;
     const t = setTimeout(() => {
       rf.fitView({ ...FIT_OPTIONS, duration: 300 });
     }, 60);
     return () => clearTimeout(t);
-  }, [token, rf]);
+  }, [token, rf, initialized]);
   return null;
 }
 
