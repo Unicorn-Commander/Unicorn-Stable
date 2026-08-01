@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Bot, Search, Network, LayoutGrid } from "lucide-react";
+import { Bot, Search, Network, LayoutGrid, Coins } from "lucide-react";
 import clsx from "clsx";
 import { type Agent } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
@@ -162,11 +162,14 @@ export function AgentsPage() {
               </span>
             ))}
           </span>
+          {/* Not a price. A count of the agent's tools that cost money to run. */}
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 font-semibold text-amber-200 ring-1 ring-amber-500/30">
-              $
+              <Coins aria-hidden="true" className="h-3 w-3" />2 paid tools
             </span>
-            <span className="font-medium text-amber-200/80">tool costs money</span>
+            <span className="font-medium text-amber-200/80">
+              how many of its tools cost money — not a price
+            </span>
           </span>
         </div>
 

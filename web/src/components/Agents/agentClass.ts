@@ -97,6 +97,13 @@ export function affiliationOf(agent: Agent): Affiliation {
   }
   if (a === "frontier") return "frontier";
   if (a === "employee") return "employee";
+  // Brigade's roster also records the operating COMPANY as an affiliation
+  // ("magic-unicorn"). Those are employees — we run them — but they matched
+  // nothing here and fell through to being classified by their model instead of
+  // by who operates them.
+  if (a === "magic-unicorn" || a === "magic_unicorn" || a === "magicunicorn") {
+    return "employee";
+  }
   // No explicit affiliation: fall back to model tier so the border is still
   // meaningful — a frontier-model agent reads as frontier, everything else as
   // employee (we run it).
@@ -218,10 +225,17 @@ export function tierOf(agent: Agent): Tier {
   ) {
     return "flexible";
   }
+  // Brigade's model ids are mostly Ops-Center gateway ALIASES
+  // ("uc/chat-local-p40"), not bare model names, so the alias's own word for
+  // its lane is the signal — a `local/` prefix never appears on this roster.
+  // Family names match on a LEADING boundary only: `\bqwen\b` fails on
+  // "qwen3.6-35b" because a digit follows, which graded a local 35B as
+  // frontier. Between the two, ~30 locally-run agents read as Frontier.
   if (
     m.startsWith("local/") ||
     m.startsWith("ollama") ||
-    /\b(qwen|llama|gemma|mistral|phi|deepseek)\b/.test(m)
+    /\blocal\b/.test(m) ||
+    /\b(qwen|llama|gemma|mistral|phi|deepseek)/.test(m)
   ) {
     return "local";
   }
