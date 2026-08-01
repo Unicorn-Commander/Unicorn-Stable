@@ -54,6 +54,14 @@ class BrigadeRosterAgent(BaseModel):
     rank: str | None = None
     title: str | None = None
     domain: str | None = None
+    # Who this agent reports to, as STATED by Brigade (agents.reports_to).
+    # Brigade is the registry for agent identity — name, rank, title, avatar —
+    # so it is the registry for the chain of command too. Stable renders this
+    # instead of re-deriving parentage from rank + domain in a second
+    # implementation that can (and did) disagree with Brigade's. None means
+    # either "the apex" or "Brigade has not stated it", and the client falls
+    # back to its own derivation only when NOBODY on the roster states a line.
+    reports_to: str | None = None
     affiliation: str = "employee"
     tools: list[str] = []
     # Per-tool cost/permission detail + rollup (from Brigade's tool_catalog).
@@ -358,6 +366,10 @@ async def _fetch_brigade_roster(redis: Redis) -> list[BrigadeRosterAgent]:
                 rank=it.get("rank"),
                 title=it.get("title"),
                 domain=it.get("domain"),
+                # Additive + backward compatible: a Brigade too old to carry
+                # reports_to simply omits the key, this stays None, and the
+                # client falls back to the rank/domain derivation.
+                reports_to=it.get("reportsTo"),
                 affiliation=affiliation,
                 tools=[str(t) for t in tools] if isinstance(tools, list) else [],
                 tool_details=tool_details if isinstance(tool_details, list) else [],

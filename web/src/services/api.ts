@@ -222,6 +222,14 @@ export interface Agent {
   rank?: string | null;
   title?: string | null;
   domain?: string | null;
+  /**
+   * Who this agent reports to, as STATED by Brigade — the registry that owns
+   * agent identity owns the chain of command with it. The org chart renders
+   * this rather than inferring a reporting line from rank + domain. Null/absent
+   * means the apex, or a Brigade that has not stated one; see buildOrgTree for
+   * the fallback that covers the second case.
+   */
+  reports_to?: string | null;
   affiliation?: string | null;
   tools?: string[];
   // Per-tool cost/permission detail + rollup (from Brigade's tool_catalog).
