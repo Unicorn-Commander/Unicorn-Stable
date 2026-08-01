@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, useEffect } from "react";
+import { useMemo, useCallback, useState, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -11,6 +11,7 @@ import {
   MarkerType,
   useReactFlow,
   useNodesInitialized,
+  getNodesBounds,
   type Node,
   type Edge,
   type NodeProps,
@@ -30,7 +31,7 @@ import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
 import { Tooltip } from "@/components/ui";
 import { buildOrgTree } from "./orgTree";
-import { useOrgLayout } from "./useOrgLayout";
+import { useOrgLayout, ORG_NODE_W, ORG_NODE_H } from "./useOrgLayout";
 import { Avatar } from "@/components/ui/Avatar";
 
 function label(a: Agent): string {
@@ -157,10 +158,26 @@ const RESTING_EDGE = { stroke: "#43436080", strokeWidth: 1.5 };
 const FIT_MIN_ZOOM = 0.12;
 const FIT_OPTIONS = { padding: 0.12, minZoom: FIT_MIN_ZOOM, maxZoom: 0.85 };
 
+// Below this the node labels stop being readable — names turn to grey mush.
+// A wide org (20 domain leads is ~4200px in a ~1200px pane) only "fits" at
+// about 0.2, so fitting everything is worse than not fitting: you get a
+// legible-at-no-zoom-level ribbon floating in an empty pane. Past this point
+// we anchor on the apex at a readable size and let the user pan / use the
+// minimap instead.
+const LEGIBLE_ZOOM = 0.55;
+
 // Re-fit the viewport when the visible node set changes (drill-down / search),
 // so newly revealed reports come into view. Rendered inside <ReactFlow> so it
 // has the flow context.
-function FitOnChange({ token }: { token: string }) {
+function FitOnChange({
+  token,
+  rootId,
+  paneRef,
+}: {
+  token: string;
+  rootId?: string;
+  paneRef: React.RefObject<HTMLDivElement | null>;
+}) {
   const rf = useReactFlow();
   // fitView is a no-op until ReactFlow has measured every node, and a bare
   // setTimeout raced that: the fit silently did nothing and the graph kept
@@ -171,10 +188,39 @@ function FitOnChange({ token }: { token: string }) {
   useEffect(() => {
     if (!initialized) return;
     const t = setTimeout(() => {
-      rf.fitView({ ...FIT_OPTIONS, duration: 300 });
+      const pane = paneRef.current;
+      const bounds = getNodesBounds(rf.getNodes());
+      const w = pane?.clientWidth ?? 0;
+      const h = pane?.clientHeight ?? 0;
+      // What zoom would fitView land on? Mirror its padding so we can decide
+      // BEFORE moving the viewport, rather than fitting and then correcting
+      // (a correction pass would need a frame callback, and rAF never fires in
+      // a hidden tab — which is every automated/background tab).
+      const pad = 1 + FIT_OPTIONS.padding * 2;
+      const wouldFit =
+        w && h && bounds.width && bounds.height
+          ? Math.min(w / (bounds.width * pad), h / (bounds.height * pad))
+          : 1;
+
+      if (wouldFit >= LEGIBLE_ZOOM) {
+        rf.fitView({ ...FIT_OPTIONS, duration: 300 });
+        return;
+      }
+      // Too wide to show legibly. Anchor on the apex at a readable zoom: it
+      // sits centred over its own tier, so this frames the top of the chain of
+      // command and the middle of the tier under it, and the minimap/pan reach
+      // the rest.
+      const root = rootId ? rf.getNode(rootId) : undefined;
+      const cx = root
+        ? root.position.x + ORG_NODE_W / 2
+        : bounds.x + bounds.width / 2;
+      const cy = root
+        ? root.position.y + h / (2 * LEGIBLE_ZOOM) - ORG_NODE_H
+        : bounds.y + bounds.height / 2;
+      rf.setCenter(cx, cy, { zoom: LEGIBLE_ZOOM, duration: 300 });
     }, 60);
     return () => clearTimeout(t);
-  }, [token, rf, initialized]);
+  }, [token, rf, initialized, rootId, paneRef]);
   return null;
 }
 
@@ -194,6 +240,9 @@ export function AgentOrgChart({
   expandAll?: boolean;
 }) {
   const tree = useMemo(() => buildOrgTree(agents), [agents]);
+  // Measured so the fit can tell whether the graph would land at a readable
+  // zoom before it moves the viewport.
+  const paneRef = useRef<HTMLDivElement>(null);
 
   const parentIds = useMemo(() => {
     const ids = new Set<string>();
@@ -337,7 +386,10 @@ export function AgentOrgChart({
   const hiddenCount = tree.agents.length - visibleIds.size;
 
   return (
-    <div className="h-[72vh] min-h-[520px] w-full overflow-hidden rounded-2xl border border-line bg-surface-1/60 shadow-soft">
+    <div
+      ref={paneRef}
+      className="h-[72vh] min-h-[520px] w-full overflow-hidden rounded-2xl border border-line bg-surface-1/60 shadow-soft"
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -351,7 +403,11 @@ export function AgentOrgChart({
         proOptions={{ hideAttribution: true }}
         className="bg-transparent"
       >
-        <FitOnChange token={`${visibleIds.size}:${expandAll}`} />
+        <FitOnChange
+          token={`${visibleIds.size}:${expandAll}`}
+          rootId={tree.root?.id}
+          paneRef={paneRef}
+        />
         <Panel position="top-right" className="!m-2">
           <div className="glass flex items-center gap-1 rounded-lg p-0.5 text-[11px] shadow-soft">
             <button
