@@ -10,7 +10,6 @@ import {
   Position,
   MarkerType,
   useReactFlow,
-  useNodesInitialized,
   getNodesBounds,
   type Node,
   type Edge,
@@ -179,37 +178,40 @@ function FitOnChange({
   paneRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const rf = useReactFlow();
-  // fitView is a no-op until ReactFlow has measured every node, and a bare
-  // setTimeout raced that: the fit silently did nothing and the graph kept
-  // whatever transform it mounted with (~0.96 — above our own maxZoom, which is
-  // the tell), leaving the apex off-screen and the tier running off the edge.
-  // Gate on measurement instead of guessing at a delay.
-  const initialized = useNodesInitialized();
   useEffect(() => {
-    if (!initialized) return;
-    const t = setTimeout(() => {
+    // Poll for real geometry rather than gating on a single readiness signal.
+    // Gating on useNodesInitialized left the viewport untouched at identity
+    // scale — the signal never satisfied us, so the body never ran and nothing
+    // positioned the chart at all. Polling is indifferent to which of pane
+    // measurement / node measurement / layout settles last, and setInterval is
+    // used deliberately over requestAnimationFrame, which never fires in a
+    // hidden tab (every background or automated one).
+    const apply = (): boolean => {
       const pane = paneRef.current;
-      const bounds = getNodesBounds(rf.getNodes());
-      const w = pane?.clientWidth ?? 0;
-      const h = pane?.clientHeight ?? 0;
-      // What zoom would fitView land on? Mirror its padding so we can decide
-      // BEFORE moving the viewport, rather than fitting and then correcting
-      // (a correction pass would need a frame callback, and rAF never fires in
-      // a hidden tab — which is every automated/background tab).
+      const ns = rf.getNodes();
+      if (!pane || !ns.length) return false;
+      const w = pane.clientWidth;
+      const h = pane.clientHeight;
+      const bounds = getNodesBounds(ns);
+      if (!w || !h || !bounds.width || !bounds.height) return false;
+
+      // What zoom would fitView land on? Mirror its padding so the choice is
+      // made BEFORE the viewport moves — fitting and then correcting would let
+      // the fit be what the user sees first.
       const pad = 1 + FIT_OPTIONS.padding * 2;
-      const wouldFit =
-        w && h && bounds.width && bounds.height
-          ? Math.min(w / (bounds.width * pad), h / (bounds.height * pad))
-          : 1;
+      const wouldFit = Math.min(
+        w / (bounds.width * pad),
+        h / (bounds.height * pad),
+      );
 
       if (wouldFit >= LEGIBLE_ZOOM) {
         rf.fitView({ ...FIT_OPTIONS, duration: 300 });
-        return;
+        return true;
       }
       // Too wide to show legibly. Anchor on the apex at a readable zoom: it
       // sits centred over its own tier, so this frames the top of the chain of
-      // command and the middle of the tier under it, and the minimap/pan reach
-      // the rest.
+      // command and the middle of the tier under it, with the minimap and
+      // panning to reach the rest.
       const root = rootId ? rf.getNode(rootId) : undefined;
       const cx = root
         ? root.position.x + ORG_NODE_W / 2
@@ -218,9 +220,16 @@ function FitOnChange({
         ? root.position.y + h / (2 * LEGIBLE_ZOOM) - ORG_NODE_H
         : bounds.y + bounds.height / 2;
       rf.setCenter(cx, cy, { zoom: LEGIBLE_ZOOM, duration: 300 });
-    }, 60);
-    return () => clearTimeout(t);
-  }, [token, rf, initialized, rootId, paneRef]);
+      return true;
+    };
+
+    if (apply()) return;
+    let tries = 0;
+    const iv = setInterval(() => {
+      if (apply() || ++tries > 40) clearInterval(iv);
+    }, 50);
+    return () => clearInterval(iv);
+  }, [token, rf, rootId, paneRef]);
   return null;
 }
 
