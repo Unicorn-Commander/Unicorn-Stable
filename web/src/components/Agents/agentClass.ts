@@ -296,6 +296,10 @@ const DOMAIN_EMOJI: Record<string, string> = {
   data: "📊",
   support: "🎧",
   intake: "📥",
+  contacts: "📇",
+  customer: "🤝",
+  meetings: "🗓️",
+  knowledge: "📚",
   general: "🦄",
 };
 

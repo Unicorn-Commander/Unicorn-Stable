@@ -148,6 +148,14 @@ function OrgGraphNode(props: NodeProps) {
 const nodeTypes = { orgAgent: OrgGraphNode };
 const RESTING_EDGE = { stroke: "#43436080", strokeWidth: 1.5 };
 
+// Fit has to be allowed to zoom out far enough to actually show the widest tier.
+// A floor of 0.5 was clamping it: the org has 15+ domain leads in one row (~3500px)
+// inside a ~1000px canvas, which needs ~0.28 — so the fit silently gave up, the
+// row ran off both edges and the apex sat off-centre, making the hierarchy
+// unreadable. Keep this at or below the flow's own minZoom.
+const FIT_MIN_ZOOM = 0.12;
+const FIT_OPTIONS = { padding: 0.12, minZoom: FIT_MIN_ZOOM, maxZoom: 0.85 };
+
 // Re-fit the viewport when the visible node set changes (drill-down / search),
 // so newly revealed reports come into view. Rendered inside <ReactFlow> so it
 // has the flow context.
@@ -155,7 +163,7 @@ function FitOnChange({ token }: { token: string }) {
   const rf = useReactFlow();
   useEffect(() => {
     const t = setTimeout(() => {
-      rf.fitView({ padding: 0.12, minZoom: 0.5, maxZoom: 0.85, duration: 300 });
+      rf.fitView({ ...FIT_OPTIONS, duration: 300 });
     }, 60);
     return () => clearTimeout(t);
   }, [token, rf]);
@@ -227,10 +235,28 @@ export function AgentOrgChart({
     return vis;
   }, [tree, expanded]);
 
+  // Emit nodes in chain-of-command order (apex, then each parent's rank-sorted
+  // children, depth-first) rather than raw roster order. Dagre seeds its
+  // within-rank ordering from insertion order, so roster order scattered the
+  // tiers — the two Field Marshal orchestrators landed 11th and 12th in their
+  // own row, reading as if they sat below the domain leads instead of beside
+  // them. Walking the tree puts the highest rank first in every tier.
+  const orderedVisible: Agent[] = useMemo(() => {
+    if (!tree.root) return [];
+    const out: Agent[] = [];
+    const walk = (id: string) => {
+      const a = tree.byId.get(id);
+      if (!a || !visibleIds.has(id)) return;
+      out.push(a);
+      for (const c of tree.childrenById.get(id) || []) walk(c);
+    };
+    walk(tree.root.id);
+    return out;
+  }, [tree, visibleIds]);
+
   const rawNodes: Node[] = useMemo(
     () =>
-      tree.agents
-        .filter((a) => visibleIds.has(a.id))
+      orderedVisible
         .map((a) => {
           const childCount = (tree.childrenById.get(a.id) || []).length;
           return {
@@ -247,7 +273,7 @@ export function AgentOrgChart({
             },
           };
         }),
-    [tree, visibleIds, expanded, toggle],
+    [orderedVisible, tree, expanded, toggle],
   );
 
   const edges: Edge[] = useMemo(
@@ -310,8 +336,8 @@ export function AgentOrgChart({
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
         fitView
-        fitViewOptions={{ padding: 0.12, minZoom: 0.5, maxZoom: 0.85 }}
-        minZoom={0.3}
+        fitViewOptions={FIT_OPTIONS}
+        minZoom={FIT_MIN_ZOOM}
         maxZoom={1.6}
         nodesDraggable={false}
         proOptions={{ hideAttribution: true }}
