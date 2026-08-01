@@ -395,8 +395,10 @@ export function AgentOrgChart({
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
-        fitView
-        fitViewOptions={FIT_OPTIONS}
+        // No `fitView` prop: ReactFlow's built-in fit and <FitOnChange> were
+        // both driving the viewport, and the built-in one won — so the
+        // legibility anchoring below was computed, applied, and then silently
+        // overwritten by a fit back down to ~0.24. One owner for the viewport.
         minZoom={FIT_MIN_ZOOM}
         maxZoom={1.6}
         nodesDraggable={false}
