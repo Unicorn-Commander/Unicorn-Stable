@@ -4,9 +4,11 @@
  * ⚠️ THE PACK IS EMPTY, AND THAT IS THE HONEST STATE OF THE ART PIPELINE.
  * No brand VRM has been authored yet — not for Majik, not for anyone. Until one
  * lands, `resolveAgentVrmUrl` returns null for every agent and the face rung
- * renders the PROCEDURAL PLACEHOLDER head (see proceduralUnicornHead.ts), which
- * is a generic unicorn in the agent's identity hue and is not, and does not
- * claim to be, any of our characters.
+ * renders the PROCEDURAL head (see proceduralUnicornHead.ts). That head is now
+ * drawn to the same rules as the approved portraits — white coat, black ink,
+ * gold ridged horn, rainbow mane for Majik — so it is our character rather than
+ * a stand-in. What it is NOT is a sculpted rig: no per-agent costume, no
+ * visemes, no body. A crafted .vrm still wins the moment one exists.
  *
  * Adding the first real skin is a one-line change here plus the asset in
  * `web/public/agent-vrm/`:

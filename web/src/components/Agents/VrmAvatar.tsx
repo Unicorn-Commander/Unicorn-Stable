@@ -11,9 +11,10 @@
  * ---------------
  *   * `vrmSrc` set  → the real rigged model, mouth driven through the rig's own
  *     viseme/ARKit morph.
- *   * `vrmSrc` null → the PROCEDURAL PLACEHOLDER head. This is the state today:
- *     no brand VRM has been authored, so what you see is a generic unicorn in
- *     the agent's identity hue, not the character. See proceduralUnicornHead.ts.
+ *   * `vrmSrc` null → the PROCEDURAL head. This is the state today: no brand
+ *     VRM has been authored, so what you see is built from primitives at
+ *     runtime — but it is our unicorn, drawn to the same rules as the approved
+ *     portraits, not a stand-in. See proceduralUnicornHead.ts.
  *
  * WHAT DRIVES THE MOUTH (phase 1)
  * -------------------------------
@@ -651,7 +652,7 @@ export function VrmAvatar({
     >
       {debug && hud && (
         <span className="pointer-events-none absolute left-1 top-1 whitespace-pre rounded bg-black/75 px-1.5 py-1 font-mono text-[10px] leading-tight text-amber-300">
-          {`${hud.source}${hud.source === "placeholder" ? " (NOT brand art)" : ""}\n` +
+          {`${hud.source}${hud.source === "placeholder" ? " (procedural, no VRM)" : ""}\n` +
             `${hud.fps.toFixed(0)} fps · ${hud.ticker}\n` +
             `lvl ${hud.level.toFixed(3)} → mouth ${hud.mouthOpen.toFixed(2)}\n` +
             `drv ${hud.driver}${hud.error ? `\nerr ${hud.error}` : ""}`}

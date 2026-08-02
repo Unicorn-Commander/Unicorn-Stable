@@ -505,6 +505,12 @@ export function buildProceduralUnicornHead(
     );
     lock.scale.set(1.2, h, 0.55);
     lock.rotation.z = Math.PI + lean; // π = tip down
+    /* Lean the TOP of the lock back into the skull. A cone has one flat end,
+     * and stood upright that end sits proud of the face as a black-capped
+     * rectangle — six of them across the crown, which is what the mane looked
+     * like before this line. Tipping it back buries the cap and sweeps the
+     * point forward, which is also how the drawn mane falls. */
+    lock.rotation.x = -0.5;
     root.add(lock);
     addOutline(lock);
     if (i === SIDE_LOCKS - 1) addHalo(lock);
@@ -519,6 +525,7 @@ export function buildProceduralUnicornHead(
     lock.position.set(bx, 0.06 - i * 0.06, 0.24 - i * 0.1);
     lock.scale.set(1, 1, 0.5);
     lock.rotation.z = Math.PI - 0.1;
+    lock.rotation.x = -0.5; // same reason as the near-side band
     root.add(lock);
     addOutline(lock);
   }
