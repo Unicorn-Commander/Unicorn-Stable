@@ -20,7 +20,7 @@
  * the browser only when the flag is on AND the tile is stage-class AND WebGL
  * works. A user who never turns the flag on never downloads a byte of it.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Avatar } from "@/components/ui/Avatar";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
@@ -41,10 +41,8 @@ import {
   type PresenceSurface,
 } from "@/lib/presenceFace";
 
-/* PR3 attaches the WebGL renderer here, behind lazy(). Until it lands the
- * face rung is unreachable: `faceRungAvailable` is false, so this composer is
- * the 2D ladder only and nothing in the app graph references three.js. */
-const faceRungAvailable = false;
+// Lazy — this import is the ONLY edge from the app graph into three.js.
+const VrmAvatar = lazy(() => import("@/components/Agents/VrmAvatar"));
 
 export interface AgentPresenceFaceProps {
   /** Full LiveKit identity ("agent-majik"). The face renderer needs it to find
@@ -101,7 +99,7 @@ export function AgentPresenceFace({
    * a decode every render would spin a broken model forever, and a WebGL context
    * that could not be created will not be creatable a frame later either.
    */
-  const [faceHealthy] = useState(true);
+  const [faceHealthy, setFaceHealthy] = useState(true);
 
   /**
    * Does the tile actually have room?
@@ -116,11 +114,7 @@ export function AgentPresenceFace({
   const hostRef = useRef<HTMLSpanElement | null>(null);
   const [boxOk, setBoxOk] = useState(false);
   const wantsFace =
-    faceRungAvailable &&
-    flagEnabled &&
-    surface === "stage" &&
-    faceHealthy &&
-    isWebglAvailable();
+    flagEnabled && surface === "stage" && faceHealthy && isWebglAvailable();
 
   useEffect(() => {
     if (!wantsFace) return;
@@ -155,7 +149,7 @@ export function AgentPresenceFace({
   const rung = selectPresenceRung({
     flagEnabled,
     surface,
-    webglOk: faceRungAvailable && isWebglAvailable() && boxOk,
+    webglOk: isWebglAvailable() && boxOk,
     faceHealthy,
     portraitSrc,
     vrmSrc,
@@ -185,6 +179,23 @@ export function AgentPresenceFace({
       />
     );
 
+  if (rung !== "face") {
+    return (
+      <span
+        ref={hostRef}
+        className={clsx(
+          "relative flex h-full w-full items-center justify-center",
+          className,
+        )}
+        data-presence-rung={rung}
+        data-presence-agent={slug}
+      >
+        {twoD}
+        {debug && <RungBadge rung={rung} reason={debugReason(flagEnabled, surface)} />}
+      </span>
+    );
+  }
+
   return (
     <span
       ref={hostRef}
@@ -192,13 +203,25 @@ export function AgentPresenceFace({
         "relative flex h-full w-full items-center justify-center",
         className,
       )}
-      data-presence-rung={rung}
+      data-presence-rung="face"
       data-presence-agent={slug}
     >
-      {twoD}
-      {debug && (
-        <RungBadge rung={rung} reason={debugReason(flagEnabled, surface)} />
-      )}
+      <Suspense fallback={twoD}>
+        <VrmAvatar
+          participantId={participantId}
+          slug={slug}
+          name={name}
+          vrmSrc={vrmSrc}
+          size={size}
+          expression={expression}
+          isSpeaking={isSpeaking}
+          debug={debug}
+          onFail={(why) => {
+            console.warn(`[talking-face] face rung failed for ${slug}: ${why}`);
+            setFaceHealthy(false);
+          }}
+        />
+      </Suspense>
     </span>
   );
 }
