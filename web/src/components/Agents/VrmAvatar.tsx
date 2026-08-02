@@ -55,6 +55,7 @@ import {
 import type { PresenceExpression } from "@/lib/presenceFace";
 import {
   buildProceduralUnicornHead,
+  resolveManeStyle,
   type HeadRig,
 } from "@/components/Agents/proceduralUnicornHead";
 
@@ -311,13 +312,32 @@ export function VrmAvatar({
     const camera = new PerspectiveCamera(28, 1, 0.1, 40);
     camera.position.set(0, 0, 5.4);
 
-    const key = new DirectionalLight(new Color("#ffffff"), 2.1);
-    key.position.set(1.4, 2.0, 2.6);
+    /* TOON LIGHTING, not studio lighting.
+     *
+     * The old rig (2.1 key + 1.15 lavender ambient) was tuned for a PBR bust
+     * and it is exactly what made a "white" body render pale violet. Both rigs
+     * we ship are toon-shaded — the procedural head via MeshToonMaterial, a VRM
+     * via MToon — so what matters is landing the lit and unlit sides on
+     * DIFFERENT plateaus of the ramp: enough ambient that the shadow side is
+     * light grey rather than a hole, low enough that the ramp's steps survive.
+     * White ambient, not lavender: the coat has to read as white paper. */
+    /* These intensities look enormous and are not: three's diffuse BRDF carries
+     * a 1/π, so a surface fully lit by intensity I settles at I/π. Landing a
+     * WHITE coat on white takes ambient + key ≈ 3.6, and the shade step is
+     * ambient/π alone. Read them as "shade tone 0.62, lit tone clipped". */
+    const key = new DirectionalLight(new Color("#ffffff"), 1.65);
+    key.position.set(1.3, 1.8, 2.4);
     scene.add(key);
-    const rim = new DirectionalLight(new Color(hue), 1.25);
-    rim.position.set(-2.0, 0.6, -1.6);
+    // A whisper of identity on the shadow side — agents stay distinguishable
+    // now that every coat is the same white. Deliberately weak: an identity
+    // rim at the old 1.25 is precisely what made the last head read lavender.
+    const rim = new DirectionalLight(new Color(hue), 0.45);
+    rim.position.set(-2.2, 0.4, -1.4);
     scene.add(rim);
-    scene.add(new AmbientLight(new Color("#b9b3d8"), 1.15));
+    // Ambient IS the shade tone: with a toon ramp that starts at 0, a surface
+    // turned away from the key gets ambient and nothing else, so this number
+    // is literally "how light is the grey side of a white coat".
+    scene.add(new AmbientLight(new Color("#ffffff"), 1.95));
 
     const holder = new Group();
     scene.add(holder);
@@ -327,8 +347,14 @@ export function VrmAvatar({
     let loadedVrm: VRM | null = null;
     let probeSource: TalkingFaceProbe["source"] = "placeholder";
 
-    /* ---- frame the subject ----------------------------------------- */
-    const frameSubject = (root: Group) => {
+    /* ---- frame the subject ----------------------------------------- *
+     * `margin` is how much empty room to leave around the fitted extent. An
+     * unknown VRM may be a full body, so it keeps the loose 1.55; the
+     * procedural head is a BUST we authored and whose extents we know, and at
+     * 1.55 it sat marooned in the middle of the tile at a size where the
+     * outlines stopped resolving. 1.16 fills the tile the way the portraits
+     * fill their frame. */
+    const frameSubject = (root: Group, margin = 1.55) => {
       const box = new Box3().setFromObject(root);
       if (box.isEmpty()) return;
       const sizeV = box.getSize(new Vector3());
@@ -336,17 +362,20 @@ export function VrmAvatar({
       // Fit the WIDER of height/width so a bust and a full body both frame.
       const extent = Math.max(sizeV.y, sizeV.x) || 1;
       const dist = (extent / 2) / Math.tan((camera.fov * Math.PI) / 360);
-      camera.position.set(center.x, center.y + sizeV.y * 0.06, center.z + dist * 1.55);
+      camera.position.set(center.x, center.y + sizeV.y * 0.06, center.z + dist * margin);
       camera.lookAt(center.x, center.y + sizeV.y * 0.04, center.z);
     };
 
     /* ---- placeholder (default today) -------------------------------- */
     const mountPlaceholder = () => {
-      headRig = buildProceduralUnicornHead(hue);
+      headRig = buildProceduralUnicornHead({
+        hue,
+        mane: resolveManeStyle(slug, name),
+      });
       holder.add(headRig.root);
       driver = driverForHead(headRig);
       probeSource = "placeholder";
-      frameSubject(headRig.root);
+      frameSubject(headRig.root, 1.16);
     };
 
     /* ---- real model ------------------------------------------------- */
