@@ -49,7 +49,7 @@ import {
   uiCommandBus,
   DEFAULT_CALL_VIEW_MODE,
 } from "@/stores/callUiStore";
-import type { CallViewMode } from "@/lib/roomDataProtocol";
+import { isAgentParticipant, type CallViewMode } from "@/lib/roomDataProtocol";
 import { api, type BrigadeAgent } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -127,6 +127,18 @@ interface CallParticipant {
   sid: string;
   name: string;
   isAgent: boolean;
+  /**
+   * LiveKit says this participant is an agent worker — `ParticipantKind.AGENT`,
+   * the `agent-` identity convention, or `participant_type: "agent"` metadata.
+   *
+   * Separate from `isAgent`, which is really "the Brigade roster matched" and
+   * therefore also carries the display name and portrait. Verified on dogfood:
+   * the worker joins as `stable-brigade`, which matches no roster row and has
+   * no `agent-` prefix, so `isAgent` is FALSE for a participant that is very
+   * obviously an agent. Anything that must be right about agent-ness rather
+   * than about roster enrichment reads this.
+   */
+  isAgentKind: boolean;
   isLocal: boolean;
   isSpeaking: boolean;
   isMuted: boolean;
@@ -386,7 +398,8 @@ function ParticipantTile({
    * identity for that lookup — flag-off must resolve byte-identically to what
    * shipped before this feature existed. */
   const presenceFace =
-    isTalkingFaceEnabled() && (isAgentIdentity(p.id) || p.isAgent);
+    isTalkingFaceEnabled() &&
+    (isAgentIdentity(p.id) || p.isAgentKind || p.isAgent);
   const faceEligible = isVrmSurfaceEligible({ size, fill, inPopout });
   const agent = useAppStore((s) =>
     p.isAgent || presenceFace
@@ -400,7 +413,63 @@ function ParticipantTile({
   // useMergedVideoRef memoizes internally (CONTRACT §3.1) so the track isn't
   // detached+reattached every render; safe to call unconditionally with an
   // undefined attach ref (the <video> only renders when showVideoEl anyway).
-  const composedVideoRef = useMergedVideoRef(videoRef, pip.videoRef);
+  // The third ref just records the element; it is a useCallback with no deps, so
+  // it is stable and does not break that memoization.
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const captureVideoEl = useCallback((el: HTMLVideoElement | null) => {
+    videoElRef.current = el;
+  }, []);
+  const composedVideoRef = useMergedVideoRef(
+    videoRef,
+    pip.videoRef,
+    captureVideoEl,
+  );
+
+  /* A PUBLISHED-BUT-DEAD CAMERA TRACK.
+   *
+   * Verified in the browser on dogfood, 2026-08-02: the agent worker publishes a
+   * camera-source video track that never encodes a frame — `videoWidth: 0`,
+   * `readyState: 0`, track state "live". `videoTrack` is therefore truthy, the
+   * tile takes the <video> branch, and the stage shows a BLACK RECTANGLE. The
+   * avatar branch below is unreachable for that agent, which is a large part of
+   * why "I can't see the agents when we talk to them".
+   *
+   * Phase 1 ships no agent-runtime changes, so this is handled client-side: an
+   * agent tile whose video has produced no frames falls through to the presence
+   * face. Two details that matter —
+   *
+   *   * The <video> stays MOUNTED (just moved out of the way). Unmounting it
+   *     would detach the track, and we would never find out if frames arrived
+   *     late; as it is, the moment one does, the face unmounts and the real
+   *     camera takes the tile back.
+   *   * setInterval, not requestAnimationFrame. rAF does not fire in a hidden
+   *     tab, and this must resolve in a background window and under automation.
+   *
+   * Flag-gated like everything else: with the flag off this is all inert and the
+   * black rectangle is exactly what it was yesterday. */
+  const [videoHasFrames, setVideoHasFrames] = useState(false);
+  useEffect(() => {
+    if (!presenceFace || !showVideoEl) {
+      setVideoHasFrames(false);
+      return;
+    }
+    let last = false;
+    const check = () => {
+      const el = videoElRef.current;
+      const live =
+        !!el && el.videoWidth > 0 && el.videoHeight > 0 && el.readyState >= 2;
+      if (live !== last) {
+        last = live;
+        setVideoHasFrames(live);
+      }
+    };
+    check();
+    const id = window.setInterval(check, 400);
+    return () => window.clearInterval(id);
+  }, [presenceFace, showVideoEl, videoRef]);
+
+  /** The tile is showing a video element that has never drawn anything. */
+  const videoIsBlank = showVideoEl && presenceFace && !videoHasFrames;
 
   // Pinned wins (purple) over the identity-hued speaking glow.
   const ringStyle: CSSProperties | undefined = isPinned
@@ -423,7 +492,7 @@ function ParticipantTile({
       )}
       style={ringStyle}
     >
-      {showVideoEl ? (
+      {showVideoEl && (
         <video
           ref={composedVideoRef}
           autoPlay
@@ -432,9 +501,13 @@ function ParticipantTile({
           className={clsx(
             "h-full w-full",
             fs.isFullscreen ? "object-contain" : "object-cover",
+            // Mounted but parked while it has no frames — see videoIsBlank.
+            videoIsBlank &&
+              "pointer-events-none absolute h-px w-px opacity-0",
           )}
         />
-      ) : presenceFace ? (
+      )}
+      {showVideoEl && !videoIsBlank ? null : presenceFace ? (
         /* Talking-face path (flag `stable.talkingFace.v1`, default OFF).
          *
          * Gated on the flag as a WHOLE, not just its WebGL rung: with the flag
@@ -969,6 +1042,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         sid: localParticipant.sid,
         name: "You",
         isAgent: false,
+        isAgentKind: false,
         isLocal: true,
         isSpeaking: localParticipant.isSpeaking,
         isMuted: !localParticipant.isMicrophoneEnabled,
@@ -984,6 +1058,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         sid: p.sid,
         name: agent?.name || p.name || p.identity,
         isAgent: !!agent,
+        isAgentKind: isAgentParticipant(p),
         isLocal: false,
         isSpeaking: p.isSpeaking,
         isMuted: !p.isMicrophoneEnabled,
