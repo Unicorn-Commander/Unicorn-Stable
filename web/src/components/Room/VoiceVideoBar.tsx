@@ -66,6 +66,7 @@ import { SplitPane } from "./SplitPane";
 import { Avatar } from "@/components/ui/Avatar";
 import { AgentPresenceFace } from "@/components/Agents/AgentPresenceFace";
 import { isTalkingFaceEnabled } from "@/lib/talkingFaceFlag";
+import { frameHasPicture, frameLumaStats } from "@/lib/videoFrame";
 import {
   isAgentIdentity,
   isVrmSurfaceEligible,
@@ -425,51 +426,83 @@ function ParticipantTile({
     captureVideoEl,
   );
 
-  /* A PUBLISHED-BUT-DEAD CAMERA TRACK.
+  /* A PUBLISHED-BUT-EMPTY AGENT CAMERA TRACK.
    *
-   * Verified in the browser on dogfood, 2026-08-02: the agent worker publishes a
-   * camera-source video track that never encodes a frame — `videoWidth: 0`,
-   * `readyState: 0`, track state "live". `videoTrack` is therefore truthy, the
-   * tile takes the <video> branch, and the stage shows a BLACK RECTANGLE. The
-   * avatar branch below is unreachable for that agent, which is a large part of
-   * why "I can't see the agents when we talk to them".
+   * Measured on dogfood, 2026-08-02, on the live stage tile: the agent worker
+   * publishes a camera-source video track that IS live and IS encoding —
+   * 640x360, readyState 4 — and every frame is a single flat colour. Sampled at
+   * 32x18: luma min 17.3, max 17.3, spread 0.0. It is the "always-on avatar
+   * face track" from the agent architecture, publishing nothing.
    *
-   * Phase 1 ships no agent-runtime changes, so this is handled client-side: an
-   * agent tile whose video has produced no frames falls through to the presence
-   * face. Two details that matter —
+   * `videoTrack` is therefore truthy, the tile takes the <video> branch, and the
+   * stage renders a BLACK RECTANGLE. The <Avatar> branch below has been
+   * unreachable for that agent the whole time, which is a large part of why
+   * Aaron keeps asking to "see the agents when we talk to them" — every avatar
+   * improvement that landed in that branch was invisible in the one place it
+   * mattered most.
    *
-   *   * The <video> stays MOUNTED (just moved out of the way). Unmounting it
-   *     would detach the track, and we would never find out if frames arrived
-   *     late; as it is, the moment one does, the face unmounts and the real
-   *     camera takes the tile back.
-   *   * setInterval, not requestAnimationFrame. rAF does not fire in a hidden
-   *     tab, and this must resolve in a background window and under automation.
+   * So "is there a video" is the wrong question; "is there a PICTURE" is the
+   * right one, and the only honest way to ask it is to look at the pixels.
+   * Cheap: 576 samples every 500 ms, and only on an agent tile with the flag on.
    *
-   * Flag-gated like everything else: with the flag off this is all inert and the
+   * Three details that matter —
+   *
+   *   * The <video> stays MOUNTED, just parked at 1px/opacity-0. Unmounting
+   *     detaches the track and we could never notice a real picture arriving;
+   *     parked, it keeps decoding and the moment it has content the face
+   *     unmounts and the camera takes the tile back. That also means this
+   *     self-corrects the day the agent publishes a real avatar feed.
+   *   * setInterval, not requestAnimationFrame — rAF does not fire in a hidden
+   *     tab, and this must settle in a background window and under automation.
+   *   * If the pixels cannot be read we assume there IS a picture. Failing
+   *     toward showing a real feed is the safe direction.
+   *
+   * Flag-gated like everything else: with the flag off this is inert and the
    * black rectangle is exactly what it was yesterday. */
-  const [videoHasFrames, setVideoHasFrames] = useState(false);
+  const [videoHasPicture, setVideoHasPicture] = useState(false);
   useEffect(() => {
     if (!presenceFace || !showVideoEl) {
-      setVideoHasFrames(false);
+      setVideoHasPicture(false);
       return;
     }
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 18;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     let last = false;
-    const check = () => {
+    let warned = false;
+
+    const sample = (): boolean => {
       const el = videoElRef.current;
-      const live =
-        !!el && el.videoWidth > 0 && el.videoHeight > 0 && el.readyState >= 2;
+      if (!el || el.videoWidth === 0 || el.readyState < 2) return false;
+      if (!ctx) return true;
+      try {
+        ctx.drawImage(el, 0, 0, canvas.width, canvas.height);
+        const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        return frameHasPicture(frameLumaStats(data));
+      } catch (e) {
+        if (!warned) {
+          warned = true;
+          console.warn("[talking-face] cannot inspect video pixels", e);
+        }
+        return true;
+      }
+    };
+
+    const check = () => {
+      const live = sample();
       if (live !== last) {
         last = live;
-        setVideoHasFrames(live);
+        setVideoHasPicture(live);
       }
     };
     check();
-    const id = window.setInterval(check, 400);
+    const id = window.setInterval(check, 500);
     return () => window.clearInterval(id);
   }, [presenceFace, showVideoEl, videoRef]);
 
-  /** The tile is showing a video element that has never drawn anything. */
-  const videoIsBlank = showVideoEl && presenceFace && !videoHasFrames;
+  /** The tile is showing a video element with nothing in it. */
+  const videoIsBlank = showVideoEl && presenceFace && !videoHasPicture;
 
   // Pinned wins (purple) over the identity-hued speaking glow.
   const ringStyle: CSSProperties | undefined = isPinned
