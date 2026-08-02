@@ -89,13 +89,33 @@ export const AFFIL_META: Record<
   },
 };
 
+/**
+ * Does this agent run on hardware we own?
+ *
+ * This is the question the AFFILIATION axis exists to answer: an agent on a
+ * hosted 3rd-party API costs us someone else's resources every call and the
+ * request leaves the building, whereas one on our own GPUs (or a local-capable
+ * model) does not. Deliberately separate from `tierOf`, which answers "how
+ * capable is the model" — the two happen to correlate today, but they are not
+ * the same question and conflating them is what made the two chips redundant.
+ */
+export function runsOnOurHardware(agent: Agent): boolean {
+  const m = (agent.model || "").toLowerCase();
+  // A hosted-vendor prefix means rented capability, whatever the model is.
+  if (/^(anthropic|openai|google|azure|mistral|cohere|groq|xai|deepseek)\//.test(m)) {
+    return false;
+  }
+  // Bare vendor model names (no gateway prefix) are hosted too.
+  if (/^(claude|gpt|gemini)[-.]/.test(m)) return false;
+  return tierOf(agent) !== "frontier";
+}
+
 export function affiliationOf(agent: Agent): Affiliation {
   const a = (agent.affiliation || "").toLowerCase();
   if (a === "contractor") return "contractor";
   if (a === "third_party" || a === "third-party" || a === "3rd_party") {
     return "third_party";
   }
-  if (a === "frontier") return "frontier";
   if (a === "employee") return "employee";
   // Brigade's roster also records the operating COMPANY as an affiliation
   // ("magic-unicorn"). Those are employees — we run them — but they matched
@@ -104,10 +124,16 @@ export function affiliationOf(agent: Agent): Affiliation {
   if (a === "magic-unicorn" || a === "magic_unicorn" || a === "magicunicorn") {
     return "employee";
   }
-  // No explicit affiliation: fall back to model tier so the border is still
-  // meaningful — a frontier-model agent reads as frontier, everything else as
-  // employee (we run it).
-  return tierOf(agent) === "frontier" ? "frontier" : "employee";
+  // "frontier" is a MODEL TIER, not an affiliation, and it used to be both —
+  // so 25 of 54 agents rendered the same word twice, once per axis, and the
+  // affiliation chip told you nothing the model chip had not already said.
+  // Read it as the question it is now asked to answer, below.
+  if (a === "frontier") return runsOnOurHardware(agent) ? "employee" : "contractor";
+  // No explicit affiliation: answer the question the axis exists for — do we
+  // need someone else's resources to run this agent? A hosted 3rd-party API is
+  // rented capability (contractor); our own GPUs and local-capable models are
+  // ours (employee).
+  return runsOnOurHardware(agent) ? "employee" : "contractor";
 }
 
 // ── Tool cost / permission (from Brigade's tool_catalog, surfaced per agent) ──
