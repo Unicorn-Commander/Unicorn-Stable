@@ -192,6 +192,11 @@ function FitOnChange({
       if (!pane || !ns.length) return false;
       const w = pane.clientWidth;
       const h = pane.clientHeight;
+      // Trust the bounds only once EVERY node has been measured. A partly
+      // measured set reports a smaller board, which reads as "this would fit
+      // legibly" and takes the fit branch — and because apply() then returns
+      // true, that wrong viewport is the one that sticks.
+      if (ns.some((n) => !(n.measured?.width && n.measured?.height))) return false;
       const bounds = getNodesBounds(ns);
       if (!w || !h || !bounds.width || !bounds.height) return false;
 
@@ -208,17 +213,24 @@ function FitOnChange({
         rf.fitView({ ...FIT_OPTIONS, duration: 300 });
         return true;
       }
-      // Too wide to show legibly. Anchor on the apex at a readable zoom: it
-      // sits centred over its own tier, so this frames the top of the chain of
-      // command and the middle of the tier under it, with the minimap and
+      // Too WIDE to show legibly. Anchor horizontally on the apex, which sits
+      // centred over its own tier, so the top of the chain of command and the
+      // middle of the tier under it are what you land on, with the minimap and
       // panning to reach the rest.
       const root = rootId ? rf.getNode(rootId) : undefined;
       const cx = root
         ? root.position.x + ORG_NODE_W / 2
         : bounds.x + bounds.width / 2;
-      const cy = root
-        ? root.position.y + h / (2 * LEGIBLE_ZOOM) - ORG_NODE_H
-        : bounds.y + bounds.height / 2;
+      // Vertically it is only the width that forces our hand — an org chart is
+      // far wider than it is deep, and collapsed to the leadership tier this
+      // one is 2 tiers in a pane with room for 8. Pinning the apex to the top
+      // of the pane the way a depth-constrained chart needs left 81% of the
+      // canvas empty under the chart. So centre the whole depth when it fits,
+      // and only pin the apex to the top when the depth overflows too.
+      const cy =
+        bounds.height * LEGIBLE_ZOOM <= h || !root
+          ? bounds.y + bounds.height / 2
+          : root.position.y + h / (2 * LEGIBLE_ZOOM) - ORG_NODE_H;
       rf.setCenter(cx, cy, { zoom: LEGIBLE_ZOOM, duration: 300 });
       return true;
     };
