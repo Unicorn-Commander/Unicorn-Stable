@@ -658,11 +658,11 @@ function ParticipantTile({
             two similar-looking controls confused Aaron once, so the accessible
             names are the plain-English "Pop out … to its own window" vs
             "Picture in picture", and both tooltips spell out the difference. */}
-        {onPopOut && p.videoTrack && (
+        {onPopOut && (p.videoTrack || isAgentTile) && (
           <TileControlButton
             icon={ExternalLink}
-            label={`Pop out ${p.name}’s camera to its own window`}
-            title={`Pop out to window — opens ${p.name}’s camera in a separate window you can drag to another monitor (different from “Picture in picture”, which floats a small always-on-top thumbnail)`}
+            label={`Pop out ${p.name} to its own window`}
+            title={`Pop out to window — opens ${p.name}${p.videoTrack ? "’s camera" : ""} in a separate window you can drag to another monitor (different from “Picture in picture”, which floats a small always-on-top thumbnail)`}
             onClick={(e) => {
               e.stopPropagation();
               onPopOut();
@@ -1352,7 +1352,15 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const liveFeedKeys = useMemo(() => {
     const keys = new Set<string>();
     for (const p of participants) {
-      if (p.videoTrack) keys.add(camFeedKey(p.id));
+      /* An AGENT is a poppable feed whether or not it has a camera track: its
+       * presence face IS the feed, and putting a colleague's face on a second
+       * monitor is exactly what pop-out is for. Before the stage-track fix an
+       * agent tile qualified here by accident, via the blank camera track it
+       * should never have been publishing; without this it would silently lose
+       * an affordance Aaron actively uses. */
+      if (p.videoTrack || p.isAgentKind || p.isAgent || isAgentIdentity(p.id)) {
+        keys.add(camFeedKey(p.id));
+      }
     }
     for (const s of screenShares) keys.add(screenFeedKey(s.feedId));
     return keys;
