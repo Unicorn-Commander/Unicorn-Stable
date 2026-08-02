@@ -131,10 +131,40 @@ class StageTrack:
         self._running: bool = False
 
     async def start(self, room: Any) -> None:
-        """Attach to a LiveKit room and begin publishing a video track."""
+        """Attach to a LiveKit room.
+
+        Deliberately does NOT publish a track. See `_ensure_published`.
+        """
+        self._room = room
+        self._running = True
+        logger.info("stage_track_ready", room=getattr(room, "name", "unknown"))
+
+    async def _ensure_published(self) -> None:
+        """Publish the stage track, once, the first time there is something on it.
+
+        WHY THIS IS LAZY — this method is the fix for a real, user-visible bug.
+
+        This track is published with `TrackSource.SOURCE_CAMERA`, because that is
+        what the Stable web client renders in a participant tile. Publishing it
+        eagerly at join therefore told every client "this agent has a camera" for
+        the entire call, and what that camera showed was `_render_blank()`: a
+        1280x720 fill of #0f1117. Measured off the live tile, that is luma 17.3
+        with a spread of 0.0 — every pixel identical.
+
+        The client's `getCameraTrack` picked it up and painted it as the agent's
+        FACE, so an agent on a call was a black rectangle, and the avatar branch
+        underneath it was unreachable. Aaron reported it as "I want to see the
+        agents when we talk to them", and as an avatar that "appeared, and also
+        when I popped back in, but it disappeared" — the tile painting the avatar
+        on mount and then being covered when the dead track subscribed.
+
+        An agent with nothing to show now publishes nothing, which is also the
+        honest answer, and saves an idle 720p keepalive stream per agent per call.
+        """
+        if self._track is not None or self._room is None or not self._running:
+            return
         from livekit import rtc
 
-        self._room = room
         self._video_source = rtc.VideoSource(width=_WIDTH, height=_HEIGHT)
         self._track = rtc.LocalVideoTrack.create_video_track(
             "stage",
@@ -143,15 +173,14 @@ class StageTrack:
         options = rtc.TrackPublishOptions(
             source=rtc.TrackSource.SOURCE_CAMERA,
         )
-        await room.local_participant.publish_track(self._track, options)
-        self._running = True
+        await self._room.local_participant.publish_track(self._track, options)
         self._publish_task = asyncio.create_task(self._publish_loop())
-        logger.info("stage_track_started", room=getattr(room, "name", "unknown"))
+        logger.info(
+            "stage_track_published", room=getattr(self._room, "name", "unknown")
+        )
 
-    async def stop(self) -> None:
-        """Unpublish and clean up."""
-        self._running = False
-        self._dirty.set()
+    async def _unpublish(self) -> None:
+        """Take the track down and stop the frame loop. Safe to call when idle."""
         if self._publish_task is not None:
             self._publish_task.cancel()
             try:
@@ -180,6 +209,12 @@ class StageTrack:
 
         self._video_source = None
         self._track = None
+
+    async def stop(self) -> None:
+        """Unpublish and clean up."""
+        self._running = False
+        self._dirty.set()
+        await self._unpublish()
         self._room = None
         logger.info("stage_track_stopped")
 
@@ -188,12 +223,14 @@ class StageTrack:
     async def show_text(self, content: str) -> None:
         """Render text content onto the stage."""
         self._current_image = _render_text(content)
+        await self._ensure_published()
         self._dirty.set()
         logger.debug("stage_show_text", length=len(content))
 
     async def show_code(self, code: str, language: str = "python") -> None:
         """Render syntax-highlighted code onto the stage."""
         self._current_image = _render_code(code, language)
+        await self._ensure_published()
         self._dirty.set()
         logger.debug("stage_show_code", language=language, lines=code.count("\n") + 1)
 
@@ -212,6 +249,7 @@ class StageTrack:
                 y_offset = (_HEIGHT - raw_image.height) // 2
                 canvas.paste(raw_image, (x_offset, y_offset))
                 self._current_image = canvas
+                await self._ensure_published()
                 self._dirty.set()
                 logger.debug("stage_show_image", url=url)
         except Exception:
@@ -234,13 +272,20 @@ class StageTrack:
         draw.text((_PADDING, _PADDING + 48), url, fill=_TEXT_COLOR, font=small_font)
 
         self._current_image = img
+        await self._ensure_published()
         self._dirty.set()
         logger.debug("stage_show_url", url=url)
 
     async def clear(self) -> None:
-        """Clear the stage back to a blank frame."""
+        """Clear the stage.
+
+        Takes the TRACK DOWN rather than painting a blank frame. A published
+        track showing nothing is indistinguishable, from the client's side, from
+        a camera that is on and pointed at a wall — and the client renders it as
+        the agent's face. Nothing to show means no track.
+        """
         self._current_image = _render_blank()
-        self._dirty.set()
+        await self._unpublish()
         logger.debug("stage_cleared")
 
     # -- internal --

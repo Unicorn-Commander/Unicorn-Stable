@@ -65,7 +65,6 @@ import { VideoGrid } from "./VideoGrid";
 import { SplitPane } from "./SplitPane";
 import { Avatar } from "@/components/ui/Avatar";
 import { AgentPresenceFace } from "@/components/Agents/AgentPresenceFace";
-import { isTalkingFaceEnabled } from "@/lib/talkingFaceFlag";
 import { frameHasPicture, frameLumaStats } from "@/lib/videoFrame";
 import {
   isAgentIdentity,
@@ -388,22 +387,26 @@ function ParticipantTile({
   const fs = useFullscreen();
   const showVideoEl = !!videoRef && !hidden;
   const ident = identityFor(p.id.replace(/^agent-/, ""), p.name);
-  /* Talking-face eligibility (flag `stable.talkingFace.v1`, default OFF).
+  /* WHICH SIDE OF THE FLAG THINGS LIVE ON.
    *
-   * Agent detection is by IDENTITY, not by `p.isAgent`. `p.isAgent` is true only
-   * when the Brigade roster query matched, and that query can be empty, slow or
-   * failed — in which case agent-majik would silently stay on the 2D path with
-   * no clue why. The `agent-<slug>` identity is minted by the dispatcher and is
-   * correct the instant the participant appears. The roster is still consulted,
-   * but only to ENRICH (portrait, emoji), and only the flag-on path trusts the
-   * identity for that lookup — flag-off must resolve byte-identically to what
-   * shipped before this feature existed. */
-  const presenceFace =
-    isTalkingFaceEnabled() &&
-    (isAgentIdentity(p.id) || p.isAgentKind || p.isAgent);
+   * An agent tile ALWAYS gets the presence-face ladder — portrait ->
+   * UnicornAvatar -> initials — flag or no flag. That is not a feature, it is
+   * the absence of a bug: the alternative, which is what shipped, is a black
+   * rectangle where a colleague's face should be.
+   *
+   * The flag `stable.talkingFace.v1` gates exactly one thing: the WebGL rung.
+   * `AgentPresenceFace` reads it itself, so nothing here has to.
+   *
+   * Agent detection is by IDENTITY and by LiveKit's participant kind, not by
+   * `p.isAgent`. `p.isAgent` means "the Brigade roster query matched", and that
+   * query can be empty, slow or failed — on dogfood the agent's roster lookup
+   * misses entirely, so `p.isAgent` is false for a participant that is
+   * unmistakably an agent. The roster is still consulted, but only to ENRICH
+   * (portrait, emoji). */
+  const isAgentTile = isAgentIdentity(p.id) || p.isAgentKind || p.isAgent;
   const faceEligible = isVrmSurfaceEligible({ size, fill, inPopout });
   const agent = useAppStore((s) =>
-    p.isAgent || presenceFace
+    isAgentTile
       ? s.agents.find(
           (candidate) => candidate.id === p.id.replace(/^agent-/, ""),
         )
@@ -426,42 +429,47 @@ function ParticipantTile({
     captureVideoEl,
   );
 
-  /* A PUBLISHED-BUT-EMPTY AGENT CAMERA TRACK.
+  /* A PUBLISHED-BUT-EMPTY AGENT VIDEO TRACK. NOT FLAG-GATED — this is a bug fix.
    *
-   * Measured on dogfood, 2026-08-02, on the live stage tile: the agent worker
-   * publishes a camera-source video track that IS live and IS encoding —
-   * 640x360, readyState 4 — and every frame is a single flat colour. Sampled at
-   * 32x18: luma min 17.3, max 17.3, spread 0.0. It is the "always-on avatar
-   * face track" from the agent architecture, publishing nothing.
+   * Root cause, traced end to end: `agents/agent_runtime/stage.py` publishes the
+   * agent's STAGE track (its "show my work" display) with
+   * `TrackSource.SOURCE_CAMERA`, from the moment the agent joins, forever, and
+   * its default content is `_render_blank()` — a 1280x720 fill of #0f1117.
+   * Rec.601 luma of #0f1117 is 17.09; sampled off the live tile it reads 17.3
+   * with a spread of 0.0. The web client's `getCameraTrack` sees a camera-source
+   * video and paints it as the agent's FACE.
    *
-   * `videoTrack` is therefore truthy, the tile takes the <video> branch, and the
-   * stage renders a BLACK RECTANGLE. The <Avatar> branch below has been
-   * unreachable for that agent the whole time, which is a large part of why
-   * Aaron keeps asking to "see the agents when we talk to them" — every avatar
-   * improvement that landed in that branch was invisible in the one place it
-   * mattered most.
+   * That is the black rectangle Aaron keeps hitting, and it is why every avatar
+   * improvement has been invisible in the one place it matters most: the
+   * <Avatar> branch below was simply unreachable for agents. It also explains
+   * his popout repro — "when I did a popout it appeared, and also when I popped
+   * back in, but it disappeared". A remount paints the avatar first, then the
+   * track subscribes, `showVideoEl` flips, and the dead video covers the face.
    *
-   * So "is there a video" is the wrong question; "is there a PICTURE" is the
-   * right one, and the only honest way to ask it is to look at the pixels.
-   * Cheap: 576 samples every 500 ms, and only on an agent tile with the flag on.
+   * The publisher is fixed too (stage.py now publishes lazily), but the client
+   * must not depend on that: an old worker, a mid-rollout room, or any future
+   * track that goes quiet has to degrade to a face rather than to a hole.
+   *
+   * So "is there a video" is the wrong question. "Is there a PICTURE" is the
+   * right one, and the only honest way to ask is to look at the pixels: 576
+   * luma samples every 500 ms, on agent tiles only.
    *
    * Three details that matter —
    *
    *   * The <video> stays MOUNTED, just parked at 1px/opacity-0. Unmounting
    *     detaches the track and we could never notice a real picture arriving;
-   *     parked, it keeps decoding and the moment it has content the face
-   *     unmounts and the camera takes the tile back. That also means this
-   *     self-corrects the day the agent publishes a real avatar feed.
+   *     parked, it keeps decoding, and the moment it has content the face steps
+   *     aside and the camera takes the tile back. This is also what makes the
+   *     remount race unwinnable in the bad direction: the state starts at
+   *     "no picture", so the face paints first and only yields to a real feed.
    *   * setInterval, not requestAnimationFrame — rAF does not fire in a hidden
-   *     tab, and this must settle in a background window and under automation.
+   *     tab, and this must settle in a background window, in a pop-out that has
+   *     lost focus, and under automation.
    *   * If the pixels cannot be read we assume there IS a picture. Failing
-   *     toward showing a real feed is the safe direction.
-   *
-   * Flag-gated like everything else: with the flag off this is inert and the
-   * black rectangle is exactly what it was yesterday. */
+   *     toward showing a real feed is the safe direction. */
   const [videoHasPicture, setVideoHasPicture] = useState(false);
   useEffect(() => {
-    if (!presenceFace || !showVideoEl) {
+    if (!isAgentTile || !showVideoEl) {
       setVideoHasPicture(false);
       return;
     }
@@ -499,10 +507,10 @@ function ParticipantTile({
     check();
     const id = window.setInterval(check, 500);
     return () => window.clearInterval(id);
-  }, [presenceFace, showVideoEl, videoRef]);
+  }, [isAgentTile, showVideoEl, videoRef]);
 
   /** The tile is showing a video element with nothing in it. */
-  const videoIsBlank = showVideoEl && presenceFace && !videoHasPicture;
+  const videoIsBlank = showVideoEl && isAgentTile && !videoHasPicture;
 
   // Pinned wins (purple) over the identity-hued speaking glow.
   const ringStyle: CSSProperties | undefined = isPinned
@@ -540,16 +548,16 @@ function ParticipantTile({
           )}
         />
       )}
-      {showVideoEl && !videoIsBlank ? null : presenceFace ? (
-        /* Talking-face path (flag `stable.talkingFace.v1`, default OFF).
+      {showVideoEl && !videoIsBlank ? null : isAgentTile ? (
+        /* Agent tiles: the presence-face ladder, always.
          *
-         * Gated on the flag as a WHOLE, not just its WebGL rung: with the flag
-         * off this branch does not exist and the tile renders exactly the
-         * <Avatar> it always did, so opting out is a guarantee rather than a
-         * hope. `surface` is the WebGL gate — stage-class tiles only, decided by
-         * the tile's ROLE (large / fill / pop-out), never by its pixel size,
-         * because normal and filmstrip tiles are 64px and would otherwise each
-         * take a WebGL context. */
+         * `surface` is the WebGL gate — stage-class tiles only, decided by the
+         * tile's ROLE (large / fill / pop-out), never by its pixel size, since
+         * normal and filmstrip tiles are 64px and would otherwise each take a
+         * WebGL context. The flag itself is read inside AgentPresenceFace and
+         * controls only whether that rung is reachable; with it off this renders
+         * the portrait, or the animated unicorn, or initials — but always a
+         * face. Humans are untouched and keep the plain <Avatar>. */
         <AgentPresenceFace
           participantId={p.id}
           id={p.id.replace(/^agent-/, "")}
