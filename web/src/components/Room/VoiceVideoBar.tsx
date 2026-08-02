@@ -64,6 +64,13 @@ import { VoiceAgentStatus } from "./VoiceAgentStatus";
 import { VideoGrid } from "./VideoGrid";
 import { SplitPane } from "./SplitPane";
 import { Avatar } from "@/components/ui/Avatar";
+import { AgentPresenceFace } from "@/components/Agents/AgentPresenceFace";
+import { isTalkingFaceEnabled } from "@/lib/talkingFaceFlag";
+import {
+  isAgentIdentity,
+  isVrmSurfaceEligible,
+  mapAgentState,
+} from "@/lib/presenceFace";
 // ─────────────────────────────────────────────────────────────────────────────
 // Pop-out / Picture-in-Picture module (audit §4a) — web/src/components/Room/popout/.
 // Integrated and typechecked against the module's REAL exports (CONTRACT.md), no
@@ -368,13 +375,27 @@ function ParticipantTile({
   const fs = useFullscreen();
   const showVideoEl = !!videoRef && !hidden;
   const ident = identityFor(p.id.replace(/^agent-/, ""), p.name);
+  /* Talking-face eligibility (flag `stable.talkingFace.v1`, default OFF).
+   *
+   * Agent detection is by IDENTITY, not by `p.isAgent`. `p.isAgent` is true only
+   * when the Brigade roster query matched, and that query can be empty, slow or
+   * failed — in which case agent-majik would silently stay on the 2D path with
+   * no clue why. The `agent-<slug>` identity is minted by the dispatcher and is
+   * correct the instant the participant appears. The roster is still consulted,
+   * but only to ENRICH (portrait, emoji), and only the flag-on path trusts the
+   * identity for that lookup — flag-off must resolve byte-identically to what
+   * shipped before this feature existed. */
+  const presenceFace =
+    isTalkingFaceEnabled() && (isAgentIdentity(p.id) || p.isAgent);
+  const faceEligible = isVrmSurfaceEligible({ size, fill, inPopout });
   const agent = useAppStore((s) =>
-    p.isAgent
+    p.isAgent || presenceFace
       ? s.agents.find(
           (candidate) => candidate.id === p.id.replace(/^agent-/, ""),
         )
       : undefined,
   );
+
   // Compose the LiveKit attach ref with the PiP ref on ONE <video> (audit §4a).
   // useMergedVideoRef memoizes internally (CONTRACT §3.1) so the track isn't
   // detached+reattached every render; safe to call unconditionally with an
@@ -412,6 +433,30 @@ function ParticipantTile({
             "h-full w-full",
             fs.isFullscreen ? "object-contain" : "object-cover",
           )}
+        />
+      ) : presenceFace ? (
+        /* Talking-face path (flag `stable.talkingFace.v1`, default OFF).
+         *
+         * Gated on the flag as a WHOLE, not just its WebGL rung: with the flag
+         * off this branch does not exist and the tile renders exactly the
+         * <Avatar> it always did, so opting out is a guarantee rather than a
+         * hope. `surface` is the WebGL gate — stage-class tiles only, decided by
+         * the tile's ROLE (large / fill / pop-out), never by its pixel size,
+         * because normal and filmstrip tiles are 64px and would otherwise each
+         * take a WebGL context. */
+        <AgentPresenceFace
+          participantId={p.id}
+          id={p.id.replace(/^agent-/, "")}
+          name={p.name}
+          avatarUrl={agent?.avatar_url}
+          emoji={agent?.emoji}
+          size={size === "large" ? 96 : 64}
+          surface={faceEligible ? "stage" : "filmstrip"}
+          expression={mapAgentState(null, {
+            isSpeaking: speaking && !p.isMuted,
+          })}
+          isSpeaking={speaking && !p.isMuted}
+          alt=""
         />
       ) : (
         <Avatar

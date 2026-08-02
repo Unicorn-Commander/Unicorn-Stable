@@ -7,6 +7,14 @@ interface ImportMetaEnv {
   readonly VITE_KEYCLOAK_CLIENT_ID: string;
   /** View-based sidebar shell (Slice 2). Default on; set "0"/"false" to disable. */
   readonly VITE_NAV_V1?: string;
+  /**
+   * Talking-face agent avatars on call stage tiles. Default **off** — set "1"
+   * to make a whole deploy opt in. Per-user opt-in is
+   * `localStorage["stable.talkingFace.v1"] = "1"` or `?talkingFace=1`.
+   */
+  readonly VITE_TALKING_FACE_V1?: string;
+  /** Talking-face debug HUD (fps + which ladder rung rendered). Default off. */
+  readonly VITE_TALKING_FACE_DEBUG?: string;
 }
 
 interface ImportMeta {
