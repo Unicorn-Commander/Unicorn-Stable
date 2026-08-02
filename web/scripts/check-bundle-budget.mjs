@@ -26,8 +26,74 @@ const budgets = {
       raw: 1_050 * 1024,
       gzip: 340 * 1024,
     },
+    {
+      // three.js + @pixiv/three-vrm, reached ONLY through the lazy import in
+      // AgentPresenceFace. Limits are the FIRST MEASURED size (706.3 KiB raw /
+      // 181.3 KiB gzip on 2026-08-01, three 0.180 + three-vrm 3.5.5) plus ~15%
+      // headroom — not a round number picked in advance. Tighter than the
+      // default gzip ceiling on purpose: this chunk is big enough that it must
+      // never grow quietly.
+      pattern: /vendor-three-vrm/,
+      raw: 815 * 1024,
+      gzip: 209 * 1024,
+    },
   ],
 };
+
+/**
+ * Chunks that may only ever be reached through ONE named lazy boundary.
+ *
+ * This is the load-bearing half of the talking-face bundle contract, and it is
+ * NOT the same question as "is it in the initial graph". `RoomView` is itself a
+ * dynamic import, so a stray `import VrmAvatar from ...` in a shared module
+ * leaves the entry graph untouched while quietly adding ~700 KiB to every user
+ * who opens a room — with the feature flag off. Measured: doing exactly that
+ * put `vendor-three-vrm` into the static imports of RoomView, KnowledgePanel
+ * and ReactRenderer, and every size budget above still passed.
+ *
+ * So check the shape of the graph instead of its weight:
+ *   1. the heavy chunk has exactly one static importer, the designated module;
+ *   2. that module is only ever a DYNAMIC import target, never a static one.
+ */
+const lazyOnlyChunks = [
+  {
+    chunk: /vendor-three-vrm/,
+    viaKey: "src/components/Agents/VrmAvatar.tsx",
+    why: "three.js must stay behind the AgentPresenceFace lazy import — a user who never enables stable.talkingFace.v1 must not download it",
+  },
+];
+
+function checkLazyOnly(manifest, failures) {
+  for (const { chunk, viaKey, why } of lazyOnlyChunks) {
+    const heavy = Object.entries(manifest).filter(([, r]) => chunk.test(r.file));
+    if (!heavy.length) continue; // not built in this configuration
+    const heavyKeys = new Set(heavy.map(([key]) => key));
+
+    if (!manifest[viaKey]) {
+      // The heavy chunk exists but its designated lazy module is not a chunk of
+      // its own: the lazy() boundary has been replaced by a static import, so
+      // the renderer has been folded into whatever imports it.
+      failures.push(
+        `${viaKey} is no longer a standalone chunk — its lazy() boundary is gone. ${why}`,
+      );
+      continue;
+    }
+    for (const [key, record] of Object.entries(manifest)) {
+      if (key === viaKey) continue;
+      const leaked = (record.imports ?? []).filter((i) => heavyKeys.has(i));
+      if (leaked.length) {
+        failures.push(
+          `${record.file} STATICALLY imports ${leaked.join(", ")} — ${why}`,
+        );
+      }
+      if ((record.imports ?? []).includes(viaKey)) {
+        failures.push(
+          `${record.file} STATICALLY imports ${viaKey} — it must only ever be lazy()'d. ${why}`,
+        );
+      }
+    }
+  }
+}
 
 function format(bytes) {
   return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -78,6 +144,7 @@ async function main() {
   );
 
   const failures = [];
+  checkLazyOnly(manifest, failures);
   if (initialRaw > budgets.initialRaw) {
     failures.push(
       `initial JS raw ${format(initialRaw)} exceeds ${format(budgets.initialRaw)}`,

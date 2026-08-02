@@ -68,6 +68,20 @@ export default defineConfig({
           ) {
             return "vendor-data";
           }
+          /* three.js + three-vrm — the talking-face renderer.
+           *
+           * Anchored on the PACKAGE PATH, not on a bare "three" substring: that
+           * would also scoop `three-vrm`'s own deps and, worse, any unrelated
+           * package with "three" in its name. This chunk must never appear in
+           * the entry graph — the only edge into it is the lazy() import in
+           * AgentPresenceFace, so a user who has not turned the flag on never
+           * requests it. `scripts/check-bundle-budget.mjs` holds the line. */
+          if (
+            id.includes("/node_modules/three/") ||
+            id.includes("/node_modules/@pixiv/three-vrm")
+          ) {
+            return "vendor-three-vrm";
+          }
           if (id.includes("/keycloak-js/")) return "vendor-auth";
           return undefined;
         },
