@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "lint": "eslint src",
     "audit:prod": "node scripts/check-prod-audit.mjs",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\""
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "puppet:calibrate": "node scripts/calibrate-puppet.ts"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

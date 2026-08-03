@@ -9,12 +9,20 @@
  *
  * WHAT IT RENDERS
  * ---------------
- *   * `vrmSrc` set  → the real rigged model, mouth driven through the rig's own
- *     viseme/ARKit morph.
- *   * `vrmSrc` null → the PROCEDURAL head. This is the state today: no brand
- *     VRM has been authored, so what you see is built from primitives at
- *     runtime — but it is our unicorn, drawn to the same rules as the approved
- *     portraits, not a stand-in. See proceduralUnicornHead.ts.
+ * A three-rung ladder, best first — see `mountBest`:
+ *
+ *   1. `vrmSrc` set                → the real rigged model, mouth driven through
+ *      the rig's own viseme/ARKit morph. Nothing authored yet.
+ *   2. `portraitSrc` WITH A RIG    → the 2D portrait puppet. This is the best
+ *      rung available today, because the approved portraits already carry the
+ *      costume — Majik's hood, Gunny's campaign hat — which is what actually
+ *      identifies an agent at call-tile size. See portraitPuppet.ts.
+ *   3. otherwise                   → the PROCEDURAL head, built from primitives
+ *      at runtime. Ours, and on-style, but one skull for everybody.
+ *
+ * Rung 2 is gated on an AUTHORED rig, not on merely having a portrait: most
+ * agents' art is a neon logo emblem, and the default mouth position against a
+ * crest opens a black hole in the middle of a logo.
  *
  * WHAT DRIVES THE MOUTH (phase 1)
  * -------------------------------
@@ -54,6 +62,8 @@ import {
   smoothLevel,
 } from "@/lib/mouthShape";
 import type { PresenceExpression } from "@/lib/presenceFace";
+import { puppetForAgent } from "@/lib/puppetRig";
+import { buildPortraitPuppet } from "./portraitPuppet";
 import {
   buildProceduralUnicornHead,
   resolveManeStyle,
@@ -68,8 +78,9 @@ import {
  * face that might be a still image.
  */
 export interface TalkingFaceProbe {
-  /** "vrm" = a real rigged model. "placeholder" = the procedural head. */
-  source: "vrm" | "placeholder";
+  /** "vrm" = a real rigged model. "puppet" = a rigged 2D portrait.
+   *  "placeholder" = the procedural head. */
+  source: "vrm" | "puppet" | "placeholder";
   /** Which morph/expression the mouth is driving, or "jaw-bone". */
   driver: string;
   /** Raw LiveKit audioLevel this frame. */
@@ -96,7 +107,7 @@ export interface VrmAvatarProps {
   participantId: string;
   slug: string;
   name: string;
-  /** Model URL, or null → procedural placeholder head. */
+  /** Model URL, or null → try the portrait puppet, then the procedural head. */
   vrmSrc: string | null;
   size: number;
   expression?: PresenceExpression;
@@ -220,9 +231,9 @@ function driverForVrm(vrm: VRM): MouthDriver {
   };
 }
 
-function driverForHead(rig: HeadRig): MouthDriver {
+function driverForHead(rig: HeadRig, label = "procedural-jaw"): MouthDriver {
   return {
-    label: "procedural-jaw",
+    label,
     setMouthOpen: (v) => rig.setMouthOpen(v),
     setBlink: (v) => rig.setBlink(v),
     update: () => {},
@@ -447,20 +458,66 @@ export function VrmAvatar({
       frameSubject(gltf.scene as unknown as Group);
     };
 
-    if (vrmSrc) {
-      void mountVrm(vrmSrc)
-        .catch((e: unknown) => {
+    /* ---- rigged 2D portrait ----------------------------------------- */
+    const mountPuppet = async (spec: NonNullable<ReturnType<typeof puppetForAgent>>) => {
+      const rig = await buildPortraitPuppet({ spec, signal: abort.signal });
+      if (disposed) {
+        rig.dispose();
+        return;
+      }
+      headRig = rig;
+      holder.add(rig.root);
+      driver = driverForHead(rig, "puppet-composite");
+      probeSource = "puppet";
+      /* Framed TIGHTER than 1 so the quad overflows the viewport. setHeadTurn
+       * translates the plane, and at a margin of 1 that slide would expose the
+       * empty space past the artwork's edge. */
+      frameSubject(rig.root, 0.92);
+    };
+
+    /* Resolved from the AGENT, not from `portraitSrc`. The roster URL is
+     * cross-origin (Brigade's UI, not ours) so it cannot become a WebGL
+     * texture, and 41 of Brigade's 53 avatar bindings name files that do not
+     * exist — neither fact is visible until the load fails. `portraitSrc`
+     * stays the source of truth for the flat portrait rung, where a 404 only
+     * costs an image. */
+    const puppetSpec = puppetForAgent(slug, name);
+
+    /**
+     * The ladder, best first. Each rung records why it failed and falls to the
+     * next; `mountPlaceholder` is the floor and cannot fail, so no branch of
+     * this can leave the tile without a face.
+     */
+    const mountBest = async () => {
+      if (vrmSrc) {
+        try {
+          await mountVrm(vrmSrc);
+          return;
+        } catch (e) {
           if (disposed) return;
           const why = e instanceof Error ? e.message : String(e);
           console.warn(`[talking-face] model load failed (${vrmSrc}): ${why}`);
-          // A configured model that will not load is a real failure, but it is
-          // not a reason to show nothing: keep the surface alive on the
-          // placeholder and record the error on the probe.
           probeError = why;
-          mountPlaceholder();
-        })
-        .finally(() => hostWindow.clearTimeout(timeout));
+        }
+      }
+      if (puppetSpec) {
+        try {
+          await mountPuppet(puppetSpec);
+          return;
+        } catch (e) {
+          if (disposed) return;
+          const why = e instanceof Error ? e.message : String(e);
+          console.warn(`[talking-face] puppet failed (${puppetSpec.texture}): ${why}`);
+          probeError ??= why;
+        }
+      }
+      if (!disposed) mountPlaceholder();
+    };
+
+    if (vrmSrc || puppetSpec) {
+      void mountBest().finally(() => hostWindow.clearTimeout(timeout));
     } else {
+      // Nothing to load — mount synchronously so the tile is never briefly bare.
       hostWindow.clearTimeout(timeout);
       mountPlaceholder();
     }

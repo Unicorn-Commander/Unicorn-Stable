@@ -1,0 +1,207 @@
+/**
+ * Which agents have a puppetable face, where its artwork lives, and where the
+ * mouth and eyes are on it.
+ *
+ * ── Why this is keyed on the AGENT, not on the portrait URL ─────────────────
+ * The first version gated the puppet on `resolveAgentPortrait(...)`, i.e. on
+ * whatever URL the roster serves. That was wrong twice over:
+ *
+ *   1. Brigade's `avatar_url` is served from the Brigade UI's origin, not
+ *      Stable's. A cross-origin image cannot be uploaded into a WebGL texture
+ *      without CORS, so the puppet would have failed on exactly the agents
+ *      that HAVE portraits.
+ *   2. 41 of Brigade's 53 avatar bindings are DANGLING — they name files that
+ *      do not exist on the server (`gunny-v2.png` when the file is
+ *      `gunny.webp`). A dangling URL is indistinguishable from a good one
+ *      until it 404s, long after the rung was chosen.
+ *
+ * So the puppet ships its own same-origin copy of the artwork under
+ * `public/agent-puppets/<agent-id>.webp`, and the roster URL keeps driving the
+ * flat portrait rung where a 404 is survivable. The two answer different
+ * questions: "what picture of this agent exists" vs "what can we animate".
+ *
+ * ── Coordinates ────────────────────────────────────────────────────────────
+ * TOP-DOWN, normalized 0..1, matching how you read the image in a viewer
+ * (y=0 is the top edge). The shader wants y-up and `toUv` is the only place
+ * that flips — do NOT pre-flip values here by hand.
+ *
+ * Tune with:  npm run puppet:calibrate
+ */
+
+export interface Ellipse {
+  /** Center, 0..1 across the image, y from the TOP. */
+  cx: number;
+  cy: number;
+  /** Radii, as a fraction of image width/height. */
+  rx: number;
+  ry: number;
+}
+
+export interface PuppetRigSpec {
+  /** Closed-mouth line. The opening grows DOWNWARD from here. */
+  mouth: Ellipse;
+  /**
+   * How far the mouth drops at FULL open, as a fraction of image height.
+   *
+   * Explicit rather than `mouth.ry * someConstant`, because the constant is
+   * what got it wrong the first time: the muzzle is only ~7% of the image
+   * tall, so a multiplier tuned on Majik punched the cavity through Gunny's
+   * chin and onto his whistle. Measure from the mouth line to the BOTTOM OF
+   * THE MUZZLE and leave margin — the calibration overlay draws exactly this.
+   */
+  openDepth: number;
+  eyeL: Ellipse;
+  eyeR: Ellipse;
+  /**
+   * How dark the mouth interior reads. The sticker style fills eyes with solid
+   * black ink, so a near-black cavity is on-style rather than a compromise.
+   */
+  cavity?: [number, number, number];
+}
+
+export interface PuppetSpec extends PuppetRigSpec {
+  /** Same-origin texture path. Must be under `public/agent-puppets/`. */
+  texture: string;
+  /** Display name, for the calibration report only. */
+  label: string;
+}
+
+/**
+ * Every portrait in this set was generated from one locked recipe — chibi white
+ * unicorn bust, thick black outlines, white sticker border, dark navy ground —
+ * so they frame almost identically and this default lands within a couple of
+ * percent on most of them. That is what makes a 13-character set tractable:
+ * only the outliers need their own numbers.
+ */
+export const DEFAULT_RIG: PuppetRigSpec = {
+  mouth: { cx: 0.500, cy: 0.612, rx: 0.055, ry: 0.017 },
+  openDepth: 0.048,
+  eyeL: { cx: 0.432, cy: 0.430, rx: 0.035, ry: 0.038 },
+  eyeR: { cx: 0.578, cy: 0.430, rx: 0.035, ry: 0.038 },
+};
+
+const T = (id: string) => `/agent-puppets/${id}.webp`;
+
+/**
+ * Keyed by BRIGADE AGENT ID (normalized). Adding a character is: drop the
+ * 512² WebP in `public/agent-puppets/`, add a row, run the calibration script,
+ * adjust. Nothing else in the app changes.
+ */
+export const PUPPETS: Record<string, PuppetSpec> = {
+  majik: {
+    label: "Majik",
+    texture: T("majik"),
+    mouth: { cx: 0.503, cy: 0.611, rx: 0.050, ry: 0.017 },
+    openDepth: 0.046,
+    eyeL: { cx: 0.437, cy: 0.432, rx: 0.036, ry: 0.038 },
+    eyeR: { cx: 0.575, cy: 0.432, rx: 0.036, ry: 0.038 },
+  },
+  sidekick: {
+    label: "Sidekick",
+    texture: T("sidekick"),
+    mouth: { cx: 0.548, cy: 0.590, rx: 0.050, ry: 0.017 },
+    openDepth: 0.045,
+    eyeL: { cx: 0.424, cy: 0.407, rx: 0.038, ry: 0.042 },
+    eyeR: { cx: 0.586, cy: 0.407, rx: 0.038, ry: 0.042 },
+  },
+  "corporal-qwen": {
+    label: "Corporal Qwen",
+    texture: T("corporal-qwen"),
+    ...DEFAULT_RIG,
+  },
+  gunny: {
+    label: "Gunny",
+    texture: T("gunny"),
+    mouth: { cx: 0.505, cy: 0.638, rx: 0.048, ry: 0.017 },
+    openDepth: 0.042,
+    eyeL: { cx: 0.428, cy: 0.452, rx: 0.034, ry: 0.036 },
+    eyeR: { cx: 0.578, cy: 0.452, rx: 0.034, ry: 0.036 },
+  },
+  /**
+   * The General's portrait has NO MOUTH DRAWN — muzzle and nostrils only.
+   * Because the opening is composited rather than warped, the puppet draws him
+   * the mouth the artist left out and he reads correctly from about a third
+   * open. What he cannot do is REST: with nothing at the mouth line his closed
+   * state is a blank muzzle, so he never quite settles between words.
+   */
+  "the-general": {
+    label: "The General",
+    texture: T("the-general"),
+    mouth: { cx: 0.500, cy: 0.625, rx: 0.048, ry: 0.016 },
+    openDepth: 0.045,
+    eyeL: { cx: 0.432, cy: 0.446, rx: 0.034, ry: 0.035 },
+    eyeR: { cx: 0.575, cy: 0.446, rx: 0.034, ry: 0.035 },
+  },
+  "cpl-colophon": { label: "Cpl. Colophon", texture: T("cpl-colophon"), ...DEFAULT_RIG },
+  perry: { label: "Perrywinkle Spector", texture: T("perry"), ...DEFAULT_RIG },
+  prudence: { label: "Prudence Finch", texture: T("prudence"), ...DEFAULT_RIG },
+  "accounting-ops-cfo": { label: "Col. Ledger", texture: T("accounting-ops-cfo"), ...DEFAULT_RIG },
+  "center-deep-lead": { label: "Prof. Fathom", texture: T("center-deep-lead"), ...DEFAULT_RIG },
+  "contact-ops-lead": { label: "The Registrar", texture: T("contact-ops-lead"), ...DEFAULT_RIG },
+  "customer-ops-lead": { label: "The Steward", texture: T("customer-ops-lead"), ...DEFAULT_RIG },
+  "meeting-ops-lead": { label: "Capt. Cadence", texture: T("meeting-ops-lead"), ...DEFAULT_RIG },
+};
+
+/**
+ * Display names and legacy slugs that resolve to a Brigade id.
+ *
+ * Needed because Stable can address an agent three ways — the LiveKit identity
+ * (`agent-<id>`), the roster id, or the display name off a room title — and the
+ * Ops leads' display names ("Col. Ledger") share nothing with their ids
+ * ("accounting-ops-cfo").
+ */
+const ALIASES: Record<string, string> = {
+  "prudence-finch": "prudence",
+  "perrywinkle-spector": "perry",
+  "perrywinkle-spector-general-counsel": "perry",
+  "col-ledger": "accounting-ops-cfo",
+  "prof-fathom": "center-deep-lead",
+  "the-registrar": "contact-ops-lead",
+  "the-steward": "customer-ops-lead",
+  "capt-cadence": "meeting-ops-lead",
+  "sgt-quill": "sgt-quill", // no portrait yet; listed so the miss is deliberate
+  general: "the-general",
+};
+
+/**
+ * "agent-Cpl. Colophon" → "cpl-colophon".
+ *
+ * Brigade ids are not clean slugs — `cpl.-colophon` carries a literal dot — so
+ * this has to fold punctuation rather than assume kebab-case.
+ */
+export function normalizeAgentKey(value: string | null | undefined): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/^chat with\s+/, "")
+    .replace(/^agent[-_\s]+/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** The puppet for an agent, or null when none is authored. */
+export function puppetForAgent(
+  agentId?: string | null,
+  name?: string | null,
+): PuppetSpec | null {
+  for (const candidate of [agentId, name]) {
+    const key = normalizeAgentKey(candidate);
+    if (!key) continue;
+    const resolved = ALIASES[key] ?? key;
+    const spec = PUPPETS[resolved];
+    if (spec) return spec;
+  }
+  return null;
+}
+
+/** Does this agent have a puppetable face? */
+export function hasPuppet(
+  agentId?: string | null,
+  name?: string | null,
+): boolean {
+  return puppetForAgent(agentId, name) !== null;
+}
+
+/** Top-down spec → the y-up vec4 the shader samples with. */
+export function toUv(e: Ellipse): [number, number, number, number] {
+  return [e.cx, 1 - e.cy, e.rx, e.ry];
+}
