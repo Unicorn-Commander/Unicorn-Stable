@@ -134,15 +134,63 @@ export function priorityModel(input: {
 
 /* ── W5: agent activity feed ─────────────────────────────────────────── */
 
+/**
+ * One row of the agent feed: the newest thread with an agent, plus how many
+ * OTHER threads with the same agent are folded behind it.
+ *
+ * Every "New chat" mints a fresh room called "Chat with <agent>", so a user
+ * who has talked to Majik six times has six identically-titled rooms. Listing
+ * them raw turned the feed into four consecutive rows reading "Chat with
+ * Majik" — indistinguishable from each other and from a rendering bug. The
+ * sidebar already collapses per-agent; the feed now does too.
+ */
+export interface AgentThreadRow {
+  room: Room;
+  /** Other rooms with the same agent, folded behind this one. */
+  extraThreads: number;
+  /** Unread across those folded threads (this row's own unread is separate). */
+  extraUnread: number;
+}
+
 export interface AgentFeedModel {
-  /** Agent rooms with unread — likely waiting on the human. Capped. */
-  waiting: Room[];
-  /** Total waiting rooms before the cap — the stat tile must count the set,
-   * not the visible slice (the old tile quietly capped at its render limit). */
+  /** Agent threads with unread — likely waiting on the human. Capped. */
+  waiting: AgentThreadRow[];
+  /** Total waiting ROOMS before grouping/capping — the stat tile must count
+   * the set, not the visible slice (the old tile quietly capped at its render
+   * limit) and not the collapsed row count. */
   waitingTotal: number;
-  /** Rooms whose latest message was agent-authored, newest first, excluding
-   * rooms already in `waiting`. Capped. */
-  recent: Room[];
+  /** Threads whose latest message was agent-authored, newest first, excluding
+   * anything already in `waiting`. Capped. */
+  recent: AgentThreadRow[];
+}
+
+/**
+ * Fold rooms that talk to the SAME agent into one row each, newest first.
+ *
+ * Rooms with no resident agent (an agent posting in a channel) group by their
+ * own id, i.e. they never merge with anything.
+ */
+export function collapseAgentThreads(rooms: Room[]): AgentThreadRow[] {
+  const byAgent = new Map<string, Room[]>();
+  for (const room of rooms) {
+    const key = room.brigade_agent_id ?? `room:${room.id}`;
+    const bucket = byAgent.get(key);
+    if (bucket) bucket.push(room);
+    else byAgent.set(key, [room]);
+  }
+  const rows: AgentThreadRow[] = [];
+  for (const bucket of byAgent.values()) {
+    const sorted = [...bucket].sort(sortByRecency);
+    const newest = sorted[0];
+    if (!newest) continue; // a bucket only exists because a room went into it
+    const rest = sorted.slice(1);
+    rows.push({
+      room: newest,
+      extraThreads: rest.length,
+      extraUnread: rest.reduce((sum, r) => sum + (r.unread_count ?? 0), 0),
+    });
+  }
+  return rows.sort((a, b) => sortByRecency(a.room, b.room));
 }
 
 /**
@@ -168,30 +216,123 @@ export function agentFeed(
       (r) => isAgentConversation(r) && unreadCountFor(r, unreadCounts) > 0,
     )
     .sort(sortByRecency);
-  const waiting = allWaiting.slice(0, waitingCap);
+  const waiting = collapseAgentThreads(allWaiting).slice(0, waitingCap);
 
   // Exclude EVERY waiting room (not just the visible slice) so a room never
   // shows up as plain "activity" merely because the waiting list was full.
   const waitingIds = new Set(allWaiting.map((r) => r.id));
-  const recent = rooms
-    .filter(
-      (r) =>
-        r.last_message?.sender_type === "agent" && !waitingIds.has(r.id),
-    )
-    .sort(sortByRecency)
-    .slice(0, recentCap);
+  const recent = collapseAgentThreads(
+    rooms.filter(
+      (r) => r.last_message?.sender_type === "agent" && !waitingIds.has(r.id),
+    ),
+  ).slice(0, recentCap);
 
   return { waiting, waitingTotal: allWaiting.length, recent };
 }
 
-/* ── W3: conversations card ──────────────────────────────────────────── */
+/* ── Agents rail ─────────────────────────────────────────────────────── */
 
-export function humanChatsByActivity(rooms: Room[], cap = 12): Room[] {
-  return roomsForView(rooms, "chats").sort(sortByRecency).slice(0, cap);
+const FLEET_STATUS_ORDER: Record<string, number> = {
+  working: 0,
+  active: 1,
+  idle: 2,
+  offline: 3,
+};
+
+/**
+ * Which agents the rail shows, in the order that answers "who do I work with".
+ *
+ * The old ordering was status-then-alphabetical, and Brigade reports nearly
+ * every agent as `active` — so it collapsed to PURE ALPHABETICAL and the rail
+ * rendered Brief Drafter, Capt. Cadence, Claude, Cognitive Companion… i.e. a
+ * roster of specialists this user has never once spoken to, while Majik and
+ * the dev agents they use daily sat below the fold. A directory sorted by
+ * accident of spelling is not a dashboard.
+ *
+ * Rank: (1) agents you actually have a thread with, most recently active
+ * first — your working set, and the only signal here that is about YOU;
+ * (2) everyone else by Brigade status; (3) name, to keep it deterministic.
+ * "Browse all" still reaches the full roster.
+ */
+export function rankedFleet(
+  roster: Agent[],
+  rooms: Room[],
+  cap = 8,
+): Agent[] {
+  const lastSeenByAgent = new Map<string, number>();
+  for (const room of rooms) {
+    const agentId = room.brigade_agent_id;
+    if (!agentId) continue;
+    const at = roomActivityAt(room);
+    if (at > (lastSeenByAgent.get(agentId) ?? 0)) {
+      lastSeenByAgent.set(agentId, at);
+    }
+  }
+  return [...roster]
+    .sort((a, b) => {
+      const aSeen = lastSeenByAgent.get(a.id) ?? 0;
+      const bSeen = lastSeenByAgent.get(b.id) ?? 0;
+      if (aSeen !== bSeen) return bSeen - aSeen;
+      const byStatus =
+        (FLEET_STATUS_ORDER[a.status] ?? 9) - (FLEET_STATUS_ORDER[b.status] ?? 9);
+      if (byStatus !== 0) return byStatus;
+      return (a.display_name || a.name).localeCompare(b.display_name || b.name);
+    })
+    .slice(0, cap);
 }
 
-export function channelsByActivity(rooms: Room[], cap = 12): Room[] {
-  return roomsForView(rooms, "channels").sort(sortByRecency).slice(0, cap);
+/**
+ * The one-line descriptor under an agent's name.
+ *
+ * Brigade carries `rank`, `title` and `domain` separately and they frequently
+ * restate each other — the CFO row rendered "Chief Financial Officer · Chief
+ * Financial Of…", spending its whole width saying one thing twice and then
+ * truncating. Keep the parts that add information; drop any that is a prefix
+ * of one already shown (case-insensitive).
+ */
+export function agentSubtitle(parts: (string | null | undefined)[]): string {
+  const kept: string[] = [];
+  for (const raw of parts) {
+    const part = (raw ?? "").trim();
+    if (!part) continue;
+    const lower = part.toLowerCase();
+    const redundant = kept.some((k) => {
+      const kl = k.toLowerCase();
+      return kl.startsWith(lower) || lower.startsWith(kl);
+    });
+    if (!redundant) kept.push(part);
+  }
+  return kept.join(" · ");
+}
+
+/* ── W3: conversations card ──────────────────────────────────────────── */
+
+export function humanChatsByActivity(
+  rooms: Room[],
+  cap = 12,
+  exclude?: ReadonlySet<string>,
+): Room[] {
+  return roomsForView(rooms, "chats")
+    .filter((r) => !exclude?.has(r.id))
+    .sort(sortByRecency)
+    .slice(0, cap);
+}
+
+/**
+ * `exclude` carries the rooms the priority inbox is ALREADY showing directly
+ * above this card. Without it the same two channels rendered twice on one
+ * screen — identical title, identical preview, identical unread pill — which
+ * reads as a duplication bug and costs the second copy's row for nothing.
+ */
+export function channelsByActivity(
+  rooms: Room[],
+  cap = 12,
+  exclude?: ReadonlySet<string>,
+): Room[] {
+  return roomsForView(rooms, "channels")
+    .filter((r) => !exclude?.has(r.id))
+    .sort(sortByRecency)
+    .slice(0, cap);
 }
 
 export type ConversationsTab = "chats" | "channels";
