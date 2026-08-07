@@ -3,7 +3,7 @@ import { Bot } from "lucide-react";
 import {
   AgentPortrait,
   RoomAgentPortrait,
-} from "./AgentPortrait";
+} from "@/components/Agents/AgentPortrait";
 import { identityFor } from "@/lib/identity";
 import {
   unreadCountFor,
