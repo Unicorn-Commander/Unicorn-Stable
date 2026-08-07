@@ -140,6 +140,21 @@ export const PUPPETS: Record<string, PuppetSpec> = {
   "contact-ops-lead": { label: "The Registrar", texture: T("contact-ops-lead"), ...DEFAULT_RIG },
   "customer-ops-lead": { label: "The Steward", texture: T("customer-ops-lead"), ...DEFAULT_RIG },
   "meeting-ops-lead": { label: "Capt. Cadence", texture: T("meeting-ops-lead"), ...DEFAULT_RIG },
+  // ── 2026-08-07 batch: Brand-Ops generated from the same locked recipe, so
+  // DEFAULT_RIG lands within tolerance; recalibrate any outlier that mumbles.
+  "claude-code": { label: "Claude Code", texture: T("claude-code"), ...DEFAULT_RIG },
+  claude: { label: "Claude", texture: T("claude"), ...DEFAULT_RIG },
+  cmo: { label: "CMO", texture: T("cmo"), ...DEFAULT_RIG },
+  "code-reviewer": { label: "Code Reviewer", texture: T("code-reviewer"), ...DEFAULT_RIG },
+  "col-finance": { label: "Col. Finance", texture: T("col-finance"), ...DEFAULT_RIG },
+  harmony: { label: "Hopesnack Harmony", texture: T("harmony"), ...DEFAULT_RIG },
+  "maj-recon": { label: "Maj. Recon", texture: T("maj-recon"), ...DEFAULT_RIG },
+  "meeting-ops-dev": { label: "Meeting-Ops Dev", texture: T("meeting-ops-dev"), ...DEFAULT_RIG },
+  scout: { label: "Scout", texture: T("scout"), ...DEFAULT_RIG },
+  // Brigade variant art re-homed for the webhook residents (doc-medresearch
+  // alert pose and detective-holmes) — real characters, not initials.
+  "gm-watchdog": { label: "GM Watchdog", texture: T("gm-watchdog"), ...DEFAULT_RIG },
+  "research-monitor": { label: "Research Monitor", texture: T("research-monitor"), ...DEFAULT_RIG },
 };
 
 /**
@@ -161,6 +176,28 @@ const ALIASES: Record<string, string> = {
   "capt-cadence": "meeting-ops-lead",
   "sgt-quill": "sgt-quill", // no portrait yet; listed so the miss is deliberate
   general: "the-general",
+  // The Claude Code residents. Every dev bot whose display name is plain
+  // "Claude Code" already normalizes to the puppet key; these are the
+  // possessive display names and per-box usernames that don't.
+  "aaron-s-claude-code": "claude-code",
+  "shafen-s-claude-code": "claude-code",
+  "shafen-claude-code": "claude-code",
+  "dev-shafen-z13": "claude-code",
+  // Webhook residents are addressed by username (their display names are
+  // generic), so the usernames are the reliable key.
+  "webhook-gm-alerts": "gm-watchdog",
+  "webhook-research-monitor": "research-monitor",
+  "webhook-majiks-research": "maj-recon",
+  "webhook-dev-stable": "claude-code",
+  "webhook-dev-contact-ops": "claude-code",
+  "webhook-dev-customer-ops": "claude-code",
+  "webhook-dev-landing-pages": "claude-code",
+  "webhook-dev-meeting-ops": "claude-code",
+  "webhook-main-conference": "claude-code",
+  "claude-orch1": "claude-code", // flagship's orchestrator resident
+  // Display-name variants for the 2026-08-07 batch.
+  "hopesnack-harmony": "harmony",
+  "meeting-ops-ios-engineer": "meeting-ops-dev",
 };
 
 /**
