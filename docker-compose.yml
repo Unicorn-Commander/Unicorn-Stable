@@ -60,9 +60,14 @@ services:
       POSTGRES_DB: stable
       POSTGRES_USER: stable
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stable_dev_password_2026}
+    # stable-net ONLY (2026-08-07): postgres was also on the shared `web`
+    # network, where BOTH Stable stacks alias the service name `postgres` —
+    # so any client resolving `postgres:5432` over `web` could land on the
+    # OTHER stack's database. Nothing routes to postgres via Traefik; it has
+    # no reason to be there. Same de-aliasing applied to redis/agent-runtime,
+    # and all consumers now dial container names (stable-postgres, …).
     networks:
       - stable-net
-      - web
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U stable -d stable"]
       interval: 10s
@@ -95,9 +100,11 @@ services:
       --rename-command FLUSHALL ""
       --rename-command FLUSHDB ""
       --rename-command CONFIG ""
+    # stable-net ONLY — see the postgres note. The 2026-08-05 reboot proved
+    # this live: dogfood LiveKit resolved `redis:6379` to the FLAGSHIP redis
+    # over `web` and died on WRONGPASS for 45 hours.
     networks:
       - stable-net
-      - web
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
@@ -132,12 +139,16 @@ services:
       # Instance tenancy binding (offering C). Empty = community/ownership mode.
       - STABLE_ORG_ID=${STABLE_ORG_ID:-}
       - ORG_ID=${STABLE_ORG_ID:-}
-      - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@postgres:5432/stable
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Container names, not service aliases: this backend sits on the shared
+      # `web` network where the flagship stack aliases the SAME short names
+      # (postgres/redis/livekit/backend) — short names are a cross-stack
+      # roulette. Container names are globally unique on this host.
+      - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@stable-postgres:5432/stable
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@stable-redis:6379/0
       - QDRANT_URL=${QDRANT_URL:-http://unicorn-qdrant:6333}
-      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_URL=ws://stable-livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-wss://livekit.magicunicorn.dev}
-      - LIVEKIT_API_URL=http://livekit:7880
+      - LIVEKIT_API_URL=http://stable-livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
       - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
@@ -278,12 +289,15 @@ services:
     volumes:
       - ./agents:/app
     environment:
-      - LIVEKIT_URL=ws://livekit:7880
+      # Container names, not aliases — see the backend note. The agents worker
+      # actually hit the flagship LiveKit with dogfood keys (401 invalid API
+      # key in flagship logs, 2026-08-07) via the `livekit` alias on `web`.
+      - LIVEKIT_URL=ws://stable-livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}
       - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
-      - STABLE_BACKEND_URL=http://backend:8400
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
+      - STABLE_BACKEND_URL=http://stable-backend:8400
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@stable-redis:6379/1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
@@ -315,9 +329,10 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+    # stable-net ONLY — see the postgres note. Outbound calls to public URLs
+    # (Brigade, Kokoro, Parakeet) leave via host NAT, not the `web` network.
     networks:
       - stable-net
-      - web
 
   # ==========================================================================
   # Web Client — React/TypeScript served by nginx
@@ -330,6 +345,11 @@ services:
     restart: unless-stopped
     ports:
       - "8401:80"
+    environment:
+      # The nginx template resolves its API upstream per-request; the short
+      # service name `backend` is ambiguous on the shared `web` network, so
+      # each stack names its own backend CONTAINER here.
+      - STABLE_BACKEND_HOST=stable-backend
     depends_on:
       - backend
     volumes:
