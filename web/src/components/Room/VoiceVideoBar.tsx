@@ -2369,7 +2369,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       <div
         className={clsx(
           "flex min-h-0 flex-1 border-b border-line bg-surface-1/70 backdrop-blur-md",
-          slim ? "flex-row items-center gap-3 px-4 py-2" : "flex-col gap-2 p-3",
+          slim
+            ? "flex-row items-center gap-3 px-4 py-2"
+            : "flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
         )}
         role="region"
         aria-label="Voice and video call"
@@ -2455,7 +2457,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         {mobileVideoChrome && (
           <div
             className={clsx(
-              "flex shrink-0 justify-center pt-1 transition-opacity duration-300",
+              "flex shrink-0 justify-center pt-1 pb-[env(safe-area-inset-bottom)] transition-opacity duration-300",
               // When extended chrome is visible, Leave is in the extended row
               // already for desktop-style bars — here safeControls is the
               // permanent dock for mic/cam/leave.

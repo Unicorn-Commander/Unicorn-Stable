@@ -171,7 +171,7 @@ export function NewChatButton({
                     "focus-ring shrink-0 rounded-md p-1 transition-colors",
                     isDefault
                       ? "text-amber-300"
-                      : "text-slate-500 opacity-0 hover:text-amber-300 focus-visible:opacity-100 group-hover:opacity-100",
+                      : "text-slate-500 opacity-100 hover:text-amber-300 focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100",
                   )}
                   aria-label={
                     isDefault

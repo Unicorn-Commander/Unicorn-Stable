@@ -148,7 +148,7 @@ export function AgentList({
                   <span className="max-w-[9rem] truncate">{agent.model || "—"}</span>
                 </span>
                 <span
-                  className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-0 transition-opacity group-hover:opacity-100"
+                  className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100"
                   style={{ color: ident.text }}
                 >
                   <MessageSquarePlus className="h-3.5 w-3.5" />

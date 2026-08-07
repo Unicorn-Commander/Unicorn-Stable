@@ -798,7 +798,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
+    // On touch keyboards there is no Shift+Enter, so Enter must insert a
+    // newline (the Send button sends). Desktop keeps Enter-to-send.
+    if (e.key === "Enter" && !e.shiftKey && !isCoarsePointer) {
       e.preventDefault();
       handleSend();
     }
@@ -1120,7 +1122,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               <span className="max-w-[16ch] truncate">{a.filename}</span>
               <button
                 onClick={() => removePending(i)}
-                className="ml-1 rounded text-slate-500 transition-colors hover:text-rose-400 focus-ring"
+                className="ml-1 inline-flex min-h-9 min-w-9 items-center justify-center rounded text-slate-500 transition-colors touch-manipulation hover:text-rose-400 focus-ring md:min-h-0 md:min-w-0"
                 aria-label={`Remove ${a.filename}`}
               >
                 ×
@@ -1151,7 +1153,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               ) : (
                 <button
                   onClick={() => retryUpload(t.id)}
-                  className="rounded font-medium text-rose-300 underline-offset-2 transition-colors hover:text-rose-200 hover:underline focus-ring"
+                  className="inline-flex min-h-9 items-center rounded px-1 font-medium text-rose-300 underline-offset-2 transition-colors touch-manipulation hover:text-rose-200 hover:underline focus-ring md:min-h-0 md:px-0"
                   aria-label={`Retry uploading ${t.file.name}`}
                 >
                   Retry
@@ -1159,7 +1161,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               )}
               <button
                 onClick={() => dismissUpload(t.id)}
-                className="ml-1 rounded text-slate-500 transition-colors hover:text-rose-400 focus-ring"
+                className="ml-1 inline-flex min-h-9 min-w-9 items-center justify-center rounded text-slate-500 transition-colors touch-manipulation hover:text-rose-400 focus-ring md:min-h-0 md:min-w-0"
                 aria-label={
                   t.status === "uploading"
                     ? `Cancel upload of ${t.file.name}`

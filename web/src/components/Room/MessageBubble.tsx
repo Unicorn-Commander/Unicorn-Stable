@@ -2183,7 +2183,13 @@ export function MessageBubble({
       onContextMenu={(e) => {
         e.preventDefault();
         setActionsOpen(true);
-        setCtxMenu({ x: e.clientX, y: e.clientY });
+        // Clamp so the menu never renders off the right/bottom edge — an
+        // Android long-press near the edge otherwise puts half the menu (and
+        // Delete) offscreen. 196 = menu min-width + margin; 280 ≈ menu height.
+        setCtxMenu({
+          x: Math.min(e.clientX, window.innerWidth - 196),
+          y: Math.min(e.clientY, window.innerHeight - 280),
+        });
       }}
       role="article"
       aria-label={`Message from ${message.sender_name}`}

@@ -403,7 +403,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                   setEditingName(false);
                 }
               }}
-              className="rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 font-display text-sm font-semibold text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+              className="rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 font-display text-base md:text-sm font-semibold text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           ) : (
             <button
@@ -440,7 +440,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                 }
               }}
               placeholder="Add a topic…"
-              className="flex-1 rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 text-xs text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+              className="flex-1 rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 text-base md:text-xs text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           ) : (
             <button
