@@ -230,7 +230,7 @@ export function VideoGrid({
             type="button"
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={page === 0}
-            className="focus-ring flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-white/[0.08] disabled:opacity-40"
+            className="focus-ring flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-white/[0.08] disabled:opacity-40 md:h-6 md:w-6"
             aria-label="Previous page"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
@@ -242,7 +242,7 @@ export function VideoGrid({
             type="button"
             onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
             disabled={page >= pageCount - 1}
-            className="focus-ring flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-white/[0.08] disabled:opacity-40"
+            className="focus-ring flex h-11 w-11 items-center justify-center rounded-full transition-colors hover:bg-white/[0.08] disabled:opacity-40 md:h-6 md:w-6"
             aria-label="Next page"
           >
             <ChevronRight className="h-3.5 w-3.5" />

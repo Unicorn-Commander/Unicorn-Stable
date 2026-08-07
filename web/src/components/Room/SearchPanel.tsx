@@ -50,7 +50,7 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
             if (e.key === "Escape") onClose();
           }}
           placeholder="Search messages in this room…"
-          className="flex-1 bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
+          className="flex-1 bg-transparent text-base md:text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
         />
         <button
           onClick={onClose}

@@ -36,6 +36,7 @@ import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { isRoomApprover } from "@/lib/approvals";
 import { useModalA11y } from "@/hooks/useModalA11y";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -1275,7 +1276,14 @@ export function MessageBubble({
   // in place of an interchangeable Bot glyph. Non-agent senders skip the lookup.
   const senderAgent = useAppStore((s) =>
     message.sender_type === "agent"
-      ? s.agents.find((a) => a.id === message.sender_id)
+      ? s.agents.find(
+          // Roster ids are Brigade SLUGS; message.sender_id is a participant
+          // UUID — the id compare alone never matched (dead code since the
+          // roster landed), so match by display name too.
+          (a) =>
+            a.id === message.sender_id ||
+            (a.display_name || a.name) === message.sender_name,
+        )
       : undefined,
   );
 
@@ -1712,7 +1720,15 @@ export function MessageBubble({
           <div className="mb-3 flex items-start gap-2">
             <Avatar
               name={message.sender_name}
-              src={message.sender_avatar ?? senderAgent?.avatar_url}
+              src={
+              message.sender_type === "agent"
+                ? resolveAgentPortrait(
+                    senderAgent?.id ?? null,
+                    message.sender_name,
+                    message.sender_avatar ?? senderAgent?.avatar_url,
+                  )
+                : message.sender_avatar
+            }
               size="sm"
               isAgent={isAgent}
               emoji={senderAgent?.emoji}
@@ -2183,7 +2199,13 @@ export function MessageBubble({
       onContextMenu={(e) => {
         e.preventDefault();
         setActionsOpen(true);
-        setCtxMenu({ x: e.clientX, y: e.clientY });
+        // Clamp so the menu never renders off the right/bottom edge — an
+        // Android long-press near the edge otherwise puts half the menu (and
+        // Delete) offscreen. 196 = menu min-width + margin; 280 ≈ menu height.
+        setCtxMenu({
+          x: Math.min(e.clientX, window.innerWidth - 196),
+          y: Math.min(e.clientY, window.innerHeight - 280),
+        });
       }}
       role="article"
       aria-label={`Message from ${message.sender_name}`}
@@ -2192,7 +2214,15 @@ export function MessageBubble({
         <div className="mt-0.5 shrink-0">
           <Avatar
             name={message.sender_name}
-            src={message.sender_avatar ?? senderAgent?.avatar_url}
+            src={
+              message.sender_type === "agent"
+                ? resolveAgentPortrait(
+                    senderAgent?.id ?? null,
+                    message.sender_name,
+                    message.sender_avatar ?? senderAgent?.avatar_url,
+                  )
+                : message.sender_avatar
+            }
             size="md"
             isAgent={isAgent}
             emoji={senderAgent?.emoji}

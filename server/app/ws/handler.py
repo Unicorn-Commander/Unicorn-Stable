@@ -35,6 +35,9 @@ router = APIRouter()
 # buggy or hostile client's word for how often that should happen. Comfortably
 # under TYPING_TTL so an honest keepalive is never swallowed.
 TYPING_REBROADCAST_FLOOR_S: float = 1.0
+# mark_read costs a DB write + commit + room-wide publish per frame; floor it
+# to one accepted frame per room per second (see the client-event task).
+MARK_READ_FLOOR_S: float = 1.0
 
 # How long an accepted-but-unauthenticated socket may sit before we require
 # its auth frame. Generous enough for a slow mobile link to flush one frame,
@@ -317,6 +320,28 @@ async def _subscribe_to_rooms(
                         if _rid not in known_rooms:
                             known_rooms.add(_rid)
                             room_ids.append(_rid)
+                    # REVOCATION, not just growth. Until 2026-08-07 this loop
+                    # only ever added rooms, so a KICKED member's socket kept
+                    # receiving every new message (and could keep emitting
+                    # typing/mark_read) in the room they were removed from
+                    # until their next reconnect — the kick looked complete
+                    # (LiveKit eviction + members_changed hides the room in an
+                    # honest client) but text confidentiality wasn't cut.
+                    # Membership loss must revoke the stream server-side,
+                    # within this loop's 4s cadence.
+                    _current = set(_rids)
+                    _gone = [rid for rid in known_rooms if rid not in _current]
+                    if _gone:
+                        _gone_channels = [f"room:{rid}" for rid in _gone]
+                        await pubsub.unsubscribe(*_gone_channels)
+                        subscribed.difference_update(_gone_channels)
+                        known_rooms.difference_update(_gone)
+                        room_ids[:] = [r for r in room_ids if r in _current]
+                        logger.info(
+                            "ws_room_revoked",
+                            rooms=_gone,
+                            participant_id=participant_id,
+                        )
                 except Exception:
                     logger.debug("ws_room_refresh_failed", exc_info=True)
             # Poll with an explicit per-read timeout rather than pubsub.listen().
@@ -456,6 +481,10 @@ async def _handle_client_events(
     typing_rooms = typing_rooms if typing_rooms is not None else set()
     # Last accepted typing_start per room, for the server-side rebroadcast floor.
     last_typing_at: dict[str, float] = {}
+    # Same floor idea for mark_read: each frame costs a DB UPDATE + commit +
+    # room-wide publish, and WS handlers run outside the HTTP rate_limit dep —
+    # without a floor one looping client is an unbounded write amplifier.
+    last_mark_read_at: dict[str, float] = {}
     try:
         while True:
             raw = await websocket.receive_text()
@@ -533,16 +562,37 @@ async def _handle_client_events(
                 # Guard like typing_*: only act on a room the caller belongs to,
                 # else a stranger could spoof read-receipts into any room by id.
                 if room_id and room_id in room_ids:
+                    # Floor like typing_*: each frame is a DB write + commit +
+                    # room-wide publish, so absorb bursts (scroll-driven
+                    # clients fire these freely) to one per room per second.
+                    now = time.monotonic()
+                    if now - last_mark_read_at.get(room_id, 0.0) < MARK_READ_FLOOR_S:
+                        continue
+                    last_mark_read_at[room_id] = now
                     # Persist last_read_at on the room_member row, then
                     # broadcast a read_receipt event to everyone in the room
                     # so their UI can show "seen by …".
                     from datetime import datetime, timezone
 
+                    from sqlalchemy import select as _select
                     from sqlalchemy import update as _update
+                    from app.models.message import Message as _Msg
                     from app.models.room import RoomMember as _RM
 
                     session_factory = websocket.app.state.db_session_factory
                     async with session_factory() as db:
+                        # Echo message_id only if it names a real message IN
+                        # this room — otherwise a member could stamp "seen by"
+                        # onto an arbitrary/foreign UUID for everyone's UI.
+                        if message_id:
+                            _owns = await db.execute(
+                                _select(_Msg.id).where(
+                                    _Msg.id == message_id,
+                                    _Msg.room_id == room_id,
+                                )
+                            )
+                            if _owns.scalar_one_or_none() is None:
+                                message_id = None
                         await db.execute(
                             _update(_RM)
                             .where(
@@ -615,7 +665,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             first = await asyncio.wait_for(
                 websocket.receive_json(), timeout=AUTH_FRAME_TIMEOUT_S
             )
-        except (TimeoutError, asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+        except (
+            TimeoutError,
+            asyncio.TimeoutError,
+            ValueError,
+            # A BINARY first frame: starlette's receive_json does
+            # message["text"], which KeyErrors on a bytes frame — uncaught,
+            # that's a pre-auth ERROR traceback per probe connection (cheap
+            # log-spam vector). Same clean 4001 close as any other bad frame.
+            KeyError,
+            WebSocketDisconnect,
+        ):
             await websocket.close(code=4001, reason="Expected auth frame")
             return
         frame_token = (

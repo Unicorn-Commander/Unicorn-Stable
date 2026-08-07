@@ -26,6 +26,7 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import type { ArtifactKind, ArtifactResponse } from "@/types/artifact";
 import { CanvasRenderer } from "./canvas/CanvasRenderer";
 import DiffView from "./canvas/DiffView";
+import { useAppStore } from "@/stores/appStore";
 
 const KIND_LABEL: Record<ArtifactKind, string> = {
   markdown: "Markdown",
@@ -332,10 +333,11 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
       setShowDiff(false);
     } catch (e) {
       const apiErr = e as { detail?: string | null; message?: string };
-      alert(
-        "Restore failed: " +
-          (apiErr?.detail || apiErr?.message || "unknown error"),
-      );
+      useAppStore.getState().pushToast({
+        title: "Restore failed",
+        body: apiErr?.detail || apiErr?.message || "unknown error",
+        kind: "error",
+      });
     }
   }
 

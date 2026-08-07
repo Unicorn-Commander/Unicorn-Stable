@@ -55,8 +55,17 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
   }, [rooms]);
 
   function openResult(m: Message) {
-    navigate(`/c/${m.room_id}`);
-    setThreadMessageId(m.thread_id ?? m.id);
+    if (m.thread_id) {
+      // A thread reply lives only in its thread panel — open that.
+      navigate(`/c/${m.room_id}`);
+      setThreadMessageId(m.thread_id);
+    } else {
+      // Land ON the message: ChatPanel's ?message deep-link scrolls to it and
+      // flashes a ring (same path ActivityCenter uses). Opening a one-message
+      // "thread" here was disorienting — you searched for a message, not a
+      // thread view of it.
+      navigate(`/c/${m.room_id}?message=${m.id}`);
+    }
     onClose();
   }
 

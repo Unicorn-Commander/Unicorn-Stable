@@ -8,6 +8,7 @@ import { useStableRoom } from "@/hooks/useStableRoom";
 import { useAppStore } from "@/stores/appStore";
 import { api } from "@/services/api";
 import { Avatar } from "@/components/ui/Avatar";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 
 interface StageViewProps {
   agentId: string;
@@ -113,7 +114,11 @@ export function StageView({ agentId, roomId }: StageViewProps) {
       ) : (
         <div className="flex animate-fade-in flex-col items-center gap-3">
           <Avatar
-            avatarUrl={stageAgent?.avatar_url}
+            avatarUrl={resolveAgentPortrait(
+              agentId.replace(/^agent-/, ""),
+              displayName,
+              stageAgent?.avatar_url,
+            )}
             emoji={stageEmoji}
             id={agentId.replace(/^agent-/, "")}
             name={displayName}

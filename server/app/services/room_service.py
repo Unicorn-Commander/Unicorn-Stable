@@ -574,7 +574,14 @@ class RoomService:
                 select(func.count()).select_from(RoomMember).where(RoomMember.room_id == room.id)
             )
             mc = mc_result.scalar() or 0
-            online_ids = await self._presence.get_online_in_room(str(room.id))
+            # Presence is decoration; the room list is the product. A redis
+            # outage here used to 500 the ENTIRE rooms endpoint — the sidebar
+            # rendered empty and users read it as "my history is gone"
+            # (2026-08-05..07, corrupt-AOF crash loop). Fail open to zero.
+            try:
+                online_ids = await self._presence.get_online_in_room(str(room.id))
+            except Exception:
+                online_ids = set()
             enriched_rooms.append({
                 "room": room,
                 "member_count": mc,
@@ -873,6 +880,8 @@ class RoomService:
                 "last_read_at": membership.last_read_at,
                 "is_muted": membership.is_muted,
                 "is_self": caller is not None and str(participant.id) == caller,
+                "avatar_url": participant.avatar_url,
+                "avatar_emoji": participant.avatar_emoji,
                 # Presence is Redis-derived ONLY. `participants.status` is a
                 # stale DB column: essentially every row is created ONLINE and
                 # then never updated. Humans are seeded ONLINE on first auth

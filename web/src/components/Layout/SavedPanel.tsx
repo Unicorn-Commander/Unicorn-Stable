@@ -155,12 +155,14 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
                       <button
                         type="button"
                         onClick={() => {
-                          navigate(`/c/${m.room_id}`);
+                          // Land on the saved message itself (?message deep-link
+                          // scroll + ring), not the bottom of the channel.
+                          navigate(`/c/${m.room_id}?message=${m.id}`);
                           if (mode === "overlay" || !isDesktop) onClose();
                         }}
                         className="focus-ring rounded font-medium text-slate-500 transition-colors hover:text-stable-purple-light"
                       >
-                        Jump to channel
+                        Jump to message
                       </button>
                       <button
                         type="button"

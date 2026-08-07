@@ -193,7 +193,7 @@ function SplitHandle({
           aria-label={`Collapse ${label}`}
           title={`Hide ${label}`}
           className={clsx(
-            "glass focus-ring absolute z-10 flex items-center justify-center rounded-full p-0.5 text-slate-300 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100",
+            "glass focus-ring absolute z-10 flex items-center justify-center rounded-full p-0.5 text-slate-300 opacity-100 transition-opacity hover:text-white focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100",
             isH
               ? "left-1/2 top-3 -translate-x-1/2"
               : "left-3 top-1/2 -translate-y-1/2",

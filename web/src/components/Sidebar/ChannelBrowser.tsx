@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Hash, Search, X } from "lucide-react";
 import { api, type Room } from "@/services/api";
 import { useModalA11y } from "@/hooks/useModalA11y";
+import { useAppStore } from "@/stores/appStore";
 
 interface ChannelBrowserProps {
   onClose: () => void;
@@ -46,7 +47,11 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
       navigate(`/c/${room.id}`);
     } catch (err) {
       console.error("join failed", err);
-      alert("Couldn't join — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't join channel",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setJoiningId(null);
     }

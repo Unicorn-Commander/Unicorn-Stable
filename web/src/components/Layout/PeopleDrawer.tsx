@@ -598,7 +598,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search people…"
             autoComplete="off"
-            className="focus-ring w-full rounded-xl border border-line bg-slate-950/60 py-2.5 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+            className="focus-ring w-full rounded-xl border border-line bg-slate-950/60 py-2.5 pl-9 pr-3 text-base md:text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             aria-label="Search people"
           />
         </div>

@@ -13,6 +13,7 @@ import {
 import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
 import { Avatar } from "@/components/ui/Avatar";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 
 /** The flat card grid (kept under "List"). Click a card to open the chat popup. */
 export function AgentList({
@@ -65,7 +66,7 @@ export function AgentList({
               <div className="flex items-start gap-3">
                 <span className="relative flex h-11 w-11 shrink-0 shadow-soft">
                   <Avatar
-                    avatarUrl={agent.avatar_url}
+                    avatarUrl={resolveAgentPortrait(agent.id, name, agent.avatar_url)}
                     emoji={agent.emoji}
                     id={agent.id}
                     name={name}
@@ -148,7 +149,7 @@ export function AgentList({
                   <span className="max-w-[9rem] truncate">{agent.model || "—"}</span>
                 </span>
                 <span
-                  className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-0 transition-opacity group-hover:opacity-100"
+                  className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100"
                   style={{ color: ident.text }}
                 >
                   <MessageSquarePlus className="h-3.5 w-3.5" />

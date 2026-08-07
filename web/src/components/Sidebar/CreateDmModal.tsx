@@ -7,6 +7,7 @@ import { api, type Room, type BrigadeAgent } from "@/services/api";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { identityFor } from "@/lib/identity";
 import { Avatar } from "@/components/Avatar";
+import { useAppStore } from "@/stores/appStore";
 
 interface CreateDmModalProps {
   onClose: () => void;
@@ -184,7 +185,11 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
       navigate(`/c/${room.id}`);
     } catch (err) {
       console.error("dm create failed", err);
-      alert("Couldn't start DM — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start DM",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setBusy(false);
     }

@@ -322,7 +322,11 @@ export function RoomView({ roomId }: RoomViewProps) {
       await qc.invalidateQueries({ queryKey: ["rooms"] });
     } catch (e) {
       console.error("name save failed", e);
-      alert("Couldn't rename: " + (e as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't rename the room",
+        body: (e as Error).message,
+        kind: "error",
+      });
     }
   }
 
@@ -399,7 +403,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                   setEditingName(false);
                 }
               }}
-              className="rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 font-display text-sm font-semibold text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+              className="rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 font-display text-base md:text-sm font-semibold text-slate-100 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           ) : (
             <button
@@ -436,7 +440,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                 }
               }}
               placeholder="Add a topic…"
-              className="flex-1 rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 text-xs text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+              className="flex-1 rounded-lg border border-line bg-slate-950/60 px-2 py-0.5 text-base md:text-xs text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
             />
           ) : (
             <button
@@ -732,11 +736,13 @@ export function RoomView({ roomId }: RoomViewProps) {
             roomId={roomId}
             onClose={() => setSearchOpen(false)}
             onSelect={(m) => {
-              // Open message in thread if it has replies, else just jump
               if (m.thread_id) {
+                // A thread reply lives only in its thread panel.
                 openThread(m.thread_id);
               } else {
-                openThread(m.id);
+                // Land on the message itself via the ?message deep-link
+                // (scroll + highlight ring), not a one-message thread view.
+                navigate(`/c/${roomId}?message=${m.id}`);
               }
             }}
           />

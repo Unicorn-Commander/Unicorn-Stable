@@ -1,3 +1,4 @@
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import {
   useMemo,
   useCallback,
@@ -114,7 +115,13 @@ import {
  * LiveKit `sid` (which is regenerated per session).
  * ------------------------------------------------------------------ */
 const camFeedKey = (participantId: string): string => `cam:${participantId}`;
-const screenFeedKey = (screenSid: string): string => `screen:${screenSid}`;
+// Takes the IDENTITY-derived ScreenShareVM.feedId, never the LiveKit sid.
+// 565943e moved the three key-MINTING sites to feedId (stable across reloads,
+// so pop-out geometry persists) but the old `screenSid` parameter name lived
+// on and hid that the one key-CONSUMING site, renderPoppedFeed, still
+// resolved by sid — for every remote share feedId ≠ sid, so its pop-out
+// window rendered NOTHING from 18 minutes after the feature shipped.
+const screenFeedKey = (feedId: string): string => `screen:${feedId}`;
 
 interface VoiceVideoBarProps {
   roomId: string;
@@ -911,7 +918,15 @@ function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
       }
     >
       <Avatar
-        avatarUrl={agent?.avatar_url}
+        avatarUrl={
+          isAgent
+            ? resolveAgentPortrait(
+                id.replace(/^agent-/, ""),
+                name,
+                agent?.avatar_url,
+              )
+            : agent?.avatar_url
+        }
         emoji={agent?.emoji}
         id={id.replace(/^agent-/, "")}
         name={name}
@@ -1731,9 +1746,22 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       return p ? buildTile(p, { fill: true, inPopout: true, size: "large" }) : null;
     }
     if (feedKey.startsWith("screen:")) {
-      const sid = feedKey.slice("screen:".length);
-      const s = screenShares.find((x) => x.sid === sid);
-      return s ? buildScreen(s, { fill: true, inPopout: true }) : null;
+      const fid = feedKey.slice("screen:".length);
+      // Resolve by feedId — the field the key was minted from. Matching sid
+      // here is the bug that blanked every remote share's pop-out window.
+      const s = screenShares.find((x) => x.feedId === fid);
+      if (!s) {
+        // A miss while the reaper still counts this key alive means key-shape
+        // drift (this exact class of bug). Say so in the window instead of
+        // silently rendering an empty frame nobody can diagnose.
+        console.warn("popout: no feed for live key", feedKey);
+        return (
+          <div className="flex h-full items-center justify-center text-xs text-slate-500">
+            This feed is no longer available.
+          </div>
+        );
+      }
+      return buildScreen(s, { fill: true, inPopout: true });
     }
     return null;
   }
@@ -2369,7 +2397,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       <div
         className={clsx(
           "flex min-h-0 flex-1 border-b border-line bg-surface-1/70 backdrop-blur-md",
-          slim ? "flex-row items-center gap-3 px-4 py-2" : "flex-col gap-2 p-3",
+          slim
+            ? "flex-row items-center gap-3 px-4 py-2"
+            : "flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
         )}
         role="region"
         aria-label="Voice and video call"
@@ -2455,7 +2485,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         {mobileVideoChrome && (
           <div
             className={clsx(
-              "flex shrink-0 justify-center pt-1 transition-opacity duration-300",
+              "flex shrink-0 justify-center pt-1 pb-[env(safe-area-inset-bottom)] transition-opacity duration-300",
               // When extended chrome is visible, Leave is in the extended row
               // already for desktop-style bars — here safeControls is the
               // permanent dock for mic/cam/leave.

@@ -577,7 +577,11 @@ async def _ensure_agent_member(
         db.add(agent_p)
         await db.commit()
         await db.refresh(agent_p)
-    elif record and (
+    elif record and avatar_url is not None and (
+        # Never replace a working picture with nothing: Brigade's roster
+        # bindings dangle/heal over time, and a None resolution here used to
+        # NULL a backfilled avatar on the next invite (and a dangling one
+        # replaced it with a 404).
         avatar_url != agent_p.keycloak_avatar_url or emoji != agent_p.avatar_emoji
     ):
         # Backfill/refresh rows created before agents had avatars. Assigning

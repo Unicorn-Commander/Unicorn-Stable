@@ -20,13 +20,16 @@ export function resolveAgentPortrait(
   name: string | null | undefined,
   avatarUrl: string | null | undefined,
 ): string | null {
+  // BUNDLED ART FIRST. Brigade's roster bindings dangle en masse (~38 of 54
+  // claimed files 404 as of 2026-08-07), and a dangling-but-allowlisted URL
+  // used to win this rung and then die in <img onError> as initials — the
+  // guaranteed puppet never got a look. Bundle art is same-origin, versioned
+  // with the app, and can't 404 (short of a broken build), so when we HAVE a
+  // character, use it; the roster URL is the tier for agents we don't ship.
+  const fromBrand = brandAvatarFor(name) ?? brandAvatarFor(agentId);
+  if (fromBrand) return fromBrand;
   // toAvatarSrc applies the host allowlist and resolves a relative path against
   // the ACTIVE federated instance's API origin, which is where Brigade portraits
   // are served from. Returns null for anything unsafe.
-  const fromRoster = toAvatarSrc(avatarUrl);
-  if (fromRoster) return fromRoster;
-  // brandAvatarFor hands back same-origin bundle paths ("/agent-avatars/x.png"),
-  // which must NOT go through toAvatarSrc — that would retarget them at the API
-  // origin, where they do not exist.
-  return brandAvatarFor(name) ?? brandAvatarFor(agentId) ?? null;
+  return toAvatarSrc(avatarUrl);
 }

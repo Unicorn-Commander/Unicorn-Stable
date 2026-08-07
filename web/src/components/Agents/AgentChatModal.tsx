@@ -18,6 +18,8 @@ import {
 import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
 import { Avatar } from "@/components/ui/Avatar";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { useAppStore } from "@/stores/appStore";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -125,7 +127,11 @@ export function AgentChatModal({
       navigate(`/c/${roomId}`);
     } catch (err) {
       console.error("start agent chat failed", err);
-      alert("Couldn't start the chat — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start the chat",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setBusy(false);
     }
@@ -168,7 +174,11 @@ export function AgentChatModal({
           <div className="relative flex items-start gap-3">
             <span className="relative flex h-14 w-14 shrink-0 shadow-soft">
               <Avatar
-                avatarUrl={focusAgent.avatar_url}
+                avatarUrl={resolveAgentPortrait(
+                  focusAgent.id,
+                  label(focusAgent),
+                  focusAgent.avatar_url,
+                )}
                 emoji={focusAgent.emoji}
                 id={focusAgent.id}
                 name={label(focusAgent)}

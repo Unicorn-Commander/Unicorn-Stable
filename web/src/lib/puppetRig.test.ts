@@ -47,12 +47,20 @@ describe("agent → puppet resolution", () => {
    * either would composite a black mouth into the middle of a logo, silently,
    * on a live call. They must resolve to null and fall to the procedural head.
    */
-  it.each(["iris", "sgt-quill", "Sgt. Quill", "gflow", "claude", ""])(
+  it.each(["iris", "sgt-quill", "Sgt. Quill", "gflow", ""])(
     "refuses %s, which has no character portrait",
     (key) => {
       expect(puppetForAgent(key, null)).toBeNull();
     },
   );
+
+  // 2026-08-07: claude moved OUT of the refusal list — it has a real
+  // character portrait now (Brand-Ops batch), so it must resolve.
+  it("resolves claude, who gained a portrait in the 2026-08-07 batch", () => {
+    expect(puppetForAgent("claude", null)?.texture).toBe(
+      "/agent-puppets/claude.webp",
+    );
+  });
 
   it("treats missing identity as no puppet rather than throwing", () => {
     expect(hasPuppet(null, null)).toBe(false);

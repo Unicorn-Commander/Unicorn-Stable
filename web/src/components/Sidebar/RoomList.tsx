@@ -79,6 +79,7 @@ import { resolveDefaultAgent } from "./newChat";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { usePresenceStore } from "@/stores/presenceStore";
 import type { PeopleDirectoryEntry } from "@/services/api";
+import { Avatar } from "@/components/ui/Avatar";
 
 export function RoomList() {
   const navigate = useNavigate();
@@ -239,9 +240,13 @@ export function RoomList() {
                     title={person.display_name}
                   >
                     <span className="relative">
-                      <span className="flex h-9 w-9 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-slate-200">
-                        {(person.display_name || "?").slice(0, 1).toUpperCase()}
-                      </span>
+                      <Avatar
+                        avatarUrl={person.avatar_url}
+                        id={person.id}
+                        name={person.display_name}
+                        size={36}
+                        alt=""
+                      />
                       <span
                         className={
                           "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-0 " +
@@ -295,7 +300,11 @@ export function RoomList() {
       openRoom(room.id);
     } catch (err) {
       console.error("new chat failed", err);
-      alert("Couldn't start a new chat — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start a new chat",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setStartingChat(false);
     }
@@ -1893,7 +1902,7 @@ export function RoomList() {
               placeholder={searchPlaceholder}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
+              className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-base md:text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
               aria-label={searchPlaceholder}
             />
           </div>

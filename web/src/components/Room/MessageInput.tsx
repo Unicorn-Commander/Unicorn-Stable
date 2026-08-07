@@ -155,10 +155,11 @@ function applySlashCommand(input: string): SlashResult {
       // the cdr_deep_research tool runs. Purely a framed message — no special
       // backend path; the research metadata is forward-compat and inert today.
       if (!rest) {
-        alert(
-          "Usage: /research <question>\n" +
-            "Runs deep web research with citations via Center Deep.",
-        );
+        useAppStore.getState().pushToast({
+          title: "Usage: /research <question>",
+          body: "Runs deep web research with citations via Center Deep.",
+          kind: "info",
+        });
         return { text: null };
       }
       return {
@@ -172,10 +173,11 @@ function applySlashCommand(input: string): SlashResult {
       // a DM with an orchestrator (Majik / GFlow / The General). The
       // `facilitate` flag rides in metadata; the text is just the question.
       if (!rest) {
-        alert(
-          "Usage: /facilitate <question>\n" +
-            "Your orchestrator routes it to the best specialist, who answers here.",
-        );
+        useAppStore.getState().pushToast({
+          title: "Usage: /facilitate <question>",
+          body: "Your orchestrator routes it to the best specialist, who answers here.",
+          kind: "info",
+        });
         return { text: null };
       }
       return { text: rest, metadata: { facilitate: true } };
@@ -184,20 +186,22 @@ function applySlashCommand(input: string): SlashResult {
       // (backend council.py). The `council` flag rides in metadata; the text
       // is just the question. Best in a DM with an agent.
       if (!rest) {
-        alert(
-          "Usage: /council <question>\n" +
-            "Several models answer in parallel, then one synthesis is posted.",
-        );
+        useAppStore.getState().pushToast({
+          title: "Usage: /council <question>",
+          body: "Several models answer in parallel, then one synthesis is posted.",
+          kind: "info",
+        });
         return { text: null };
       }
       return { text: rest, metadata: { council: true } };
     case "poll": {
       const poll = parsePoll(rest);
       if (!poll) {
-        alert(
-          'Usage: /poll "Question?" option1 option2 [option3...]\n' +
-            "Use double-quotes for multi-word options.",
-        );
+        useAppStore.getState().pushToast({
+          title: 'Usage: /poll "Question?" option1 option2…',
+          body: "Use double-quotes for multi-word options.",
+          kind: "info",
+        });
         return { text: null };
       }
       return {
@@ -794,7 +798,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
+    // On touch keyboards there is no Shift+Enter, so Enter must insert a
+    // newline (the Send button sends). Desktop keeps Enter-to-send.
+    if (e.key === "Enter" && !e.shiftKey && !isCoarsePointer) {
       e.preventDefault();
       handleSend();
     }
@@ -1116,7 +1122,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               <span className="max-w-[16ch] truncate">{a.filename}</span>
               <button
                 onClick={() => removePending(i)}
-                className="ml-1 rounded text-slate-500 transition-colors hover:text-rose-400 focus-ring"
+                className="ml-1 inline-flex min-h-9 min-w-9 items-center justify-center rounded text-slate-500 transition-colors touch-manipulation hover:text-rose-400 focus-ring md:min-h-0 md:min-w-0"
                 aria-label={`Remove ${a.filename}`}
               >
                 ×
@@ -1147,7 +1153,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               ) : (
                 <button
                   onClick={() => retryUpload(t.id)}
-                  className="rounded font-medium text-rose-300 underline-offset-2 transition-colors hover:text-rose-200 hover:underline focus-ring"
+                  className="inline-flex min-h-9 items-center rounded px-1 font-medium text-rose-300 underline-offset-2 transition-colors touch-manipulation hover:text-rose-200 hover:underline focus-ring md:min-h-0 md:px-0"
                   aria-label={`Retry uploading ${t.file.name}`}
                 >
                   Retry
@@ -1155,7 +1161,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
               )}
               <button
                 onClick={() => dismissUpload(t.id)}
-                className="ml-1 rounded text-slate-500 transition-colors hover:text-rose-400 focus-ring"
+                className="ml-1 inline-flex min-h-9 min-w-9 items-center justify-center rounded text-slate-500 transition-colors touch-manipulation hover:text-rose-400 focus-ring md:min-h-0 md:min-w-0"
                 aria-label={
                   t.status === "uploading"
                     ? `Cancel upload of ${t.file.name}`
