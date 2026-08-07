@@ -114,7 +114,13 @@ import {
  * LiveKit `sid` (which is regenerated per session).
  * ------------------------------------------------------------------ */
 const camFeedKey = (participantId: string): string => `cam:${participantId}`;
-const screenFeedKey = (screenSid: string): string => `screen:${screenSid}`;
+// Takes the IDENTITY-derived ScreenShareVM.feedId, never the LiveKit sid.
+// 565943e moved the three key-MINTING sites to feedId (stable across reloads,
+// so pop-out geometry persists) but the old `screenSid` parameter name lived
+// on and hid that the one key-CONSUMING site, renderPoppedFeed, still
+// resolved by sid — for every remote share feedId ≠ sid, so its pop-out
+// window rendered NOTHING from 18 minutes after the feature shipped.
+const screenFeedKey = (feedId: string): string => `screen:${feedId}`;
 
 interface VoiceVideoBarProps {
   roomId: string;
@@ -1731,9 +1737,22 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       return p ? buildTile(p, { fill: true, inPopout: true, size: "large" }) : null;
     }
     if (feedKey.startsWith("screen:")) {
-      const sid = feedKey.slice("screen:".length);
-      const s = screenShares.find((x) => x.sid === sid);
-      return s ? buildScreen(s, { fill: true, inPopout: true }) : null;
+      const fid = feedKey.slice("screen:".length);
+      // Resolve by feedId — the field the key was minted from. Matching sid
+      // here is the bug that blanked every remote share's pop-out window.
+      const s = screenShares.find((x) => x.feedId === fid);
+      if (!s) {
+        // A miss while the reaper still counts this key alive means key-shape
+        // drift (this exact class of bug). Say so in the window instead of
+        // silently rendering an empty frame nobody can diagnose.
+        console.warn("popout: no feed for live key", feedKey);
+        return (
+          <div className="flex h-full items-center justify-center text-xs text-slate-500">
+            This feed is no longer available.
+          </div>
+        );
+      }
+      return buildScreen(s, { fill: true, inPopout: true });
     }
     return null;
   }

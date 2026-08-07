@@ -415,7 +415,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       const { token, ws_url } = await api.getLiveKitToken(roomId);
 
       const r = new Room({
-        adaptiveStream: true,
+        // Adaptive stream YES, background pause NO. livekit keys "background"
+        // off the MAIN document's visibility only and exempts nothing but
+        // element-PiP / Document-PiP — a feed popped out via window.open
+        // froze the instant the opener tab was hidden (the normal way a
+        // second-monitor pop-out is used), while PiP of the same track kept
+        // playing. Per-element resolution adaptation and viewport-visibility
+        // pausing still apply (cross-window IO/RO verified working); we only
+        // drop the opener-tab-hidden pause, which can't see our windows.
+        adaptiveStream: { pauseVideoInBackground: false },
         dynacast: true,
         audioCaptureDefaults: {
           echoCancellation: true,
