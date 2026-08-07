@@ -172,7 +172,12 @@ export function SettingsModal({ onClose, initialPane = "account" }: SettingsModa
           </nav>
 
           <div className="min-h-0 flex-1">
-            {pane === "account" && <AccountPane onClose={onClose} />}
+            {pane === "account" && (
+              <AccountPane
+                onClose={onClose}
+                onGoToAppearance={() => setPane("appearance")}
+              />
+            )}
             {pane === "appearance" && (
               <div className="h-full overflow-y-auto p-5">
                 <AppearanceSection />
@@ -537,7 +542,13 @@ function InstancePane() {
   );
 }
 
-function AccountPane({ onClose }: { onClose: () => void }) {
+function AccountPane({
+  onClose,
+  onGoToAppearance,
+}: {
+  onClose: () => void;
+  onGoToAppearance: () => void;
+}) {
   const currentUser = useAppStore((s) => s.currentUser);
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
 
@@ -560,9 +571,13 @@ function AccountPane({ onClose }: { onClose: () => void }) {
               {currentUser.displayName}
             </p>
             <p className="truncate text-xs text-slate-400">{currentUser.email}</p>
+            {/* This used to say the photo "comes from your account, not from
+                Stable", full stop — which is contradicted one tab over, where
+                Appearance → Your picture uploads a Stable-only override. A
+                user who read this pane concluded the feature did not exist.
+                Name and email really are Ops-Center's; the picture is both. */}
             <p className="mt-1 text-[11px] text-slate-500">
-              Your name, email and photo come from your account, not from Stable.
-              Edit them at{" "}
+              Your name and email come from{" "}
               <a
                 href={ACCOUNT_URL}
                 target="_blank"
@@ -571,6 +586,15 @@ function AccountPane({ onClose }: { onClose: () => void }) {
               >
                 UC-1 Hub Account
               </a>
+              . Your picture is pulled from there too — or set a Stable-only one
+              under{" "}
+              <button
+                type="button"
+                onClick={onGoToAppearance}
+                className="focus-ring rounded text-stable-purple-light hover:underline"
+              >
+                Appearance → Your picture
+              </button>
               .
             </p>
           </div>
