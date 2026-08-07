@@ -33,19 +33,27 @@ export function ConversationsCard({
   unreadCounts,
   onOpenRoom,
   onFindPeople,
+  excludeRoomIds,
+  chosenTab,
+  onChooseTab,
 }: {
   rooms: Room[];
   unreadCounts: UnreadMap;
   onOpenRoom: (roomId: string) => void;
   onFindPeople: () => void;
+  /** Rooms the priority inbox already renders above this card. */
+  excludeRoomIds?: ReadonlySet<string>;
+  /** Tab state is LIFTED so the priority card's "+N more channels" tail can
+   * switch this card to Channels — a count you cannot act on is a dead end. */
+  chosenTab: ConversationsTab | null;
+  onChooseTab: (tab: ConversationsTab) => void;
 }) {
-  const chats = humanChatsByActivity(rooms);
-  const channels = channelsByActivity(rooms);
+  const chats = humanChatsByActivity(rooms, 12, excludeRoomIds);
+  const channels = channelsByActivity(rooms, 12, excludeRoomIds);
 
-  // Local tab state, sidebarUiStore-style: null until the user picks, so the
-  // DEFAULT stays live (whichever side has newer top activity — it may flip
-  // once as rooms stream in) but an explicit choice is never overridden.
-  const [chosenTab, setChosenTab] = useState<ConversationsTab | null>(null);
+  // Null until the user picks, so the DEFAULT stays live (whichever side has
+  // newer top activity — it may flip once as rooms stream in) but an explicit
+  // choice is never overridden.
   const tab = chosenTab ?? defaultConversationsTab(chats, channels);
 
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -73,7 +81,7 @@ export function ConversationsCard({
               type="button"
               role="tab"
               aria-selected={tab === t.id}
-              onClick={() => setChosenTab(t.id)}
+              onClick={() => onChooseTab(t.id)}
               className={clsx(
                 "focus-ring rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors",
                 tab === t.id

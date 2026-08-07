@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
   AtSign,
   Bot,
   Hash,
@@ -30,10 +29,12 @@ import { usePresenceStore } from "@/stores/presenceStore";
 import { useVoice } from "@/contexts/VoiceProvider";
 import {
   agentFeed,
+  agentSubtitle,
+  rankedFleet,
+  type ConversationsTab,
   liveConferences,
   priorityModel,
   sortByRecency,
-  type SegmentTone,
 } from "./homeModel";
 import { HomeRow, SenderLine, previewText, rowTime } from "./widgets/HomeRow";
 import {
@@ -59,21 +60,37 @@ type HomeStat = {
 
 function StatTile({ stat }: { stat: HomeStat }) {
   const Icon = stat.icon;
+  // A zero is a real answer, but it is not NEWS. Rendering six zeros in the
+  // same white bold as the one number that matters makes the eye search for
+  // the signal instead of landing on it — the strip reads as a wall of
+  // digits. Zeros keep their tile (the set is stable, and the count is still
+  // there when you look for it) and lose their emphasis.
+  const isZero = stat.value === "0";
   const inner = (
     <>
       <span
         className={clsx(
           "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04]",
-          stat.tone,
+          isZero ? "text-slate-600" : stat.tone,
         )}
       >
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0">
-        <span className="block truncate font-display text-lg font-bold leading-none tabular-nums text-slate-50">
+        <span
+          className={clsx(
+            "block truncate font-display text-lg font-bold leading-none tabular-nums",
+            isZero ? "text-slate-600" : "text-slate-50",
+          )}
+        >
           {stat.value}
         </span>
-        <span className="mt-1 block truncate text-[11px] font-medium text-slate-500">
+        <span
+          className={clsx(
+            "mt-1 block truncate text-[11px] font-medium",
+            isZero ? "text-slate-600" : "text-slate-500",
+          )}
+        >
           {stat.label}
         </span>
       </span>
@@ -109,15 +126,8 @@ const SECTION_PRIORITY = "home-priority";
 const SECTION_LIVE_NOW = "home-live-now";
 const SECTION_AGENT_FEED = "home-agent-feed";
 const SECTION_HEALTH = "home-health-strip";
+const SECTION_CONVERSATIONS = "home-conversations";
 
-/** Workspace-tile face per health tone. `off` never reaches here (overallTone
- * folds it into ok), but the record stays total so tsc guards the mapping. */
-const WORKSPACE_TILE: Record<SegmentTone, { value: string; tone: string }> = {
-  ok: { value: "OK", tone: "text-stable-mint" },
-  warn: { value: "Degraded", tone: "text-status-working" },
-  unknown: { value: "Unknown", tone: "text-slate-500" },
-  off: { value: "OK", tone: "text-stable-mint" },
-};
 
 /**
  * Command-center landing surface for `/` when no room is selected.
@@ -298,21 +308,10 @@ export function HomeDashboard() {
     staleTime: 60_000,
     refetchInterval: 120_000,
   });
-  const fleetAgents = useMemo(() => {
-    const order: Record<string, number> = {
-      working: 0,
-      active: 1,
-      idle: 2,
-      offline: 3,
-    };
-    return [...agentRoster]
-      .sort(
-        (a, b) =>
-          (order[a.status] ?? 9) - (order[b.status] ?? 9) ||
-          (a.display_name || a.name).localeCompare(b.display_name || b.name),
-      )
-      .slice(0, 8);
-  }, [agentRoster]);
+  const fleetAgents = useMemo(
+    () => rankedFleet(agentRoster, rooms),
+    [agentRoster, rooms],
+  );
   const fleetActiveCount = useMemo(
     () =>
       agentRoster.filter((a) => a.status === "working" || a.status === "active")
@@ -341,6 +340,9 @@ export function HomeDashboard() {
 
   // ── W7 health (one hook — the strip and the Workspace tile share it) ───
   const health = useHomeHealth();
+  // Lifted out of ConversationsCard so the priority tail can drive it.
+  const [conversationsTab, setConversationsTab] =
+    useState<ConversationsTab | null>(null);
 
   const openPersonDm = useCallback(
     async (person: PeopleDirectoryEntry) => {
@@ -420,7 +422,16 @@ export function HomeDashboard() {
   }
 
   const liveMeetingCount = liveConferenceRooms.length + (hasActiveCall ? 1 : 0);
-  const workspaceTile = WORKSPACE_TILE[health.overall];
+
+  // Rooms the priority inbox is already rendering: Conversations must not
+  // repeat them verbatim a few hundred pixels lower.
+  const priorityRoomIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of priority.items) {
+      if (item.kind !== "approval") ids.add(item.room.id);
+    }
+    return ids;
+  }, [priority.items]);
   // Every tile is always clickable now: its target section always renders
   // (showing an honest empty state at zero), so there is no "count without a
   // set" dead end and no undefined-onClick dance per tile.
@@ -479,15 +490,11 @@ export function HomeDashboard() {
       tone: "text-stable-mint",
       onClick: () => setPeopleDrawerOpen(true),
     },
-    {
-      key: "workspace",
-      label: "Workspace",
-      value: workspaceTile.value,
-      icon: Activity,
-      tone: workspaceTile.tone,
-      attention: health.overall === "warn",
-      onClick: () => scrollToSection(SECTION_HEALTH),
-    },
+    // NO "Workspace" tile. It sat directly on top of the health strip, which
+    // names all four services and the deployed sha — two health surfaces
+    // stacked, the upper one saying only "OK". The strip is strictly more
+    // informative, so the tile was pure redundancy in the most valuable
+    // pixels on the page.
   ];
 
   return (
@@ -604,7 +611,7 @@ export function HomeDashboard() {
                     id="home-priority-heading"
                     className="font-display text-sm font-semibold text-slate-200"
                   >
-                    Mentions &amp; priority
+                    Needs you
                   </h2>
                 </div>
                 {approvalCount > 0 && (
@@ -697,10 +704,18 @@ export function HomeDashboard() {
                     );
                   })}
                   {priority.moreChannelCount > 0 && (
-                    <li className="border-t border-line px-3.5 py-2 text-[11px] tabular-nums text-slate-500">
-                      +{priority.moreChannelCount} more unread channel
-                      {priority.moreChannelCount === 1 ? "" : "s"} — see
-                      Conversations → Channels
+                    <li className="border-t border-line">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConversationsTab("channels");
+                          scrollToSection(SECTION_CONVERSATIONS);
+                        }}
+                        className="focus-ring w-full px-3.5 py-2 text-left text-[11px] tabular-nums text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                      >
+                        +{priority.moreChannelCount} more unread channel
+                        {priority.moreChannelCount === 1 ? "" : "s"} — show all
+                      </button>
                     </li>
                   )}
                 </ul>
@@ -708,12 +723,22 @@ export function HomeDashboard() {
             </section>
 
             {/* ── W3: Conversations (Chats | Channels) ─────────────────── */}
-            <div className="min-w-0 max-lg:order-4">
+            <div
+              id={SECTION_CONVERSATIONS}
+              tabIndex={-1}
+              className={clsx(
+                "min-w-0 max-lg:order-4",
+                flashClass(SECTION_CONVERSATIONS),
+              )}
+            >
               <ConversationsCard
                 rooms={rooms}
                 unreadCounts={unreadCounts}
                 onOpenRoom={openRoom}
                 onFindPeople={() => setPeopleDrawerOpen(true)}
+                excludeRoomIds={priorityRoomIds}
+                chosenTab={conversationsTab}
+                onChooseTab={setConversationsTab}
               />
             </div>
           </div>
@@ -937,7 +962,14 @@ export function HomeDashboard() {
                   </h2>
                   {agentRoster.length > 0 && (
                     <span className="text-[11px] tabular-nums text-slate-500">
-                      {fleetActiveCount}/{agentRoster.length} active
+                      {/* "54/54 active" is a ratio that carries no information
+                          and reads as a fabricated stat — Brigade reports
+                          nearly everything `active` because that is
+                          REGISTRATION, not liveness. State the count plainly
+                          unless the split is real. */}
+                      {fleetActiveCount === agentRoster.length
+                        ? `${agentRoster.length} registered`
+                        : `${fleetActiveCount}/${agentRoster.length} active`}
                     </span>
                   )}
                 </div>
@@ -1016,9 +1048,8 @@ export function HomeDashboard() {
                               {agent.display_name || agent.name}
                             </span>
                             <span className="block truncate text-xs text-slate-500">
-                              {[agent.rank, agent.title]
-                                .filter(Boolean)
-                                .join(" · ") || agent.model}
+                              {agentSubtitle([agent.rank, agent.title]) ||
+                                agent.model}
                             </span>
                           </span>
                           <span

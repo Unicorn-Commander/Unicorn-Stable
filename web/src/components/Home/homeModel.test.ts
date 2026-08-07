@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Message, PendingApproval, Room } from "@/services/api";
+import type { Agent } from "@/services/api";
 import {
   LIVE_MEETING_MS,
   agentFeed,
+  agentSubtitle,
   agentsSegment,
   buildRevision,
   channelsByActivity,
@@ -11,6 +13,7 @@ import {
   liveConferences,
   overallTone,
   priorityModel,
+  rankedFleet,
   serviceEntries,
   unreadCountFor,
 } from "./homeModel";
@@ -192,8 +195,8 @@ describe("agentFeed", () => {
       }),
     ];
     const feed = agentFeed(rooms, {});
-    expect(feed.waiting.map((r) => r.id)).toEqual(["waiting"]);
-    expect(feed.recent.map((r) => r.id)).toEqual(["recent"]);
+    expect(feed.waiting.map((r) => r.room.id)).toEqual(["waiting"]);
+    expect(feed.recent.map((r) => r.room.id)).toEqual(["recent"]);
   });
 
   it("excludes waiting rooms from recent even beyond the waiting cap", () => {
@@ -207,10 +210,15 @@ describe("agentFeed", () => {
       }),
     );
     const feed = agentFeed(rooms, {});
-    expect(feed.waiting).toHaveLength(5);
+    // All seven are threads with the SAME agent, so they collapse to one row
+    // carrying the other six — seven consecutive "Chat with Majik" rows was
+    // the bug, not the feature. The tile still counts all seven.
+    expect(feed.waiting).toHaveLength(1);
+    expect(feed.waiting[0]!.room.id).toBe("w0");
+    expect(feed.waiting[0]!.extraThreads).toBe(6);
     expect(feed.waitingTotal).toBe(7);
-    // w5/w6 fell off the visible waiting list but must NOT reappear as
-    // plain activity — they are still waiting on the human.
+    // The folded threads must NOT reappear as plain activity — they are
+    // still waiting on the human.
     expect(feed.recent).toHaveLength(0);
   });
 
@@ -243,7 +251,7 @@ describe("agentFeed", () => {
     );
     const feed = agentFeed(rooms, {});
     expect(feed.recent).toHaveLength(10);
-    expect(feed.recent[0]?.id).toBe("r0");
+    expect(feed.recent[0]?.room.id).toBe("r0");
   });
 });
 
@@ -397,5 +405,125 @@ describe("health strip semantics", () => {
     expect(buildRevision({ build: {} })).toBeNull();
     expect(buildRevision({})).toBeNull();
     expect(buildRevision(undefined)).toBeNull();
+  });
+
+  describe("collapsing duplicate agent threads", () => {
+    // Every "New chat" mints another room titled "Chat with Majik"; the feed
+    // used to render them as N identical rows.
+    const threads = [
+      activeRoom(5, { id: "majik-c", type: "dm", brigade_agent_id: "majik", display_name: "Chat with Majik", unread_count: 1 }),
+      activeRoom(40, { id: "majik-a", type: "dm", brigade_agent_id: "majik", display_name: "Chat with Majik", unread_count: 2 }),
+      activeRoom(80, { id: "majik-b", type: "dm", brigade_agent_id: "majik", display_name: "Chat with Majik", unread_count: 3 }),
+      activeRoom(9, { id: "qwen-a", type: "dm", brigade_agent_id: "corporal-qwen", display_name: "Chat with Corporal Qwen", unread_count: 1 }),
+    ];
+
+    it("shows one row per agent, newest thread first, folding the rest", () => {
+      const feed = agentFeed(threads, {});
+      expect(feed.waiting.map((r) => r.room.id)).toEqual(["majik-c", "qwen-a"]);
+      const majik = feed.waiting[0]!;
+      expect(majik.extraThreads).toBe(2);
+      expect(majik.extraUnread).toBe(5);
+      expect(feed.waiting[1]!.extraThreads).toBe(0);
+    });
+
+    it("still counts every waiting ROOM for the stat tile, not the rows", () => {
+      expect(agentFeed(threads, {}).waitingTotal).toBe(4);
+    });
+
+    it("never folds rooms that have no resident agent", () => {
+      const channels = [
+        activeRoom(3, { id: "c1", type: "channel", last_message: undefined as never }),
+      ];
+      const withAgentMsg = [
+        room({
+          id: "c1",
+          type: "channel",
+          last_message: message({ created_at: new Date(NOW - 60_000).toISOString(), sender_type: "agent" }),
+        }),
+        room({
+          id: "c2",
+          type: "channel",
+          last_message: message({ created_at: new Date(NOW - 120_000).toISOString(), sender_type: "agent" }),
+        }),
+      ];
+      void channels;
+      const feed = agentFeed(withAgentMsg, {});
+      expect(feed.recent).toHaveLength(2);
+      expect(feed.recent.every((r) => r.extraThreads === 0)).toBe(true);
+    });
+  });
+
+  describe("agents rail ranking", () => {
+    function agent(id: string, status: Agent["status"] = "active"): Agent {
+      return {
+        id,
+        name: id,
+        display_name: id,
+        description: "",
+        avatar_url: null,
+        status,
+        capabilities: [],
+        model: "m",
+      };
+    }
+
+    it("puts the agents you actually talk to first, newest thread first", () => {
+      // Brigade reports nearly everything "active", so the old status-then-name
+      // sort was pure alphabetical and buried the working set.
+      const roster = [agent("brief-drafter"), agent("majik"), agent("corporal-qwen")];
+      const rooms = [
+        activeRoom(90, { id: "r1", type: "dm", brigade_agent_id: "corporal-qwen" }),
+        activeRoom(5, { id: "r2", type: "dm", brigade_agent_id: "majik" }),
+      ];
+      expect(rankedFleet(roster, rooms).map((a) => a.id)).toEqual([
+        "majik",
+        "corporal-qwen",
+        "brief-drafter",
+      ]);
+    });
+
+    it("falls back to status then name when no thread exists", () => {
+      const roster = [agent("zeta"), agent("alpha"), agent("busy", "working")];
+      expect(rankedFleet(roster, []).map((a) => a.id)).toEqual([
+        "busy",
+        "alpha",
+        "zeta",
+      ]);
+    });
+  });
+
+  describe("agent subtitle", () => {
+    it("drops a part that merely restates one already shown", () => {
+      // "Chief Financial Officer · Chief Financial Of…" — one fact, twice,
+      // then truncated.
+      expect(
+        agentSubtitle(["Chief Financial Officer", "Chief Financial Officer"]),
+      ).toBe("Chief Financial Officer");
+      expect(agentSubtitle(["Senior Counsel", "Senior Counsel · Drafting"])).toBe(
+        "Senior Counsel",
+      );
+    });
+
+    it("keeps genuinely different parts and ignores blanks", () => {
+      expect(agentSubtitle(["Corporal", "Backlog Dev Drafter"])).toBe(
+        "Corporal · Backlog Dev Drafter",
+      );
+      expect(agentSubtitle([null, "  ", "Domain Lead"])).toBe("Domain Lead");
+      expect(agentSubtitle([])).toBe("");
+    });
+  });
+
+  describe("priority / conversations de-duplication", () => {
+    it("hides rooms the priority inbox is already showing", () => {
+      const rooms = [
+        activeRoom(5, { id: "gm", type: "channel", unread_count: 10 }),
+        activeRoom(9, { id: "eng", type: "channel", unread_count: 0 }),
+      ];
+      const shown = new Set(["gm"]);
+      expect(channelsByActivity(rooms, 12, shown).map((r) => r.id)).toEqual([
+        "eng",
+      ]);
+      expect(channelsByActivity(rooms).map((r) => r.id)).toEqual(["gm", "eng"]);
+    });
   });
 });

@@ -1,4 +1,4 @@
-import type { Agent, Message, Room } from "@/services/api";
+import type { Agent, Message } from "@/services/api";
 import { Bot } from "lucide-react";
 import { brandAvatarFor } from "@/lib/brandAvatars";
 import { identityFor } from "@/lib/identity";
@@ -6,8 +6,20 @@ import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import {
   unreadCountFor,
   type AgentFeedModel,
+  type AgentThreadRow,
   type UnreadMap,
 } from "@/components/Home/homeModel";
+
+/** "+3 more threads" — the folded duplicate rooms with the same agent. */
+function FoldedThreads({ row }: { row: AgentThreadRow }) {
+  if (row.extraThreads === 0) return null;
+  return (
+    <span className="shrink-0 rounded bg-white/[0.05] px-1.5 py-px text-[10px] font-medium text-slate-500">
+      +{row.extraThreads} more thread{row.extraThreads === 1 ? "" : "s"}
+      {row.extraUnread > 0 ? ` · ${row.extraUnread} unread` : ""}
+    </span>
+  );
+}
 import { HomeRow, SenderLine, previewText } from "./HomeRow";
 
 /**
@@ -112,7 +124,8 @@ export function AgentActivityFeed({
               waiting" as a standing line inside a feed that HAS content would
               be noise the stat strip already carries. */}
           {waiting.length > 0 && <GroupHeader label="Waiting on you" />}
-          {waiting.map((room: Room) => {
+          {waiting.map((row: AgentThreadRow) => {
+            const room = row.room;
             const unread = unreadCountFor(room, unreadCounts);
             const m = room.last_message;
             return (
@@ -140,13 +153,16 @@ export function AgentActivityFeed({
                   divider
                   onClick={() => onOpenRoom(room.id)}
                   line={
-                    m ? (
-                      <SenderLine message={m} />
-                    ) : (
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        Unread agent messages
-                      </p>
-                    )
+                    <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                      {m ? (
+                        <SenderLine message={m} />
+                      ) : (
+                        <span className="truncate text-xs text-slate-500">
+                          Unread agent messages
+                        </span>
+                      )}
+                      <FoldedThreads row={row} />
+                    </span>
                   }
                 />
               </li>
@@ -156,7 +172,8 @@ export function AgentActivityFeed({
           {recent.length > 0 && (
             <GroupHeader label="Recent agent activity" divider={waiting.length > 0} />
           )}
-          {recent.map((room: Room) => {
+          {recent.map((row: AgentThreadRow) => {
+            const room = row.room;
             // recent rows are guaranteed a last_message by construction
             // (that message is WHY the room is in the list).
             const m = room.last_message!;
@@ -177,6 +194,7 @@ export function AgentActivityFeed({
                         {room.display_name || room.name}
                       </span>
                       <span className="truncate">{previewText(m.content)}</span>
+                      <FoldedThreads row={row} />
                     </span>
                   }
                 />
