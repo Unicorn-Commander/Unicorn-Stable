@@ -46,7 +46,11 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
       navigate(`/c/${room.id}`);
     } catch (err) {
       console.error("join failed", err);
-      alert("Couldn't join — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't join channel",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setJoiningId(null);
     }

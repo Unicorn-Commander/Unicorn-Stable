@@ -117,7 +117,11 @@ function MemberMenu({
       setOpen(false);
     } catch (e) {
       const err = e as ApiError;
-      alert(err?.detail || err?.message || "Action failed");
+      useAppStore.getState().pushToast({
+        title: "Action failed",
+        body: err?.detail || err?.message || undefined,
+        kind: "error",
+      });
     } finally {
       setBusy(false);
     }

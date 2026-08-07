@@ -155,10 +155,11 @@ function applySlashCommand(input: string): SlashResult {
       // the cdr_deep_research tool runs. Purely a framed message — no special
       // backend path; the research metadata is forward-compat and inert today.
       if (!rest) {
-        alert(
-          "Usage: /research <question>\n" +
-            "Runs deep web research with citations via Center Deep.",
-        );
+        useAppStore.getState().pushToast({
+          title: "Usage: /research <question>",
+          body: "Runs deep web research with citations via Center Deep.",
+          kind: "info",
+        });
         return { text: null };
       }
       return {
@@ -172,10 +173,11 @@ function applySlashCommand(input: string): SlashResult {
       // a DM with an orchestrator (Majik / GFlow / The General). The
       // `facilitate` flag rides in metadata; the text is just the question.
       if (!rest) {
-        alert(
-          "Usage: /facilitate <question>\n" +
-            "Your orchestrator routes it to the best specialist, who answers here.",
-        );
+        useAppStore.getState().pushToast({
+          title: "Usage: /facilitate <question>",
+          body: "Your orchestrator routes it to the best specialist, who answers here.",
+          kind: "info",
+        });
         return { text: null };
       }
       return { text: rest, metadata: { facilitate: true } };
@@ -184,20 +186,22 @@ function applySlashCommand(input: string): SlashResult {
       // (backend council.py). The `council` flag rides in metadata; the text
       // is just the question. Best in a DM with an agent.
       if (!rest) {
-        alert(
-          "Usage: /council <question>\n" +
-            "Several models answer in parallel, then one synthesis is posted.",
-        );
+        useAppStore.getState().pushToast({
+          title: "Usage: /council <question>",
+          body: "Several models answer in parallel, then one synthesis is posted.",
+          kind: "info",
+        });
         return { text: null };
       }
       return { text: rest, metadata: { council: true } };
     case "poll": {
       const poll = parsePoll(rest);
       if (!poll) {
-        alert(
-          'Usage: /poll "Question?" option1 option2 [option3...]\n' +
-            "Use double-quotes for multi-word options.",
-        );
+        useAppStore.getState().pushToast({
+          title: 'Usage: /poll "Question?" option1 option2…',
+          body: "Use double-quotes for multi-word options.",
+          kind: "info",
+        });
         return { text: null };
       }
       return {

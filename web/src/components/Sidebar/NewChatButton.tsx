@@ -56,7 +56,11 @@ export function NewChatButton({
       if (onStarted) onStarted(room.id);
       else navigate(`/c/${room.id}`);
     } catch (err) {
-      alert("Couldn't start a new chat — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start a new chat",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setStarting(false);
     }

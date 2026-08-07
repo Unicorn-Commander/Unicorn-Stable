@@ -322,7 +322,11 @@ export function RoomView({ roomId }: RoomViewProps) {
       await qc.invalidateQueries({ queryKey: ["rooms"] });
     } catch (e) {
       console.error("name save failed", e);
-      alert("Couldn't rename: " + (e as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't rename the room",
+        body: (e as Error).message,
+        kind: "error",
+      });
     }
   }
 
@@ -732,11 +736,13 @@ export function RoomView({ roomId }: RoomViewProps) {
             roomId={roomId}
             onClose={() => setSearchOpen(false)}
             onSelect={(m) => {
-              // Open message in thread if it has replies, else just jump
               if (m.thread_id) {
+                // A thread reply lives only in its thread panel.
                 openThread(m.thread_id);
               } else {
-                openThread(m.id);
+                // Land on the message itself via the ?message deep-link
+                // (scroll + highlight ring), not a one-message thread view.
+                navigate(`/c/${roomId}?message=${m.id}`);
               }
             }}
           />

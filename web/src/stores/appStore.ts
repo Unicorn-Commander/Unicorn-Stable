@@ -70,6 +70,12 @@ export interface Toast {
   body?: string;
   roomId?: string;
   createdAt: number;
+  /** Semantic tone. When absent, ToastStack falls back to reading the title —
+   * callers reporting a FAILURE should always pass "error" so the toast
+   * doesn't render as an info chirp (and so it lingers long enough to read). */
+  kind?: "success" | "error" | "info";
+  /** Never auto-dismiss (user must close). For failures that need action. */
+  sticky?: boolean;
 }
 
 interface AppState {

@@ -125,7 +125,11 @@ export function AgentChatModal({
       navigate(`/c/${roomId}`);
     } catch (err) {
       console.error("start agent chat failed", err);
-      alert("Couldn't start the chat — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start the chat",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setBusy(false);
     }

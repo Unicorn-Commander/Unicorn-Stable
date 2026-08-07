@@ -5,20 +5,35 @@ import { Bell, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 
 const AUTO_DISMISS_MS = 6000;
+// Errors linger: 6s is a success-chirp budget, not enough to read a failure
+// and decide what to do about it.
+const ERROR_DISMISS_MS = 15000;
 
-// Semantic tone for the accent bar + icon chip. The store's Toast carries no
-// kind field, so this is a purely presentational read of the title — success
-// and error phrasing get emerald/rose, everything else is info (sky).
-function toneFor(title: string): { bar: string; chip: string; icon: string } {
+type ToastKind = "success" | "error" | "info";
+
+// Semantic tone for the accent bar + icon chip. Callers that pass `kind` win;
+// the title regex stays as the legacy fallback for older call sites.
+function kindFor(title: string, kind?: ToastKind): ToastKind {
+  if (kind) return kind;
   const t = title.toLowerCase();
-  if (/\b(fail|failed|error|couldn|cannot|can't|denied|invalid)\b/.test(t)) {
+  if (/\b(fail|failed|error|couldn|cannot|can't|denied|invalid|not delivered)\b/.test(t)) {
+    return "error";
+  }
+  if (/\b(saved|success|done|copied|created|sent|joined|added)\b/.test(t)) {
+    return "success";
+  }
+  return "info";
+}
+
+function toneFor(kind: ToastKind): { bar: string; chip: string; icon: string } {
+  if (kind === "error") {
     return {
       bar: "bg-rose-400",
       chip: "bg-rose-500/15",
       icon: "text-rose-400",
     };
   }
-  if (/\b(saved|success|done|copied|created|sent|joined|added)\b/.test(t)) {
+  if (kind === "success") {
     return {
       bar: "bg-emerald-400",
       chip: "bg-emerald-500/15",
@@ -35,9 +50,21 @@ export function ToastStack() {
 
   useEffect(() => {
     if (toasts.length === 0) return;
-    const timers = toasts.map((t) =>
-      setTimeout(() => dismissToast(t.id), AUTO_DISMISS_MS),
-    );
+    // Timers are anchored to each toast's createdAt rather than to effect
+    // re-runs: the array identity changes whenever ANY toast arrives or
+    // leaves, and naive `setTimeout(..., FULL_DURATION)` here silently reset
+    // every surviving toast's countdown each time.
+    const now = Date.now();
+    const timers = toasts
+      .filter((t) => !t.sticky)
+      .map((t) => {
+        const budget =
+          kindFor(t.title, t.kind) === "error"
+            ? ERROR_DISMISS_MS
+            : AUTO_DISMISS_MS;
+        const remaining = Math.max(0, t.createdAt + budget - now);
+        return setTimeout(() => dismissToast(t.id), remaining);
+      });
     return () => timers.forEach(clearTimeout);
   }, [toasts, dismissToast]);
 
@@ -49,7 +76,7 @@ export function ToastStack() {
     >
       <AnimatePresence initial={false}>
         {toasts.slice(-5).map((t) => {
-          const tone = toneFor(t.title);
+          const tone = toneFor(kindFor(t.title, t.kind));
           return (
             <motion.div
               key={t.id}

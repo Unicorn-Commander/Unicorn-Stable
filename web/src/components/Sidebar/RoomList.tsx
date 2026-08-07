@@ -295,7 +295,11 @@ export function RoomList() {
       openRoom(room.id);
     } catch (err) {
       console.error("new chat failed", err);
-      alert("Couldn't start a new chat — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start a new chat",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setStartingChat(false);
     }

@@ -184,7 +184,11 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
       navigate(`/c/${room.id}`);
     } catch (err) {
       console.error("dm create failed", err);
-      alert("Couldn't start DM — " + (err as Error).message);
+      useAppStore.getState().pushToast({
+        title: "Couldn't start DM",
+        body: (err as Error).message,
+        kind: "error",
+      });
     } finally {
       setBusy(false);
     }

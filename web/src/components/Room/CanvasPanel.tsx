@@ -332,10 +332,11 @@ export function CanvasPanel({ roomId, onClose }: CanvasPanelProps) {
       setShowDiff(false);
     } catch (e) {
       const apiErr = e as { detail?: string | null; message?: string };
-      alert(
-        "Restore failed: " +
-          (apiErr?.detail || apiErr?.message || "unknown error"),
-      );
+      useAppStore.getState().pushToast({
+        title: "Restore failed",
+        body: apiErr?.detail || apiErr?.message || "unknown error",
+        kind: "error",
+      });
     }
   }
 
