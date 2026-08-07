@@ -942,9 +942,31 @@ class StableApiClient {
     return this.request<Agent[]>("GET", "/api/v1/brigade/roster");
   }
 
-  /** Backend health/build summary — powers the Settings → Instance pane. */
+  /** Backend health/build summary — powers the Settings → Instance pane and
+   * the home dashboard's health strip.
+   *
+   * Not routed through request(): the readiness endpoint returns 503 WITH the
+   * same `{status, services}` body when any service is down (health.py) — the
+   * 503 is a valid answer naming what broke, not a transport failure, and
+   * request() would throw it away and keep only statusText. Only a response
+   * with no parseable readiness body (network down, proxy 5xx) throws. */
   async getInstanceHealth(): Promise<InstanceHealth> {
-    return this.request<InstanceHealth>("GET", "/api/v1/health");
+    const response = await fetch(`${activeBaseUrl()}/api/v1/health`, {
+      headers: await this.getAuthHeaders(),
+    });
+    if (response.ok || response.status === 503) {
+      try {
+        return (await response.json()) as InstanceHealth;
+      } catch {
+        /* a 503 from a proxy in front of a dead app — fall through */
+      }
+    }
+    const error: ApiError = {
+      status: response.status,
+      message: response.statusText,
+      detail: null,
+    };
+    throw error;
   }
 
   async getBrigadeAgents(): Promise<BrigadeAgent[]> {
