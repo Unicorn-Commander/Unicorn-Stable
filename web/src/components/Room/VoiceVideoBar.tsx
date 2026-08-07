@@ -1,3 +1,4 @@
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import {
   useMemo,
   useCallback,
@@ -95,7 +96,6 @@ import {
 // participant can publish both a camera and a screen share and Aaron wants those
 // on separate monitors. Each key portals exactly one tile into its own window.
 import {
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
   usePipTile,
   useMergedVideoRef,
   useCallPopout,

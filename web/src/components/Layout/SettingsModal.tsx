@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import {
   Bell,
   BellRing,
@@ -20,7 +21,6 @@ import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
-import { brandAvatarFor } from "@/lib/brandAvatars";
 import { logout } from "@/services/auth";
 import { api } from "@/services/api";
 import { ensurePushSubscription } from "@/lib/webpush";
@@ -29,7 +29,6 @@ import { Tooltip } from "@/components/ui";
 import { AppearanceSection } from "@/components/Settings/AppearanceSection";
 import { HelpCenter } from "@/components/Help";
 import {
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
   loadMeetingOpsPrefs,
   saveMeetingOpsPrefs,
   type MeetingOpsTranscriptPrefs,

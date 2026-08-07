@@ -467,13 +467,13 @@ class StableApiClient {
     const all: Raw[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 20; page++) {
-      const qs = cursor
+      const qs: string = cursor
         ? `?limit=100&cursor=${encodeURIComponent(cursor)}`
         : "?limit=100";
-      const resp = await this.request<{ rooms: Raw[]; cursor?: string | null }>(
-        "GET",
-        `/api/v1/rooms${qs}`,
-      );
+      const resp: { rooms: Raw[]; cursor?: string | null } = await this.request<{
+        rooms: Raw[];
+        cursor?: string | null;
+      }>("GET", `/api/v1/rooms${qs}`);
       all.push(...(resp.rooms ?? []));
       cursor = resp.cursor ?? null;
       if (!cursor) break;

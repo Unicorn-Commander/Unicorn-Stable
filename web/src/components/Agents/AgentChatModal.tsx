@@ -19,6 +19,7 @@ import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
 import { Avatar } from "@/components/ui/Avatar";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { useAppStore } from "@/stores/appStore";
 
 function label(a: Agent): string {
   return a.display_name || a.name;

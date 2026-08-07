@@ -26,6 +26,7 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import type { ArtifactKind, ArtifactResponse } from "@/types/artifact";
 import { CanvasRenderer } from "./canvas/CanvasRenderer";
 import DiffView from "./canvas/DiffView";
+import { useAppStore } from "@/stores/appStore";
 
 const KIND_LABEL: Record<ArtifactKind, string> = {
   markdown: "Markdown",

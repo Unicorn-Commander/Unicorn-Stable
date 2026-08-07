@@ -7,6 +7,7 @@ import { api, type Room, type BrigadeAgent } from "@/services/api";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { identityFor } from "@/lib/identity";
 import { Avatar } from "@/components/Avatar";
+import { useAppStore } from "@/stores/appStore";
 
 interface CreateDmModalProps {
   onClose: () => void;

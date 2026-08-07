@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Hash, Search, X } from "lucide-react";
 import { api, type Room } from "@/services/api";
 import { useModalA11y } from "@/hooks/useModalA11y";
+import { useAppStore } from "@/stores/appStore";
 
 interface ChannelBrowserProps {
   onClose: () => void;
