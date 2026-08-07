@@ -981,6 +981,12 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* The composer shares the message column's measure. It used to span the
+          full content width (1307px beside an 832px message column at 1904px
+          viewport), so the input visibly overhung the conversation above it —
+          two different documents stacked. `relative` moves with it so the
+          emoji/slash popovers anchor to the column, not the viewport edge. */}
+      <div className="relative mx-auto w-full max-w-[52rem]">
       {showEmojiPanel && (
         <div
           ref={emojiPanelRef}
@@ -1280,6 +1286,8 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             <Phone className="h-4 w-4" />
           </button>
         )}
+      </div>
+
       </div>
 
       {dragOver && (

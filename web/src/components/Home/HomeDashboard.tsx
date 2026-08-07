@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type PeopleDirectoryEntry } from "@/services/api";
-import { brandAvatarFor } from "@/lib/brandAvatars";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { Avatar } from "@/components/Avatar";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
@@ -567,7 +567,7 @@ export function HomeDashboard() {
 
         {/* ── Stat strip — the pulse of the whole workspace ────────────── */}
         <div
-          className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-7"
+          className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6"
           role="group"
           aria-label="Workspace overview"
         >
@@ -1002,16 +1002,30 @@ export function HomeDashboard() {
                         >
                           <span className="relative shrink-0">
                             {(() => {
-                              const src =
-                                agent.avatar_url ||
-                                brandAvatarFor(
-                                  agent.display_name || agent.name,
-                                );
+                              // Ladder, not the raw roster URL: ~38 of
+                              // Brigade's 54 avatar bindings 404, and this
+                              // <img> has no onError — so cmo-v2.png,
+                              // maj-recon-v2.png, meeting-ops-dev-v2.png and
+                              // brief-drafter-v2.png rendered as broken-image
+                              // boxes on the live dashboard (verified in the
+                              // browser: 4 imgs with naturalWidth 0).
+                              const src = resolveAgentPortrait(
+                                agent.id,
+                                agent.display_name || agent.name,
+                                agent.avatar_url,
+                              );
                               return src ? (
                                 <img
                                   src={src}
                                   alt=""
                                   loading="lazy"
+                                  onError={(e) => {
+                                    // Agents with no bundled portrait fall to
+                                    // the procedural head rather than a broken
+                                    // glyph — the ladder cannot know a remote
+                                    // file 404s until it does.
+                                    e.currentTarget.style.display = "none";
+                                  }}
                                   className={clsx(
                                     "h-8 w-8 rounded-lg object-cover ring-1 ring-white/10",
                                     (unreachable ||

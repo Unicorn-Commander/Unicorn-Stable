@@ -1,6 +1,7 @@
-import type { Agent, Message } from "@/services/api";
+import { useState } from "react";
+import type { Agent, Message, Room } from "@/services/api";
 import { Bot } from "lucide-react";
-import { brandAvatarFor } from "@/lib/brandAvatars";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import { identityFor } from "@/lib/identity";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import {
@@ -34,34 +35,65 @@ import { HomeRow, SenderLine, previewText } from "./HomeRow";
  * the message's own avatar → the roster's (matched by name — feed rows come
  * from `last_message`, which carries no agent id) → puppet art by name →
  * generated unicorn. */
-function AgentPortrait({ message, roster }: { message: Message; roster: Agent[] }) {
-  const rosterMatch = roster.find(
-    (a) =>
-      a.display_name === message.sender_name || a.name === message.sender_name,
-  );
-  const src =
-    message.sender_avatar ||
-    rosterMatch?.avatar_url ||
-    brandAvatarFor(message.sender_name);
-  if (src) {
+/**
+ * A feed row's portrait, with a real failure path.
+ *
+ * These used to be bare <img> tags fed straight from the roster URL, and
+ * Brigade's bindings dangle by the dozen — the live dashboard rendered four
+ * broken-image boxes. The ladder puts same-origin bundle art first, and any
+ * load failure still falls through to the procedural head instead of a
+ * broken glyph.
+ */
+function Portrait({
+  id,
+  name,
+  avatarUrl,
+}: {
+  id: string | null;
+  name: string;
+  avatarUrl?: string | null;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = resolveAgentPortrait(id, name, avatarUrl);
+  if (src && !failed) {
     return (
       <img
         src={src}
         alt=""
         loading="lazy"
+        onError={() => setFailed(true)}
         className="mt-0.5 h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-white/10"
       />
     );
   }
   return (
     <span className="mt-0.5 shrink-0">
-      <UnicornAvatar
-        id={message.sender_id}
-        name={message.sender_name}
-        size={36}
-        state="idle"
-      />
+      <UnicornAvatar id={id ?? name} name={name} size={36} state="idle" />
     </span>
+  );
+}
+
+function AgentPortrait({ message, roster }: { message: Message; roster: Agent[] }) {
+  const rosterMatch = roster.find(
+    (a) =>
+      a.display_name === message.sender_name || a.name === message.sender_name,
+  );
+  return (
+    <Portrait
+      id={rosterMatch?.id ?? message.sender_id}
+      name={message.sender_name}
+      avatarUrl={message.sender_avatar || rosterMatch?.avatar_url}
+    />
+  );
+}
+
+/** Portrait for a waiting row, which has a room rather than a message. */
+function RoomAgentPortrait({ room }: { room: Room }) {
+  return (
+    <Portrait
+      id={room.brigade_agent_id ?? null}
+      name={room.display_name || room.name}
+    />
   );
 }
 
@@ -131,21 +163,7 @@ export function AgentActivityFeed({
             return (
               <li key={room.id}>
                 <HomeRow
-                  leading={(() => {
-                    const src = brandAvatarFor(room.display_name || room.name);
-                    return src ? (
-                      <img
-                        src={src}
-                        alt=""
-                        loading="lazy"
-                        className="mt-0.5 h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-white/10"
-                      />
-                    ) : (
-                      <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
-                        <Bot className="h-4 w-4" />
-                      </span>
-                    );
-                  })()}
+                  leading={<RoomAgentPortrait room={room} />}
                   title={room.display_name || room.name}
                   at={m?.created_at ?? null}
                   unread={unread}
