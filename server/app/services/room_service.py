@@ -574,7 +574,14 @@ class RoomService:
                 select(func.count()).select_from(RoomMember).where(RoomMember.room_id == room.id)
             )
             mc = mc_result.scalar() or 0
-            online_ids = await self._presence.get_online_in_room(str(room.id))
+            # Presence is decoration; the room list is the product. A redis
+            # outage here used to 500 the ENTIRE rooms endpoint — the sidebar
+            # rendered empty and users read it as "my history is gone"
+            # (2026-08-05..07, corrupt-AOF crash loop). Fail open to zero.
+            try:
+                online_ids = await self._presence.get_online_in_room(str(room.id))
+            except Exception:
+                online_ids = set()
             enriched_rooms.append({
                 "room": room,
                 "member_count": mc,

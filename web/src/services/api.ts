@@ -52,6 +52,9 @@ export interface Room {
   created_at: string;
   updated_at: string;
   member_count: number;
+  /** How many members are online right now (server presence). The list
+   * endpoint has always sent this; the mapper used to drop it. */
+  online_count?: number;
   unread_count: number;
   last_message: Message | null;
   members: RoomMember[];
@@ -457,8 +460,25 @@ class StableApiClient {
       last_message?: Message | null;
       unread_count?: number;
     };
-    const resp = await this.request<{ rooms: Raw[] }>("GET", "/api/v1/rooms");
-    return (resp.rooms ?? []).map((r) => ({
+    // Follow the cursor to the END. The endpoint pages at 100 max and the
+    // old single-request version silently showed only the 50 most recently
+    // updated rooms — a member of 82 rooms had 32 (old channels, old agent
+    // DMs) permanently invisible in the sidebar. "My history isn't there."
+    const all: Raw[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const qs = cursor
+        ? `?limit=100&cursor=${encodeURIComponent(cursor)}`
+        : "?limit=100";
+      const resp = await this.request<{ rooms: Raw[]; cursor?: string | null }>(
+        "GET",
+        `/api/v1/rooms${qs}`,
+      );
+      all.push(...(resp.rooms ?? []));
+      cursor = resp.cursor ?? null;
+      if (!cursor) break;
+    }
+    return all.map((r) => ({
       id: r.id,
       name: r.display_name || r.name,
       description: r.description ?? "",
@@ -466,6 +486,7 @@ class StableApiClient {
       created_at: r.created_at,
       updated_at: r.updated_at,
       member_count: r.member_count,
+      online_count: r.online_count ?? 0,
       unread_count: r.unread_count ?? 0,
       last_message: r.last_message ?? null,
       members: [],

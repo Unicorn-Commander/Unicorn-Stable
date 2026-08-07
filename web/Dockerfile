@@ -18,7 +18,13 @@ RUN npm run build
 # Stage 2: Serve
 FROM nginx:alpine AS production
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Installed as a TEMPLATE: the nginx image's entrypoint envsubsts
+# /etc/nginx/templates/*.template -> /etc/nginx/conf.d/*.conf at start,
+# substituting only DEFINED env vars (nginx's own $vars are untouched).
+# STABLE_BACKEND_HOST defaults to the compose service name for single-stack
+# deploys; multi-stack hosts override it with the unique container name.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+ENV STABLE_BACKEND_HOST=backend
 
 # --- build provenance (stamped by scripts/deploy.sh / compose build args) ---
 ARG GIT_SHA=unknown
