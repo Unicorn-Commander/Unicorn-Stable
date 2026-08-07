@@ -880,6 +880,8 @@ class RoomService:
                 "last_read_at": membership.last_read_at,
                 "is_muted": membership.is_muted,
                 "is_self": caller is not None and str(participant.id) == caller,
+                "avatar_url": participant.avatar_url,
+                "avatar_emoji": participant.avatar_emoji,
                 # Presence is Redis-derived ONLY. `participants.status` is a
                 # stale DB column: essentially every row is created ONLINE and
                 # then never updated. Humans are seeded ONLINE on first auth

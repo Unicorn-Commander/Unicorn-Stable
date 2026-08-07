@@ -29,6 +29,7 @@ import { Tooltip } from "@/components/ui";
 import { AppearanceSection } from "@/components/Settings/AppearanceSection";
 import { HelpCenter } from "@/components/Help";
 import {
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
   loadMeetingOpsPrefs,
   saveMeetingOpsPrefs,
   type MeetingOpsTranscriptPrefs,
@@ -312,14 +313,23 @@ function AgentsPane() {
               () => void choose(agent.id),
               <>
                 {(() => {
-                  const src =
-                    agent.avatar_url ||
-                    brandAvatarFor(agent.display_name || agent.name);
+                  // Ladder (bundle art first, allowlisted roster URL second)
+                  // instead of a raw roster URL: ~38 of Brigade's bindings
+                  // 404 and this img had no onError — a live broken-image
+                  // glyph in Settings.
+                  const src = resolveAgentPortrait(
+                    agent.id,
+                    agent.display_name || agent.name,
+                    agent.avatar_url,
+                  );
                   return src ? (
                     <img
                       src={src}
                       alt=""
                       loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
                       className="h-8 w-8 shrink-0 rounded-lg object-cover ring-1 ring-white/10"
                     />
                   ) : (

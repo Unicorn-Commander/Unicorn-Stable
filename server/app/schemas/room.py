@@ -45,6 +45,12 @@ class RoomMemberResponse(BaseModel):
     # `status` carries the same fact as a string for status-shaped consumers.
     is_online: bool = False
     status: str | None = None
+    # The participant's picture (mirror/override hybrid, same value messages
+    # carry as sender_avatar) + emoji tier. Absent for years, which made every
+    # members-driven surface — roster strip, "seen by", the DM hero — render
+    # initials for humans AND agents no matter how much art existed.
+    avatar_url: str | None = None
+    avatar_emoji: str | None = None
     # AGENTS ONLY (null for humans) — a deliberately separate fact from
     # `is_online`. Presence means "a client is connected"; availability means
     # "this agent can be invoked right now" (Brigade has it enabled, or a

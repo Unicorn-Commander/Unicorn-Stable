@@ -95,6 +95,7 @@ import {
 // participant can publish both a camera and a screen share and Aaron wants those
 // on separate monitors. Each key portals exactly one tile into its own window.
 import {
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
   usePipTile,
   useMergedVideoRef,
   useCallPopout,
@@ -917,7 +918,15 @@ function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
       }
     >
       <Avatar
-        avatarUrl={agent?.avatar_url}
+        avatarUrl={
+          isAgent
+            ? resolveAgentPortrait(
+                id.replace(/^agent-/, ""),
+                name,
+                agent?.avatar_url,
+              )
+            : agent?.avatar_url
+        }
         emoji={agent?.emoji}
         id={id.replace(/^agent-/, "")}
         name={name}

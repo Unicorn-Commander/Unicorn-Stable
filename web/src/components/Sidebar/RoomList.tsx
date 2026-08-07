@@ -79,6 +79,7 @@ import { resolveDefaultAgent } from "./newChat";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { usePresenceStore } from "@/stores/presenceStore";
 import type { PeopleDirectoryEntry } from "@/services/api";
+import { Avatar } from "@/components/ui/Avatar";
 
 export function RoomList() {
   const navigate = useNavigate();
@@ -239,9 +240,13 @@ export function RoomList() {
                     title={person.display_name}
                   >
                     <span className="relative">
-                      <span className="flex h-9 w-9 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-slate-200">
-                        {(person.display_name || "?").slice(0, 1).toUpperCase()}
-                      </span>
+                      <Avatar
+                        avatarUrl={person.avatar_url}
+                        id={person.id}
+                        name={person.display_name}
+                        size={36}
+                        alt=""
+                      />
                       <span
                         className={
                           "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-0 " +

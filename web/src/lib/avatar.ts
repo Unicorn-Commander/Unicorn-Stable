@@ -105,6 +105,13 @@ export function isSafeAvatarUrl(url: string | null | undefined): boolean {
 export function toAvatarSrc(url: string | null | undefined): string | null {
   if (!isSafeAvatarUrl(url)) return null;
   const raw = (url as string).trim();
+  // Bundle art ships with the WEB origin, not the API origin — a DB row that
+  // points at "/agent-puppets/x.webp" must load from the SPA that rendered
+  // it. Same host on both instances today, but the rewrite below is an
+  // API-origin rewrite and would silently break the moment they split.
+  if (raw.startsWith("/agent-puppets/") || raw.startsWith("/agent-avatars/")) {
+    return raw;
+  }
   return raw.startsWith("/") ? `${avatarApiBase()}${raw}` : raw;
 }
 
@@ -162,10 +169,13 @@ export function resolveAvatar(input: AvatarInput): ResolvedAvatar {
   const identity = identityFor(input.id, input.name);
   const initials = initialsFor(input.name ?? input.id);
   const src = toAvatarSrc(input.avatarUrl);
-  if (src) {
-    return { kind: "image", src, emoji: null, initials, identity };
-  }
+  // Carry the emoji THROUGH the image branch: ui/Avatar's onError falls back
+  // to `resolved.emoji`, and returning null here made that branch dead code —
+  // a dead URL skipped the emoji tier and landed on initials.
   const emoji = (input.emoji ?? "").trim();
+  if (src) {
+    return { kind: "image", src, emoji: emoji || null, initials, identity };
+  }
   if (emoji) {
     return { kind: "emoji", src: null, emoji, initials, identity };
   }

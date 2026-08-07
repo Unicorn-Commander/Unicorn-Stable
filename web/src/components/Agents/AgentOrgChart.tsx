@@ -32,6 +32,7 @@ import { Tooltip } from "@/components/ui";
 import { buildOrgTree } from "./orgTree";
 import { useOrgLayout, ORG_NODE_W, ORG_NODE_H } from "./useOrgLayout";
 import { Avatar } from "@/components/ui/Avatar";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -75,7 +76,7 @@ function OrgGraphNode(props: NodeProps) {
       />
       <span className="relative flex h-9 w-9 shrink-0">
         <Avatar
-          avatarUrl={agent.avatar_url}
+          avatarUrl={resolveAgentPortrait(agent.id, label(agent), agent.avatar_url)}
           emoji={agent.emoji}
           id={agent.id}
           name={label(agent)}

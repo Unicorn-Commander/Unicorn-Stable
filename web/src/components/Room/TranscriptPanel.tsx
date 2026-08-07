@@ -18,6 +18,7 @@ import {
 import { isBrowserSttAvailable } from "@/lib/humanTranscript";
 import { api } from "@/services/api";
 import { Avatar } from "@/components/ui/Avatar";
+import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 
 /**
  * Live call transcript. Renders speaker-labeled lines in near-real-time with
@@ -326,7 +327,11 @@ export function TranscriptPanel() {
                 <div className="w-7 shrink-0 pt-0.5">
                   {!continuation && (
                     <Avatar
-                      avatarUrl={agent?.avatar_url ?? participant?.avatar_url}
+                      avatarUrl={resolveAgentPortrait(
+                        agentId,
+                        line.name,
+                        agent?.avatar_url ?? participant?.avatar_url,
+                      )}
                       emoji={agent?.emoji}
                       id={agentId}
                       name={line.name}
