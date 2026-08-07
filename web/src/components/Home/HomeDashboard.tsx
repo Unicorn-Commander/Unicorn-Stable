@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type PeopleDirectoryEntry } from "@/services/api";
-import { AgentPortrait } from "./widgets/AgentPortrait";
+import { AgentPortrait } from "@/components/Agents/AgentPortrait";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { Avatar } from "@/components/Avatar";
 import { useAppStore } from "@/stores/appStore";

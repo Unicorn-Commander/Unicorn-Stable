@@ -7,6 +7,7 @@ import { useChat } from "@/hooks/useChat";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
+import { AgentPortrait } from "@/components/Agents/AgentPortrait";
 import { ws } from "@/services/websocket";
 import { Avatar } from "@/components/Avatar";
 import { StableMark } from "@/components/StableMark";
@@ -975,6 +976,14 @@ const AGENT_PROMPTS = [
   "Walk me through a typical task you handle.",
 ];
 
+/** Brigade slug for a member row when we have one, else the display name —
+ *  the portrait ladder matches on either. Member rows carry a participant
+ *  UUID, which never matches a Brigade id, so passing that alone would skip
+ *  the bundled art entirely. */
+function agentKeyFor(member: { username?: string; display_name: string }): string {
+  return (member.username || member.display_name).replace(/^agent-/, "");
+}
+
 // Empty-channel starter chips. Each wires to a real action (see runChip):
 // "invite-agent" opens the room's invite flow; the other two seed the composer
 // and focus it via the store's requestInsert (consumed + focused by
@@ -1022,27 +1031,32 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
     return (
       <div className="flex flex-1 items-center justify-center px-4">
         <div className="w-full max-w-md text-center animate-fade-in">
-          <div className="relative mx-auto mb-4 h-12 w-12">
+          {/* The portrait is the point of this screen. Every character ships
+              as 512² art and every surface rendered it at 32-48px, throwing
+              away the detail we generated; this is the one moment where you
+              are META a resident rather than scanning a list, so it gets a
+              real portrait. Sized in rem so it scales with the user's text
+              size, and capped on short viewports so the starter prompts stay
+              above the fold on a laptop. */}
+          <div className="relative mx-auto mb-5 h-32 w-32 max-[900px]:h-24 max-[900px]:w-24">
             <div
               aria-hidden="true"
-              className="absolute -inset-1 rounded-full blur-xl"
+              className="absolute -inset-3 rounded-full blur-2xl opacity-70"
               style={{ background: ident.ring }}
             />
-            <Avatar
+            <AgentPortrait
+              id={agentKeyFor(onlyAgent)}
               name={onlyAgent.display_name}
-              id={onlyAgent.participant_id || onlyAgent.user_id}
-              src={onlyAgent.avatar_url}
-              isAgent
-              size="lg"
-              className="relative"
+              avatarUrl={onlyAgent.avatar_url}
+              size={128}
+              className="relative h-full w-full rounded-2xl"
             />
           </div>
-          <p className="font-display text-base font-semibold text-slate-100">
-            Chatting privately with{" "}
+          <p className="font-display text-lg font-semibold text-slate-100">
             <span style={{ color: ident.text }}>{onlyAgent.display_name}</span>
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            Mentions are off in DMs — every message goes to them.
+            Private chat — mentions are off, every message goes to them.
           </p>
           <div className="mt-5 flex flex-col gap-2">
             {AGENT_PROMPTS.map((p) => (
