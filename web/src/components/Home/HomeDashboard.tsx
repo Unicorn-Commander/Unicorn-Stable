@@ -17,10 +17,9 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type PeopleDirectoryEntry } from "@/services/api";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { AgentPortrait } from "./widgets/AgentPortrait";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { Avatar } from "@/components/Avatar";
-import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -1001,53 +1000,13 @@ export function HomeDashboard() {
                           )}
                         >
                           <span className="relative shrink-0">
-                            {(() => {
-                              // Ladder, not the raw roster URL: ~38 of
-                              // Brigade's 54 avatar bindings 404, and this
-                              // <img> has no onError — so cmo-v2.png,
-                              // maj-recon-v2.png, meeting-ops-dev-v2.png and
-                              // brief-drafter-v2.png rendered as broken-image
-                              // boxes on the live dashboard (verified in the
-                              // browser: 4 imgs with naturalWidth 0).
-                              const src = resolveAgentPortrait(
-                                agent.id,
-                                agent.display_name || agent.name,
-                                agent.avatar_url,
-                              );
-                              return src ? (
-                                <img
-                                  src={src}
-                                  alt=""
-                                  loading="lazy"
-                                  onError={(e) => {
-                                    // Agents with no bundled portrait fall to
-                                    // the procedural head rather than a broken
-                                    // glyph — the ladder cannot know a remote
-                                    // file 404s until it does.
-                                    e.currentTarget.style.display = "none";
-                                  }}
-                                  className={clsx(
-                                    "h-8 w-8 rounded-lg object-cover ring-1 ring-white/10",
-                                    (unreachable ||
-                                      agent.status === "offline") &&
-                                      "opacity-50 saturate-50",
-                                  )}
-                                />
-                              ) : (
-                                <UnicornAvatar
-                                  id={agent.id}
-                                  name={agent.display_name || agent.name}
-                                  size={32}
-                                  state={
-                                    unreachable || agent.status === "offline"
-                                      ? "offline"
-                                      : agent.status === "working"
-                                        ? "working"
-                                        : "idle"
-                                  }
-                                />
-                              );
-                            })()}
+                            <AgentPortrait
+                              id={agent.id}
+                              name={agent.display_name || agent.name}
+                              avatarUrl={agent.avatar_url}
+                              size={32}
+                              dimmed={unreachable || agent.status === "offline"}
+                            />
                             {agent.emoji && (
                               <span
                                 className="absolute -bottom-1 -right-1 text-[10px]"
