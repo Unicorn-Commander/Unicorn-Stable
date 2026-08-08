@@ -499,6 +499,17 @@ fi
 # ----------------------------------------------------------------------------
 # Bring the stack up
 # ----------------------------------------------------------------------------
+# Make the generated .env AUTHORITATIVE for compose interpolation. docker
+# compose prefers the caller's OS environment over --env-file, so a var the
+# user's shell happens to export (BRIGADE_API_KEY, OPENAI_API_KEY, …) would
+# silently override what we just wrote — the running containers and the .env
+# on disk would disagree. Exporting every pair from the file closes that gap.
+# (Parsed line-by-line, not `source`d: values may contain spaces.)
+while IFS= read -r _line; do
+  case "$_line" in
+    [A-Za-z_]*=*) export "${_line%%=*}=${_line#*=}" ;;
+  esac
+done < "$ENV_FILE"
 compose() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" --env-file "$ENV_FILE" "$@"; }
 export COMPOSE_PROFILES="$PROFILES"
 
