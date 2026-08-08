@@ -437,7 +437,12 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
       icon: AtSign,
       tone: "text-stable-purple-light",
       attention: priority.mentionRooms.length > 0,
-      onClick: () => onOpenActivity?.("mentions") ?? scrollToSection(SECTION_PRIORITY),
+      // Open the message-level Mentions inbox; the ?? form double-fired
+      // (void ?? scroll) and scrolled the page under the panel.
+      onClick: () =>
+        onOpenActivity
+          ? onOpenActivity("mentions")
+          : scrollToSection(SECTION_PRIORITY),
     },
     {
       key: "dms",
@@ -446,7 +451,10 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
       icon: MessageSquare,
       tone: "text-stable-cyan",
       attention: priority.dmUnreadRooms.length > 0,
-      onClick: () => onOpenActivity?.("threads") ?? scrollToSection(SECTION_PRIORITY),
+      // No message-level DM feed exists (the inbox tabs are mention/thread/
+      // reaction events) — the honest target is the Needs-you list, which is
+      // exactly the set this number counts. "threads" was a wrong-tab map.
+      onClick: () => scrollToSection(SECTION_PRIORITY),
     },
     {
       key: "approvals",
@@ -457,7 +465,10 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
       icon: ShieldCheck,
       tone: "text-rose-300",
       attention: approvalCount > 0,
-      onClick: () => onOpenActivity?.("approvals") ?? scrollToSection(SECTION_PRIORITY),
+      onClick: () =>
+        onOpenActivity
+          ? onOpenActivity("approvals")
+          : scrollToSection(SECTION_PRIORITY),
     },
     {
       key: "meetings",
