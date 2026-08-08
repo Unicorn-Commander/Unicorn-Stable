@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { ArrowDown, ArrowUp, Loader2, X } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
@@ -112,6 +112,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const currentUser = useAppStore((s) => s.currentUser);
   const [editFocusId, setEditFocusId] = useState<string | null>(null);
   const [editTick, setEditTick] = useState(0);
+  const queryClient = useQueryClient();
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const readReceipts = useAppStore(
     (s) => s.readReceipts[roomId] ?? EMPTY_READ_RECEIPTS,
@@ -604,6 +605,8 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     });
   }, [hasMore, loading, loadMore]);
 
+  const autoTitleDoneRef = useRef(false);
+
   function handleSend(
     content: string,
     threadId?: string,
@@ -615,7 +618,34 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // "Jordan is typing…" underneath a message Jordan just posted is the stuck
     // indicator in its most obvious form.
     clearTypingIndicator();
-    sendMessage(content, threadId, attachments, extraMetadata);
+    void sendMessage(content, threadId, attachments, extraMetadata).then(() => {
+      // Auto-title agent DMs: after the first human message, replace the
+      // default "chat with <agent>" with a one-line summary ≤42 chars, and set
+      // metadata.auto_titled so we never overwrite a user rename.
+      if (autoTitleDoneRef.current) return;
+      const room = useAppStore.getState().rooms.find((r) => r.id === roomId);
+      if (!room) return;
+      const isAgentDm =
+        room.type === "dm" &&
+        !!room.brigade_agent_id;
+      const isDefaultName = /^chat with /i.test(room.display_name || room.name);
+      const meta = (room as any).metadata_ as Record<string, unknown> | null | undefined;
+      if (isAgentDm && isDefaultName && !meta?.auto_titled) {
+        autoTitleDoneRef.current = true;
+        const summary = content.trim().slice(0, 42);
+        if (summary.length > 0) {
+          api.updateRoom(roomId, {
+            display_name: summary,
+            metadata: { auto_titled: true },
+          }).then(() => {
+            queryClient.invalidateQueries({ queryKey: ["rooms"] });
+          }).catch((err) => {
+            console.debug("[chat] auto-title failed", err);
+            autoTitleDoneRef.current = false;
+          });
+        }
+      }
+    });
     // Arm the missed-reply resync poll, but only where a reply can actually be
     // missed. This says nothing about whether an agent is working — it only
     // covers a dropped WS event on our own send.

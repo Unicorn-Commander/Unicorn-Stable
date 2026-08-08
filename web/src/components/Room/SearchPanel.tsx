@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import clsx from "clsx";
@@ -6,6 +6,7 @@ import { Search, SearchX, X } from "lucide-react";
 import { identityFor } from "@/lib/identity";
 import { api, type Message } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
+import { parseSearchQuery, removeOperatorToken } from "@/utils/searchOperators";
 
 interface SearchPanelProps {
   roomId: string;
@@ -23,10 +24,20 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
     inputRef.current?.focus();
   }, []);
 
+  // Operators (from:/has:/before:/after:) are parsed out of the raw input;
+  // the free-text remainder is what gets debounced into the query string.
+  const parsed = useMemo(() => parseSearchQuery(q), [q]);
+
+  const removeOperator = (key: string) => {
+    const op = parsed.operators[key as keyof typeof parsed.operators];
+    if (!op) return;
+    setQ(removeOperatorToken(q, key, op));
+  };
+
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(q.trim()), 250);
+    const t = setTimeout(() => setDebounced(parsed.query.trim()), 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [parsed]);
 
   // New result set → keyboard selection restarts at the top.
   useEffect(() => {
@@ -34,8 +45,8 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
   }, [debounced]);
 
   const { data: results = [], isFetching, isError, refetch } = useQuery({
-    queryKey: ["search", roomId, debounced],
-    queryFn: () => api.searchMessages(roomId, debounced),
+    queryKey: ["search", roomId, debounced, JSON.stringify(parsed.operators)],
+    queryFn: () => api.searchMessages(roomId, debounced, parsed.operators),
     enabled: debounced.length > 0,
   });
 
@@ -86,6 +97,22 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {Object.keys(parsed.operators).length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
+          {Object.entries(parsed.operators).map(([key, value]) => (
+            <button
+              key={key}
+              onClick={() => removeOperator(key)}
+              className="inline-flex items-center gap-1 rounded-full border border-line bg-white/[0.04] px-2 py-0.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
+            >
+              <span className="text-slate-500">{key}:</span>
+              <span>{value}</span>
+              <X className="h-2.5 w-2.5 text-slate-500" />
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="max-h-96 overflow-y-auto">
         {!debounced ? (
