@@ -29,6 +29,9 @@ import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
 import { CanvasPanel } from "./CanvasPanel";
 import { LeaveRoomModal } from "./LeaveRoomModal";
+import { Avatar } from "@/components/Avatar";
+import { AgentPortrait } from "@/components/Agents/AgentPortrait";
+import { agentPresence } from "@/lib/agentStatus";
 
 // Lazy: the Knowledge panel (collection mgmt + file upload + doc lists) is a
 // distinct surface most sessions never open, so split it out of the main chunk.
@@ -299,6 +302,40 @@ export function RoomView({ roomId }: RoomViewProps) {
     setNameDraft(roomDetail?.display_name || roomDetail?.name || "");
   }, [roomDetail?.display_name, roomDetail?.name]);
 
+  // ── Type-aware identity block (Fable gap 12) ────────────────────────────
+  // A 1:1 DM is a private conversation, not a channel: its header names a
+  // PERSON, so it gets the person's avatar + presence instead of a #, and it
+  // drops the channel furniture (topic edit, rename, Invite) that implies
+  // the room is a public space.
+  const isDm = roomDetail?.type === "dm";
+  const dmAgentId = roomDetail?.brigade_agent_id ?? null;
+  const dmAgent = dmAgentId
+    ? rosterAgents.find((a) => a.id === dmAgentId)
+    : undefined;
+  const dmAgentName =
+    dmAgent?.display_name || dmAgent?.name || dmAgentId || "";
+  // The person on the other side of a human 1:1 — members arrive from the
+  // room-members query above (is_self is server-set, the only reliable marker).
+  const dmPeer = members?.find(
+    (m) => !m.is_self && (m.participant_type ?? "human") !== "agent",
+  );
+  const dmPeerName = dmPeer?.display_name || displayName;
+  // Live presence comes from the agent's MEMBER row (Redis-derived, WS-
+  // patched); the roster's `availability` is the reachability fallback.
+  const dmAgentMember = members?.find(
+    (m) => (m.participant_type ?? "human") === "agent",
+  );
+  const dmAgentBadge = dmAgentId
+    ? agentPresence({
+        isOnline: dmAgentMember?.is_online,
+        availability:
+          dmAgentMember?.availability ?? dmAgent?.availability,
+        availabilityReason:
+          dmAgentMember?.availability_reason ?? dmAgent?.availability_reason,
+        name: dmAgentName,
+      })
+    : null;
+
   async function saveTopic() {
     const next = topicDraft.trim();
     if ((roomDetail?.description || "") === next) {
@@ -412,6 +449,50 @@ export function RoomView({ roomId }: RoomViewProps) {
           >
             <UserRound className="h-5 w-5" />
           </button>
+          {isDm ? (
+            /* 1:1 DM: the person IS the header. Avatar + presence + name,
+               read-only — no #, no topic, no rename (channel furniture). */
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="relative shrink-0">
+                {dmAgentId ? (
+                  <AgentPortrait
+                    id={dmAgentId}
+                    name={dmAgentName}
+                    avatarUrl={dmAgent?.avatar_url}
+                    size={24}
+                  />
+                ) : (
+                  <Avatar
+                    name={dmPeerName}
+                    src={dmPeer?.avatar_url}
+                    size="sm"
+                  />
+                )}
+                {dmAgentId ? (
+                  <span
+                    className={clsx(
+                      "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900",
+                      dmAgentBadge?.dotClass,
+                    )}
+                    aria-label={dmAgentBadge?.label}
+                    title={dmAgentBadge?.label}
+                  />
+                ) : (
+                  dmPeer?.is_online && (
+                    <span
+                      className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 animate-live rounded-full border-2 border-slate-900 bg-stable-mint"
+                      aria-label="Online"
+                      title="Online"
+                    />
+                  )
+                )}
+              </span>
+              <span className="truncate font-display text-sm font-semibold text-slate-50">
+                {dmAgentId ? dmAgentName : dmPeerName}
+              </span>
+            </div>
+          ) : (
+            <>
           <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />
           {editingName ? (
             <input
@@ -480,6 +561,8 @@ export function RoomView({ roomId }: RoomViewProps) {
             </button>
           )}
           </span>
+            </>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {/* Mid-conversation model switcher. Desktop: inline. Phones: folds
@@ -611,6 +694,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
             </button>
           </span>
+          {!isDm && (
           <button
             onClick={() => setInviteOpen(true)}
             className="flex items-center gap-1 rounded-lg border border-stable-purple/30 bg-stable-purple/15 p-2.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 focus-ring md:px-2.5 md:py-1"
@@ -619,6 +703,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             <UserPlus className="h-3.5 w-3.5" />
             <span className="hidden md:inline">Invite</span>
           </button>
+          )}
           <button
             onClick={toggleParticipants}
             className={clsx(
@@ -727,7 +812,9 @@ export function RoomView({ roomId }: RoomViewProps) {
                   {muted ? "Unmute room" : "Mute room"}
                 </button>
                 {/* Phones: rename lives here (the inline title tap is gated
-                    to desktop pointers so it can't summon the keyboard). */}
+                    to desktop pointers so it can't summon the keyboard). 1:1
+                    DMs are named by their person, not by the room. */}
+                {!isDm && (
                 <button
                   role="menuitem"
                   onClick={() => {
@@ -739,7 +826,8 @@ export function RoomView({ roomId }: RoomViewProps) {
                   <Pencil className="h-4 w-4" />
                   Rename channel
                 </button>
-                <div className="my-1 h-px bg-white/[0.06] md:hidden" />
+                )}
+                {!isDm && <div className="my-1 h-px bg-white/[0.06] md:hidden" />}
                 <button
                   role="menuitem"
                   onClick={openLeave}
