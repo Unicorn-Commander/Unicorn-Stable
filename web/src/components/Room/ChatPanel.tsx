@@ -607,6 +607,12 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
 
   const autoTitleDoneRef = useRef(false);
 
+  // The done-latch is per ROOM. ChatPanel is normally remounted per room via
+  // the surrounding key'd boundary, but don't lean on that from this far away.
+  useEffect(() => {
+    autoTitleDoneRef.current = false;
+  }, [roomId]);
+
   function handleSend(
     content: string,
     threadId?: string,
@@ -618,18 +624,27 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // "Jordan is typing…" underneath a message Jordan just posted is the stuck
     // indicator in its most obvious form.
     clearTypingIndicator();
+    // Auto-title eligibility is decided from the PRE-send state: the message
+    // being sent must be the room's first human message. Any older page still
+    // on the server (hasMore) or any human message already in the loaded
+    // window means this room has history — never retitle an old "Chat with X"
+    // room because message #31 happened to be sent in it.
+    const hadPriorHumanMessage =
+      hasMore || messages.some((m) => m.sender_type === "human");
     void sendMessage(content, threadId, attachments, extraMetadata).then(() => {
       // Auto-title agent DMs: after the first human message, replace the
       // default "chat with <agent>" with a one-line summary ≤42 chars, and set
-      // metadata.auto_titled so we never overwrite a user rename.
-      if (autoTitleDoneRef.current) return;
+      // metadata.auto_titled so we never overwrite a user rename (the server
+      // persists the flag via the RoomUpdate metadata allowlist and it rides
+      // back on room.metadata_).
+      if (autoTitleDoneRef.current || hadPriorHumanMessage || threadId) return;
       const room = useAppStore.getState().rooms.find((r) => r.id === roomId);
       if (!room) return;
       const isAgentDm =
         room.type === "dm" &&
         !!room.brigade_agent_id;
       const isDefaultName = /^chat with /i.test(room.display_name || room.name);
-      const meta = (room as any).metadata_ as Record<string, unknown> | null | undefined;
+      const meta = room.metadata_;
       if (isAgentDm && isDefaultName && !meta?.auto_titled) {
         autoTitleDoneRef.current = true;
         const summary = content.trim().slice(0, 42);
