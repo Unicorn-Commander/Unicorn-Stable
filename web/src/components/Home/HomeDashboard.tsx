@@ -140,6 +140,7 @@ export function HomeDashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const rooms = useAppStore((s) => s.rooms);
+  const roomsLoaded = useAppStore((s) => s.roomsLoaded);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -570,9 +571,30 @@ export function HomeDashboard() {
           role="group"
           aria-label="Workspace overview"
         >
-          {stats.map((stat) => (
-            <StatTile key={stat.key} stat={stat} />
-          ))}
+          {roomsLoaded ? (
+            stats.map((stat) => (
+              <StatTile key={stat.key} stat={stat} />
+            ))
+          ) : (
+            // Pre-load: the tiles would read as six zeros before the rooms
+            // payload lands. Shimmer keeps the grid geometry stable.
+            Array.from({ length: 6 }, (_, i) => (
+              <div
+                key={i}
+                className="card flex animate-pulse-soft items-center gap-3 px-3.5 py-3"
+                aria-hidden="true"
+              >
+                <div className="h-8 w-8 shrink-0 rounded-lg bg-white/[0.05]" />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <div
+                    className="h-4 rounded bg-white/[0.06]"
+                    style={{ width: `${[40, 55, 30, 45, 35, 50][i]}%` }}
+                  />
+                  <div className="h-2.5 w-2/3 rounded bg-white/[0.04]" />
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
         {/* ── W7: ambient health strip (always renders — see the widget) ─ */}

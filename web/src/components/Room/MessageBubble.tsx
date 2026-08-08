@@ -37,7 +37,7 @@ import { identityFor } from "@/lib/identity";
 import { isRoomApprover } from "@/lib/approvals";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
-
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 
@@ -877,7 +877,7 @@ function QuickReact({ onReact }: { onReact: (emoji: string) => void }) {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+        className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
         aria-label="Add reaction"
         aria-expanded={open}
       >
@@ -1221,7 +1221,7 @@ interface MessageBubbleProps {
   message: Message;
   isOwn: boolean;
   showAvatar: boolean;
-  onEdit: (messageId: string, content: string) => Promise<void>;
+  onEdit: (messageId: string, content: string) => Promise<boolean>;
   onDelete: (messageId: string) => Promise<void>;
   onReply: (messageId: string) => void;
   onRetry?: (messageId: string) => Promise<void>;
@@ -1581,6 +1581,7 @@ export function MessageBubble({
   const failedError = (message.metadata as { failed_error?: string } | undefined)?.failed_error;
   const [editContent, setEditContent] = useState(message.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const showActions = (hovered || actionsOpen || regenMenuOpen) && !editing;
 
   // Outside-tap closes the mobile-pinned action strip (mirrors hover leave).
@@ -1619,9 +1620,13 @@ export function MessageBubble({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceEditTick]);
 
-  function handleEditSubmit() {
+  async function handleEditSubmit() {
     if (editContent.trim() && editContent !== message.content) {
-      onEdit(message.id, editContent.trim());
+      // Resolves false when the server rejected the edit — keep the box open
+      // with the attempted text (the failure toast explains why), so the
+      // user's words are never silently discarded.
+      const ok = await onEdit(message.id, editContent.trim());
+      if (!ok) return;
     }
     setEditing(false);
   }
@@ -2486,7 +2491,7 @@ export function MessageBubble({
               e.stopPropagation();
               onReply(message.id);
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Reply in thread"
           >
             <MessageSquare className="h-3.5 w-3.5" />
@@ -2498,7 +2503,7 @@ export function MessageBubble({
               const quote = `> **${message.sender_name}:** ${message.content}\n\n`;
               useAppStore.getState().requestInsert(message.room_id, quote);
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Quote reply"
             title="Quote and reply"
           >
@@ -2510,7 +2515,7 @@ export function MessageBubble({
               e.stopPropagation();
               handleToggleSave();
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Save message"
             title="Save to your bookmarks"
           >
@@ -2522,7 +2527,7 @@ export function MessageBubble({
               e.stopPropagation();
               setPromoteOpen(true);
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Promote to Project Ops task"
             title="Promote to Project Ops task"
           >
@@ -2534,7 +2539,7 @@ export function MessageBubble({
               e.stopPropagation();
               handleTogglePin();
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Pin / unpin message"
             title="Pin or unpin"
           >
@@ -2671,9 +2676,7 @@ export function MessageBubble({
                 onClick={() => {
                   // Confirm here too — the hover toolbar deleted instantly
                   // while only the context-menu path asked (easy mis-click).
-                  if (window.confirm("Delete this message?")) {
-                    void onDelete(message.id);
-                  }
+                  setConfirmDelete(true);
                 }}
                 className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-500/15 hover:text-rose-300 focus-ring"
                 aria-label="Delete message"
@@ -2805,9 +2808,7 @@ export function MessageBubble({
               <li>
                 <button
                   onClick={() => {
-                    if (window.confirm("Delete this message?")) {
-                      void onDelete(message.id);
-                    }
+                    setConfirmDelete(true);
                     setCtxMenu(null);
                   }}
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-rose-300 transition-colors hover:bg-rose-500/15 focus-ring"
@@ -2824,6 +2825,20 @@ export function MessageBubble({
           message={message}
           onClose={() => setPromoteOpen(false)}
           onPromoted={handlePromoted}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete message?"
+          message="This permanently removes the message for everyone. This can't be undone."
+          confirmLabel="Delete"
+          icon={Trash2}
+          busy={false}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            void onDelete(message.id);
+          }}
+          onClose={() => setConfirmDelete(false)}
         />
       )}
       {lightbox && (

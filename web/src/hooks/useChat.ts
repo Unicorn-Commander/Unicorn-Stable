@@ -12,15 +12,16 @@ interface UseChatReturn {
   /** Initial page failed to load — the room may not actually be empty. */
   error: boolean;
   /** Re-run the initial page fetch after a failure. */
-  retryInitial: () => Promise<void>;
-  sendMessage: (
+  retryInitial: () => Promise<void>;  sendMessage: (
     content: string,
     threadId?: string,
     attachments?: { url: string; filename: string; content_type: string; size: number }[],
     extraMetadata?: Record<string, unknown>,
   ) => Promise<void>;
   loadMore: () => Promise<void>;
-  editMessage: (messageId: string, content: string) => Promise<void>;
+  /** Resolves true when the server accepted the edit, false on failure (the
+   *  bubble keeps its draft so the user's words aren't lost). */
+  editMessage: (messageId: string, content: string) => Promise<boolean>;
   deleteMessage: (messageId: string) => Promise<void>;
   retryMessage: (messageId: string) => Promise<void>;
   /** Force a merge-refetch of the room's latest messages (used as a safety net
@@ -382,20 +383,30 @@ export function useChat(roomId: string | null): UseChatReturn {
   );
 
   const editMessage = useCallback(
-    async (messageId: string, content: string) => {
-      if (!roomId) return;
+    async (messageId: string, content: string): Promise<boolean> => {
+      if (!roomId) return false;
       const original = messages.find((m) => m.id === messageId);
-      if (!original) return;
+      if (!original) return false;
 
       updateMessage(roomId, messageId, { content, edited: true });
 
       try {
         await api.editMessage(roomId, messageId, content);
-      } catch {
+        return true;
+      } catch (err) {
         updateMessage(roomId, messageId, {
           content: original.content,
           edited: original.edited,
         });
+        useAppStore.getState().pushToast({
+          title: "Edit failed",
+          body:
+            (err as { detail?: string; message?: string })?.detail ||
+            (err as { message?: string })?.message ||
+            (err instanceof Error ? err.message : "Request failed"),
+          kind: "error",
+        });
+        return false;
       }
     },
     [roomId, messages, updateMessage],
@@ -411,8 +422,16 @@ export function useChat(roomId: string | null): UseChatReturn {
 
       try {
         await api.deleteMessage(roomId, messageId);
-      } catch {
+      } catch (err) {
         addMessage(roomId, original);
+        useAppStore.getState().pushToast({
+          title: "Delete failed",
+          body:
+            (err as { detail?: string; message?: string })?.detail ||
+            (err as { message?: string })?.message ||
+            (err instanceof Error ? err.message : "Request failed"),
+          kind: "error",
+        });
       }
     },
     [roomId, messages, addMessage, removeMessage],

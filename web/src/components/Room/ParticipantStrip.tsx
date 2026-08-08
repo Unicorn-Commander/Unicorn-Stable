@@ -24,6 +24,7 @@ import {
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -81,6 +82,7 @@ function MemberMenu({
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   // Hooks must run unconditionally — keep this above the visibility short-circuit.
@@ -131,7 +133,10 @@ function MemberMenu({
     void run(() => api.setMemberMute(roomId, pid, !member.is_muted));
   }
   function remove() {
-    if (!confirm(`Remove ${member.display_name} from this channel?`)) return;
+    setConfirmRemove(true);
+  }
+  function confirmRemoveMember() {
+    setConfirmRemove(false);
     void run(() => api.removeMember(roomId, pid));
   }
   function changeRole(role: ModRole) {
@@ -213,6 +218,25 @@ function MemberMenu({
             <UserMinus className="h-3.5 w-3.5" /> Remove from channel
           </button>
         </div>
+      )}
+      {confirmRemove && (
+        <ConfirmDialog
+          title="Remove member?"
+          message={
+            <>
+              Remove{" "}
+              <span className="font-semibold text-slate-100">
+                {member.display_name}
+              </span>{" "}
+              from this channel? They can be invited back anytime.
+            </>
+          }
+          confirmLabel="Remove"
+          icon={UserMinus}
+          busy={false}
+          onConfirm={confirmRemoveMember}
+          onClose={() => setConfirmRemove(false)}
+        />
       )}
     </div>
   );
@@ -339,6 +363,8 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const participants =
     useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const qc = useQueryClient();
+  const [confirmRemoveAgent, setConfirmRemoveAgent] =
+    useState<RoomMember | null>(null);
   // Occasional snapshot for correctness; live WS presence patches presenceStore
   // so the panel does not wait a full 30s for someone to go green/gray.
   const { data: directory = [] } = useQuery({
@@ -449,7 +475,6 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
       });
       return;
     }
-    if (!confirm(`Remove ${member.display_name} from this channel?`)) return;
     try {
       await api.removeBrigadeAgent(roomId, slug);
       await qc.invalidateQueries({ queryKey: ["room-members", roomId] });
@@ -650,7 +675,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      void removeAgent(m);
+                      setConfirmRemoveAgent(m);
                     }}
                     className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md p-1.5 text-slate-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 focus-ring touch-manipulation opacity-100 md:opacity-70 md:group-hover:opacity-100"
                     aria-label={`Remove ${m.display_name}`}
@@ -711,6 +736,29 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
             ))}
           </ul>
         </section>
+      )}
+      {confirmRemoveAgent && (
+        <ConfirmDialog
+          title="Remove agent?"
+          message={
+            <>
+              Remove{" "}
+              <span className="font-semibold text-slate-100">
+                {confirmRemoveAgent.display_name}
+              </span>{" "}
+              from this channel? They can be invited back anytime.
+            </>
+          }
+          confirmLabel="Remove"
+          icon={UserMinus}
+          busy={false}
+          onConfirm={() => {
+            const target = confirmRemoveAgent;
+            setConfirmRemoveAgent(null);
+            void removeAgent(target);
+          }}
+          onClose={() => setConfirmRemoveAgent(null)}
+        />
       )}
     </aside>
   );

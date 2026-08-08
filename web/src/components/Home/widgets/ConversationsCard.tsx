@@ -4,6 +4,7 @@ import { Hash, MessageSquare, MessagesSquare, UserRound, Users } from "lucide-re
 import type { Room } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
 import { ChannelBrowser } from "@/components/Sidebar/ChannelBrowser";
+import { useAppStore } from "@/stores/appStore";
 import {
   channelsByActivity,
   defaultConversationsTab,
@@ -57,6 +58,45 @@ export function ConversationsCard({
   const tab = chosenTab ?? defaultConversationsTab(chats, channels);
 
   const [browseOpen, setBrowseOpen] = useState(false);
+  // The rooms list is empty until the first payload lands. Before that, "No
+  // human chats yet" / "No channel activity" are lies — the data is just
+  // late. Show a skeleton instead of the empty states.
+  const roomsLoaded = useAppStore((s) => s.roomsLoaded);
+
+  if (!roomsLoaded) {
+    return (
+      <section aria-labelledby="home-conversations-heading" aria-busy="true">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <MessagesSquare className="h-4 w-4 text-stable-cyan" />
+            <h2
+              id="home-conversations-heading"
+              className="font-display text-sm font-semibold text-slate-200"
+            >
+              Conversations
+            </h2>
+          </div>
+        </div>
+        <ul className="card space-y-3 px-4 py-4" aria-hidden="true">
+          {[72, 55, 64, 40, 60].map((w, i) => (
+            <li key={i} className="flex animate-pulse-soft items-center gap-3">
+              <div className="h-9 w-9 shrink-0 rounded-full bg-white/[0.05]" />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div
+                  className="h-2.5 rounded bg-white/[0.06]"
+                  style={{ width: `${w}%` }}
+                />
+                <div
+                  className="h-2 rounded bg-white/[0.04]"
+                  style={{ width: `${Math.max(w - 24, 20)}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    );
+  }
 
   return (
     <section aria-labelledby="home-conversations-heading">

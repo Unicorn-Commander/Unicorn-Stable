@@ -86,6 +86,12 @@ interface AppState {
    * bumped unread. Learned from the websocket auth_ok ack. */
   currentParticipantId: string | null;
   rooms: Room[];
+  /**
+   * True once the initial rooms payload has landed (from the AppShell rooms
+   * refetch). Lets the sidebar/Home distinguish "loading" from "genuinely
+   * empty" so they don't flash empty-state CTAs and zero stats mid-load.
+   */
+  roomsLoaded: boolean;
   activeRoomId: string | null;
   messages: Record<string, RoomMessages>;
   participants: Record<string, RoomMember[]>;
@@ -116,6 +122,7 @@ interface AppState {
   setCurrentUser: (user: CurrentUser | null) => void;
   setCurrentParticipantId: (id: string | null) => void;
   setRooms: (rooms: Room[]) => void;
+  setRoomsLoaded: (loaded: boolean) => void;
   updateRoom: (roomId: string, updates: Partial<Room>) => void;
   removeRoom: (roomId: string) => void;
   setActiveRoomId: (id: string | null) => void;
@@ -177,6 +184,7 @@ export const useAppStore = create<AppState>((set) => ({
   currentUser: null,
   currentParticipantId: null,
   rooms: [],
+  roomsLoaded: false,
   activeRoomId: null,
   messages: {},
   participants: {},
@@ -228,8 +236,12 @@ export const useAppStore = create<AppState>((set) => ({
         const prev = prevById.get(r.id);
         return prev ? { ...r, last_message: r.last_message ?? prev.last_message } : r;
       });
-      return { rooms: merged, unreadCounts: nextUnread };
+      // Any payload is evidence the backend answered — the list is "loaded"
+      // even when it comes back empty (that's the honest empty state).
+      return { rooms: merged, unreadCounts: nextUnread, roomsLoaded: true };
     }),
+
+  setRoomsLoaded: (loaded) => set({ roomsLoaded: loaded }),
 
   updateRoom: (roomId, updates) =>
     set((state) => ({
@@ -563,6 +575,7 @@ export const useAppStore = create<AppState>((set) => ({
       }
       return {
         rooms: [],
+        roomsLoaded: false,
         activeRoomId: null,
         messages: {},
         participants: {},

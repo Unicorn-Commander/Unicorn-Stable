@@ -194,7 +194,7 @@ export function Header({
         <Tooltip content={sidebarOpen ? "Close sidebar" : "Open sidebar"} placement="bottom">
           <button
             onClick={toggleSidebar}
-            className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
+            className="focus-ring max-md:min-h-11 max-md:min-w-11 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
             aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
           >
             {sidebarOpen ? (

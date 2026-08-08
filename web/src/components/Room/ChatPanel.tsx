@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
-import { ArrowDown, Loader2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
@@ -237,16 +237,26 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     resolved: false,
   });
   const [unreadAnchorId, setUnreadAnchorId] = useState<string | null>(null);
+  // Gap #14: a big backlog needs a door back to where the user left off. The
+  // seeded unread count is captured ONCE at anchor resolution (the server
+  // count zeroes via mark_read/60s refetch, but the door must not evaporate
+  // mid-look) and the chip stays until the user jumps, dismisses, or leaves.
+  const [anchorUnreadCount, setAnchorUnreadCount] = useState(0);
+  const [jumpAnchorDismissed, setJumpAnchorDismissed] = useState(false);
   useEffect(() => {
     if (unreadAnchorRef.current.roomId !== roomId) {
       unreadAnchorRef.current = { roomId, resolved: false };
       setUnreadAnchorId(null);
+      setAnchorUnreadCount(0);
+      setJumpAnchorDismissed(false);
     }
     if (messages.length === 0) {
       // List wiped for refetch — recompute the anchor from the fresh page.
       if (unreadAnchorRef.current.resolved) {
         unreadAnchorRef.current.resolved = false;
         setUnreadAnchorId(null);
+        setAnchorUnreadCount(0);
+        setJumpAnchorDismissed(false);
       }
       return;
     }
@@ -281,7 +291,13 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
         anchor = history[Math.max(0, history.length - unread)];
       }
     }
-    if (anchor) setUnreadAnchorId(anchor.id);
+    if (anchor) {
+      setUnreadAnchorId(anchor.id);
+      const seeded =
+        state.rooms.find((r) => r.id === roomId)?.unread_count ?? 0;
+      setAnchorUnreadCount(seeded);
+      setJumpAnchorDismissed(false);
+    }
   }, [roomId, loading, messages, currentUser?.id]);
 
   // Virtuoso owns scrolling — its handle drives all programmatic scrolls
@@ -395,6 +411,8 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     setNewWhileScrolledUp(0);
     prevLastMessageIdRef.current = null;
     setFirstItemIndex(START);
+    setJumpAnchorDismissed(false);
+    setAnchorUnreadCount(0);
   }, [roomId]);
 
   // Double-tap scroll to the newest message that survives the variable-height
@@ -837,6 +855,53 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
             }}
           />
         )}
+
+        {/* Jump-to-first-unread chip — gap #14. Only for a BIG cold backlog
+            (seeded unread > 25): opening pinned to the bottom of an 80-message
+            backlog hides the "New messages" divider far above, so this is the
+            door back to where the user left off. Dismissed on jump, on X, or
+            on room switch. */}
+        {unreadAnchorId &&
+          !jumpAnchorDismissed &&
+          anchorUnreadCount > 25 &&
+          messages.length > 0 && (
+            <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 animate-slide-up items-center gap-2">
+              <button
+                onClick={() => {
+                  const arrayIndex = messages.findIndex(
+                    (m) => m.id === unreadAnchorId,
+                  );
+                  if (arrayIndex < 0) return;
+                  isAtBottomRef.current = false;
+                  setIsAtBottom(false);
+                  setJumpAnchorDismissed(true);
+                  virtuosoRef.current?.scrollToIndex({
+                    index: firstItemIndex + arrayIndex,
+                    behavior: "smooth",
+                    align: "start",
+                  });
+                }}
+                className="glass-heavy flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium text-slate-200 shadow-pop transition-colors hover:border-stable-purple/40 hover:text-white focus-ring"
+                aria-label={`Jump to first unread — ${anchorUnreadCount} new messages`}
+              >
+                <ArrowUp className="h-3.5 w-3.5 text-stable-purple" aria-hidden="true" />
+                <span>
+                  {anchorUnreadCount} new since your last visit
+                </span>
+                <span className="font-semibold text-stable-purple-light">
+                  Jump to first unread
+                </span>
+              </button>
+              <button
+                onClick={() => setJumpAnchorDismissed(true)}
+                className="glass-heavy grid h-7 w-7 shrink-0 place-items-center rounded-full text-slate-400 shadow-pop transition-colors hover:bg-white/[0.08] hover:text-white focus-ring"
+                aria-label="Dismiss jump-to-unread banner"
+                title="Dismiss"
+              >
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          )}
 
         {/* Jump-to-latest pill — only while scrolled up, so it can't cover the
             "Seen by" row (that row lives at the bottom of the scrolled content,
