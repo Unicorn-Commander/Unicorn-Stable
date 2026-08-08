@@ -959,7 +959,9 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                           onClick={() => openRoom(item.room_id)}
                           line={
                             <span className="mt-0.5 block truncate text-xs text-slate-400">
-                              {item.room_name} · {item.preview}
+                              {/* Server previews are raw message text — flatten
+                                  markdown exactly like the client-derived rows. */}
+                              {item.room_name} · {previewText(item.preview)}
                             </span>
                           }
                         />
