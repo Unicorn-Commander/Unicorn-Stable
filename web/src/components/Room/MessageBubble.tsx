@@ -37,7 +37,7 @@ import { identityFor } from "@/lib/identity";
 import { isRoomApprover } from "@/lib/approvals";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
-
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 
@@ -1581,6 +1581,7 @@ export function MessageBubble({
   const failedError = (message.metadata as { failed_error?: string } | undefined)?.failed_error;
   const [editContent, setEditContent] = useState(message.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const showActions = (hovered || actionsOpen || regenMenuOpen) && !editing;
 
   // Outside-tap closes the mobile-pinned action strip (mirrors hover leave).
@@ -2671,9 +2672,7 @@ export function MessageBubble({
                 onClick={() => {
                   // Confirm here too — the hover toolbar deleted instantly
                   // while only the context-menu path asked (easy mis-click).
-                  if (window.confirm("Delete this message?")) {
-                    void onDelete(message.id);
-                  }
+                  setConfirmDelete(true);
                 }}
                 className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-500/15 hover:text-rose-300 focus-ring"
                 aria-label="Delete message"
@@ -2805,9 +2804,7 @@ export function MessageBubble({
               <li>
                 <button
                   onClick={() => {
-                    if (window.confirm("Delete this message?")) {
-                      void onDelete(message.id);
-                    }
+                    setConfirmDelete(true);
                     setCtxMenu(null);
                   }}
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-rose-300 transition-colors hover:bg-rose-500/15 focus-ring"
@@ -2824,6 +2821,20 @@ export function MessageBubble({
           message={message}
           onClose={() => setPromoteOpen(false)}
           onPromoted={handlePromoted}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete message?"
+          message="This permanently removes the message for everyone. This can't be undone."
+          confirmLabel="Delete"
+          icon={Trash2}
+          busy={false}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            void onDelete(message.id);
+          }}
+          onClose={() => setConfirmDelete(false)}
         />
       )}
       {lightbox && (
