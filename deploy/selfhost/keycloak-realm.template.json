@@ -40,7 +40,6 @@
       "redirectUris": ["__WEB_ORIGIN__/*"],
       "webOrigins": ["__WEB_ORIGIN__"],
       "attributes": {
-        "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "__WEB_ORIGIN__/*"
       }
     },
