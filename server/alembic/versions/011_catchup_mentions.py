@@ -1,6 +1,6 @@
 """Persist mention attention and the participant activity inbox.
 
-Revision ID: 011_catchup_mentions_and_activity
+Revision ID: 011_catchup_mentions
 Revises: 010_dm_pair_unique
 """
 
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "011_catchup_mentions_and_activity"
+revision = "011_catchup_mentions"
 down_revision = "010_dm_pair_unique"
 branch_labels = None
 depends_on = None
