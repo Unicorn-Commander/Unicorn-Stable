@@ -224,10 +224,17 @@ replicate this in your realm:
 ```
 
 **2. Confidential backend client** (`KEYCLOAK_CLIENT_ID` /
-`KEYCLOAK_CLIENT_SECRET`) — the token audience check accepts `account` or this
-client id; its **service account** needs `realm-management` roles
-`view-users` + `query-users` for the people directory (degrades to empty
-search results without them):
+`KEYCLOAK_CLIENT_SECRET`) — its **service account** needs `realm-management`
+roles `view-users` + `query-users` for the people directory (degrades to
+empty search results without them).
+
+The API accepts tokens whose `aud` includes `account` **or** this client id —
+and a minimal realm mints tokens with **no `aud` at all** (every API call
+then 401s even though login succeeds). Guarantee the audience with an
+**audience protocol mapper on `stable-web`** (Client scopes → dedicated →
+Add mapper → Audience → included client audience: `stable-backend`); the
+bundled realm import ships exactly that. Realms whose users carry the
+default `account` roles also pass, but the mapper is the deterministic fix:
 
 ```json
 { "clientId": "stable-backend", "publicClient": false,

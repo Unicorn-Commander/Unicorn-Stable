@@ -29,6 +29,14 @@ COPY --from=builder /install /usr/local
 
 COPY --chown=stable:stable . .
 
+# The uploads mountpoint must exist IN THE IMAGE owned by the app user: the
+# repo ships no server/uploads/ directory, so on a fresh deployment Docker
+# created the named-volume mountpoint itself — as root — and every upload
+# (and instance-meta write) failed with EACCES. A directory baked here is
+# copy-initialized into new named volumes with this ownership. Long-lived
+# production volumes already carry their own ownership and are unaffected.
+RUN install -d -o stable -g stable /home/stable/server/uploads
+
 # --- build provenance (stamped by scripts/deploy.sh / compose build args) ---
 ARG GIT_SHA=unknown
 ARG GIT_SHA_FULL=unknown

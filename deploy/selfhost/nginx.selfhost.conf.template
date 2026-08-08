@@ -96,7 +96,10 @@ server {
     # Keycloak sends its own security headers for its own pages; defining any
     # add_header here cuts inheritance of the app CSP above so the two header
     # sets don't fight in the admin console.
-    location /auth/ {
+    # ^~ is load-bearing: without it the static-asset REGEX location above
+    # outranks this prefix location, swallows /auth/resources/*.css|js, and
+    # serves 404s — the Keycloak login page rendered unstyled.
+    location ^~ /auth/ {
         proxy_pass http://$stable_keycloak;
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
