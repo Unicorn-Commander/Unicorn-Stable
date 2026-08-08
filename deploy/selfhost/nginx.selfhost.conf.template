@@ -87,6 +87,12 @@ server {
     # Bundled Keycloak, same origin. $http_host (NOT $host) preserves the
     # port, which Keycloak needs to mint the token issuer the backend expects:
     #   http://<STABLE_HOST>:<web port>/auth/realms/<realm>
+    # Deliberately NO X-Forwarded-Port header: nginx only knows $server_port
+    # (80 inside the container, NOT the published host port), and Keycloak
+    # lets X-Forwarded-Port override the port carried in X-Forwarded-Host —
+    # sending it strips the real port from the issuer/jwks_uri and the
+    # backend's JWKS fetch then dials the wrong address. The Host header
+    # already carries the correct host:port.
     # Keycloak sends its own security headers for its own pages; defining any
     # add_header here cuts inheritance of the app CSP above so the two header
     # sets don't fight in the admin console.
@@ -97,7 +103,6 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Forwarded-Port $server_port;
         proxy_read_timeout 120s;
         proxy_buffer_size 64k;
         proxy_buffers 8 64k;

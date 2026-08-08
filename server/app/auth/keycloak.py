@@ -199,6 +199,14 @@ async def start_jwks_refresh_task(
                 break
             except Exception:
                 logger.exception("jwks_refresh_failed")
+                # A failed refresh must not pin a stale discovery document:
+                # fetch_oidc_config caches forever on success, so a discovery
+                # doc whose jwks_uri is wrong (e.g. an IdP behind a
+                # misconfigured proxy that later gets fixed) would otherwise
+                # keep every retry failing until a process restart. Refetch
+                # both documents on the next attempt.
+                global _oidc_config_cache
+                _oidc_config_cache = {}
                 # Retry soon after an initial/bootstrap outage, then return to
                 # the normal hourly refresh cadence after the first success.
                 delay = JWKS_RETRY_INTERVAL
