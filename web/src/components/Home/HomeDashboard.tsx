@@ -34,7 +34,7 @@ import {
   priorityModel,
   sortByRecency,
 } from "./homeModel";
-import { HomeRow, SenderLine, previewText } from "./widgets/HomeRow";
+import { HomeRow, SenderLine, previewText, rowTime } from "./widgets/HomeRow";
 import { SystemHealthStrip, useHomeHealth } from "./widgets/SystemHealthStrip";
 import { ConversationsCard } from "./widgets/ConversationsCard";
 import { KnowledgeRecents } from "./widgets/KnowledgeRecents";
