@@ -435,7 +435,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               takes over there). */}
           <button
             onClick={toggleSidebar}
-            className="-ml-1 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
+            className="-ml-1 max-md:min-h-11 max-md:min-w-11 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
             aria-label="Open sidebar"
           >
             <PanelLeftOpen className="h-5 w-5" />
@@ -443,7 +443,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           <button
             type="button"
             onClick={() => setPeopleDrawerOpen(true)}
-            className="shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
+            className="max-md:min-h-11 max-md:min-w-11 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
             aria-label="People"
             title="People"
           >
@@ -697,7 +697,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           {!isDm && (
           <button
             onClick={() => setInviteOpen(true)}
-            className="flex items-center gap-1 rounded-lg border border-stable-purple/30 bg-stable-purple/15 p-2.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 focus-ring md:px-2.5 md:py-1"
+            className="max-md:min-h-11 max-md:min-w-11 flex items-center gap-1 rounded-lg border border-stable-purple/30 bg-stable-purple/15 p-2.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 focus-ring md:px-2.5 md:py-1"
             aria-label="Invite members"
           >
             <UserPlus className="h-3.5 w-3.5" />
@@ -707,7 +707,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           <button
             onClick={toggleParticipants}
             className={clsx(
-              "rounded-md p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5",
+              "max-md:min-h-11 max-md:min-w-11 rounded-md p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5",
               participantPanelOpen && "bg-white/[0.08] text-slate-100",
             )}
             aria-label="Toggle participants panel"
@@ -720,7 +720,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             <button
               ref={overflowBtnRef}
               onClick={() => setOverflowOpen((v) => !v)}
-              className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+              className="max-md:min-h-11 max-md:min-w-11 rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
               aria-label="More room actions"
               aria-haspopup="menu"
               aria-expanded={overflowOpen}

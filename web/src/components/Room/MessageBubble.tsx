@@ -877,7 +877,7 @@ function QuickReact({ onReact }: { onReact: (emoji: string) => void }) {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+        className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
         aria-label="Add reaction"
         aria-expanded={open}
       >
@@ -2491,7 +2491,7 @@ export function MessageBubble({
               e.stopPropagation();
               onReply(message.id);
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Reply in thread"
           >
             <MessageSquare className="h-3.5 w-3.5" />
@@ -2503,7 +2503,7 @@ export function MessageBubble({
               const quote = `> **${message.sender_name}:** ${message.content}\n\n`;
               useAppStore.getState().requestInsert(message.room_id, quote);
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Quote reply"
             title="Quote and reply"
           >
@@ -2515,7 +2515,7 @@ export function MessageBubble({
               e.stopPropagation();
               handleToggleSave();
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Save message"
             title="Save to your bookmarks"
           >
@@ -2527,7 +2527,7 @@ export function MessageBubble({
               e.stopPropagation();
               setPromoteOpen(true);
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Promote to Project Ops task"
             title="Promote to Project Ops task"
           >
@@ -2539,7 +2539,7 @@ export function MessageBubble({
               e.stopPropagation();
               handleTogglePin();
             }}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
             aria-label="Pin / unpin message"
             title="Pin or unpin"
           >
