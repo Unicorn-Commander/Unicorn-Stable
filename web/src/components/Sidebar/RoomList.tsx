@@ -80,6 +80,28 @@ import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { usePresenceStore } from "@/stores/presenceStore";
 import type { PeopleDirectoryEntry } from "@/services/api";
 import { Avatar } from "@/components/ui/Avatar";
+import { hasDraft, subscribeDrafts } from "@/utils/drafts";
+
+/**
+ * Bump-version subscription to the draft store. localStorage is not reactive,
+ * so the sidebar re-reads `hasDraft` on every save/clear (typing a message
+ * shows the pencil instantly; sending hides it).
+ */
+function useDraftVersion(): number {
+  const [version, setVersion] = useState(0);
+  useEffect(() => subscribeDrafts(() => setVersion((n) => n + 1)), []);
+  return version;
+}
+
+/** Small pencil glyph for rows with an unsaved draft (Slack's affordance). */
+function DraftPencil() {
+  return (
+    <Pencil
+      aria-label="Draft saved"
+      className="ml-1 h-3 w-3 shrink-0 text-slate-500"
+    />
+  );
+}
 
 export function RoomList() {
   const navigate = useNavigate();
@@ -105,6 +127,8 @@ export function RoomList() {
   // Live call rejoin (Meetings empty/rail) — same source as Home.
   const { isConnected } = useVoice();
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
+  // Draft pencils: bump on every draft save/clear so rows stay truthful.
+  useDraftVersion();
   // Model view: classic mode always builds the full tree.
   const modelView: SidebarView = navV1 ? activeView : "all";
   // The agent the "New chat" button + the primary conversation section key off
@@ -808,6 +832,7 @@ export function RoomList() {
                     className="ml-1 h-3 w-3 shrink-0 text-slate-500"
                   />
                 )}
+                {hasDraft(room.id) && <DraftPencil />}
                 {unread > 0 && (
                   <span
                     className={clsx(
@@ -908,6 +933,7 @@ export function RoomList() {
                 )}
               </span>
               <div className="flex shrink-0 items-center gap-1.5">
+                {hasDraft(room.id) && <DraftPencil />}
                 {room.last_message && (
                   <span className="text-[10px] tabular-nums text-slate-500">
                     {formatTimestamp(room.last_message.created_at)}
@@ -1022,6 +1048,7 @@ export function RoomList() {
                   {name}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  {latest && hasDraft(latest.id) && <DraftPencil />}
                   {latest?.last_message && (
                     <span className="text-[10px] tabular-nums text-slate-500">
                       {formatTimestamp(latest.last_message.created_at)}
@@ -1154,6 +1181,7 @@ export function RoomList() {
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium">{room.name}</span>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  {hasDraft(room.id) && <DraftPencil />}
                   {room.member_count > 0 && (
                     <span className="text-[10px] tabular-nums text-slate-600">
                       {room.member_count}
