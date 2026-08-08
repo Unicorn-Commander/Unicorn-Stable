@@ -527,3 +527,98 @@ describe("health strip semantics", () => {
     });
   });
 });
+
+describe("stale unread (2+ weeks idle)", () => {
+  const DAYS = 24 * 60 * 60_000;
+
+  it("moves idle unread out of the priority list into the stale tail", () => {
+    const rooms = [
+      activeRoom(5, { id: "fresh-dm", type: "dm", unread_count: 2 }),
+      room({
+        id: "old-dm",
+        type: "dm",
+        unread_count: 4,
+        last_message: message({
+          created_at: new Date(NOW - 30 * DAYS).toISOString(),
+          room_id: "old-dm",
+        }),
+      }),
+      room({
+        id: "old-chan",
+        type: "channel",
+        unread_count: 9,
+        last_message: message({
+          created_at: new Date(NOW - 90 * DAYS).toISOString(),
+          room_id: "old-chan",
+        }),
+      }),
+    ];
+    const model = priorityModel({
+      rooms,
+      unreadCounts: {},
+      mentionUnreads: {},
+      approvals: [],
+      now: NOW,
+    });
+    expect(model.items.map((i) => (i.kind === "approval" ? "" : i.room.id)))
+      .toEqual(["fresh-dm"]);
+    expect(
+      model.staleItems.map((i) => (i.kind === "approval" ? "" : i.room.id)),
+    ).toEqual(["old-dm", "old-chan"]);
+    // Stale channels must not inflate the "+N more channels" tail either.
+    expect(model.moreChannelCount).toBe(0);
+  });
+
+  it("never stales approvals — an unanswered approval blocks an agent", () => {
+    const model = priorityModel({
+      rooms: [],
+      unreadCounts: {},
+      mentionUnreads: {},
+      approvals: [approval("old")],
+      now: NOW + 365 * DAYS,
+    });
+    expect(model.items.map((i) => i.kind)).toEqual(["approval"]);
+    expect(model.staleItems).toHaveLength(0);
+  });
+
+  it("agent feed: idle waiting rooms move to staleWaitingTotal and stay out of recent", () => {
+    const staleAt = new Date(NOW - 21 * DAYS).toISOString();
+    const rooms = [
+      activeRoom(5, {
+        id: "fresh-agent",
+        type: "dm",
+        brigade_agent_id: "majik",
+        unread_count: 1,
+      }),
+      room({
+        id: "old-agent",
+        type: "dm",
+        brigade_agent_id: "gunny",
+        unread_count: 3,
+        last_message: message({
+          created_at: staleAt,
+          room_id: "old-agent",
+          sender_type: "agent",
+        }),
+      }),
+    ];
+    const feed = agentFeed(rooms, {}, { now: NOW });
+    expect(feed.waiting.map((w) => w.room.id)).toEqual(["fresh-agent"]);
+    expect(feed.waitingTotal).toBe(1);
+    expect(feed.staleWaitingTotal).toBe(1);
+    // The stale room's agent-authored last message must not resurface it as
+    // plain "recent activity" — aged-out is not a promotion.
+    expect(feed.recent.map((r) => r.room.id)).not.toContain("old-agent");
+  });
+});
+
+describe("agentsSegment wording", () => {
+  it("calls a no-variance all-available roster what it is: registration", () => {
+    expect(
+      agentsSegment([
+        { availability: "available" },
+        { availability: "available" },
+      ]),
+    ).toEqual({ tone: "ok", label: "2 registered" });
+  });
+});

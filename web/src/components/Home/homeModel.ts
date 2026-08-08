@@ -48,6 +48,15 @@ export function unreadCountFor(room: Room, unreadCounts: UnreadMap): number {
   return unreadCounts[room.id] ?? room.unread_count ?? 0;
 }
 
+/** Unread older than this is history, not a to-do. Two weeks of silence means
+ * the conversation moved on without you — a "Needs you" list that still leads
+ * with it trains the user that the whole list is ignorable. */
+export const STALE_UNREAD_MS = 14 * 24 * 60 * 60 * 1000;
+
+export function isStaleRoom(room: Room, now: number): boolean {
+  return now - roomActivityAt(room) > STALE_UNREAD_MS;
+}
+
 /* ── W2: priority inbox ──────────────────────────────────────────────── */
 
 export type PriorityItem =
@@ -58,8 +67,13 @@ export type PriorityItem =
 
 export interface PriorityModel {
   /** The interleaved jump list: mentions → DM unreads → approvals → channel
-   * unreads. Each group is recency-sorted internally. */
+   * unreads. Each group is recency-sorted internally. Fresh rooms only. */
   items: PriorityItem[];
+  /** Rooms that WOULD be priority items but have been idle past
+   * STALE_UNREAD_MS — rendered as a muted, collapsed tail so old unread stops
+   * impersonating a to-do. Approvals are never staled out: an unanswered
+   * approval blocks an agent no matter how old it is. */
+  staleItems: PriorityItem[];
   mentionRooms: Room[];
   dmUnreadRooms: Room[];
   /** Channel-unread rooms actually shown (capped). */
@@ -75,15 +89,20 @@ export function priorityModel(input: {
   approvals: PendingApproval[];
   /** Channel-unread rows shown before the "+N more" tail (spec §4.2 W2: 5). */
   channelCap?: number;
+  /** Injected clock (tests); the component passes Date.now(). */
+  now?: number;
 }): PriorityModel {
   const { rooms, unreadCounts, mentionUnreads, approvals } = input;
   const channelCap = input.channelCap ?? 5;
+  const now = input.now ?? Date.now();
+  const fresh = (r: Room) => !isStaleRoom(r, now);
 
-  const mentionRooms = rooms
+  const allMentionRooms = rooms
     .filter((r) => mentionUnreads[r.id] === true)
     .sort(sortByRecency);
+  const mentionRooms = allMentionRooms.filter(fresh);
 
-  const dmUnreadRooms = rooms
+  const allDmUnreadRooms = rooms
     .filter(
       (r) =>
         isHumanConversation(r) &&
@@ -91,6 +110,7 @@ export function priorityModel(input: {
         mentionUnreads[r.id] !== true,
     )
     .sort(sortByRecency);
+  const dmUnreadRooms = allDmUnreadRooms.filter(fresh);
 
   // The new fourth group: a busy channel with 40 unread and no @-mention used
   // to appear nowhere on home. Mention-flagged channels are deduped into the
@@ -105,8 +125,9 @@ export function priorityModel(input: {
         mentionUnreads[r.id] !== true,
     )
     .sort(sortByRecency);
-  const channelUnreadRooms = allChannelUnreads.slice(0, channelCap);
-  const moreChannelCount = allChannelUnreads.length - channelUnreadRooms.length;
+  const freshChannelUnreads = allChannelUnreads.filter(fresh);
+  const channelUnreadRooms = freshChannelUnreads.slice(0, channelCap);
+  const moreChannelCount = freshChannelUnreads.length - channelUnreadRooms.length;
 
   const items: PriorityItem[] = [];
   for (const room of mentionRooms) {
@@ -129,7 +150,40 @@ export function priorityModel(input: {
       unread: unreadCountFor(room, unreadCounts),
     });
   }
-  return { items, mentionRooms, dmUnreadRooms, channelUnreadRooms, moreChannelCount };
+
+  // Stale tail, same group order as the fresh list. Stale channels are NOT
+  // capped — they only ever render collapsed behind a count.
+  const staleItems: PriorityItem[] = [];
+  for (const room of allMentionRooms.filter((r) => !fresh(r))) {
+    staleItems.push({
+      kind: "mention",
+      room,
+      unread: unreadCountFor(room, unreadCounts),
+    });
+  }
+  for (const room of allDmUnreadRooms.filter((r) => !fresh(r))) {
+    staleItems.push({
+      kind: "dm",
+      room,
+      unread: unreadCountFor(room, unreadCounts),
+    });
+  }
+  for (const room of allChannelUnreads.filter((r) => !fresh(r))) {
+    staleItems.push({
+      kind: "channel",
+      room,
+      unread: unreadCountFor(room, unreadCounts),
+    });
+  }
+
+  return {
+    items,
+    staleItems,
+    mentionRooms,
+    dmUnreadRooms,
+    channelUnreadRooms,
+    moreChannelCount,
+  };
 }
 
 /* ── W5: agent activity feed ─────────────────────────────────────────── */
@@ -153,12 +207,16 @@ export interface AgentThreadRow {
 }
 
 export interface AgentFeedModel {
-  /** Agent threads with unread — likely waiting on the human. Capped. */
+  /** Agent threads with unread — likely waiting on the human. Fresh only
+   * (idle < STALE_UNREAD_MS). Capped. */
   waiting: AgentThreadRow[];
-  /** Total waiting ROOMS before grouping/capping — the stat tile must count
-   * the set, not the visible slice (the old tile quietly capped at its render
-   * limit) and not the collapsed row count. */
+  /** Total FRESH waiting ROOMS before grouping/capping — the stat tile must
+   * count the set, not the visible slice (the old tile quietly capped at its
+   * render limit) and not the collapsed row count. */
   waitingTotal: number;
+  /** Waiting rooms idle past STALE_UNREAD_MS — an agent that asked a question
+   * a month ago is not "waiting on you", it's history. Rendered collapsed. */
+  staleWaitingTotal: number;
   /** Threads whose latest message was agent-authored, newest first, excluding
    * anything already in `waiting`. Capped. */
   recent: AgentThreadRow[];
@@ -206,20 +264,23 @@ export function collapseAgentThreads(rooms: Room[]): AgentThreadRow[] {
 export function agentFeed(
   rooms: Room[],
   unreadCounts: UnreadMap,
-  caps: { waiting?: number; recent?: number } = {},
+  caps: { waiting?: number; recent?: number; now?: number } = {},
 ): AgentFeedModel {
   const waitingCap = caps.waiting ?? 5;
   const recentCap = caps.recent ?? 10;
+  const now = caps.now ?? Date.now();
 
   const allWaiting = rooms
     .filter(
       (r) => isAgentConversation(r) && unreadCountFor(r, unreadCounts) > 0,
     )
     .sort(sortByRecency);
-  const waiting = collapseAgentThreads(allWaiting).slice(0, waitingCap);
+  const freshWaiting = allWaiting.filter((r) => !isStaleRoom(r, now));
+  const waiting = collapseAgentThreads(freshWaiting).slice(0, waitingCap);
 
-  // Exclude EVERY waiting room (not just the visible slice) so a room never
-  // shows up as plain "activity" merely because the waiting list was full.
+  // Exclude EVERY waiting room, fresh or stale, not just the visible slice —
+  // a room must never show up as plain "activity" merely because the waiting
+  // list was full or because it aged out of it.
   const waitingIds = new Set(allWaiting.map((r) => r.id));
   const recent = collapseAgentThreads(
     rooms.filter(
@@ -227,7 +288,12 @@ export function agentFeed(
     ),
   ).slice(0, recentCap);
 
-  return { waiting, waitingTotal: allWaiting.length, recent };
+  return {
+    waiting,
+    waitingTotal: freshWaiting.length,
+    staleWaitingTotal: allWaiting.length - freshWaiting.length,
+    recent,
+  };
 }
 
 /* ── Agents rail ─────────────────────────────────────────────────────── */
@@ -410,12 +476,20 @@ export interface AgentsSegment {
  *  - every agent explicitly "unavailable"  → warn — that IS a signal, and
  *    collapsing it into "unknown" would hide a fleet-wide outage
  *  - anything else (empty roster, missing/"unknown" availability) → unknown
+ *
+ * Wording: Brigade marks ~every registered agent "available", so a roster
+ * where EVERYONE is available carries no liveness information — that number
+ * is the registration count and gets the same word the Agents rail uses
+ * ("registered"). Only a real split earns "available".
  */
 export function agentsSegment(
   roster: Pick<Agent, "availability">[],
 ): AgentsSegment {
   const available = roster.filter((a) => a.availability === "available").length;
   if (available > 0) {
+    if (available === roster.length) {
+      return { tone: "ok", label: `${available} registered` };
+    }
     return { tone: "ok", label: `${available} available` };
   }
   if (
