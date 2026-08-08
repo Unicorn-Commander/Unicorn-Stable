@@ -86,6 +86,8 @@ interface AppState {
    * bumped unread. Learned from the websocket auth_ok ack. */
   currentParticipantId: string | null;
   rooms: Room[];
+  /** True only after the first authoritative room-list response. */
+  roomsLoaded: boolean;
   activeRoomId: string | null;
   messages: Record<string, RoomMessages>;
   participants: Record<string, RoomMember[]>;
@@ -177,6 +179,7 @@ export const useAppStore = create<AppState>((set) => ({
   currentUser: null,
   currentParticipantId: null,
   rooms: [],
+  roomsLoaded: false,
   activeRoomId: null,
   messages: {},
   participants: {},
@@ -217,18 +220,22 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => {
       const prevById = new Map(state.rooms.map((r) => [r.id, r]));
       const nextUnread = { ...state.unreadCounts };
+      const nextMentions = { ...state.mentionUnreads };
       const merged = rooms.map((r) => {
         // Seed the live unread map from the backend's cold-load count the
         // FIRST time we see a room (so badges show on login, before any WS
         // traffic); never clobber a count we're already tracking live.
         if (!(r.id in nextUnread)) nextUnread[r.id] = r.unread_count ?? 0;
+        if (!(r.id in nextMentions)) {
+          nextMentions[r.id] = r.has_unread_mention === true || (r.mention_count ?? 0) > 0;
+        }
         // Preserve the conversation-list preview across the 60s refetch: if
         // this payload has no last_message (older backend), keep whatever the
         // live WS path set. Without this, every refetch blanks the previews.
         const prev = prevById.get(r.id);
         return prev ? { ...r, last_message: r.last_message ?? prev.last_message } : r;
       });
-      return { rooms: merged, unreadCounts: nextUnread };
+      return { rooms: merged, roomsLoaded: true, unreadCounts: nextUnread, mentionUnreads: nextMentions };
     }),
 
   updateRoom: (roomId, updates) =>
@@ -563,6 +570,7 @@ export const useAppStore = create<AppState>((set) => ({
       }
       return {
         rooms: [],
+        roomsLoaded: false,
         activeRoomId: null,
         messages: {},
         participants: {},

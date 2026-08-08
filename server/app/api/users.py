@@ -34,6 +34,7 @@ class UserPreferences(BaseModel):
 
     default_agent_id: str | None = None
     favorite_people_ids: list[UUID] = Field(default_factory=list)
+    onboarding_checklist: dict[str, bool] = Field(default_factory=dict)
 
 
 class UserPreferencesUpdate(BaseModel):
@@ -41,6 +42,7 @@ class UserPreferencesUpdate(BaseModel):
 
     default_agent_id: str | None = None
     favorite_people_ids: list[UUID] | None = None
+    onboarding_checklist: dict[str, bool] | None = None
 
 
 def _favorite_people(meta: dict[str, Any]) -> list[UUID]:
@@ -61,6 +63,11 @@ def _favorite_people(meta: dict[str, Any]) -> list[UUID]:
     return result
 
 
+def _onboarding(meta: dict[str, Any]) -> dict[str, bool]:
+    raw = meta.get("onboarding_checklist")
+    return {key: value is True for key, value in raw.items() if key in {"agent", "channels", "invite"}} if isinstance(raw, dict) else {}
+
+
 @router.get("/users/me/preferences", response_model=UserPreferences)
 async def get_my_preferences(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
@@ -75,6 +82,7 @@ async def get_my_preferences(
     return UserPreferences(
         default_agent_id=val if isinstance(val, str) and val else None,
         favorite_people_ids=_favorite_people(meta),
+        onboarding_checklist=_onboarding(meta),
     )
 
 
@@ -110,12 +118,18 @@ async def set_my_preferences(
             valid = {UUID(str(value)) for value in valid_rows}
             requested = [value for value in requested if value in valid]
         meta["favorite_people_ids"] = [str(value) for value in requested]
+    if body.onboarding_checklist is not None:
+        meta["onboarding_checklist"] = {
+            key: value is True for key, value in body.onboarding_checklist.items()
+            if key in {"agent", "channels", "invite"}
+        }
     p.metadata_ = meta  # reassign (not mutate) so SQLAlchemy tracks the JSONB change
     await db.commit()
     val = meta.get("default_agent_id")
     return UserPreferences(
         default_agent_id=val if isinstance(val, str) and val else None,
         favorite_people_ids=_favorite_people(meta),
+        onboarding_checklist=_onboarding(meta),
     )
 
 

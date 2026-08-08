@@ -366,6 +366,18 @@ async def _subscribe_to_rooms(
                 if isinstance(data_raw, bytes):
                     data_raw = data_raw.decode("utf-8")
                 data = json.loads(data_raw)
+                if data.get("type") == "room_revoked":
+                    revoked = str(data.get("room_id") or "")
+                    channel = f"room:{revoked}"
+                    if revoked and revoked in known_rooms:
+                        await pubsub.unsubscribe(channel)
+                        subscribed.discard(channel)
+                        known_rooms.discard(revoked)
+                        # This same mutable list authorizes client-originated
+                        # typing/read frames, so revocation applies both ways.
+                        room_ids[:] = [rid for rid in room_ids if rid != revoked]
+                        logger.info("ws_room_revoked_immediate", room_id=revoked, participant_id=participant_id)
+                    continue
                 # Never echo your own typing back to you. Redis pub/sub has no
                 # per-subscriber exclusion, and the publisher may be a
                 # DIFFERENT uvicorn worker than the one holding this socket, so
@@ -599,7 +611,11 @@ async def _handle_client_events(
                                 _RM.room_id == room_id,
                                 _RM.participant_id == participant_id,
                             )
-                            .values(last_read_at=datetime.now(timezone.utc))
+                            .values(
+                                last_read_at=datetime.now(timezone.utc),
+                                mention_count=0,
+                                has_unread_mention=False,
+                            )
                         )
                         await db.commit()
                     await redis.publish(

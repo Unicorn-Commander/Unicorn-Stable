@@ -130,6 +130,14 @@ class RoomMember(Base, UUIDPrimaryKeyMixin):
     is_muted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # Durable attention state.  Unlike unread_count (derived from a timestamp),
+    # this records the messages that explicitly need the member's attention.
+    mention_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    has_unread_mention: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # Relationships
     room: Mapped[Room] = relationship("Room", back_populates="members", lazy="selectin")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from datetime import datetime
 from typing import Annotated, Any
 
 import httpx
@@ -35,10 +36,53 @@ from app.schemas.message import (
 from app.services.agent_chat_responder import schedule_response as schedule_agent_chat_response
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
+from app.models.activity import ActivityEvent, ActivityEventType
+from app.models.message import Message
+from app.models.participant import Participant
+from app.models.room import Room
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+class ActivityEventResponse(BaseModel):
+    id: uuid.UUID
+    event_type: str
+    room_id: uuid.UUID
+    room_name: str
+    message_id: uuid.UUID
+    actor_name: str | None = None
+    content: str
+    created_at: datetime
+    metadata: dict | None = None
+
+
+@router.get("/activity-events", response_model=list[ActivityEventResponse])
+async def list_activity_events(
+    event_type: ActivityEventType | None = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    user: Annotated[dict[str, Any], Depends(get_current_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+) -> list[ActivityEventResponse]:
+    """The caller's durable mention/thread/reaction catch-up inbox."""
+    actor = aliased(Participant)
+    query = (
+        select(ActivityEvent, Message, Room.display_name, actor.display_name)
+        .join(Message, Message.id == ActivityEvent.message_id)
+        .join(Room, Room.id == ActivityEvent.room_id)
+        .outerjoin(actor, actor.id == ActivityEvent.actor_id)
+        .where(ActivityEvent.participant_id == user["participant_id"])
+        .order_by(ActivityEvent.created_at.desc()).limit(limit)
+    )
+    if event_type is not None:
+        query = query.where(ActivityEvent.event_type == event_type)
+    rows = (await db.execute(query)).all()
+    return [ActivityEventResponse(
+        id=e.id, event_type=e.event_type.value, room_id=e.room_id,
+        room_name=room_name, message_id=e.message_id, actor_name=actor_name,
+        content=m.content, created_at=e.created_at, metadata=e.metadata_,
+    ) for e, m, room_name, actor_name in rows]
 
 
 def _build_message_service(
@@ -1865,14 +1909,28 @@ async def toggle_reaction(
     users_for_emoji = list(reactions.get(body.emoji) or [])
     if pid in users_for_emoji:
         users_for_emoji.remove(pid)
+        added = False
     else:
         users_for_emoji.append(pid)
+        added = True
     if users_for_emoji:
         reactions[body.emoji] = users_for_emoji
     else:
         reactions.pop(body.emoji, None)
     meta["reactions"] = reactions
     msg.metadata_ = meta
+    # A reaction is catch-up worthy only for the author of the reacted-to
+    # message, and never for a self-reaction. Removing it is not an event.
+    if added and msg.sender_id is not None and str(msg.sender_id) != pid:
+        from app.models.activity import ActivityEvent, ActivityEventType
+        db.add(ActivityEvent(
+            participant_id=msg.sender_id,
+            room_id=msg.room_id,
+            message_id=msg.id,
+            actor_id=user["participant_id"],
+            event_type=ActivityEventType.REACTION,
+            metadata_={"emoji": body.emoji},
+        ))
     await db.commit()
     await db.refresh(msg)
 

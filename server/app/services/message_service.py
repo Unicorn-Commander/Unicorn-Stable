@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.message import ContentType, Message
 from app.models.participant import Participant
 from app.models.room import RoomMember
+from app.models.activity import ActivityEvent, ActivityEventType
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
@@ -84,6 +85,42 @@ class MessageService:
             parent_id=parent_id,
         )
         self._db.add(message)
+        # Flush first: activity rows have a real message FK and the mention
+        # counters/event index must commit with the message, never after it.
+        await self._db.flush()
+
+        lower_content = (content or "").casefold()
+        member_rows = (
+            await self._db.execute(
+                select(RoomMember, Participant).join(
+                    Participant, Participant.id == RoomMember.participant_id
+                ).where(RoomMember.room_id == room_id)
+            )
+        ).all()
+        broad = "@channel" in lower_content or "@here" in lower_content
+        for member, participant in member_rows:
+            if str(member.participant_id) == str(sender_id):
+                continue
+            names = (f"@{participant.username}".casefold(), f"@{participant.display_name}".casefold())
+            if broad or any(name in lower_content for name in names):
+                member.mention_count += 1
+                member.has_unread_mention = True
+                self._db.add(ActivityEvent(
+                    participant_id=member.participant_id,
+                    room_id=room_id,
+                    message_id=message.id,
+                    actor_id=sender_id,
+                    event_type=ActivityEventType.MENTION,
+                ))
+
+        if parent_id is not None:
+            parent = (await self._db.execute(select(Message).where(Message.id == parent_id))).scalar_one()
+            if parent.sender_id is not None and str(parent.sender_id) != str(sender_id):
+                self._db.add(ActivityEvent(
+                    participant_id=parent.sender_id, room_id=room_id,
+                    message_id=message.id, actor_id=sender_id,
+                    event_type=ActivityEventType.THREAD,
+                ))
         await self._db.commit()
         await self._db.refresh(message)
 

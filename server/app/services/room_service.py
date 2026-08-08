@@ -527,6 +527,7 @@ class RoomService:
         room_ids = [room.id for room in rooms]
         last_msg_by_room: dict[str, Message] = {}
         unread_by_room: dict[str, int] = {}
+        mention_by_room: dict[str, tuple[int, bool]] = {}
         if room_ids:
             # Latest non-deleted message per room (Postgres DISTINCT ON; the
             # leading ORDER BY column must match the DISTINCT column).
@@ -566,6 +567,18 @@ class RoomService:
             )
             for rid, cnt in unread_rows.all():
                 unread_by_room[str(rid)] = cnt
+            mention_rows = await self._db.execute(
+                select(
+                    RoomMember.room_id,
+                    RoomMember.mention_count,
+                    RoomMember.has_unread_mention,
+                ).where(
+                    RoomMember.participant_id == participant_id,
+                    RoomMember.room_id.in_(room_ids),
+                )
+            )
+            for rid, count, unread in mention_rows.all():
+                mention_by_room[str(rid)] = (count, unread)
 
         # Enrich rooms with member/online counts + conversation-list extras
         enriched_rooms: list[dict[str, Any]] = []
@@ -588,6 +601,8 @@ class RoomService:
                 "online_count": len(online_ids),
                 "last_message": last_msg_by_room.get(str(room.id)),
                 "unread_count": unread_by_room.get(str(room.id), 0),
+                "mention_count": mention_by_room.get(str(room.id), (0, False))[0],
+                "has_unread_mention": mention_by_room.get(str(room.id), (0, False))[1],
             })
 
         return {
