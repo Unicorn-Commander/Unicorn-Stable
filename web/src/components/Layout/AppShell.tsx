@@ -708,7 +708,7 @@ export function AppShell() {
           hideOnMobile={!!activeRoomId}
           onOpenActivity={() => setActivityOpen(true)}
         />
-        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden" style={{ paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" }}>
           <Suspense fallback={<SurfaceLoading />}>
             {activeRoomId ? (
               <ErrorBoundary key={activeRoomId}>

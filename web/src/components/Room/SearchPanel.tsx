@@ -5,6 +5,8 @@ import { Search, SearchX, X } from "lucide-react";
 import { identityFor } from "@/lib/identity";
 import { api, type Message } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
+import { parseSearchQuery } from "@/utils/searchOperators";
+import type { ParsedSearchQuery } from "@/utils/searchOperators";
 
 interface SearchPanelProps {
   roomId: string;
@@ -13,7 +15,8 @@ interface SearchPanelProps {
 }
 
 export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
-  const [q, setQ] = useState("");
+  const [raw, setRaw] = useState("");
+  const [parsed, setParsed] = useState<ParsedSearchQuery>({ query: "", operators: {} });
   const [debounced, setDebounced] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -21,14 +24,31 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
     inputRef.current?.focus();
   }, []);
 
+  const handleRawChange = (val: string) => {
+    setRaw(val);
+    const p = parseSearchQuery(val);
+    setParsed(p);
+    setDebounced(p.query.trim());
+  };
+
+  const removeOperator = (key: string) => {
+    const op = parsed.operators[key as keyof typeof parsed.operators];
+    if (!op) return;
+    const stripped = raw.replace(new RegExp(`\\b${key}:${op}\\b`, "gi"), "").trim();
+    setRaw(stripped);
+    const p = parseSearchQuery(stripped);
+    setParsed(p);
+    setDebounced(p.query.trim());
+  };
+
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(q.trim()), 250);
+    const t = setTimeout(() => setDebounced(parsed.query.trim()), 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [parsed]);
 
   const { data: results = [], isFetching, isError, refetch } = useQuery({
-    queryKey: ["search", roomId, debounced],
-    queryFn: () => api.searchMessages(roomId, debounced),
+    queryKey: ["search", roomId, debounced, JSON.stringify(parsed.operators)],
+    queryFn: () => api.searchMessages(roomId, debounced, parsed.operators),
     enabled: debounced.length > 0,
   });
 
@@ -44,8 +64,8 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
         <Search className="h-4 w-4 text-stable-cyan/80" />
         <input
           ref={inputRef}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
+          value={raw}
+          onChange={(e) => handleRawChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape") onClose();
           }}
@@ -60,6 +80,22 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {Object.keys(parsed.operators).length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
+          {Object.entries(parsed.operators).map(([key, value]) => (
+            <button
+              key={key}
+              onClick={() => removeOperator(key)}
+              className="inline-flex items-center gap-1 rounded-full border border-line bg-white/[0.04] px-2 py-0.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
+            >
+              <span className="text-slate-500">{key}:</span>
+              <span>{value}</span>
+              <X className="h-2.5 w-2.5 text-slate-500" />
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="max-h-96 overflow-y-auto">
         {!debounced ? (

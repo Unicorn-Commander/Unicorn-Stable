@@ -167,7 +167,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
         {stageAgentId && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 300, opacity: 1 }}
+            animate={{ height: "min(300px, 40vh)", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
             className="shrink-0 overflow-hidden border-b border-line"

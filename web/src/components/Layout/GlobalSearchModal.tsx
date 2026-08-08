@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Hash, Loader2, Search, SearchX } from "lucide-react";
+import { Hash, Loader2, Search, SearchX, X } from "lucide-react";
 import { api, type Message } from "@/services/api";
 import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { Avatar } from "@/components/Avatar";
+import { parseSearchQuery } from "@/utils/searchOperators";
+import type { ParsedSearchQuery } from "@/utils/searchOperators";
 
 interface GlobalSearchModalProps {
   onClose: () => void;
@@ -24,7 +26,8 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
   const rooms = useAppStore((s) => s.rooms);
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const navigate = useNavigate();
-  const [q, setQ] = useState("");
+  const [raw, setRaw] = useState("");
+  const [parsed, setParsed] = useState<ParsedSearchQuery>({ query: "", operators: {} });
   const [debounced, setDebounced] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useModalA11y(true, onClose);
@@ -33,14 +36,31 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
     inputRef.current?.focus();
   }, []);
 
+  const handleRawChange = (val: string) => {
+    setRaw(val);
+    const p = parseSearchQuery(val);
+    setParsed(p);
+    setDebounced(p.query.trim());
+  };
+
+  const removeOperator = (key: string) => {
+    const op = parsed.operators[key as keyof typeof parsed.operators];
+    if (!op) return;
+    const stripped = raw.replace(new RegExp(`\\b${key}:${op}\\b`, "gi"), "").trim();
+    setRaw(stripped);
+    const p = parseSearchQuery(stripped);
+    setParsed(p);
+    setDebounced(p.query.trim());
+  };
+
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(q.trim()), 250);
+    const t = setTimeout(() => setDebounced(parsed.query.trim()), 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [parsed]);
 
   const { data: results = [], isFetching, isError, refetch } = useQuery({
-    queryKey: ["global-search", debounced],
-    queryFn: () => api.searchAllMessages(debounced),
+    queryKey: ["global-search", debounced, JSON.stringify(parsed.operators)],
+    queryFn: () => api.searchAllMessages(debounced, parsed.operators),
     enabled: debounced.length > 0,
   });
 
@@ -92,8 +112,8 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
           <Search className="h-4 w-4 shrink-0 text-stable-cyan/80" />
           <input
             ref={inputRef}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
+          value={raw}
+             onChange={(e) => handleRawChange(e.target.value)}
             placeholder="Search messages across all channels…"
             className="min-w-0 flex-1 bg-transparent text-base text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
@@ -105,6 +125,22 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
             </kbd>
           )}
         </div>
+
+        {Object.keys(parsed.operators).length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 px-4 py-1.5">
+            {Object.entries(parsed.operators).map(([key, value]) => (
+              <button
+                key={key}
+                onClick={() => removeOperator(key)}
+                className="inline-flex items-center gap-1 rounded-full border border-line bg-white/[0.04] px-2 py-0.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
+              >
+                <span className="text-slate-500">{key}:</span>
+                <span>{value}</span>
+                <X className="h-2.5 w-2.5 text-slate-500" />
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="flex-1 min-h-0 overflow-y-auto">
           {!debounced ? (

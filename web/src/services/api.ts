@@ -70,7 +70,9 @@ export interface Room {
    * the Meetings nav view; plain channels leave this false/undefined.
    */
   is_conference?: boolean;
-}
+ is_archived?: boolean;
+  metadata_?: Record<string, unknown> | null;
+  }
 
 export interface RoomMember {
   id?: string;
@@ -329,6 +331,15 @@ export interface SendMessageRequest {
   model?: string;
 }
 
+/** Search operators supported by the backend: from, in, has, before, after. */
+export interface SearchOperators {
+  from?: string;
+  in?: string;
+  has?: string;
+  before?: string;
+  after?: string;
+}
+
 class StableApiClient {
   private async getAuthHeaders(): Promise<Record<string, string>> {
     let token = getToken();
@@ -448,6 +459,7 @@ class StableApiClient {
       updated_at: string;
       member_count: number;
       online_count: number;
+      is_archived?: boolean;
       // RoomResponse serializes the column as `metadata_` (alias). The list
       // endpoint shares _room_to_response with getRoom(), so the resident
       // Brigade agent's id rides along here too — used to group a persona's
@@ -496,6 +508,7 @@ class StableApiClient {
           ? (r.metadata_.brigade_agent_id as string)
           : null,
       is_conference: r.metadata_?.conference === true,
+      is_archived: r.is_archived ?? false,
     }));
   }
 
@@ -579,9 +592,47 @@ class StableApiClient {
 
   async updateRoom(
     roomId: string,
-    patch: { display_name?: string; description?: string },
+    patch: { display_name?: string; description?: string; is_archived?: boolean; metadata?: Record<string, unknown> },
   ): Promise<Room> {
     return this.request<Room>("PATCH", `/api/v1/rooms/${roomId}`, patch);
+  }
+
+  /** Archive a room (server-side soft-delete via is_archived). Returns the updated room. */
+  async archiveRoom(roomId: string): Promise<Room> {
+    // DELETE /rooms/{id} is the archive endpoint per rooms.py
+    await this.request("DELETE", `/api/v1/rooms/${roomId}`);
+    // Refetch to get the updated is_archived state
+    return this.getRoom(roomId);
+  }
+
+  /** Unarchive a room by setting is_archived=false via PATCH. */
+  async unarchiveRoom(roomId: string): Promise<Room> {
+    return this.updateRoom(roomId, { is_archived: false });
+  }
+
+  /** Fetch archived rooms (is_archived=true) for the Archived disclosure section. */
+  async getArchivedRooms(): Promise<Room[]> {
+    const resp = await this.request<{ rooms: any[] }>("GET", "/api/v1/rooms?is_archived=true");
+    return (resp.rooms ?? []).map((r) => ({
+      id: r.id,
+      name: r.display_name || r.name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      online_count: r.online_count ?? 0,
+      unread_count: r.unread_count ?? 0,
+      last_message: r.last_message ?? null,
+      members: [],
+      agents: [],
+      brigade_agent_id:
+        typeof r.metadata_?.brigade_agent_id === "string"
+          ? (r.metadata_.brigade_agent_id as string)
+          : null,
+      is_conference: r.metadata_?.conference === true,
+      is_archived: true,
+    }));
   }
 
   /**
@@ -1078,18 +1129,30 @@ class StableApiClient {
     );
   }
 
-  async searchMessages(roomId: string, q: string): Promise<Message[]> {
+  async searchMessages(roomId: string, q: string, ops?: SearchOperators): Promise<Message[]> {
+    const params = new URLSearchParams({ q });
+    if (ops?.from) params.set("from", ops.from);
+    if (ops?.in) params.set("in", ops.in);
+    if (ops?.has) params.set("has", ops.has);
+    if (ops?.before) params.set("before", ops.before);
+    if (ops?.after) params.set("after", ops.after);
     return this.request<Message[]>(
       "GET",
-      `/api/v1/rooms/${roomId}/messages/search?q=${encodeURIComponent(q)}`,
+      `/api/v1/rooms/${roomId}/messages/search?${params.toString()}`,
     );
   }
 
   /** Global search across every room the caller belongs to (server-scoped). */
-  async searchAllMessages(q: string): Promise<Message[]> {
+  async searchAllMessages(q: string, ops?: SearchOperators): Promise<Message[]> {
+    const params = new URLSearchParams({ q });
+    if (ops?.from) params.set("from", ops.from);
+    if (ops?.in) params.set("in", ops.in);
+    if (ops?.has) params.set("has", ops.has);
+    if (ops?.before) params.set("before", ops.before);
+    if (ops?.after) params.set("after", ops.after);
     return this.request<Message[]>(
       "GET",
-      `/api/v1/search/messages?q=${encodeURIComponent(q)}`,
+      `/api/v1/search/messages?${params.toString()}`,
     );
   }
 

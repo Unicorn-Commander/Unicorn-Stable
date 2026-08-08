@@ -7,6 +7,7 @@ import {
   Bot,
   Check,
   CheckCheck,
+  Archive,
   ChevronDown,
   ChevronRight,
   Download,
@@ -201,6 +202,45 @@ export function RoomList() {
         body: e instanceof Error ? e.message : "Request failed",
       });
     }
+  }
+
+  // ---- Archive / unarchive --------------------------------------------------
+
+  const [archivedRooms, setArchivedRooms] = useState<Room[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+
+  useEffect(() => {
+    api.getArchivedRooms().then((rooms) => setArchivedRooms(rooms)).catch(() => {});
+  }, []);
+
+  async function handleArchiveRoom(room: Room) {
+    try {
+      await api.archiveRoom(room.id);
+      await qc.invalidateQueries({ queryKey: ["rooms"] });
+      setArchivedRooms((prev) => [...prev, { ...room, is_archived: true }]);
+      pushToast({ title: "Chat archived", body: `${room.name} moved to Archived` });
+    } catch (e) {
+      pushToast({ title: "Couldn't archive", body: e instanceof Error ? e.message : "Request failed" });
+    } finally {
+      setMenuKey(null);
+    }
+  }
+
+  async function handleUnarchiveRoom(room: Room) {
+    try {
+      await api.unarchiveRoom(room.id);
+      await qc.invalidateQueries({ queryKey: ["rooms"] });
+      setArchivedRooms((prev) => prev.filter((r) => r.id !== room.id));
+      pushToast({ title: "Chat unarchived", body: `${room.name} restored` });
+    } catch (e) {
+      pushToast({ title: "Couldn't unarchive", body: e instanceof Error ? e.message : "Request failed" });
+    } finally {
+      setMenuKey(null);
+    }
+  }
+
+  function canArchive(room: Room): boolean {
+    return room.is_archived === false && (room.type === "dm" || room.type === "group_dm");
   }
 
   function renderFavoritePeopleStrip() {
@@ -840,6 +880,17 @@ export function RoomList() {
                 cat,
                 "channels",
               )}
+              <div className="my-0.5 border-t border-line" />
+              {!room.is_archived && canArchive(room) && (
+                <button
+                  role="menuitem"
+                  onClick={() => handleArchiveRoom(room)}
+                  className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                >
+                  <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  Archive chat
+                </button>
+              )}
             </>,
           )}
       </li>
@@ -1089,6 +1140,17 @@ export function RoomList() {
                 cat,
                 "people",
               )}
+              <div className="my-0.5 border-t border-line" />
+              {latest && !latest.is_archived && (
+                <button
+                  role="menuitem"
+                  onClick={() => handleArchiveRoom(latest)}
+                  className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                >
+                  <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  Archive chat
+                </button>
+              )}
             </>,
           )}
 
@@ -1182,7 +1244,23 @@ export function RoomList() {
           </button>
           {renderMenuTrigger(room.id, `Options for ${room.name}`)}
         </div>
-        {menuOpen && renderMenuShell(renderNotifyItems(room))}
+        {menuOpen &&
+          renderMenuShell(
+            <>
+              {renderNotifyItems(room)}
+              <div className="my-0.5 border-t border-line" />
+              {!room.is_archived && canArchive(room) && (
+                <button
+                  role="menuitem"
+                  onClick={() => handleArchiveRoom(room)}
+                  className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                >
+                  <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  Archive chat
+                </button>
+              )}
+            </>,
+          )}
       </li>
     );
   }
@@ -1611,6 +1689,99 @@ export function RoomList() {
     );
   }
 
+  function renderArchivedSection() {
+    if (archivedRooms.length === 0) return null;
+    const collapsed = showArchived;
+    return (
+      <section>
+        <div className="flex items-center justify-between px-2.5 pb-1">
+          <button
+            onClick={() => setShowArchived(!collapsed)}
+            className="focus-ring group flex min-w-0 items-center gap-1 rounded-md py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+            aria-expanded={collapsed}
+            title="Archived direct messages and groups"
+          >
+            <Archive className="h-3 w-3 shrink-0 opacity-60" />
+            <span className="truncate">Archived</span>
+            <span className="ml-auto tabular-nums text-slate-500">
+              {archivedRooms.length}
+            </span>
+            <ChevronDown
+              className={clsx(
+                "h-3 w-3 shrink-0 transition-transform duration-150",
+                collapsed && "-rotate-90",
+              )}
+            />
+          </button>
+        </div>
+        {collapsed && (
+          <ul role="list" className="ml-1.5 border-l border-line pl-1">
+            {archivedRooms.map((room) => (
+              <li key={room.id}>
+                <button
+                  onClick={() => {
+                    openRoom(room.id);
+                    setShowArchived(false);
+                  }}
+                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-[13px]">
+                        {room.last_message ? (
+                          <>
+                            <span className="font-medium">
+                              {room.last_message.sender_name}:
+                            </span>{" "}
+                            {formatLastMessage(room.last_message.content)}
+                          </>
+                        ) : (
+                          <span className="italic text-slate-500">
+                            New conversation
+                          </span>
+                        )}
+                      </span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {room.last_message && (
+                          <span className="text-[10px] tabular-nums text-slate-500">
+                            {formatTimestamp(room.last_message.created_at)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuKey(room.id);
+                    }}
+                    className="shrink-0 rounded-md p-1 text-slate-500 hover:text-slate-200"
+                  >
+                    <MoreVertical className="h-3.5 w-3.5" />
+                  </button>
+                  {menuKey === room.id &&
+                    renderMenuShell(
+                      <>
+                        <div className="my-0.5 border-t border-line" />
+                        <button
+                          role="menuitem"
+                          onClick={() => handleUnarchiveRoom(room)}
+                          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                        >
+                          <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                          Unarchive chat
+                        </button>
+                      </>,
+                    )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  }
+
   function renderChannelsSection() {
     return (
       <section>
@@ -1804,6 +1975,7 @@ export function RoomList() {
           <div className="-mt-2">{renderBridgeLink()}</div>
           {renderPeopleSection()}
           {renderGroupsSection()}
+          {renderArchivedSection()}
           {renderChannelsSection()}
         </>
       );
