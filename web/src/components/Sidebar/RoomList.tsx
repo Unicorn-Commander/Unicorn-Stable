@@ -86,6 +86,7 @@ export function RoomList() {
   const qc = useQueryClient();
   const location = useLocation();
   const rooms = useAppStore((s) => s.rooms);
+  const roomsLoaded = useAppStore((s) => s.roomsLoaded);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
@@ -1561,7 +1562,8 @@ export function RoomList() {
           <>
             {renderNewFolderInput("people")}
 
-            {peopleCount === 0 &&
+            {roomsLoaded &&
+              peopleCount === 0 &&
               groupCount === 0 &&
               focusMode !== "focused" && (
               <div className="mx-2 mb-1 flex flex-col gap-1">
@@ -1642,7 +1644,9 @@ export function RoomList() {
           <>
             {renderNewFolderInput("channels")}
 
-            {channelCount === 0 && focusMode !== "focused" && (
+            {roomsLoaded &&
+              channelCount === 0 &&
+              focusMode !== "focused" && (
               <div className="px-2.5 py-2">
                 <p className="mb-2 text-xs text-slate-500">No channels yet</p>
                 <button
@@ -1795,8 +1799,40 @@ export function RoomList() {
     );
   }
 
+  /** First-load placeholder: the rooms payload hasn't landed yet, so the
+   *  sidebar must not flash "No conversations yet" / "No channels yet"
+   *  empty states or a stub list. Shimmer rows match the ChatPanel skeleton
+   *  idiom. */
+  function renderNavSkeleton() {
+    return (
+      <div
+        className="mx-2 space-y-1"
+        aria-hidden="true"
+        aria-busy="true"
+      >
+        {[64, 48, 72, 40, 58].map((w, i) => (
+          <div
+            key={i}
+            className="flex animate-pulse-soft items-center gap-2.5 rounded-lg px-2.5 py-2"
+            style={{ animationDelay: `${i * 120}ms` }}
+          >
+            <div className="h-6 w-6 shrink-0 rounded-full bg-white/[0.05]" />
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div
+                className="h-2.5 rounded bg-white/[0.06]"
+                style={{ width: `${w}%` }}
+              />
+              <div className="h-2 rounded bg-white/[0.04]" style={{ width: `${w - 18}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   /** Classic (flag off) or view-filtered (flag on) body. */
   function renderNavBody() {
+    if (!roomsLoaded) return renderNavSkeleton();
     if (!navV1) {
       return (
         <>
@@ -1822,7 +1858,10 @@ export function RoomList() {
               emptyAgentCta: false,
             })}
             {renderGroupsSection()}
-            {peopleCount === 0 && groupCount === 0 && focusMode !== "focused" && (
+            {roomsLoaded &&
+              peopleCount === 0 &&
+              groupCount === 0 &&
+              focusMode !== "focused" && (
               <div className="mx-3 mt-2 rounded-xl border border-line bg-surface-2/40 px-3 py-4 text-center">
                 <p className="text-xs text-slate-400">
                   No chats yet. Open{" "}
@@ -1967,7 +2006,7 @@ export function RoomList() {
         className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4"
         aria-label="Room navigation"
       >
-        {focusedEmpty && (
+        {roomsLoaded && focusedEmpty && (
           <div className="mx-2 rounded-lg border border-dashed border-line px-3 py-3 text-xs text-slate-500">
             <p className="font-medium text-slate-400">Nothing needs attention</p>
             <p className="mt-1">
