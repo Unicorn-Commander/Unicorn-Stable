@@ -26,6 +26,11 @@ class RoomUpdate(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     is_archived: bool | None = None
+    # Client-writable room metadata. MERGED into the room's existing metadata
+    # server-side, and restricted to an allowlist of benign keys
+    # (room_service.CLIENT_MUTABLE_METADATA_KEYS — currently `auto_titled`);
+    # anything else (brigade_agent_id, conference, …) is silently dropped.
+    metadata: dict[str, object] | None = None
 
 
 class RoomMemberResponse(BaseModel):

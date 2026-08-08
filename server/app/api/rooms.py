@@ -367,6 +367,13 @@ async def list_rooms(
     presence: Annotated[PresenceService, Depends(get_presence)],
     cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
+    is_archived: bool = Query(
+        False,
+        description=(
+            "True returns ONLY the caller's archived rooms (the sidebar's "
+            "Archived section); the default excludes archived rooms."
+        ),
+    ),
 ) -> RoomListResponse:
     """List rooms the current user is a member of."""
     svc = _build_room_service(db, livekit, presence)
@@ -374,6 +381,7 @@ async def list_rooms(
         participant_id=user["participant_id"],
         cursor=cursor,
         limit=limit,
+        is_archived=is_archived,
     )
     rooms = [
         _room_to_response(
@@ -429,6 +437,7 @@ async def update_room(
         display_name=body.display_name,
         description=body.description,
         is_archived=body.is_archived,
+        metadata=body.metadata,
     )
     result = await svc.get_room(room_id)
     return _room_to_response(
