@@ -6,11 +6,10 @@ import {
   Activity,
   Check,
   ExternalLink,
-  ShieldCheck,
   X,
   XCircle,
 } from "lucide-react";
-import { api, type ApiError, type PendingApproval } from "@/services/api";
+import { api, type ActivityEventType, type ApiError, type PendingApproval } from "@/services/api";
 import { Avatar } from "@/components/Avatar";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useAppStore } from "@/stores/appStore";
@@ -18,7 +17,13 @@ import { useFederationStore } from "@/stores/federationStore";
 
 interface ActivityCenterProps {
   onClose: () => void;
+  initialTab?: ActivityTab;
 }
+
+export type ActivityTab = "approvals" | "mentions" | "threads" | "reactions";
+const EVENT_TYPE: Record<Exclude<ActivityTab, "approvals">, ActivityEventType> = {
+  mentions: "mention", threads: "thread", reactions: "reaction",
+};
 
 function errorDetail(error: unknown): string {
   const apiError = error as Partial<ApiError>;
@@ -29,7 +34,7 @@ function errorDetail(error: unknown): string {
   );
 }
 
-export function ActivityCenter({ onClose }: ActivityCenterProps) {
+export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCenterProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const panelRef = useModalA11y(true, onClose);
@@ -40,6 +45,7 @@ export function ActivityCenter({ onClose }: ActivityCenterProps) {
     id: string;
     decision: "approved" | "rejected";
   } | null>(null);
+  const [tab, setTab] = useState<ActivityTab>(initialTab);
 
   const {
     data,
@@ -52,6 +58,13 @@ export function ActivityCenter({ onClose }: ActivityCenterProps) {
     refetchInterval: 15_000,
   });
   const approvals = data?.items ?? [];
+  const activityType = tab === "approvals" ? null : EVENT_TYPE[tab];
+  const activityQuery = useQuery({
+    queryKey: ["activity-events", activityType, activeInstanceId],
+    queryFn: () => api.getActivityEvents(activityType!),
+    enabled: activityType !== null,
+    refetchInterval: 15_000,
+  });
 
   async function decide(
     approval: PendingApproval,
@@ -115,7 +128,7 @@ export function ActivityCenter({ onClose }: ActivityCenterProps) {
                 Activity Center
               </h2>
               <p className="truncate text-xs text-slate-400">
-                Agent requests awaiting your approval
+                {tab === "approvals" ? "Agent requests awaiting your approval" : "Your durable workspace catch-up inbox"}
               </p>
             </div>
           </div>
@@ -129,10 +142,15 @@ export function ActivityCenter({ onClose }: ActivityCenterProps) {
           </button>
         </header>
 
-        <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
-          <ShieldCheck className="h-4 w-4 text-emerald-300" />
-          <span className="text-xs font-semibold text-slate-200">Approvals</span>
-          {!isLoading && (
+        <div className="flex items-center gap-1 overflow-x-auto border-b border-line px-3 py-2" role="tablist" aria-label="Activity categories">
+          {(["approvals", "mentions", "threads", "reactions"] as ActivityTab[]).map((name) => (
+            <button key={name} type="button" role="tab" aria-selected={tab === name}
+              onClick={() => setTab(name)}
+              className={`focus-ring rounded-lg px-3 py-2 text-xs font-semibold capitalize ${tab === name ? "bg-white/[0.09] text-slate-100" : "text-slate-400 hover:text-slate-200"}`}>
+              {name}
+            </button>
+          ))}
+          {tab === "approvals" && !isLoading && (
             <span
               className="ml-auto rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-slate-300 tabular-nums"
               aria-label={`${approvals.length}${data?.has_more ? " or more" : ""} pending approvals`}
@@ -144,7 +162,12 @@ export function ActivityCenter({ onClose }: ActivityCenterProps) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {isLoading ? (
+          {tab !== "approvals" ? (
+            activityQuery.isLoading ? <div className="flex h-40 items-center justify-center text-sm text-slate-400">Loading activity…</div> :
+            activityQuery.isError ? <div className="flex flex-col items-center px-6 py-14 text-center"><XCircle className="mb-3 h-7 w-7 text-rose-300" /><h3 className="text-sm font-semibold text-slate-100">Activity unavailable</h3><button type="button" onClick={() => void activityQuery.refetch()} className="focus-ring mt-4 rounded-xl border border-line px-4 py-2 text-sm text-slate-200">Try again</button></div> :
+            (activityQuery.data?.length ?? 0) === 0 ? <div className="flex flex-col items-center px-6 py-16 text-center"><Check className="mb-3 h-7 w-7 text-emerald-300" /><h3 className="text-sm font-semibold text-slate-100">You’re all caught up</h3></div> :
+            <ul className="divide-y divide-line">{activityQuery.data?.map((event) => <li key={event.id}><button type="button" onClick={() => { onClose(); navigate(`/c/${event.room_id}?message=${event.message_id}`); }} className="focus-ring w-full px-4 py-3 text-left hover:bg-white/[0.04]"><p className="text-xs text-slate-400">{event.actor_name ?? "Someone"} · {event.room_name} · {new Date(event.created_at).toLocaleString()}</p><p className="mt-1 line-clamp-2 text-sm text-slate-200">{event.content || (event.metadata?.emoji as string | undefined) || "Activity"}</p></button></li>)}</ul>
+          ) : isLoading ? (
             <div
               className="flex h-40 items-center justify-center text-sm text-slate-400"
               role="status"

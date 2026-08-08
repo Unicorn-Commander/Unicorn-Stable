@@ -49,7 +49,7 @@ import { CheatsheetModal } from "./CheatsheetModal";
 import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
 import { PeopleDrawer } from "./PeopleDrawer";
-import { ActivityCenter } from "./ActivityCenter";
+import { ActivityCenter, type ActivityTab } from "./ActivityCenter";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
 import { ServerRail } from "./ServerRail";
@@ -195,6 +195,7 @@ export function AppShell() {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [activityTab, setActivityTab] = useState<ActivityTab>("approvals");
   // Federated multi-server: the active instance id keys the per-server
   // react-query caches; a switch clears the cache and returns to the home view.
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
@@ -724,7 +725,7 @@ export function AppShell() {
               </ErrorBoundary>
             ) : (
               <ErrorBoundary>
-                <HomeDashboard />
+                <HomeDashboard onOpenActivity={(tab) => { setActivityTab(tab); setActivityOpen(true); }} />
               </ErrorBoundary>
             )}
           </Suspense>
@@ -753,7 +754,7 @@ export function AppShell() {
 
       <AnimatePresence>
         {activityOpen && (
-          <ActivityCenter onClose={() => setActivityOpen(false)} />
+          <ActivityCenter initialTab={activityTab} onClose={() => setActivityOpen(false)} />
         )}
       </AnimatePresence>
 

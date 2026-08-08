@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Annotated, Any
 
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from redis.asyncio import Redis
 
 from app.config import Settings
 from app.deps import (
@@ -15,6 +17,7 @@ from app.deps import (
     get_db,
     get_livekit,
     get_presence,
+    get_redis,
     get_settings_dep,
     rate_limit,
     require_room_member,
@@ -54,6 +57,8 @@ def _room_to_response(
     online_count: int = 0,
     last_message: Any = None,
     unread_count: int = 0,
+    mention_count: int = 0,
+    has_unread_mention: bool = False,
 ) -> RoomResponse:
     last_msg_resp = None
     if last_message is not None:
@@ -80,6 +85,8 @@ def _room_to_response(
         online_count=online_count,
         last_message=last_msg_resp,
         unread_count=unread_count,
+        mention_count=mention_count,
+        has_unread_mention=has_unread_mention,
     )
 
 
@@ -375,6 +382,8 @@ async def list_rooms(
             r["online_count"],
             last_message=r.get("last_message"),
             unread_count=r.get("unread_count", 0),
+            mention_count=r.get("mention_count", 0),
+            has_unread_mention=r.get("has_unread_mention", False),
         )
         for r in result["rooms"]
     ]
@@ -928,6 +937,7 @@ async def remove_member(
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> None:
     """Remove a member from a room (kick). Owner or admin only."""
     svc = _build_room_service(db, livekit, presence)
@@ -935,6 +945,13 @@ async def remove_member(
     await _broadcast_members_changed(
         db, room_id, removed_participant_id=info["participant_id"]
     )
+    try:
+        await redis.publish(
+            f"user:{info['participant_id']}",
+            json.dumps({"type": "room_revoked", "room_id": str(room_id)}),
+        )
+    except Exception:
+        logger.warning("room_revocation_fanout_failed", exc_info=True)
 
 
 @router.patch(

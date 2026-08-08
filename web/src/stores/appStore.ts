@@ -225,11 +225,15 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => {
       const prevById = new Map(state.rooms.map((r) => [r.id, r]));
       const nextUnread = { ...state.unreadCounts };
+      const nextMentions = { ...state.mentionUnreads };
       const merged = rooms.map((r) => {
         // Seed the live unread map from the backend's cold-load count the
         // FIRST time we see a room (so badges show on login, before any WS
         // traffic); never clobber a count we're already tracking live.
         if (!(r.id in nextUnread)) nextUnread[r.id] = r.unread_count ?? 0;
+        if (!(r.id in nextMentions)) {
+          nextMentions[r.id] = r.has_unread_mention === true || (r.mention_count ?? 0) > 0;
+        }
         // Preserve the conversation-list preview across the 60s refetch: if
         // this payload has no last_message (older backend), keep whatever the
         // live WS path set. Without this, every refetch blanks the previews.
@@ -238,7 +242,12 @@ export const useAppStore = create<AppState>((set) => ({
       });
       // Any payload is evidence the backend answered — the list is "loaded"
       // even when it comes back empty (that's the honest empty state).
-      return { rooms: merged, unreadCounts: nextUnread, roomsLoaded: true };
+      return {
+        rooms: merged,
+        unreadCounts: nextUnread,
+        mentionUnreads: nextMentions,
+        roomsLoaded: true,
+      };
     }),
 
   setRoomsLoaded: (loaded) => set({ roomsLoaded: loaded }),

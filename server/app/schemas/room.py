@@ -84,6 +84,8 @@ class RoomResponse(BaseModel):
     # last_read_at. Both let the sidebar + home feed show previews and badges
     # on cold load. Default to empty so other RoomResponse callers are unaffected.
     unread_count: int = 0
+    mention_count: int = 0
+    has_unread_mention: bool = False
     last_message: MessageResponse | None = None
 
 

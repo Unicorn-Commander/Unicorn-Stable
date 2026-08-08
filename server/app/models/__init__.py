@@ -1,4 +1,5 @@
 from app.models.agent import AgentConfig, AgentEvent, AgentRun, AgentRunStatus, AgentType
+from app.models.activity import ActivityEvent, ActivityEventType
 from app.models.artifact import (
     Artifact,
     ArtifactAuthorKind,
@@ -45,4 +46,6 @@ __all__ = [
     "KnowledgeCollection",
     "KnowledgeDocument",
     "RoomKnowledge",
+    "ActivityEvent",
+    "ActivityEventType",
 ]

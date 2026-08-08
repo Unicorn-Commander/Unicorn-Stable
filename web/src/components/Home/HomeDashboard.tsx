@@ -43,6 +43,7 @@ import {
 import { ConversationsCard } from "./widgets/ConversationsCard";
 import { AgentActivityFeed } from "./widgets/AgentActivityFeed";
 import { KnowledgeRecents } from "./widgets/KnowledgeRecents";
+import type { ActivityTab } from "@/components/Layout/ActivityCenter";
 
 /** One tile in the command-center stat strip. */
 type HomeStat = {
@@ -136,7 +137,7 @@ const SECTION_CONVERSATIONS = "home-conversations";
  * feed), and is the system healthy (health strip). Derivations live in
  * ./homeModel.ts; repeated row markup lives in ./widgets/HomeRow.tsx.
  */
-export function HomeDashboard() {
+export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: ActivityTab) => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const rooms = useAppStore((s) => s.rooms);
@@ -446,7 +447,7 @@ export function HomeDashboard() {
       icon: AtSign,
       tone: "text-stable-purple-light",
       attention: priority.mentionRooms.length > 0,
-      onClick: () => scrollToSection(SECTION_PRIORITY),
+      onClick: () => onOpenActivity?.("mentions") ?? scrollToSection(SECTION_PRIORITY),
     },
     {
       key: "dms",
@@ -455,7 +456,7 @@ export function HomeDashboard() {
       icon: MessageSquare,
       tone: "text-stable-cyan",
       attention: priority.dmUnreadRooms.length > 0,
-      onClick: () => scrollToSection(SECTION_PRIORITY),
+      onClick: () => onOpenActivity?.("threads") ?? scrollToSection(SECTION_PRIORITY),
     },
     {
       key: "approvals",
@@ -464,7 +465,7 @@ export function HomeDashboard() {
       icon: ShieldCheck,
       tone: "text-rose-300",
       attention: approvalCount > 0,
-      onClick: () => scrollToSection(SECTION_PRIORITY),
+      onClick: () => onOpenActivity?.("approvals") ?? scrollToSection(SECTION_PRIORITY),
     },
     {
       key: "meetings",
@@ -567,6 +568,20 @@ export function HomeDashboard() {
             </div>
           </div>
         </header>
+
+        {roomsLoaded && rooms.length === 0 && (
+          <section className="mb-6 rounded-2xl border border-stable-purple/30 bg-stable-purple/10 p-5" aria-label="Get started">
+            <div className="flex items-center gap-4">
+              <AgentPortrait id={agentRoster[0]?.id} name={agentRoster[0]?.name ?? "Majik"} size={56} />
+              <div><p className="font-display text-lg font-semibold text-slate-100">Meet {agentRoster[0]?.name ?? "Majik"}</p><p className="mt-1 text-sm text-slate-300">Your workspace starts with one useful conversation.</p></div>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <button type="button" onClick={() => agentRoster[0] && void api.createAgentDm(agentRoster[0].id, agentRoster[0].name).then(async (room) => { await api.setOnboardingChecklist({ ...preferences?.onboarding_checklist, agent: true }); useAppStore.getState().setRooms([room]); navigate(`/c/${room.id}`); })} className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100">{preferences?.onboarding_checklist?.agent ? "✓ " : "1. "}Say hi to an agent</button>
+              <button type="button" onClick={() => void api.bootstrapDefaultRooms().then(async (newRooms) => { await api.setOnboardingChecklist({ ...preferences?.onboarding_checklist, channels: true }); useAppStore.getState().setRooms(newRooms); })} className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100">{preferences?.onboarding_checklist?.channels ? "✓ " : "2. "}Seed your channels</button>
+              <button type="button" onClick={() => { void api.setOnboardingChecklist({ ...preferences?.onboarding_checklist, invite: true }); setPeopleDrawerOpen(true); }} className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100">{preferences?.onboarding_checklist?.invite ? "✓ " : "3. "}Invite a teammate</button>
+            </div>
+          </section>
+        )}
 
         {/* ── Stat strip — the pulse of the whole workspace ────────────── */}
         <div

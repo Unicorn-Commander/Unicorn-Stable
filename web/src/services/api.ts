@@ -43,6 +43,20 @@ export interface PaginatedResponse<T> {
   has_more: boolean;
 }
 
+export type ActivityEventType = "mention" | "thread" | "reaction";
+
+export interface ActivityEvent {
+  id: string;
+  event_type: ActivityEventType;
+  room_id: string;
+  room_name: string;
+  message_id: string;
+  actor_name?: string | null;
+  content: string;
+  created_at: string;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface Room {
   id: string;
   name: string;
@@ -56,6 +70,8 @@ export interface Room {
    * endpoint has always sent this; the mapper used to drop it. */
   online_count?: number;
   unread_count: number;
+  mention_count?: number;
+  has_unread_mention?: boolean;
   last_message: Message | null;
   members: RoomMember[];
   agents: Agent[];
@@ -162,6 +178,7 @@ export interface PeopleDirectoryEntry {
 export interface UserPreferences {
   default_agent_id: string | null;
   favorite_people_ids: string[];
+  onboarding_checklist?: Record<string, boolean>;
 }
 
 export interface Message {
@@ -620,6 +637,10 @@ class StableApiClient {
     return this.request<UserPreferences>("GET", "/api/v1/users/me/preferences");
   }
 
+  async getActivityEvents(type: ActivityEventType): Promise<ActivityEvent[]> {
+    return this.request<ActivityEvent[]>("GET", `/api/v1/activity-events?event_type=${type}`);
+  }
+
   /** Set (or clear, with null) the user's default "New chat" agent. */
   async setDefaultAgent(agentId: string | null): Promise<UserPreferences> {
     return this.request<UserPreferences>(
@@ -636,6 +657,10 @@ class StableApiClient {
       "/api/v1/users/me/preferences",
       { favorite_people_ids: participantIds },
     );
+  }
+
+  async setOnboardingChecklist(checklist: Record<string, boolean>): Promise<UserPreferences> {
+    return this.request<UserPreferences>("PUT", "/api/v1/users/me/preferences", { onboarding_checklist: checklist });
   }
 
   async bootstrapDefaultRooms(): Promise<Room[]> {
