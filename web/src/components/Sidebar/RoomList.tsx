@@ -44,6 +44,7 @@ import {
   roomsNeedingMarkRead,
 } from "@/utils/unreadModel";
 import { exportRoomToMarkdown } from "@/utils/exportRoom";
+import { stripMarkdown } from "@/utils/messagePreview";
 import { identityFor } from "@/lib/identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
@@ -882,8 +883,9 @@ export function RoomList() {
   }
 
   function formatLastMessage(content: string): string {
-    if (content.length <= 40) return content;
-    return content.slice(0, 40) + "...";
+    const flat = stripMarkdown(content).replace(/\s+/g, " ").trim();
+    if (flat.length <= 40) return flat;
+    return flat.slice(0, 40) + "...";
   }
 
   function formatTimestamp(dateStr: string): string {

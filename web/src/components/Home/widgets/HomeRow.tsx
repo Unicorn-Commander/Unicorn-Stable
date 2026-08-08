@@ -3,6 +3,7 @@ import { formatDistanceToNowStrict } from "date-fns";
 import clsx from "clsx";
 import type { Message } from "@/services/api";
 import { identityFor } from "@/lib/identity";
+import { stripMarkdown } from "@/utils/messagePreview";
 
 /**
  * The home dashboard's one room/message row: leading chip-or-avatar, title,
@@ -15,7 +16,7 @@ import { identityFor } from "@/lib/identity";
  */
 
 export function previewText(content: string): string {
-  const oneLine = content.replace(/\s+/g, " ").trim();
+  const oneLine = stripMarkdown(content).replace(/\s+/g, " ").trim();
   return oneLine.length > 90 ? oneLine.slice(0, 90) + "…" : oneLine;
 }
 
