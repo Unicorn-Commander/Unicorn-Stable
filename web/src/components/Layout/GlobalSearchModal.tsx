@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import clsx from "clsx";
 import { Hash, Loader2, Search, SearchX } from "lucide-react";
 import { api, type Message } from "@/services/api";
 import { useQuery } from "@tanstack/react-query";
@@ -26,6 +27,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
+  const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useModalA11y(true, onClose);
 
@@ -37,6 +39,11 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
     const t = setTimeout(() => setDebounced(q.trim()), 250);
     return () => clearTimeout(t);
   }, [q]);
+
+  // New result set → keyboard selection restarts at the top.
+  useEffect(() => {
+    setSel(0);
+  }, [debounced]);
 
   const { data: results = [], isFetching, isError, refetch } = useQuery({
     queryKey: ["global-search", debounced],
@@ -69,6 +76,22 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
     onClose();
   }
 
+  // ↑↓ move the selection, ↵ opens it — same contract as the QuickSwitcher
+  // (the search modal is its sibling surface).
+  function onKey(e: React.KeyboardEvent) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSel((s) => Math.min(s + 1, results.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSel((s) => Math.max(s - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const m = results[sel];
+      if (m) openResult(m);
+    }
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -84,6 +107,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
         exit={{ scale: 0.96, y: -8 }}
         className="glass-heavy flex max-h-[85dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl shadow-pop"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={onKey}
         role="dialog"
         aria-modal="true"
         aria-label="Search all messages"
@@ -147,12 +171,24 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
             </div>
           ) : (
             <ul className="divide-y divide-line">
-              {results.map((m) => (
+              {results.map((m, i) => (
                 <li key={m.id}>
                   <button
+                    onMouseEnter={() => setSel(i)}
                     onClick={() => openResult(m)}
-                    className="focus-ring flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.04]"
+                    className={clsx(
+                      "focus-ring relative flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors",
+                      i === sel
+                        ? "bg-white/[0.06] text-slate-50"
+                        : "text-slate-300 hover:bg-white/[0.04]",
+                    )}
                   >
+                    {i === sel && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+                      />
+                    )}
                     <Avatar
                       name={m.sender_name}
                       src={m.sender_avatar}

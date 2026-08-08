@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
+import clsx from "clsx";
 import { Search, SearchX, X } from "lucide-react";
 import { identityFor } from "@/lib/identity";
 import { api, type Message } from "@/services/api";
@@ -15,6 +16,7 @@ interface SearchPanelProps {
 export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
+  const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -26,11 +28,37 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
     return () => clearTimeout(t);
   }, [q]);
 
+  // New result set → keyboard selection restarts at the top.
+  useEffect(() => {
+    setSel(0);
+  }, [debounced]);
+
   const { data: results = [], isFetching, isError, refetch } = useQuery({
     queryKey: ["search", roomId, debounced],
     queryFn: () => api.searchMessages(roomId, debounced),
     enabled: debounced.length > 0,
   });
+
+  // ↑↓ move the selection, ↵ jumps to it — same contract as the
+  // QuickSwitcher / global search.
+  function onKey(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      onClose();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSel((s) => Math.min(s + 1, results.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSel((s) => Math.max(s - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const m = results[sel];
+      if (m) {
+        onSelect(m);
+        onClose();
+      }
+    }
+  }
 
   return (
     <motion.div
@@ -46,9 +74,7 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") onClose();
-          }}
+          onKeyDown={onKey}
           placeholder="Search messages in this room…"
           className="flex-1 bg-transparent text-base md:text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
         />
@@ -102,15 +128,27 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
           </div>
         ) : (
           <ul className="divide-y divide-line">
-            {results.map((m) => (
+            {results.map((m, i) => (
               <li key={m.id}>
                 <button
+                  onMouseEnter={() => setSel(i)}
                   onClick={() => {
                     onSelect(m);
                     onClose();
                   }}
-                  className="focus-ring flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-white/[0.04]"
+                  className={clsx(
+                    "focus-ring relative flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
+                    i === sel
+                      ? "bg-white/[0.06] text-slate-50"
+                      : "text-slate-300 hover:bg-white/[0.04]",
+                  )}
                 >
+                  {i === sel && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+                    />
+                  )}
                   <Avatar
                     name={m.sender_name}
                     src={m.sender_avatar}
