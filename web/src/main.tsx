@@ -17,6 +17,21 @@ import { initPalette } from "./stores/themeStore";
 // before the real STT producer exists. No-op otherwise.
 installDevTranscriptGlobals();
 
+// Deploy-survival: after a redeploy, a tab still holding the previous build's
+// shell will 404 on any lazy chunk it hasn't loaded yet ("Failed to fetch
+// dynamically imported module …") — e.g. joining a video call crashed on the
+// old VrmAvatar hash. Vite reports every such failure as `vite:preloadError`;
+// reload ONCE to pick up the current build. The sessionStorage latch (cleared
+// on a successful boot) is the loop-breaker for genuine network failure.
+const PRELOAD_RELOAD_AT = "stable:chunk-reload-at";
+window.addEventListener("vite:preloadError", (event) => {
+  const last = Number(sessionStorage.getItem(PRELOAD_RELOAD_AT) ?? 0);
+  if (Date.now() - last < 60_000) return; // reloaded <1min ago: real outage, don't loop
+  event.preventDefault(); // we own recovery — don't also surface the throw
+  sessionStorage.setItem(PRELOAD_RELOAD_AT, String(Date.now()));
+  window.location.reload();
+});
+
 // Theme: stamp the stored (or system-resolved) theme before React paints,
 // keeping browser chrome (meta theme-color) in sync, and start the OS-theme
 // listener so a "system" preference live-updates. index.html also stamps

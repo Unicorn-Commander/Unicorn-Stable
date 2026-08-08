@@ -496,21 +496,27 @@ function MobileCallLayout({
           <>
             <IncomingMessagePreview roomId={roomId} active={sheet === null} />
             {sheet === null && (
-              <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col items-center pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2">
+              /* Sits ABOVE VoiceVideoBar's permanent mic/cam/leave dock
+                 (pt-1 + h-10 buttons ≈ 2.75rem + safe-area) — anchored to
+                 bottom-0 this pill landed ON the camera button. Wrapper is
+                 click-transparent so a miss still reaches the controls. */
+              <div className="pointer-events-none absolute inset-x-0 bottom-[calc(3.25rem+env(safe-area-inset-bottom,0px))] z-20 flex flex-col items-center">
                 <button
                   type="button"
                   onClick={() => onOpenSheet("half")}
-                  className="focus-ring flex h-11 min-w-[11rem] items-center justify-center gap-2 rounded-full border border-line bg-slate-950/80 px-4 text-sm font-medium text-slate-100 shadow-pop backdrop-blur-md"
+                  className="focus-ring pointer-events-auto flex h-11 min-w-[11rem] items-center justify-center gap-2 rounded-full border border-line bg-slate-950/80 px-4 text-sm font-medium text-slate-100 shadow-pop backdrop-blur-md"
                   aria-label="Open chat"
                 >
                   <MessageSquare className="h-4 w-4 text-stable-cyan" />
                   Chat
                   <ChevronUp className="h-4 w-4 text-slate-400" />
                 </button>
-                <SheetDragHandle
-                  onOpenHalf={() => onOpenSheet("half")}
-                  onOpenFull={() => onOpenSheet("full")}
-                />
+                <div className="pointer-events-auto">
+                  <SheetDragHandle
+                    onOpenHalf={() => onOpenSheet("half")}
+                    onOpenFull={() => onOpenSheet("full")}
+                  />
+                </div>
               </div>
             )}
           </>
