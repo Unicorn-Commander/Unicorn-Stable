@@ -2,14 +2,13 @@
 //
 // Design goals:
 //   * Keep the app shell available offline (network-first navigations).
-//   * NEVER cache hashed build assets, /api calls, or WebSocket upgrades —
-//     Vite fingerprints assets, so stale-caching them causes broken loads.
+//   * Cache immutable Vite assets so the cached shell can boot offline.
 //   * Be forward-compatible with web-push (push + notificationclick handlers)
 //     even though the backend isn't wired up yet.
 //
 // Dependency-free vanilla JS.
 
-const CACHE = "stable-shell-v1";
+const CACHE = "stable-shell-v2";
 
 // Just the app shell. index.html is the SPA entry; "/" resolves to it.
 const SHELL = ["/", "/index.html"];
@@ -29,7 +28,7 @@ self.addEventListener("install", (event) => {
         // Precache is best-effort; navigations will re-fill the cache later.
         console.warn("[sw] precache failed (non-fatal):", err);
       }
-    })()
+    })(),
   );
 });
 
@@ -41,10 +40,10 @@ self.addEventListener("activate", (event) => {
     (async () => {
       const names = await caches.keys();
       await Promise.all(
-        names.map((name) => (name !== CACHE ? caches.delete(name) : null))
+        names.map((name) => (name !== CACHE ? caches.delete(name) : null)),
       );
       await self.clients.claim();
-    })()
+    })(),
   );
 });
 
@@ -57,6 +56,26 @@ self.addEventListener("activate", (event) => {
 // shell so the offline copy stays reasonably current.
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+
+  if (
+    req.method === "GET" &&
+    new URL(req.url).origin === self.location.origin &&
+    new URL(req.url).pathname.startsWith("/assets/")
+  ) {
+    event.respondWith(
+      (async () => {
+        const cached = await caches.match(req);
+        if (cached) return cached;
+        const fresh = await fetch(req);
+        if (fresh.ok) {
+          const cache = await caches.open(CACHE);
+          await cache.put(req, fresh.clone());
+        }
+        return fresh;
+      })(),
+    );
+    return;
+  }
 
   // Only GET navigations. request.mode === "navigate" is true for full-page
   // loads / address-bar hits, not for fetch()/XHR/asset subrequests.
@@ -88,7 +107,7 @@ self.addEventListener("fetch", (event) => {
           headers: { "Content-Type": "text/plain" },
         });
       }
-    })()
+    })(),
   );
 });
 
@@ -148,6 +167,6 @@ self.addEventListener("notificationclick", (event) => {
       if (self.clients.openWindow) {
         await self.clients.openWindow(url);
       }
-    })()
+    })(),
   );
 });

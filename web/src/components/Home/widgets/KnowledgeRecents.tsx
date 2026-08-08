@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen } from "lucide-react";
-import { api } from "@/services/api";
+import { BookOpen, FileText } from "lucide-react";
+import { api, type HomeSummary } from "@/services/api";
 import { useFederationStore } from "@/stores/federationStore";
 import { rowTime } from "./HomeRow";
 
@@ -13,11 +13,15 @@ import { rowTime } from "./HomeRow";
  */
 export function KnowledgeRecents({
   onOpenKnowledge,
+  artifacts = [],
+  transcripts = [],
 }: {
   /** Open the existing knowledge UI, optionally landing on one collection.
    * The KB panel only mounts inside a room (RoomView's right drawer), so the
    * caller owns the "which room hosts it" decision. */
   onOpenKnowledge: (collectionId?: string) => void;
+  artifacts?: HomeSummary["recent_artifacts"];
+  transcripts?: HomeSummary["recent_transcripts"];
 }) {
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
 
@@ -92,6 +96,42 @@ export function KnowledgeRecents({
                   </span>
                 </span>
               </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(artifacts.length > 0 || transcripts.length > 0) && (
+        <ul className="card mt-3 overflow-hidden">
+          {artifacts.map((item) => (
+            <li
+              key={`artifact-${item.id}`}
+              className="flex items-center gap-3 border-b border-line px-3.5 py-2.5"
+            >
+              <FileText className="h-4 w-4 text-stable-cyan" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm text-slate-100">
+                  {item.title}
+                </span>
+                <span className="block truncate text-xs text-slate-500">
+                  {item.room_name} · {item.kind}
+                </span>
+              </span>
+            </li>
+          ))}
+          {transcripts.map((item) => (
+            <li
+              key={`transcript-${item.id}`}
+              className="flex items-center gap-3 px-3.5 py-2.5"
+            >
+              <FileText className="h-4 w-4 text-item-agent" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm text-slate-100">
+                  Transcript · {item.room_name}
+                </span>
+                <span className="block text-xs text-slate-500">
+                  {item.status}
+                </span>
+              </span>
             </li>
           ))}
         </ul>

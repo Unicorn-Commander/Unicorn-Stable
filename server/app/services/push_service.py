@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.push_subscription import PushSubscription
-from app.models.room import Room
+from app.models.room import Room, RoomMember, RoomType
 
 logger = structlog.get_logger(__name__)
 
@@ -117,3 +117,62 @@ async def dispatch_mention_pushes(
         await db.execute(delete(PushSubscription).where(PushSubscription.endpoint.in_(dead)))
         await db.commit()
         logger.info("web_push_pruned", n=len(dead))
+
+
+async def dispatch_message_pushes(
+    *, db: AsyncSession, content: str, room_id: Any, sender_id: Any,
+    sender_name: str, settings: Settings,
+) -> None:
+    """Push one message to offline DM/group members, plus channel mentions."""
+    if not push_configured(settings):
+        return
+    room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
+    if room is None:
+        return
+    handles = {m.lower() for m in _MENTION_RE.findall(content or "")}
+    rows = (await db.execute(
+        select(Participant).join(RoomMember, RoomMember.participant_id == Participant.id).where(
+            RoomMember.room_id == room_id,
+            Participant.id != sender_id,
+            Participant.participant_type == ParticipantType.HUMAN,
+            Participant.status != ParticipantStatus.ONLINE,
+        )
+    )).scalars().all()
+    if room.room_type == RoomType.CHANNEL:
+        rows = [p for p in rows if (p.username or "").lower() in handles]
+    await _dispatch_targets(
+        db=db, targets=rows,
+        payload={
+            "title": f"{sender_name} in {room.display_name or room.name}",
+            "body": content if len(content) <= 140 else content[:140] + "…",
+            "url": f"{settings.public_base_url}/?room={room.id}", "tag": str(room.id),
+        }, settings=settings,
+    )
+
+
+async def dispatch_call_pushes(
+    *, db: AsyncSession, targets: list[Participant], room: Room,
+    caller_name: str, call_id: str, settings: Settings,
+) -> None:
+    """Push an incoming ring to offline callee devices."""
+    offline = [p for p in targets if p.status != ParticipantStatus.ONLINE]
+    await _dispatch_targets(db=db, targets=offline, settings=settings, payload={
+        "title": f"Incoming call from {caller_name}",
+        "body": room.display_name or "Direct message",
+        "url": f"{settings.public_base_url}/?room={room.id}",
+        "tag": f"call:{call_id}",
+    })
+
+
+async def _dispatch_targets(
+    *, db: AsyncSession, targets: list[Participant], payload: dict, settings: Settings,
+) -> None:
+    if not targets or not push_configured(settings):
+        return
+    subs = (await db.execute(select(PushSubscription).where(
+        PushSubscription.participant_id.in_([p.id for p in targets])
+    ))).scalars().all()
+    dead = [s.endpoint for s in subs if not await send_web_push(s, payload, settings)]
+    if dead:
+        await db.execute(delete(PushSubscription).where(PushSubscription.endpoint.in_(dead)))
+        await db.commit()

@@ -108,7 +108,10 @@ export function useGlobalNotifications() {
       }
 
       // Don't increment for the room that's currently open (user is seeing it)
-      if (event.room_id === activeRoomId && document.visibilityState === "visible") {
+      if (
+        event.room_id === activeRoomId &&
+        document.visibilityState === "visible"
+      ) {
         return;
       }
 
@@ -160,25 +163,25 @@ export function useGlobalNotifications() {
       if (
         shouldNotify &&
         document.hidden &&
+        "serviceWorker" in navigator &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted"
       ) {
         const room = rooms.find((r) => r.id === event.room_id);
         try {
-          const n = new Notification(
-            `${event.message.sender_name} in ${room?.name ?? "a room"}`,
-            {
-              body: event.message.content.slice(0, 140),
-              icon: "/icon-192.png",
-              tag: event.room_id,
-            },
+          void navigator.serviceWorker.ready.then((registration) =>
+            registration.showNotification(
+              `${event.message.sender_name} in ${room?.name ?? "a room"}`,
+              {
+                body: event.message.content.slice(0, 140),
+                icon: "/icon-192.png",
+                tag: event.room_id,
+                data: { url: `/?room=${event.room_id}` },
+              },
+            ),
           );
-          n.onclick = () => {
-            window.focus();
-            n.close();
-          };
         } catch {
-          /* Notification constructor throws on some mobile browsers */
+          /* Service-worker notifications are best-effort. */
         }
       }
     });
@@ -328,7 +331,9 @@ export function useGlobalNotifications() {
       // Client-side backstop: if the matching typing=false is never delivered
       // (worker crash, dropped frame) this row expires on its own.
       const timeout = setTimeout(() => {
-        useAppStore.getState().clearAgentActivity(e.room_id, e.brigade_agent_id);
+        useAppStore
+          .getState()
+          .clearAgentActivity(e.room_id, e.brigade_agent_id);
       }, AGENT_THINKING_MAX_MS);
       store.setAgentActivity(e.room_id, {
         agent_id: e.brigade_agent_id,
@@ -387,25 +392,22 @@ export function useGlobalNotifications() {
       useAppStore.getState().clearAllAgentActivity();
     });
 
-    const unsubReaction = ws.on(
-      "message_reaction",
-      (data: WsEventPayload) => {
-        const event = data as unknown as {
-          message_id: string;
-          room_id: string;
-          reactions: Record<string, string[]>;
-        };
-        if (!event?.message_id || !event?.room_id) return;
-        const updateMessage = useAppStore.getState().updateMessage;
-        const room = useAppStore.getState().messages[event.room_id];
-        const existing = room?.items.find((m) => m.id === event.message_id);
-        const oldMeta =
-          (existing?.metadata as Record<string, unknown> | undefined) ?? {};
-        updateMessage(event.room_id, event.message_id, {
-          metadata: { ...oldMeta, reactions: event.reactions },
-        });
-      },
-    );
+    const unsubReaction = ws.on("message_reaction", (data: WsEventPayload) => {
+      const event = data as unknown as {
+        message_id: string;
+        room_id: string;
+        reactions: Record<string, string[]>;
+      };
+      if (!event?.message_id || !event?.room_id) return;
+      const updateMessage = useAppStore.getState().updateMessage;
+      const room = useAppStore.getState().messages[event.room_id];
+      const existing = room?.items.find((m) => m.id === event.message_id);
+      const oldMeta =
+        (existing?.metadata as Record<string, unknown> | undefined) ?? {};
+      updateMessage(event.room_id, event.message_id, {
+        metadata: { ...oldMeta, reactions: event.reactions },
+      });
+    });
 
     return () => {
       unsubMessage();

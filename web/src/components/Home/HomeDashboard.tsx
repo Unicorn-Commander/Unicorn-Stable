@@ -31,17 +31,12 @@ import {
   agentSubtitle,
   rankedFleet,
   type ConversationsTab,
-  liveConferences,
   priorityModel,
   sortByRecency,
 } from "./homeModel";
-import { HomeRow, SenderLine, previewText, rowTime } from "./widgets/HomeRow";
-import {
-  SystemHealthStrip,
-  useHomeHealth,
-} from "./widgets/SystemHealthStrip";
+import { HomeRow, SenderLine, previewText } from "./widgets/HomeRow";
+import { SystemHealthStrip, useHomeHealth } from "./widgets/SystemHealthStrip";
 import { ConversationsCard } from "./widgets/ConversationsCard";
-import { AgentActivityFeed } from "./widgets/AgentActivityFeed";
 import { KnowledgeRecents } from "./widgets/KnowledgeRecents";
 
 /** One tile in the command-center stat strip. */
@@ -127,7 +122,6 @@ const SECTION_AGENT_FEED = "home-agent-feed";
 const SECTION_HEALTH = "home-health-strip";
 const SECTION_CONVERSATIONS = "home-conversations";
 
-
 /**
  * Command-center landing surface for `/` when no room is selected.
  *
@@ -148,6 +142,11 @@ export function HomeDashboard() {
   const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const pushToast = useAppStore((s) => s.pushToast);
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const { data: homeSummary } = useQuery({
+    queryKey: ["home-summary", activeInstanceId],
+    queryFn: () => api.getHomeSummary(),
+    refetchInterval: 30_000,
+  });
 
   const { isConnected } = useVoice();
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
@@ -249,25 +248,14 @@ export function HomeDashboard() {
   const activeCallRoom = useMemo(
     () =>
       activeCallRoomId
-        ? rooms.find((r) => r.id === activeCallRoomId) ?? null
+        ? (rooms.find((r) => r.id === activeCallRoomId) ?? null)
         : null,
     [rooms, activeCallRoomId],
   );
   const hasActiveCall = Boolean(isConnected && activeCallRoomId);
 
-  const liveConferenceRooms = useMemo(
-    () =>
-      liveConferences({
-        rooms,
-        unreadCounts,
-        activeCallRoomId,
-        hasActiveCall,
-        now: Date.now(),
-      }),
-    [rooms, unreadCounts, activeCallRoomId, hasActiveCall],
-  );
-
-  const showMeetingEmpty = !hasActiveCall && liveConferenceRooms.length === 0;
+  const summaryLiveCalls = homeSummary?.live_calls ?? [];
+  const showMeetingEmpty = !hasActiveCall && summaryLiveCalls.length === 0;
 
   const priority = useMemo(
     () =>
@@ -338,7 +326,7 @@ export function HomeDashboard() {
   }, [directory, presenceById, favoriteIds, currentUser?.id]);
 
   // ── W7 health (one hook — the strip and the Workspace tile share it) ───
-  const health = useHomeHealth();
+  const health = useHomeHealth(homeSummary?.counts.worker_last_seen_at);
   // Lifted out of ConversationsCard so the priority tail can drive it.
   const [conversationsTab, setConversationsTab] =
     useState<ConversationsTab | null>(null);
@@ -420,7 +408,7 @@ export function HomeDashboard() {
     );
   }
 
-  const liveMeetingCount = liveConferenceRooms.length + (hasActiveCall ? 1 : 0);
+  const liveMeetingCount = summaryLiveCalls.length;
 
   // Rooms the priority inbox is already rendering: Conversations must not
   // repeat them verbatim a few hundred pixels lower.
@@ -438,7 +426,9 @@ export function HomeDashboard() {
     {
       key: "mentions",
       label: "Mentions",
-      value: String(priority.mentionRooms.length),
+      value: String(
+        homeSummary?.counts.mention_rooms ?? priority.mentionRooms.length,
+      ),
       icon: AtSign,
       tone: "text-stable-purple-light",
       attention: priority.mentionRooms.length > 0,
@@ -456,7 +446,9 @@ export function HomeDashboard() {
     {
       key: "approvals",
       label: "Approvals",
-      value: approvalLabel,
+      value: homeSummary
+        ? String(homeSummary.counts.approvals_pending)
+        : approvalLabel,
       icon: ShieldCheck,
       tone: "text-rose-300",
       attention: approvalCount > 0,
@@ -484,7 +476,7 @@ export function HomeDashboard() {
     {
       key: "people",
       label: "People online",
-      value: String(peopleOnline.length),
+      value: String(homeSummary?.counts.people_online ?? peopleOnline.length),
       icon: UserRound,
       tone: "text-stable-mint",
       onClick: () => setPeopleDrawerOpen(true),
@@ -601,7 +593,10 @@ export function HomeDashboard() {
               id={SECTION_PRIORITY}
               tabIndex={-1}
               aria-labelledby="home-priority-heading"
-              className={clsx("min-w-0 max-lg:order-1", flashClass(SECTION_PRIORITY))}
+              className={clsx(
+                "min-w-0 max-lg:order-1",
+                flashClass(SECTION_PRIORITY),
+              )}
             >
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -750,7 +745,10 @@ export function HomeDashboard() {
               id={SECTION_LIVE_NOW}
               tabIndex={-1}
               aria-labelledby="home-live-now-heading"
-              className={clsx("min-w-0 max-lg:order-2", flashClass(SECTION_LIVE_NOW))}
+              className={clsx(
+                "min-w-0 max-lg:order-2",
+                flashClass(SECTION_LIVE_NOW),
+              )}
             >
               <div className="mb-2 flex items-center gap-2">
                 <Video className="h-4 w-4 text-stable-cyan" />
@@ -797,13 +795,13 @@ export function HomeDashboard() {
                 </button>
               )}
 
-              {liveConferenceRooms.length > 0 && (
+              {summaryLiveCalls.length > 0 && (
                 <ul className="grid grid-cols-1 gap-3">
-                  {liveConferenceRooms.map((room) => (
-                    <li key={room.id}>
+                  {summaryLiveCalls.map((room) => (
+                    <li key={room.room_id}>
                       <button
                         type="button"
-                        onClick={() => openRoom(room.id)}
+                        onClick={() => openRoom(room.room_id)}
                         className="card card-hover focus-ring group relative flex w-full items-center gap-3 overflow-hidden px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98]"
                       >
                         <span
@@ -815,15 +813,12 @@ export function HomeDashboard() {
                         </span>
                         <span className="relative min-w-0 flex-1">
                           <span className="block truncate text-sm font-semibold">
-                            {room.display_name || room.name}
+                            {room.display_name}
                           </span>
                           <span className="mt-0.5 block truncate text-xs text-slate-400">
-                            {/* "Active Xm ago", never "live" — this list is a
-                                recency heuristic until /home/summary can ask
-                                LiveKit who is actually in a call (v2). */}
-                            {room.last_message
-                              ? `Active ${rowTime(room.last_message.created_at)} ago`
-                              : "Conference room"}
+                            {room.participant_count} participant
+                            {room.participant_count === 1 ? "" : "s"}
+                            {room.has_agent ? " · agent present" : ""}
                           </span>
                         </span>
                         <span className="relative shrink-0 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors group-hover:border-line-strong group-hover:bg-surface-3">
@@ -846,15 +841,46 @@ export function HomeDashboard() {
             <div
               id={SECTION_AGENT_FEED}
               tabIndex={-1}
-              className={clsx("min-w-0 max-lg:order-3", flashClass(SECTION_AGENT_FEED))}
+              className={clsx(
+                "min-w-0 max-lg:order-3",
+                flashClass(SECTION_AGENT_FEED),
+              )}
             >
-              <AgentActivityFeed
-                feed={feed}
-                unreadCounts={unreadCounts}
-                roster={agentRoster}
-                onOpenRoom={openRoom}
-                onBrowseAgents={() => navigate("/agents")}
-              />
+              <section aria-labelledby="home-agent-feed-heading">
+                <div className="mb-2 flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-item-agent" />
+                  <h2
+                    id="home-agent-feed-heading"
+                    className="font-display text-sm font-semibold text-slate-200"
+                  >
+                    Agent activity
+                  </h2>
+                </div>
+                {(homeSummary?.agent_activity.length ?? 0) === 0 ? (
+                  <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
+                    No agent activity yet
+                  </p>
+                ) : (
+                  <ul className="card overflow-hidden">
+                    {homeSummary!.agent_activity.map((item, i) => (
+                      <li key={item.message_id}>
+                        <HomeRow
+                          leading={<Bot className="h-4 w-4 text-item-agent" />}
+                          title={item.sender_name}
+                          at={item.created_at}
+                          divider={i > 0}
+                          onClick={() => openRoom(item.room_id)}
+                          line={
+                            <span className="mt-0.5 block truncate text-xs text-slate-400">
+                              {item.room_name} · {item.preview}
+                            </span>
+                          }
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
             </div>
           </div>
 
@@ -1063,7 +1089,11 @@ export function HomeDashboard() {
 
             {/* ── W6: Knowledge rail ───────────────────────────────────── */}
             <div className="min-w-0 max-lg:order-7">
-              <KnowledgeRecents onOpenKnowledge={openKnowledge} />
+              <KnowledgeRecents
+                onOpenKnowledge={openKnowledge}
+                artifacts={homeSummary?.recent_artifacts}
+                transcripts={homeSummary?.recent_transcripts}
+              />
             </div>
           </div>
         </div>

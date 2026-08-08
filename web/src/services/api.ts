@@ -196,6 +196,50 @@ export interface PendingApprovalsResponse {
   has_more: boolean;
 }
 
+export interface HomeSummary {
+  generated_at: string;
+  live_calls: Array<{
+    room_id: string;
+    display_name: string;
+    room_type: string;
+    participant_count: number;
+    has_agent: boolean;
+  }>;
+  agent_activity: Array<{
+    message_id: string;
+    room_id: string;
+    room_name: string;
+    sender_id: string;
+    sender_name: string;
+    preview: string;
+    created_at: string;
+  }>;
+  recent_artifacts: Array<{
+    id: string;
+    room_id: string;
+    room_name: string;
+    title: string;
+    kind: string;
+    author_kind: string;
+    updated_at: string;
+  }>;
+  recent_transcripts: Array<{
+    id: string;
+    room_id: string;
+    room_name: string;
+    status: string;
+    created_at: string;
+  }>;
+  counts: {
+    unread_rooms: number;
+    mention_rooms: number;
+    approvals_pending: number;
+    agents_available: number;
+    people_online: number;
+    worker_last_seen_at: string | null;
+  };
+}
+
 /** Shape of GET /api/v1/health — service states vary (strings or objects). */
 export interface InstanceHealth {
   status: string;
@@ -389,6 +433,10 @@ class StableApiClient {
     return response.json() as Promise<T>;
   }
 
+  async getHomeSummary(): Promise<HomeSummary> {
+    return this.request<HomeSummary>("GET", "/api/v1/home/summary");
+  }
+
   async getLiveKitToken(roomId: string): Promise<LiveKitTokenResponse> {
     return this.request<LiveKitTokenResponse>(
       "POST",
@@ -470,10 +518,11 @@ class StableApiClient {
       const qs: string = cursor
         ? `?limit=100&cursor=${encodeURIComponent(cursor)}`
         : "?limit=100";
-      const resp: { rooms: Raw[]; cursor?: string | null } = await this.request<{
-        rooms: Raw[];
-        cursor?: string | null;
-      }>("GET", `/api/v1/rooms${qs}`);
+      const resp: { rooms: Raw[]; cursor?: string | null } =
+        await this.request<{
+          rooms: Raw[];
+          cursor?: string | null;
+        }>("GET", `/api/v1/rooms${qs}`);
       all.push(...(resp.rooms ?? []));
       cursor = resp.cursor ?? null;
       if (!cursor) break;

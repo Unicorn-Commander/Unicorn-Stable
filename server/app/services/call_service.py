@@ -181,7 +181,7 @@ class CallService:
         caller_id: str,
         caller_name: str,
         caller_avatar_url: str | None,
-        callees: list[dict[str, str | None]],
+        callees: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Offer a call to `callees` and return the caller's feedback record.
 
@@ -205,7 +205,10 @@ class CallService:
             if await self._is_busy(cid):
                 state = "busy"
             elif fact == "offline":
-                state = "offline"
+                # A push subscription is a real reachability plane even when
+                # no websocket is connected. Keep call state alive so tapping
+                # the OS notification can accept before the shared deadline.
+                state = "ringing" if c.get("push_reachable") else "offline"
             elif fact == "unknown":
                 # Ring anyway — we could not prove they're away — but SAY that
                 # we could not tell, rather than dressing it up as "ringing".

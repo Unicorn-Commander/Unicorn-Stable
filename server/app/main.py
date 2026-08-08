@@ -20,6 +20,7 @@ from app.api.artifacts import router as artifacts_router
 from app.api.internal_artifacts import router as internal_artifacts_router
 from app.api.brigade import router as brigade_router
 from app.api.health import router as health_router
+from app.api.home import router as home_router
 from app.api.instance_meta import router as instance_meta_router
 from app.api.participants import router as participants_router
 from app.api.help import router as help_router
@@ -334,6 +335,7 @@ def create_app() -> FastAPI:
 
     # Mount API routers under /api/v1
     app.include_router(health_router, tags=["Health"])
+    app.include_router(home_router, prefix="/api/v1", tags=["Home"])
     app.include_router(rooms_router, prefix="/api/v1", tags=["Rooms"])
     app.include_router(messages_router, prefix="/api/v1", tags=["Messages"])
     app.include_router(gateway_router, prefix="/api/v1", tags=["Gateway"])  # ORCH-1

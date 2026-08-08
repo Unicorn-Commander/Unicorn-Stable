@@ -46,7 +46,9 @@ export interface HomeHealthModel {
  * is a cheap listener, so sharing state through props vs. calling twice costs
  * the same, and the tile can never disagree with the strip it scrolls to.
  */
-export function useHomeHealth(): HomeHealthModel {
+export function useHomeHealth(
+  workerLastSeenAt?: string | null,
+): HomeHealthModel {
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
 
   // Realtime — event-driven, seeded from the live getter so a dashboard
@@ -137,7 +139,12 @@ export function useHomeHealth(): HomeHealthModel {
     }
     segments.push(server);
 
-    const agents = agentsSegment(roster);
+    const heartbeatFresh = workerLastSeenAt
+      ? Date.now() - new Date(workerLastSeenAt).getTime() < 90_000
+      : false;
+    const agents = heartbeatFresh
+      ? { tone: "ok" as const, label: "worker online" }
+      : agentsSegment(roster);
     segments.push({
       key: "agents",
       label: `Agents · ${agents.label}`,
@@ -177,7 +184,16 @@ export function useHomeHealth(): HomeHealthModel {
       overall: overallTone(segments.map((s) => s.tone)),
       revision,
     };
-  }, [realtimeUp, health, healthFailed, healthError, roster, meetingOps, meetingOpsFailed]);
+  }, [
+    realtimeUp,
+    health,
+    healthFailed,
+    healthError,
+    roster,
+    meetingOps,
+    meetingOpsFailed,
+    workerLastSeenAt,
+  ]);
 }
 
 /** Static dots by design: no animate-live here, so the strip is calm and

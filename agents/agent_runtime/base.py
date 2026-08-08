@@ -84,6 +84,7 @@ class StableAgent:
         self._msg_limiter = _RateLimiter(self._settings.rate_limit_messages_per_minute)
         self._tool_limiter = _RateLimiter(self._settings.rate_limit_tool_calls_per_minute)
         self._running: bool = False
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     # ---------- identity ----------
 
@@ -168,6 +169,9 @@ class StableAgent:
 
         # 5. Log the run to the backend
         await self._log_agent_event("agent_started", {"room": self._room_name})
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat_loop(), name=f"worker-heartbeat:{self.agent_type}"
+        )
 
         logger.info(
             "agent_started",
@@ -196,6 +200,13 @@ class StableAgent:
         logger.info("agent_stopped", identity=self._identity)
 
     async def _shutdown_steps(self) -> None:
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
         await self._log_agent_event("agent_stopped", {"room": self._room_name})
 
         if self.chat is not None:
@@ -473,3 +484,9 @@ class StableAgent:
                 )
         except Exception:
             logger.warning("audit_log_failed", event=event, exc_info=True)
+
+    async def _heartbeat_loop(self) -> None:
+        """Publish worker liveness without coupling it to room traffic."""
+        while self._running:
+            await self._log_agent_event("worker_heartbeat", {"room": self._room_name})
+            await asyncio.sleep(30)

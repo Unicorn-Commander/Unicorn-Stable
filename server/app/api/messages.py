@@ -199,20 +199,20 @@ async def send_message(
     except Exception:
         logger.warning("mention_email_dispatch_error", exc_info=True)
 
-    # Web-push the same offline @-mentioned users (closed/backgrounded app).
-    # Fail-safe; no-op unless VAPID is configured.
+    # Web-push offline DM/group members and offline channel mentions.
     try:
-        from app.services.push_service import dispatch_mention_pushes
+        from app.services.push_service import dispatch_message_pushes
 
-        await dispatch_mention_pushes(
+        await dispatch_message_pushes(
             db=db,
             content=body.content or "",
             room_id=room_id,
+            sender_id=user["participant_id"],
             sender_name=user.get("display_name") or user.get("username") or "Someone",
             settings=get_settings(),
         )
     except Exception:
-        logger.warning("mention_push_dispatch_error", exc_info=True)
+        logger.warning("message_push_dispatch_error", exc_info=True)
 
     # Text-only agent reply path. If the room is agent-attached, route the
     # user's message through Brigade's chat API in a background task so the
