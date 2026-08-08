@@ -11,6 +11,12 @@ import "./styles/globals.css";
 import "highlight.js/styles/github-dark.css";
 import { applyTheme, getStoredTheme, initSystemThemeWatcher } from "./lib/theme";
 import { initPalette } from "./stores/themeStore";
+import { installInsecureContextCryptoShim } from "./lib/insecureContextCrypto";
+
+// MUST run before any auth code: plain-HTTP LAN self-hosts have no
+// crypto.randomUUID / crypto.subtle (insecure context) and keycloak-js 26
+// refuses to init without them. No-op on https/localhost.
+installInsecureContextCryptoShim();
 
 // Dev-only: expose window.__stableSeedTranscript()/__stableInjectTranscript()
 // behind the ?devtranscript flag so the live-transcript panel is testable

@@ -13,18 +13,11 @@ const TOKEN_REFRESH_INTERVAL_MS = 30_000;
 /** Seconds of remaining life required before we will hand a token to the WS. */
 const ACCESS_TOKEN_MIN_REMAINING_S = 20;
 
-/**
- * PKCE S256 requires the Web Crypto API (`crypto.subtle`), which browsers
- * expose only in SECURE CONTEXTS — https:// or localhost. A plain-HTTP LAN
- * self-host (http://192.168.x.x) is NOT one, and keycloak-js 26 then rejects
- * `init()` while building the code challenge, which surfaced as a permanent
- * "Authentication unavailable" before any redirect happened. Fall back to the
- * plain authorization-code flow there (state-param CSRF protection remains);
- * every https deployment keeps S256. keycloak-js defaults pkceMethod to
- * "S256", so the insecure-context case must pass `false` explicitly.
- */
-const PKCE_METHOD: "S256" | false =
-  typeof window !== "undefined" && window.isSecureContext ? "S256" : false;
+// PKCE is S256 everywhere, including plain-HTTP LAN self-hosts: keycloak-js
+// 26 needs crypto.randomUUID + crypto.subtle, which insecure contexts lack,
+// and lib/insecureContextCrypto.ts (installed first thing in main.tsx) fills
+// exactly those two members there. Do not downgrade pkceMethod for insecure
+// contexts — the shim keeps the stronger flow working.
 
 /**
  * Decode a JWT payload without verifying the signature. Used only to decide
@@ -121,7 +114,7 @@ export async function initInstanceAuth(
   const authenticated = await client.init({
     onLoad,
     checkLoginIframe: false,
-    pkceMethod: PKCE_METHOD,
+    pkceMethod: "S256",
     silentCheckSsoRedirectUri: `${window.location.origin}/silent-check-sso.html`,
   });
   initializedInstances.add(instance.id);

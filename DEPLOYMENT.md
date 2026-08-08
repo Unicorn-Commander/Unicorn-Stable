@@ -246,14 +246,15 @@ Public HTTPS IdPs satisfy both trivially. Split-horizon setups that give
 containers a different URL for the same IdP will fail issuer validation —
 don't.
 
-**5. PKCE and plain-HTTP installs:** browsers expose the Web Crypto API only
-in secure contexts (https:// or localhost), and PKCE S256 needs it — so on a
-plain-HTTP LAN install the web client automatically falls back to the plain
-authorization-code flow (state-param CSRF protection remains), and the
-bundled realm therefore does **not** set the client attribute that would
-force PKCE. Every https deployment negotiates S256 as before; if you operate
-your own realm behind TLS, keep `"pkce.code.challenge.method": "S256"`
-enforced. One more reason internet-facing installs must use TLS.
+**5. Plain-HTTP installs and Web Crypto:** browsers expose `crypto.randomUUID`
+and `crypto.subtle` only in secure contexts (https:// or localhost), and
+keycloak-js 26 requires both — on a plain-HTTP LAN origin it would refuse to
+initialize at all ("Web Crypto API is not available"). The web client ships a
+tiny shim (`web/src/lib/insecureContextCrypto.ts`) that fills exactly those
+two members from `getRandomValues` + a pure-JS SHA-256 in insecure contexts,
+so the full PKCE S256 flow works on LAN HTTP too and the bundled realm keeps
+PKCE **enforced**. Native implementations are never shadowed on https. TLS
+remains the recommended deployment for anything beyond a trusted LAN.
 
 ---
 
