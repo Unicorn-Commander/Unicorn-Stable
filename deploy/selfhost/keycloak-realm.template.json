@@ -1,0 +1,87 @@
+{
+  "realm": "__KEYCLOAK_REALM__",
+  "enabled": true,
+  "displayName": "Unicorn Stable",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      {
+        "name": "stable-admin",
+        "description": "Stable server administrator (instance branding, admin surfaces)"
+      },
+      {
+        "name": "stable-user",
+        "description": "Regular Stable user"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "stable-web",
+      "name": "Stable web client",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "rootUrl": "__WEB_ORIGIN__",
+      "baseUrl": "__WEB_ORIGIN__",
+      "redirectUris": ["__WEB_ORIGIN__/*"],
+      "webOrigins": ["__WEB_ORIGIN__"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "__WEB_ORIGIN__/*"
+      }
+    },
+    {
+      "clientId": "stable-backend",
+      "name": "Stable backend (service account for the people directory)",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "secret": "__BACKEND_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true
+    }
+  ],
+  "users": [
+    {
+      "username": "__ADMIN_USERNAME__",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "__ADMIN_EMAIL__",
+      "firstName": "Stable",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "__ADMIN_PASSWORD__",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["stable-admin", "stable-user"]
+    },
+    {
+      "username": "service-account-stable-backend",
+      "enabled": true,
+      "serviceAccountClientId": "stable-backend",
+      "clientRoles": {
+        "realm-management": ["view-users", "query-users"]
+      }
+    }
+  ]
+}

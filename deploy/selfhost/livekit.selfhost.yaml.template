@@ -1,0 +1,50 @@
+# =============================================================================
+# LiveKit server configuration — SELF-HOST template
+# =============================================================================
+# Rendered by install.sh to deploy/selfhost/livekit.yaml (gitignored).
+# Placeholders (__NAME__) are replaced with values from your .env, so the
+# container listens on the exact ports the compose file publishes and the API
+# key/secret match what the backend and agent runtime present.
+# =============================================================================
+
+port: __LK_WS_PORT__
+
+rtc:
+  tcp_port: __LK_TCP_PORT__
+  udp_port: __LK_UDP_PORT__
+  use_external_ip: false
+  # Advertise the host address (what browsers on your network can actually
+  # reach) instead of the container's 172.x bridge IP. This is what makes
+  # media work for LAN clients on a single-box install.
+  #
+  # NOTE: in-cluster agent workers (the optional `agents` profile) pair over
+  # this hairpinned candidate; on some Docker/NAT setups that fails. If agent
+  # VOICE media fails while browser media works, remove node_ip, restart
+  # livekit, and accept browser media via the TCP fallback — or run TURN.
+  node_ip: __STABLE_HOST__
+  enable_loopback_candidate: true
+
+redis:
+  address: redis:6379
+  password: __REDIS_PASSWORD__
+
+keys:
+  __LIVEKIT_API_KEY__: __LIVEKIT_API_SECRET__
+
+room:
+  auto_create: true
+  empty_timeout: 300
+  max_participants: 50
+
+webhook:
+  urls:
+    - http://backend:8400/api/v1/webhooks/livekit
+  api_key: __LIVEKIT_API_KEY__
+
+logging:
+  level: info
+  pion_level: warn
+
+# TURN is intentionally OFF in the self-host default: it needs a public domain
+# + TLS certificate. Single-box LAN installs don't need it; internet-facing
+# installs should front LiveKit with TLS and enable TURN — see DEPLOYMENT.md.

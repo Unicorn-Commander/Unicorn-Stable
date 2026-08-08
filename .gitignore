@@ -19,6 +19,7 @@ agents/*.egg-info/
 .env
 .env.local
 .env.production
+.env.bak.*
 
 # IDE
 .vscode/
@@ -59,3 +60,8 @@ server/livekit.yaml
 
 # Per-org instance artifacts contain generated secrets — never commit.
 deploy/per-org/instances/
+
+# Self-host artifacts rendered by install.sh (contain generated secrets).
+deploy/selfhost/livekit.yaml
+deploy/selfhost/instances.json
+deploy/selfhost/keycloak-import/

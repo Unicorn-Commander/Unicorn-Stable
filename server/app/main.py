@@ -280,7 +280,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Stable",
         description="LiveKit-based chat/voice/video platform API",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.state.observability_enabled = observability_enabled

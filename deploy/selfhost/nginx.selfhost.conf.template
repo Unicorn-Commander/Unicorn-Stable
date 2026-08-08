@@ -1,0 +1,129 @@
+# =============================================================================
+# Unicorn Stable — SELF-HOST nginx vhost (template)
+# =============================================================================
+# Mounted by docker-compose.selfhost.yml over the web image's default template.
+# Differences from the production vhost (web/nginx.conf):
+#   * adds a same-origin /auth/ proxy to the bundled Keycloak, so the browser,
+#     the backend, and the OIDC issuer all use ONE URL and the strict CSP
+#     below needs no third-party auth origins
+#   * CSP drops the production analytics + hosted-IdP origins and instead
+#     allows ${STABLE_CSP_EXTRA_CONNECT} (the LiveKit signaling origin, which
+#     lives on its own port and is therefore not covered by 'self')
+# Substituted at container start by the nginx image's envsubst:
+#   STABLE_BACKEND_HOST, STABLE_KEYCLOAK_UPSTREAM, STABLE_CSP_EXTRA_CONNECT
+# nginx runtime variables ($host, $remote_addr, …) are left untouched because
+# envsubst only replaces names that exist in the container environment.
+# =============================================================================
+
+# Variable proxy_pass targets force per-request resolution through Docker's
+# DNS — a recreated backend (new IP) can never strand this proxy.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+# OIDC callback URLs and Keycloak admin-console requests carry large headers.
+large_client_header_buffers 8 64k;
+client_header_buffer_size 16k;
+
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    set $stable_backend "${STABLE_BACKEND_HOST}:8400";
+    set $stable_keycloak "${STABLE_KEYCLOAK_UPSTREAM}";
+
+    # Self-contained baseline: everything the app needs is same-origin except
+    # the LiveKit signaling socket (extra connect-src entries) and, for media
+    # previews, remote images. No analytics, no third-party frames.
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: wss: ${STABLE_CSP_EXTRA_CONNECT}; media-src 'self' blob: data:; worker-src 'self' blob:; frame-src 'self'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=()" always;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_min_length 256;
+    gzip_types
+        text/plain
+        text/css
+        text/javascript
+        application/javascript
+        application/json
+        application/xml
+        image/svg+xml
+        font/woff2;
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        # add_header does not inherit once a location defines its own — repeat
+        # the baseline for static assets.
+        add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: wss: ${STABLE_CSP_EXTRA_CONNECT}; media-src 'self' blob: data:; worker-src 'self' blob:; frame-src 'self'" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=()" always;
+        try_files $uri =404;
+    }
+
+    location /api/ {
+        proxy_pass http://$stable_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffer_size 64k;
+        proxy_buffers 8 64k;
+        proxy_busy_buffers_size 128k;
+        # Upload body: allow up to 25 MB (backend enforces 20 MB in code).
+        client_max_body_size 25m;
+    }
+
+    # Bundled Keycloak, same origin. $http_host (NOT $host) preserves the
+    # port, which Keycloak needs to mint the token issuer the backend expects:
+    #   http://<STABLE_HOST>:<web port>/auth/realms/<realm>
+    # Keycloak sends its own security headers for its own pages; defining any
+    # add_header here cuts inheritance of the app CSP above so the two header
+    # sets don't fight in the admin console.
+    location /auth/ {
+        proxy_pass http://$stable_keycloak;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_read_timeout 120s;
+        proxy_buffer_size 64k;
+        proxy_buffers 8 64k;
+        proxy_busy_buffers_size 128k;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
+    location /ws {
+        proxy_pass http://$stable_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        # Strip browser baggage the socket never uses: uvicorn answers any
+        # handshake whose header block passes ~8 KiB with silence, and WS auth
+        # is the first application frame, not a cookie.
+        proxy_set_header Cookie "";
+        proxy_set_header Sec-WebSocket-Extensions "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

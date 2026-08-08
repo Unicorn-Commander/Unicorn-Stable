@@ -1,6 +1,6 @@
 [project]
 name = "stable-agents"
-version = "0.1.0"
+version = "0.2.0"
 description = "Stable AI agent runtime — LiveKit Agents SDK workers"
 requires-python = ">=3.12"
 dependencies = [
