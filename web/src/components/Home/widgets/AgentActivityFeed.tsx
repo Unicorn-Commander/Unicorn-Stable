@@ -83,8 +83,9 @@ export function AgentActivityFeed({
   onOpenRoom: (roomId: string) => void;
   onBrowseAgents: () => void;
 }) {
-  const { waiting, recent } = feed;
-  const empty = waiting.length === 0 && recent.length === 0;
+  const { waiting, recent, staleWaitingTotal } = feed;
+  const empty =
+    waiting.length === 0 && recent.length === 0 && staleWaitingTotal === 0;
 
   return (
     <section aria-labelledby="home-agent-feed-heading">
@@ -179,6 +180,30 @@ export function AgentActivityFeed({
               </li>
             );
           })}
+
+          {/* Threads that aged out of "Waiting on you" (idle 2+ weeks). An
+              agent that asked a question a month ago is history, not a
+              standing demand — but silently dropping it would hide unread,
+              so the count stays visible. The threads live under Agents. */}
+          {staleWaitingTotal > 0 && (
+            <li
+              className={
+                waiting.length > 0 || recent.length > 0
+                  ? "border-t border-line"
+                  : ""
+              }
+            >
+              <button
+                type="button"
+                onClick={onBrowseAgents}
+                className="focus-ring w-full px-3.5 py-2 text-left text-[11px] tabular-nums text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+              >
+                {staleWaitingTotal} older agent thread
+                {staleWaitingTotal === 1 ? "" : "s"} unread — quiet for 2+
+                weeks
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </section>
