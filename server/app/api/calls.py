@@ -12,12 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db, get_redis, rate_limit, require_room_member
 from app.models.participant import Participant, ParticipantType
+from app.models.push_subscription import PushSubscription
 from app.models.room import Room, RoomMember, RoomType
 # Imported as a MODULE, not `from … import RING_TIMEOUT_S`, on purpose: a
 # value-binding here would be a second copy of the ring deadline that could
 # drift from the one the service actually arms its timer with. One clock.
 from app.services import call_service as _cs
 from app.services.call_service import CallService
+from app.config import get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -131,6 +133,11 @@ async def ring_room(
     # KIND of conversation instead.
     room_label = "Direct message" if room.room_type == RoomType.DM else room.display_name
 
+    push_ids = set((await db.execute(
+        select(PushSubscription.participant_id).where(
+            PushSubscription.participant_id.in_([p.id for p in rows])
+        )
+    )).scalars().all())
     svc = _svc(redis)
     call = await svc.ring(
         room_id=str(room.id),
@@ -139,7 +146,10 @@ async def ring_room(
         caller_id=caller_id,
         caller_name=caller_name,
         caller_avatar_url=(caller.avatar_url if caller else None),
-        callees=[{"id": str(p.id), "display_name": p.display_name or p.username} for p in rows],
+        callees=[{
+            "id": str(p.id), "display_name": p.display_name or p.username,
+            "push_reachable": p.id in push_ids,
+        } for p in rows],
     )
 
     if call["state"] == "ringing":
@@ -147,6 +157,14 @@ async def ring_room(
         # `expires_at` this same call published, so the two agree by
         # construction rather than by two constants happening to match.
         svc.arm_timeout(str(call["call_id"]))
+        try:
+            from app.services.push_service import dispatch_call_pushes
+            await dispatch_call_pushes(
+                db=db, targets=rows, room=room, caller_name=caller_name,
+                call_id=str(call["call_id"]), settings=get_settings(),
+            )
+        except Exception:
+            logger.warning("call_push_dispatch_error", exc_info=True)
 
     return RingResponse(
         call_id=call.get("call_id") if call["state"] == "ringing" else None,
