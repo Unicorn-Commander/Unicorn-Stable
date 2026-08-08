@@ -277,12 +277,13 @@ export function HomeDashboard() {
         unreadCounts,
         mentionUnreads,
         approvals: approvalItems,
+        now: Date.now(),
       }),
     [rooms, unreadCounts, mentionUnreads, approvalItems],
   );
 
   const feed = useMemo(
-    () => agentFeed(rooms, unreadCounts),
+    () => agentFeed(rooms, unreadCounts, { now: Date.now() }),
     [rooms, unreadCounts],
   );
 
@@ -343,6 +344,8 @@ export function HomeDashboard() {
   // Lifted out of ConversationsCard so the priority tail can drive it.
   const [conversationsTab, setConversationsTab] =
     useState<ConversationsTab | null>(null);
+  // Stale-unread tail of "Needs you" — collapsed by default, per session.
+  const [showStalePriority, setShowStalePriority] = useState(false);
 
   const openPersonDm = useCallback(
     async (person: PeopleDirectoryEntry) => {
@@ -643,7 +646,8 @@ export function HomeDashboard() {
                 )}
               </div>
 
-              {priority.items.length === 0 ? (
+              {priority.items.length === 0 &&
+              priority.staleItems.length === 0 ? (
                 <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
                   No mentions, DM unreads, approvals, or unread channels
                 </p>
@@ -739,6 +743,52 @@ export function HomeDashboard() {
                       </button>
                     </li>
                   )}
+                  {/* Stale tail: unread that has sat idle 2+ weeks is history
+                      impersonating a to-do — collapsed behind a count so the
+                      list above stays believable. */}
+                  {priority.staleItems.length > 0 && (
+                    <li
+                      className={
+                        priority.items.length > 0 ? "border-t border-line" : ""
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setShowStalePriority((v) => !v)}
+                        aria-expanded={showStalePriority}
+                        className="focus-ring w-full px-3.5 py-2 text-left text-[11px] tabular-nums text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                      >
+                        {priority.staleItems.length} older unread — quiet for
+                        2+ weeks {showStalePriority ? "· hide" : "· show"}
+                      </button>
+                    </li>
+                  )}
+                  {showStalePriority &&
+                    priority.staleItems.map((item) => {
+                      if (item.kind === "approval") return null;
+                      const { room, kind } = item;
+                      return (
+                        <li
+                          key={`stale-${kind}-${room.id}`}
+                          className="border-t border-line/50"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => openRoom(room.id)}
+                            className="focus-ring flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
+                          >
+                            <span className="truncate">
+                              {room.display_name || room.name}
+                            </span>
+                            {room.last_message && (
+                              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-slate-600">
+                                {rowTime(room.last_message.created_at)} ago
+                              </span>
+                            )}
+                          </button>
+                        </li>
+                      );
+                    })}
                 </ul>
               )}
             </section>
