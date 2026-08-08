@@ -7,16 +7,110 @@ from typing import Any
 
 import structlog
 from fastapi import HTTPException, status
-from sqlalchemy import Text, desc, func, or_, select, text
+from sqlalchemy import Text, cast as sa_cast, desc, func, or_, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.message import ContentType, Message
 from app.models.participant import Participant
-from app.models.room import RoomMember
+from app.models.room import Room, RoomMember
 from app.models.activity import ActivityEvent, ActivityEventType
 from app.services.livekit_service import LiveKitService
 
 logger = structlog.get_logger(__name__)
+
+# `has:` operator values that mean "message carries attachments". Attachments
+# have no column of their own — they live in messages.metadata['attachments']
+# (see uploads.py) — so this is the only `has:` fact the server can answer.
+# Anything else (`has:link`, typos, …) is ignored, per the lenient operator
+# contract: an unknown value drops that filter, it never 422s/500s.
+_HAS_ATTACHMENT_VALUES = frozenset({"file", "files", "attachment", "attachments"})
+
+
+def parse_operator_date(value: str | None) -> datetime | None:
+    """Lenient ISO-8601 parse for the before:/after: search operators.
+
+    Returns an aware datetime (naive input is taken as UTC) or None for
+    anything unparseable — operator filters degrade to "not applied", they
+    never error out the whole search.
+    """
+    if not value or not value.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def build_search_operator_filters(
+    *,
+    from_sender: str | None = None,
+    in_room: str | None = None,
+    has: str | None = None,
+    before: str | None = None,
+    after: str | None = None,
+) -> list[Any]:
+    """SQLAlchemy filter clauses for the chip search operators.
+
+    Shared by the per-room and global search paths; every input is untrusted
+    free text from the client's operator parser, so each filter validates
+    leniently and simply drops itself when the value is unusable.
+
+    - ``from_sender``: case-insensitive substring on the sender's
+      display_name or username (leading ``@`` stripped).
+    - ``in_room``: case-insensitive substring on room name/display_name
+      (leading ``#`` stripped). Global search only — the per-room endpoint
+      never passes it (the room is already fixed).
+    - ``has``: attachment presence for file/attachment values.
+    - ``before``/``after``: ISO dates against created_at (before is
+      exclusive; after with a bare date means "from that day's midnight UTC").
+    """
+    conds: list[Any] = []
+
+    if from_sender and from_sender.strip().lstrip("@"):
+        needle = from_sender.strip().lstrip("@")
+        like = f"%{needle}%"
+        sender_ids = select(Participant.id).where(
+            or_(
+                Participant.display_name.ilike(like),
+                Participant.username.ilike(like),
+            )
+        )
+        conds.append(Message.sender_id.in_(sender_ids))
+
+    if in_room and in_room.strip().lstrip("#"):
+        needle = in_room.strip().lstrip("#")
+        like = f"%{needle}%"
+        room_ids = select(Room.id).where(
+            or_(
+                Room.name.ilike(like),
+                Room.display_name.ilike(like),
+            )
+        )
+        conds.append(Message.room_id.in_(room_ids))
+
+    if has and has.strip().lower() in _HAS_ATTACHMENT_VALUES:
+        # Explicit `->` (not Python subscript) so the rendered SQL is the
+        # arrow operator on every Postgres version, not PG14+ subscripting.
+        attachments = Message.metadata_.op("->")("attachments")
+        # Both clauses are NULL-safe in any evaluation order (jsonb_typeof of
+        # a missing key is NULL) — never jsonb_array_length, which raises on
+        # non-arrays and Postgres does not guarantee AND short-circuit order.
+        conds.append(func.jsonb_typeof(attachments) == "array")
+        conds.append(attachments != sa_cast("[]", JSONB))
+
+    before_dt = parse_operator_date(before)
+    if before_dt is not None:
+        conds.append(Message.created_at < before_dt)
+
+    after_dt = parse_operator_date(after)
+    if after_dt is not None:
+        conds.append(Message.created_at > after_dt)
+
+    return conds
 
 
 class MessageService:
@@ -426,8 +520,17 @@ class MessageService:
         room_id: uuid.UUID,
         query_text: str,
         limit: int = 20,
+        from_sender: str | None = None,
+        has: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
     ) -> list[Message]:
-        """Full-text search on messages using pg_trgm."""
+        """Full-text search on messages using pg_trgm.
+
+        The optional operator filters (from:/has:/before:/after: chips) narrow
+        the same query; unusable values drop their filter (see
+        build_search_operator_filters). No ``in:`` here — the room is fixed.
+        """
         if not query_text.strip():
             return []
 
@@ -438,6 +541,12 @@ class MessageService:
                 Message.room_id == room_id,
                 Message.is_deleted == False,  # noqa: E712
                 Message.content.ilike(f"%{query_text}%"),
+                *build_search_operator_filters(
+                    from_sender=from_sender,
+                    has=has,
+                    before=before,
+                    after=after,
+                ),
             )
             .order_by(desc(Message.created_at))
             .limit(limit)
@@ -451,12 +560,19 @@ class MessageService:
         participant_id: uuid.UUID,
         query_text: str,
         limit: int = 30,
+        from_sender: str | None = None,
+        in_room: str | None = None,
+        has: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
     ) -> list[Message]:
         """Full-text search across every room the participant belongs to.
 
         Scoped to the caller's room memberships so results never leak from
         rooms the user is not in. Reuses the ``ix_messages_content_trgm`` GIN
-        index that backs the per-room search.
+        index that backs the per-room search. The operator filters
+        (from:/in:/has:/before:/after: chips) only ever narrow within that
+        membership scope — ``in:`` intersects with it, never widens it.
         """
         if not query_text.strip():
             return []
@@ -470,6 +586,13 @@ class MessageService:
                 Message.room_id.in_(member_subq),
                 Message.is_deleted == False,  # noqa: E712
                 Message.content.ilike(f"%{query_text}%"),
+                *build_search_operator_filters(
+                    from_sender=from_sender,
+                    in_room=in_room,
+                    has=has,
+                    before=before,
+                    after=after,
+                ),
             )
             .order_by(desc(Message.created_at))
             .limit(limit)

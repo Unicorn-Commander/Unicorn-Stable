@@ -167,7 +167,10 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
         {stageAgentId && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 300, opacity: 1 }}
+            // Clamp against --app-height (visual viewport), not vh: when the
+            // mobile keyboard opens, vh keeps phantom height and the stage
+            // shoves the composer off screen; --app-height tracks it.
+            animate={{ height: "min(300px, calc(var(--app-height, 100dvh) * 0.4))", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
             className="shrink-0 overflow-hidden border-b border-line"

@@ -86,6 +86,10 @@ export interface Room {
    * the Meetings nav view; plain channels leave this false/undefined.
    */
   is_conference?: boolean;
+  /** Soft-archived (hidden from the main sidebar; shown under “Archived”). */
+  is_archived?: boolean;
+  /** Raw server room metadata (auto_titled, brigade_agent_id, conference…). */
+  metadata_?: Record<string, unknown> | null;
 }
 
 export interface RoomMember {
@@ -390,6 +394,74 @@ export interface SendMessageRequest {
   model?: string;
 }
 
+/** Search operators supported by the backend: from, in, has, before, after. */
+export interface SearchOperators {
+  from?: string;
+  in?: string;
+  has?: string;
+  before?: string;
+  after?: string;
+}
+
+/**
+ * Server RoomResponse row as the list endpoints send it (the subset the
+ * client reads). RoomResponse serializes the metadata column as `metadata_`
+ * (alias); the list endpoint shares _room_to_response with getRoom(), so the
+ * resident Brigade agent's id rides along here too.
+ */
+export interface RawRoomListItem {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string | null;
+  room_type: "channel" | "group_dm" | "dm";
+  created_at: string;
+  updated_at: string;
+  member_count: number;
+  online_count?: number;
+  is_archived?: boolean;
+  metadata_?: Record<string, unknown> | null;
+  // Conversation-list extras. The backend MessageResponse already matches
+  // the client Message shape (getMessages passes it through unmapped), so
+  // last_message rides through directly. Both are optional for forward-
+  // compat: older backends omit them and the store merges a live value.
+  last_message?: Message | null;
+  unread_count?: number;
+}
+
+/**
+ * Canonical RoomResponse → Room mapping for list endpoints. One mapper for
+ * the live sidebar AND the Archived section so the two can never drift —
+ * the previous archived mapper stamped `is_archived: true` onto whatever the
+ * server returned instead of reading the server's field.
+ */
+export function mapRoomListItem(r: RawRoomListItem): Room {
+  return {
+    id: r.id,
+    name: r.display_name || r.name,
+    display_name: r.display_name,
+    description: r.description ?? "",
+    type: r.room_type,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    member_count: r.member_count,
+    online_count: r.online_count ?? 0,
+    unread_count: r.unread_count ?? 0,
+    last_message: r.last_message ?? null,
+    members: [],
+    agents: [],
+    brigade_agent_id:
+      typeof r.metadata_?.brigade_agent_id === "string"
+        ? (r.metadata_.brigade_agent_id as string)
+        : null,
+    is_conference: r.metadata_?.conference === true,
+    is_archived: r.is_archived ?? false,
+    // Carried so guards that read persisted room facts (e.g. the auto-title
+    // metadata.auto_titled flag) see them without a per-room GET.
+    metadata_: r.metadata_ ?? null,
+  };
+}
+
 class StableApiClient {
   private async getAuthHeaders(): Promise<Record<string, string>> {
     let token = getToken();
@@ -498,71 +570,41 @@ class StableApiClient {
     );
   }
 
-  async getRooms(): Promise<Room[]> {
-    // Backend returns { rooms: [{ ..., room_type, display_name, ... }] }
-    // ordered by updated_at DESC (most-recent conversation first — see
-    // room_service.list_rooms_for_user). We preserve that order.
-    // Map to the client's Room shape (type, name, description, …).
-    type Raw = {
-      id: string;
-      name: string;
-      display_name: string;
-      description: string | null;
-      room_type: "channel" | "group_dm" | "dm";
-      created_at: string;
-      updated_at: string;
-      member_count: number;
-      online_count: number;
-      // RoomResponse serializes the column as `metadata_` (alias). The list
-      // endpoint shares _room_to_response with getRoom(), so the resident
-      // Brigade agent's id rides along here too — used to group a persona's
-      // conversations (e.g. Majik) in the sidebar.
-      metadata_?: Record<string, unknown> | null;
-      // Conversation-list extras. The backend MessageResponse already matches
-      // the client Message shape (getMessages passes it through unmapped), so
-      // last_message rides through directly. Both are optional for forward-
-      // compat: older backends omit them and the store merges a live value.
-      last_message?: Message | null;
-      unread_count?: number;
-    };
-    // Follow the cursor to the END. The endpoint pages at 100 max and the
-    // old single-request version silently showed only the 50 most recently
-    // updated rooms — a member of 82 rooms had 32 (old channels, old agent
-    // DMs) permanently invisible in the sidebar. "My history isn't there."
-    const all: Raw[] = [];
+  /**
+   * Follow the room-list cursor to the END. The endpoint pages at 100 max and
+   * the old single-request version silently showed only the 50 most recently
+   * updated rooms — a member of 82 rooms had 32 (old channels, old agent DMs)
+   * permanently invisible in the sidebar. "My history isn't there."
+   * `extraQuery` rides along on every page (e.g. `&is_archived=true`).
+   */
+  private async fetchAllRoomPages(
+    extraQuery = "",
+  ): Promise<RawRoomListItem[]> {
+    const all: RawRoomListItem[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 20; page++) {
-      const qs: string = cursor
-        ? `?limit=100&cursor=${encodeURIComponent(cursor)}`
-        : "?limit=100";
-      const resp: { rooms: Raw[]; cursor?: string | null } =
+      const qs: string = `?limit=100${extraQuery}${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+      }`;
+      const resp: { rooms: RawRoomListItem[]; cursor?: string | null } =
         await this.request<{
-          rooms: Raw[];
+          rooms: RawRoomListItem[];
           cursor?: string | null;
         }>("GET", `/api/v1/rooms${qs}`);
       all.push(...(resp.rooms ?? []));
       cursor = resp.cursor ?? null;
       if (!cursor) break;
     }
-    return all.map((r) => ({
-      id: r.id,
-      name: r.display_name || r.name,
-      description: r.description ?? "",
-      type: r.room_type,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-      member_count: r.member_count,
-      online_count: r.online_count ?? 0,
-      unread_count: r.unread_count ?? 0,
-      last_message: r.last_message ?? null,
-      members: [],
-      agents: [],
-      brigade_agent_id:
-        typeof r.metadata_?.brigade_agent_id === "string"
-          ? (r.metadata_.brigade_agent_id as string)
-          : null,
-      is_conference: r.metadata_?.conference === true,
-    }));
+    return all;
+  }
+
+  async getRooms(): Promise<Room[]> {
+    // Backend returns { rooms: [{ ..., room_type, display_name, ... }] }
+    // ordered by updated_at DESC (most-recent conversation first — see
+    // room_service.list_rooms_for_user). We preserve that order.
+    // Map to the client's Room shape (type, name, description, …).
+    const all = await this.fetchAllRoomPages();
+    return all.map(mapRoomListItem);
   }
 
   async createRoom(data: CreateRoomRequest): Promise<Room> {
@@ -645,9 +687,33 @@ class StableApiClient {
 
   async updateRoom(
     roomId: string,
-    patch: { display_name?: string; description?: string },
+    patch: { display_name?: string; description?: string; is_archived?: boolean; metadata?: Record<string, unknown> },
   ): Promise<Room> {
     return this.request<Room>("PATCH", `/api/v1/rooms/${roomId}`, patch);
+  }
+
+  /** Archive a room (server-side soft-delete via is_archived). Returns the updated room. */
+  async archiveRoom(roomId: string): Promise<Room> {
+    // DELETE /rooms/{id} is the archive endpoint per rooms.py
+    await this.request("DELETE", `/api/v1/rooms/${roomId}`);
+    // Refetch to get the updated is_archived state
+    return this.getRoom(roomId);
+  }
+
+  /** Unarchive a room by setting is_archived=false via PATCH. */
+  async unarchiveRoom(roomId: string): Promise<Room> {
+    return this.updateRoom(roomId, { is_archived: false });
+  }
+
+  /**
+   * Fetch the caller's archived rooms for the Archived disclosure section.
+   * Server-filtered (`GET /rooms?is_archived=true` — list_rooms threads the
+   * flag into list_rooms_for_user) and mapped by the same canonical mapper as
+   * the live list, so `is_archived` is the server's word, not a client stamp.
+   */
+  async getArchivedRooms(): Promise<Room[]> {
+    const all = await this.fetchAllRoomPages("&is_archived=true");
+    return all.map(mapRoomListItem);
   }
 
   /**
@@ -1152,18 +1218,30 @@ class StableApiClient {
     );
   }
 
-  async searchMessages(roomId: string, q: string): Promise<Message[]> {
+  async searchMessages(roomId: string, q: string, ops?: SearchOperators): Promise<Message[]> {
+    const params = new URLSearchParams({ q });
+    if (ops?.from) params.set("from", ops.from);
+    if (ops?.in) params.set("in", ops.in);
+    if (ops?.has) params.set("has", ops.has);
+    if (ops?.before) params.set("before", ops.before);
+    if (ops?.after) params.set("after", ops.after);
     return this.request<Message[]>(
       "GET",
-      `/api/v1/rooms/${roomId}/messages/search?q=${encodeURIComponent(q)}`,
+      `/api/v1/rooms/${roomId}/messages/search?${params.toString()}`,
     );
   }
 
   /** Global search across every room the caller belongs to (server-scoped). */
-  async searchAllMessages(q: string): Promise<Message[]> {
+  async searchAllMessages(q: string, ops?: SearchOperators): Promise<Message[]> {
+    const params = new URLSearchParams({ q });
+    if (ops?.from) params.set("from", ops.from);
+    if (ops?.in) params.set("in", ops.in);
+    if (ops?.has) params.set("has", ops.has);
+    if (ops?.before) params.set("before", ops.before);
+    if (ops?.after) params.set("after", ops.after);
     return this.request<Message[]>(
       "GET",
-      `/api/v1/search/messages?q=${encodeURIComponent(q)}`,
+      `/api/v1/search/messages?${params.toString()}`,
     );
   }
 

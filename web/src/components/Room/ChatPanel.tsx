@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { ArrowDown, ArrowUp, Loader2, X } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
@@ -112,6 +112,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const currentUser = useAppStore((s) => s.currentUser);
   const [editFocusId, setEditFocusId] = useState<string | null>(null);
   const [editTick, setEditTick] = useState(0);
+  const queryClient = useQueryClient();
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const readReceipts = useAppStore(
     (s) => s.readReceipts[roomId] ?? EMPTY_READ_RECEIPTS,
@@ -604,6 +605,14 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     });
   }, [hasMore, loading, loadMore]);
 
+  const autoTitleDoneRef = useRef(false);
+
+  // The done-latch is per ROOM. ChatPanel is normally remounted per room via
+  // the surrounding key'd boundary, but don't lean on that from this far away.
+  useEffect(() => {
+    autoTitleDoneRef.current = false;
+  }, [roomId]);
+
   function handleSend(
     content: string,
     threadId?: string,
@@ -615,7 +624,43 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // "Jordan is typing…" underneath a message Jordan just posted is the stuck
     // indicator in its most obvious form.
     clearTypingIndicator();
-    sendMessage(content, threadId, attachments, extraMetadata);
+    // Auto-title eligibility is decided from the PRE-send state: the message
+    // being sent must be the room's first human message. Any older page still
+    // on the server (hasMore) or any human message already in the loaded
+    // window means this room has history — never retitle an old "Chat with X"
+    // room because message #31 happened to be sent in it.
+    const hadPriorHumanMessage =
+      hasMore || messages.some((m) => m.sender_type === "human");
+    void sendMessage(content, threadId, attachments, extraMetadata).then(() => {
+      // Auto-title agent DMs: after the first human message, replace the
+      // default "chat with <agent>" with a one-line summary ≤42 chars, and set
+      // metadata.auto_titled so we never overwrite a user rename (the server
+      // persists the flag via the RoomUpdate metadata allowlist and it rides
+      // back on room.metadata_).
+      if (autoTitleDoneRef.current || hadPriorHumanMessage || threadId) return;
+      const room = useAppStore.getState().rooms.find((r) => r.id === roomId);
+      if (!room) return;
+      const isAgentDm =
+        room.type === "dm" &&
+        !!room.brigade_agent_id;
+      const isDefaultName = /^chat with /i.test(room.display_name || room.name);
+      const meta = room.metadata_;
+      if (isAgentDm && isDefaultName && !meta?.auto_titled) {
+        autoTitleDoneRef.current = true;
+        const summary = content.trim().slice(0, 42);
+        if (summary.length > 0) {
+          api.updateRoom(roomId, {
+            display_name: summary,
+            metadata: { auto_titled: true },
+          }).then(() => {
+            queryClient.invalidateQueries({ queryKey: ["rooms"] });
+          }).catch((err) => {
+            console.debug("[chat] auto-title failed", err);
+            autoTitleDoneRef.current = false;
+          });
+        }
+      }
+    });
     // Arm the missed-reply resync poll, but only where a reply can actually be
     // missed. This says nothing about whether an agent is working — it only
     // covers a dropped WS event on our own send.

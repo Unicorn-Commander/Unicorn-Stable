@@ -1960,13 +1960,27 @@ async def search_messages(
     db: Annotated[AsyncSession, Depends(get_db)] = None,
     livekit: Annotated[LiveKitService, Depends(get_livekit)] = None,
     limit: int = Query(20, ge=1, le=100),
+    from_: str | None = Query(None, alias="from", max_length=255),
+    has: str | None = Query(None, max_length=64),
+    before: str | None = Query(None, max_length=64),
+    after: str | None = Query(None, max_length=64),
 ) -> list[MessageResponse]:
-    """Search messages in a room. Caller must be a member of the room."""
+    """Search messages in a room. Caller must be a member of the room.
+
+    The optional operator params mirror the client's search chips
+    (from:/has:/before:/after:). Values validate leniently — an unusable
+    value drops that one filter rather than failing the search. An ``in=``
+    param is accepted but ignored here: the room is already fixed by the path.
+    """
     svc = _build_message_service(db, livekit)
     messages = await svc.search_messages(
         room_id=room_id,
         query_text=q,
         limit=limit,
+        from_sender=from_,
+        has=has,
+        before=before,
+        after=after,
     )
     return [_msg_to_response(msg) for msg in messages]
 
@@ -1978,12 +1992,27 @@ async def search_all_messages(
     db: Annotated[AsyncSession, Depends(get_db)] = None,
     livekit: Annotated[LiveKitService, Depends(get_livekit)] = None,
     limit: int = Query(30, ge=1, le=100),
+    from_: str | None = Query(None, alias="from", max_length=255),
+    in_: str | None = Query(None, alias="in", max_length=255),
+    has: str | None = Query(None, max_length=64),
+    before: str | None = Query(None, max_length=64),
+    after: str | None = Query(None, max_length=64),
 ) -> list[MessageResponse]:
-    """Global search across every room the caller belongs to."""
+    """Global search across every room the caller belongs to.
+
+    Operator params (from:/in:/has:/before:/after: chips) narrow within the
+    caller's membership scope; ``in=`` matches room name/display_name. All
+    validate leniently — unusable values drop their filter, never 422/500.
+    """
     svc = _build_message_service(db, livekit)
     messages = await svc.search_all_messages(
         participant_id=user["participant_id"],
         query_text=q,
         limit=limit,
+        from_sender=from_,
+        in_room=in_,
+        has=has,
+        before=before,
+        after=after,
     )
     return [_msg_to_response(msg) for msg in messages]

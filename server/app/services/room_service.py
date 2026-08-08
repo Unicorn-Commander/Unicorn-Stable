@@ -20,6 +20,12 @@ from app.services.presence_service import PresenceService
 
 logger = structlog.get_logger(__name__)
 
+# Room-metadata keys a client PATCH may write. Everything else in metadata_
+# is server-owned wiring (brigade_agent_id, conference, dm_pair, …) that a
+# room admin's browser must not be able to rewrite through the generic
+# update endpoint.
+CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled"})
+
 
 def dm_pair_key(a: uuid.UUID | str, b: uuid.UUID | str) -> str:
     """Canonical 1:1 human-DM key: sorted participant UUIDs joined by ``:``.
@@ -476,14 +482,22 @@ class RoomService:
         participant_id: uuid.UUID,
         cursor: str | None = None,
         limit: int = 50,
+        is_archived: bool = False,
     ) -> dict[str, Any]:
-        """List rooms the user is a member of, with pagination."""
+        """List rooms the user is a member of, with pagination.
+
+        ``is_archived`` selects which shelf you're looking at: the default
+        (False) is the live sidebar and excludes archived rooms, exactly as
+        before; True returns ONLY the caller's archived rooms (the sidebar's
+        "Archived" disclosure). It is a filter on the same membership-scoped
+        query — never a way to see someone else's rooms.
+        """
         query = (
             select(Room)
             .join(RoomMember, RoomMember.room_id == Room.id)
             .where(
                 RoomMember.participant_id == participant_id,
-                Room.is_archived == False,  # noqa: E712
+                Room.is_archived == is_archived,
             )
             .order_by(Room.updated_at.desc())
         )
@@ -509,13 +523,13 @@ class RoomService:
             rooms = rooms[:limit]
             next_cursor = str(rooms[-1].id)
 
-        # Get total count
+        # Get total count (same shelf as the page: archived or live).
         count_query = (
             select(func.count())
             .select_from(RoomMember)
             .where(RoomMember.participant_id == participant_id)
             .join(Room, Room.id == RoomMember.room_id)
-            .where(Room.is_archived == False)  # noqa: E712
+            .where(Room.is_archived == is_archived)
         )
         total_result = await self._db.execute(count_query)
         total = total_result.scalar() or 0
@@ -743,8 +757,17 @@ class RoomService:
         display_name: str | None = None,
         description: str | None = None,
         is_archived: bool | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Room:
-        """Update room details. Requires admin or owner role."""
+        """Update room details. Requires admin or owner role.
+
+        ``metadata`` is MERGED into the room's existing metadata, and only
+        allowlisted keys (CLIENT_MUTABLE_METADATA_KEYS) are applied — room
+        metadata also carries server-owned facts (``brigade_agent_id``,
+        ``conference``, ``dm_pair``) that a PATCH body must never stomp.
+        Non-allowlisted keys are silently dropped, matching the endpoint's
+        lenient contract.
+        """
         await self._require_role(room_id, participant_id, ["owner", "admin"])
 
         result = await self._db.execute(select(Room).where(Room.id == room_id))
@@ -761,6 +784,18 @@ class RoomService:
             room.description = description
         if is_archived is not None:
             room.is_archived = is_archived
+        if metadata:
+            allowed = {
+                k: v
+                for k, v in metadata.items()
+                if k in CLIENT_MUTABLE_METADATA_KEYS
+            }
+            if allowed:
+                # Reassign (never mutate in place) so SQLAlchemy's JSONB
+                # change detection sees the update.
+                merged = dict(room.metadata_ or {})
+                merged.update(allowed)
+                room.metadata_ = merged
 
         await self._db.commit()
         await self._db.refresh(room)
