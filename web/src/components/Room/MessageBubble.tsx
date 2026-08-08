@@ -1221,7 +1221,7 @@ interface MessageBubbleProps {
   message: Message;
   isOwn: boolean;
   showAvatar: boolean;
-  onEdit: (messageId: string, content: string) => Promise<void>;
+  onEdit: (messageId: string, content: string) => Promise<boolean>;
   onDelete: (messageId: string) => Promise<void>;
   onReply: (messageId: string) => void;
   onRetry?: (messageId: string) => Promise<void>;
@@ -1620,9 +1620,13 @@ export function MessageBubble({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceEditTick]);
 
-  function handleEditSubmit() {
+  async function handleEditSubmit() {
     if (editContent.trim() && editContent !== message.content) {
-      onEdit(message.id, editContent.trim());
+      // Resolves false when the server rejected the edit — keep the box open
+      // with the attempted text (the failure toast explains why), so the
+      // user's words are never silently discarded.
+      const ok = await onEdit(message.id, editContent.trim());
+      if (!ok) return;
     }
     setEditing(false);
   }

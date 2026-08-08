@@ -300,31 +300,49 @@ export function RoomView({ roomId }: RoomViewProps) {
   }, [roomDetail?.display_name, roomDetail?.name]);
 
   async function saveTopic() {
-    setEditingTopic(false);
     const next = topicDraft.trim();
-    if ((roomDetail?.description || "") === next) return;
+    if ((roomDetail?.description || "") === next) {
+      setEditingTopic(false);
+      return;
+    }
     try {
       await api.updateRoom(roomId, { description: next });
       await qc.invalidateQueries({ queryKey: ["room", roomId] });
+      setEditingTopic(false);
     } catch (e) {
       console.error("topic save failed", e);
+      // Keep the input open with the attempted text — closing it would
+      // silently discard what the user typed.
+      useAppStore.getState().pushToast({
+        title: "Couldn't update the topic",
+        body:
+          (e as { detail?: string; message?: string }).detail ||
+          (e as Error).message,
+        kind: "error",
+      });
     }
   }
 
   async function saveName() {
-    setEditingName(false);
     const next = nameDraft.trim();
-    if (!next || next === (roomDetail?.display_name || roomDetail?.name || ""))
+    if (!next || next === (roomDetail?.display_name || roomDetail?.name || "")) {
+      setEditingName(false);
       return;
+    }
     try {
       await api.updateRoom(roomId, { display_name: next });
       await qc.invalidateQueries({ queryKey: ["room", roomId] });
       await qc.invalidateQueries({ queryKey: ["rooms"] });
+      setEditingName(false);
     } catch (e) {
       console.error("name save failed", e);
+      // Keep the input open with the attempted text (same contract as the
+      // message-edit failure path).
       useAppStore.getState().pushToast({
         title: "Couldn't rename the room",
-        body: (e as Error).message,
+        body:
+          (e as { detail?: string; message?: string }).detail ||
+          (e as Error).message,
         kind: "error",
       });
     }
@@ -349,6 +367,13 @@ export function RoomView({ roomId }: RoomViewProps) {
       navigate("/");
     } catch (e) {
       console.error("leave room failed", e);
+      useAppStore.getState().pushToast({
+        title: "Couldn't leave the room",
+        body:
+          (e as { detail?: string; message?: string }).detail ||
+          (e as Error).message,
+        kind: "error",
+      });
     } finally {
       setLeaving(false);
     }

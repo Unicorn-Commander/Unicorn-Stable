@@ -78,15 +78,24 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
   // hit the message-scoped API directly and refetch. Mirrors what ChatPanel
   // wires for the main timeline; the room query is invalidated so reply_count
   // and last_message badges stay in sync.
-  async function handleEdit(messageId: string, content: string) {
+  async function handleEdit(messageId: string, content: string): Promise<boolean> {
     const trimmed = content.trim();
-    if (!trimmed) return;
+    if (!trimmed) return true;
     try {
       await api.editMessage(roomId, messageId, trimmed);
       await refetch();
       qc.invalidateQueries({ queryKey: ["room", roomId] });
+      return true;
     } catch (e) {
       console.error("thread edit failed", e);
+      useAppStore.getState().pushToast({
+        title: "Edit failed",
+        body:
+          (e as { detail?: string; message?: string }).detail ||
+          (e as Error).message,
+        kind: "error",
+      });
+      return false;
     }
   }
 
@@ -97,6 +106,13 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
       qc.invalidateQueries({ queryKey: ["room", roomId] });
     } catch (e) {
       console.error("thread delete failed", e);
+      useAppStore.getState().pushToast({
+        title: "Delete failed",
+        body:
+          (e as { detail?: string; message?: string }).detail ||
+          (e as Error).message,
+        kind: "error",
+      });
     }
   }
 
