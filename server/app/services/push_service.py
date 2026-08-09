@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import Any
 
 import structlog
@@ -17,10 +16,9 @@ from app.config import Settings
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.push_subscription import PushSubscription
 from app.models.room import Room, RoomMember, RoomType
+from app.services.mentions import offline_notify_targets, parse_mentions
 
 logger = structlog.get_logger(__name__)
-
-_MENTION_RE = re.compile(r"@([A-Za-z0-9_.\-]{2,64})")
 
 
 def push_configured(settings: Settings) -> bool:
@@ -66,70 +64,21 @@ async def send_web_push(sub: PushSubscription, payload: dict, settings: Settings
         return True
 
 
-async def dispatch_mention_pushes(
-    *,
-    db: AsyncSession,
-    content: str,
-    room_id: Any,
-    sender_name: str,
-    settings: Settings,
-) -> None:
-    """Find @-mentioned offline humans and web-push each of their devices."""
-    if not push_configured(settings):
-        return
-    handles = {m.lower() for m in _MENTION_RE.findall(content or "")}
-    if not handles:
-        return
-    room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
-    if room is None:
-        return
-    rows = (
-        await db.execute(
-            select(Participant).where(
-                Participant.participant_type == ParticipantType.HUMAN,
-                Participant.status != ParticipantStatus.ONLINE,
-            )
-        )
-    ).scalars().all()
-    targets = [p for p in rows if (p.username or "").lower() in handles]
-    if not targets:
-        return
-
-    body = content if len(content) <= 140 else content[:140] + "…"
-    payload = {
-        "title": f"{sender_name} in {room.display_name or room.name}",
-        "body": body,
-        "url": f"{settings.public_base_url}/?room={room.id}",
-        "tag": str(room.id),
-    }
-    subs = (
-        await db.execute(
-            select(PushSubscription).where(
-                PushSubscription.participant_id.in_([p.id for p in targets])
-            )
-        )
-    ).scalars().all()
-    dead: list[str] = []
-    for s in subs:
-        if not await send_web_push(s, payload, settings):
-            dead.append(s.endpoint)
-    if dead:
-        await db.execute(delete(PushSubscription).where(PushSubscription.endpoint.in_(dead)))
-        await db.commit()
-        logger.info("web_push_pruned", n=len(dead))
-
-
 async def dispatch_message_pushes(
     *, db: AsyncSession, content: str, room_id: Any, sender_id: Any,
     sender_name: str, settings: Settings,
 ) -> None:
-    """Push one message to offline DM/group members, plus channel mentions."""
+    """Push one message to offline DM/group members, plus channel mentions.
+
+    In channels only mentioned members are pushed: explicit @user handles
+    matched on USERNAME, plus @channel = every (offline, non-sender, human)
+    member. @here adds no push targets by design — see services/mentions.py.
+    """
     if not push_configured(settings):
         return
     room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
     if room is None:
         return
-    handles = {m.lower() for m in _MENTION_RE.findall(content or "")}
     rows = (await db.execute(
         select(Participant).join(RoomMember, RoomMember.participant_id == Participant.id).where(
             RoomMember.room_id == room_id,
@@ -139,7 +88,7 @@ async def dispatch_message_pushes(
         )
     )).scalars().all()
     if room.room_type == RoomType.CHANNEL:
-        rows = [p for p in rows if (p.username or "").lower() in handles]
+        rows = offline_notify_targets(parse_mentions(content), rows)
     await _dispatch_targets(
         db=db, targets=rows,
         payload={
