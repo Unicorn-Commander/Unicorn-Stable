@@ -4,6 +4,48 @@ import type { Message, SendMessageRequest } from "@/services/api";
 import { ws } from "@/services/websocket";
 import type { WsMessageEvent, WsMessageEditEvent, WsMessageDeleteEvent, WsEventPayload } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
+import {
+  PendingSendTracker,
+  type TrackedSend,
+  type OutgoingSendRequest,
+  ackedSendMetadata,
+  clientMsgIdOf,
+  failedSendMetadata,
+  newClientMsgId,
+  optimisticIdFor,
+  pendingSendMetadata,
+} from "@/lib/sendPipeline";
+
+/** What the failed pill says when nothing NACKed but nothing ACKed either. */
+const UNACKED_ERROR =
+  "Not delivered — the server never confirmed this message.";
+
+/** Mark a tracked send's bubble visibly failed + retryable in the store.
+ *  No-ops if the bubble was already reconciled away (an ACK path won). */
+function markSendFailed(send: TrackedSend, error: string = UNACKED_ERROR): void {
+  const store = useAppStore.getState();
+  const item = (store.messages[send.roomId]?.items ?? []).find(
+    (m) => m.id === send.optimisticId,
+  );
+  if (!item) return;
+  console.debug(
+    "[chat] send FAILED (%s attempt %d): %s",
+    send.clientMsgId,
+    send.attempts,
+    error,
+  );
+  store.updateMessage(send.roomId, send.optimisticId, {
+    metadata: failedSendMetadata(item.metadata, error, send.request),
+  });
+}
+
+// Module-level on purpose: pending sends must survive room switches and hook
+// remounts (the zustand store they reconcile into is module-global too). The
+// timer marks a send failed when NOTHING acknowledged it in time — the exact
+// hang that used to leave a never-persisted bubble looking delivered forever.
+const sendTracker = new PendingSendTracker({
+  onTimeout: (send) => markSendFailed(send),
+});
 
 interface UseChatReturn {
   messages: Message[];
@@ -90,17 +132,57 @@ export function useChat(roomId: string | null): UseChatReturn {
       const event = data as WsMessageEvent;
       if (event.room_id !== roomId) return;
       const incoming = event.message as Message;
-      // Skip the redis echo of our OWN just-sent message. A pending optimistic
-      // copy is already on screen, and the POST response reconciles it to the
-      // server id. If we add the echo too, the user sees a duplicate that then
-      // gets removed (the "deleted my reply / made the same reply" flicker).
+      const items = useAppStore.getState().messages[roomId]?.items ?? [];
+      // The echo of one of OUR unresolved sends — identified by the
+      // client_msg_id the server stamped into metadata — is a server ACK in
+      // its own right: the message only reaches redis after the DB commit.
+      // Reconcile the optimistic bubble to the server message HERE, so a send
+      // whose POST response got lost (connection died after the server
+      // persisted) is confirmed by the echo instead of timing out to failed.
+      const incomingCid = clientMsgIdOf(incoming);
+      if (incomingCid) {
+        const ownByCid = items.find(
+          (m) =>
+            m.id.startsWith("optimistic-") && clientMsgIdOf(m) === incomingCid,
+        );
+        if (ownByCid) {
+          sendTracker.ack(incomingCid);
+          console.debug(
+            "[chat] ws echo ACK %s -> server %s",
+            ownByCid.id,
+            incoming.id,
+          );
+          if (items.some((m) => m.id === incoming.id)) {
+            // POST reconcile already renamed a copy to the server id — drop
+            // the leftover optimistic bubble rather than duplicating the id.
+            removeMessage(roomId, ownByCid.id);
+          } else {
+            updateMessage(roomId, ownByCid.id, {
+              id: incoming.id,
+              created_at: incoming.created_at,
+              updated_at: incoming.updated_at,
+              metadata: ackedSendMetadata(ownByCid.metadata, incoming.metadata),
+            });
+          }
+          return;
+        }
+      }
+      // Legacy skip for the redis echo of our OWN just-sent message when no
+      // client_msg_id matched (an older build's send, mid-deploy overlap). A
+      // pending optimistic copy is already on screen, and the POST response
+      // reconciles it to the server id. If we add the echo too, the user sees
+      // a duplicate that then gets removed (the "deleted my reply / made the
+      // same reply" flicker).
       // NOTE: incoming.sender_id is the participant UUID; currentUser.id is the
       // Keycloak id — they never match — so match the pending optimistic copy
-      // (whose sender_id we set to currentUser.id) by content instead.
-      const items = useAppStore.getState().messages[roomId]?.items ?? [];
+      // (whose sender_id we set to currentUser.id) by content instead. Only
+      // cid-less optimistic copies qualify: if OUR copy carries a cid and the
+      // echo's differs, the echo is a DIFFERENT message (another tab/device
+      // sending the same text) and must render, not be swallowed.
       const ownPending = items.find(
         (m) =>
           m.id.startsWith("optimistic-") &&
+          !clientMsgIdOf(m) &&
           m.content === incoming.content &&
           m.sender_id === currentUser?.id,
       );
@@ -182,10 +264,49 @@ export function useChat(roomId: string | null): UseChatReturn {
           });
         }
       }
+      // Reconcile the send-ACK pipeline against the fresh page:
+      //  1. an optimistic bubble whose client_msg_id came back as a REAL
+      //     message = a send whose ACK we never received (response lost,
+      //     socket frozen) — the merge above added the server copy, so drop
+      //     the optimistic double and resolve the tracker;
+      //  2. anything still pending past the ACK window turns failed HERE,
+      //     because setTimeout freezes while a phone sleeps — reconnect is
+      //     exactly when stranded sends must surface as retryable instead of
+      //     sitting there looking delivered (or silently vanishing on the
+      //     next reload).
+      const merged = useAppStore.getState().messages[roomId]?.items ?? [];
+      const persistedByCid = new Map<string, Message>();
+      for (const m of merged) {
+        if (m.id.startsWith("optimistic-")) continue;
+        const cid = clientMsgIdOf(m);
+        if (cid) persistedByCid.set(cid, m);
+      }
+      for (const m of merged) {
+        if (!m.id.startsWith("optimistic-")) continue;
+        const cid = clientMsgIdOf(m);
+        if (cid && persistedByCid.has(cid)) {
+          sendTracker.ack(cid);
+          console.debug(
+            "[chat] resync ACK %s -> server %s",
+            m.id,
+            persistedByCid.get(cid)!.id,
+          );
+          removeMessage(roomId, m.id);
+        }
+      }
     } catch {
       /* best-effort; the next live event or a manual refresh reconciles */
     }
-  }, [roomId, addMessage, updateMessage]);
+    // Deadline sweep runs even when the refetch failed: an unreachable API is
+    // MORE reason to stop showing an unACKed send as delivered, not less.
+    // Unscoped on purpose — a send stranded in a room the user navigated away
+    // from has no mounted hook of its own, but markSendFailed routes each
+    // send to its own roomId in the store. Concurrent hooks sweeping is safe:
+    // the transition happens once, later sweeps get an empty list.
+    for (const overdue of sendTracker.sweepOverdue()) {
+      markSendFailed(overdue);
+    }
+  }, [roomId, addMessage, updateMessage, removeMessage]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -245,7 +366,18 @@ export function useChat(roomId: string | null): UseChatReturn {
       const hasImage = (attachments || []).some((a) =>
         a.content_type.startsWith("image/"),
       );
-      const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      // The send's identity for the whole ACK protocol: the optimistic bubble
+      // id derives from the client_msg_id, the POST carries it, the server
+      // stamps it into metadata (so the echo carries it back), and a retry
+      // replays the SAME id so the server can dedupe.
+      const clientMsgId = newClientMsgId();
+      const optimisticId = optimisticIdFor(clientMsgId);
+      const requestSnapshot: OutgoingSendRequest = {
+        content: trimmedContent,
+        thread_id: threadId,
+        attachments,
+        extraMetadata,
+      };
       const optimisticMessage: Message = {
         id: optimisticId,
         room_id: roomId,
@@ -260,10 +392,13 @@ export function useChat(roomId: string | null): UseChatReturn {
         edited: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        metadata: {
-          ...(attachments?.length ? { attachments } : {}),
-          ...(extraMetadata ?? {}),
-        },
+        metadata: pendingSendMetadata(
+          {
+            ...(attachments?.length ? { attachments } : {}),
+            ...(extraMetadata ?? {}),
+          },
+          clientMsgId,
+        ),
       };
 
       console.debug(
@@ -272,11 +407,21 @@ export function useChat(roomId: string | null): UseChatReturn {
         trimmedContent.slice(0, 60),
       );
       addMessage(roomId, optimisticMessage);
+      // Arm the ACK deadline BEFORE the request: the timer is what turns a
+      // request that never settles (hung proxy, stalled token refresh — the
+      // silent-loss class) into a visible failed+Retry bubble.
+      sendTracker.begin({
+        roomId,
+        clientMsgId,
+        optimisticId,
+        request: requestSnapshot,
+      });
 
       try {
         const request: SendMessageRequest = {
           content: trimmedContent,
           content_type: (optimisticMessage.content_type as SendMessageRequest["content_type"]),
+          client_msg_id: clientMsgId,
         };
         const meta: Record<string, unknown> = {};
         if (attachments?.length) meta.attachments = attachments;
@@ -294,12 +439,15 @@ export function useChat(roomId: string | null): UseChatReturn {
           request.model = modelOverride;
         }
         const serverMessage = await api.sendMessage(roomId, request);
+        sendTracker.ack(clientMsgId);
         // The realtime WS echo of this same message can race ahead of this POST
-        // response and already be in the list under its server id. If so, drop
-        // our optimistic copy rather than renaming it to that id — renaming would
-        // produce two items with the same id and render the message twice (the
-        // duplicate-own-message bug). If the echo hasn't arrived yet, rename as
-        // usual; a later echo is then deduped by addMessage's id check.
+        // response and already be in the list under its server id (the echo
+        // handler reconciles by client_msg_id, which also renames the bubble).
+        // If so, drop any leftover optimistic copy rather than renaming it —
+        // renaming would produce two items with the same id and render the
+        // message twice (the duplicate-own-message bug). If the echo hasn't
+        // arrived yet, rename as usual; a later echo is then deduped by
+        // addMessage's id check.
         const alreadyEchoed = (
           useAppStore.getState().messages[roomId]?.items ?? []
         ).some((m) => m.id === serverMessage.id);
@@ -316,29 +464,25 @@ export function useChat(roomId: string | null): UseChatReturn {
             id: serverMessage.id,
             created_at: serverMessage.created_at,
             updated_at: serverMessage.updated_at,
-            metadata: {
-              ...(optimisticMessage.metadata ?? {}),
-              ...(serverMessage.metadata ?? {}),
-              failed: false,
-            },
+            metadata: ackedSendMetadata(
+              optimisticMessage.metadata,
+              serverMessage.metadata,
+            ),
           });
         }
       } catch (err) {
-        // Keep the optimistic message in-place so the user can retry.
-        // Stuff the original request into metadata so retryMessage can replay it.
-        updateMessage(roomId, optimisticId, {
-          metadata: {
-            ...(optimisticMessage.metadata ?? {}),
-            failed: true,
-            failed_error: (err as Error)?.message || "Send failed",
-            failed_request: {
-              content: trimmedContent,
-              thread_id: threadId,
-              attachments,
-              extraMetadata,
-            },
-          },
-        });
+        // Keep the optimistic message in-place so the user can retry — but
+        // only mark it failed if this rejection is the resolving event. A
+        // null here means the ACK deadline already failed it (state is
+        // correct) or the WS echo already confirmed the server persisted it
+        // (marking failed would lie).
+        const settled = sendTracker.fail(clientMsgId);
+        if (settled) {
+          markSendFailed(
+            settled,
+            (err as Error)?.message || "Send failed",
+          );
+        }
       }
     },
     [roomId, currentUser, addMessage, updateMessage, removeMessage],
@@ -349,16 +493,32 @@ export function useChat(roomId: string | null): UseChatReturn {
       if (!roomId) return;
       const m = messages.find((x) => x.id === messageId);
       if (!m) return;
-      const req = (m.metadata as { failed_request?: { content: string; thread_id?: string; attachments?: Array<{ url: string; filename: string; content_type: string; size: number }>; extraMetadata?: Record<string, unknown> } } | null)?.failed_request;
+      const req = (m.metadata as { failed_request?: OutgoingSendRequest } | null)
+        ?.failed_request;
       if (!req) return;
-      // Optimistically clear failed flag so the bubble UI updates.
+      // Retry replays the SAME client_msg_id — that is the whole idempotency
+      // contract: if the original send actually reached the DB (its response
+      // just never reached us), the server answers with the already-persisted
+      // message instead of double-posting. Bubbles from before this protocol
+      // shipped have no id; they get one now (their original can't be deduped
+      // against, same as today).
+      const clientMsgId = clientMsgIdOf(m) ?? newClientMsgId();
+      // Back to pending so the bubble UI updates (and the ACK deadline
+      // re-arms — a retry can fail visibly too, never silently).
       updateMessage(roomId, messageId, {
-        metadata: { ...(m.metadata ?? {}), failed: false, failed_error: null },
+        metadata: pendingSendMetadata(m.metadata, clientMsgId),
+      });
+      sendTracker.begin({
+        roomId,
+        clientMsgId,
+        optimisticId: messageId,
+        request: req,
       });
       try {
         const request: SendMessageRequest = {
           content: req.content,
           content_type: m.content_type as SendMessageRequest["content_type"],
+          client_msg_id: clientMsgId,
         };
         if (req.attachments?.length) request.metadata = { attachments: req.attachments };
         if (req.extraMetadata) request.metadata = { ...(request.metadata ?? {}), ...req.extraMetadata };
@@ -367,19 +527,31 @@ export function useChat(roomId: string | null): UseChatReturn {
         const modelOverride = useAppStore.getState().modelOverrides[roomId];
         if (modelOverride) request.model = modelOverride;
         const serverMessage = await api.sendMessage(roomId, request);
-        updateMessage(roomId, messageId, {
-          id: serverMessage.id,
-          created_at: serverMessage.created_at,
-          updated_at: serverMessage.updated_at,
-          metadata: { ...(m.metadata ?? {}), failed: false, failed_request: null },
-        });
+        sendTracker.ack(clientMsgId);
+        // Same echo race as the first attempt: if the echo (or the original
+        // POST landing late) already put the server id in the list, drop this
+        // bubble instead of renaming into a duplicate id.
+        const alreadyPresent = (
+          useAppStore.getState().messages[roomId]?.items ?? []
+        ).some((x) => x.id === serverMessage.id && x.id !== messageId);
+        if (alreadyPresent) {
+          removeMessage(roomId, messageId);
+        } else {
+          updateMessage(roomId, messageId, {
+            id: serverMessage.id,
+            created_at: serverMessage.created_at,
+            updated_at: serverMessage.updated_at,
+            metadata: ackedSendMetadata(m.metadata, serverMessage.metadata),
+          });
+        }
       } catch (err) {
-        updateMessage(roomId, messageId, {
-          metadata: { ...(m.metadata ?? {}), failed: true, failed_error: (err as Error)?.message || "Send failed" },
-        });
+        const settled = sendTracker.fail(clientMsgId);
+        if (settled) {
+          markSendFailed(settled, (err as Error)?.message || "Send failed");
+        }
       }
     },
-    [roomId, messages, updateMessage],
+    [roomId, messages, updateMessage, removeMessage],
   );
 
   const editMessage = useCallback(

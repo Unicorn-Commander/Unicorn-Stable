@@ -4,6 +4,7 @@ import {
   RotateCw,
   BriefcaseBusiness,
   ChevronDown,
+  Clock3,
   Copy as CopyIcon,
   ExternalLink,
   Link2,
@@ -1579,6 +1580,12 @@ export function MessageBubble({
     (message.metadata as { failed?: boolean } | undefined)?.failed,
   );
   const failedError = (message.metadata as { failed_error?: string } | undefined)?.failed_error;
+  // Awaiting the server ACK (see lib/sendPipeline.ts). Guarded on the
+  // optimistic id prefix so a stale flag can never dim a persisted message:
+  // reconciling always swaps in the server id.
+  const pendingAck =
+    message.id.startsWith("optimistic-") &&
+    Boolean((message.metadata as { pending?: boolean } | undefined)?.pending);
   const [editContent, setEditContent] = useState(message.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -2186,6 +2193,10 @@ export function MessageBubble({
         (hovered || actionsOpen) && "bg-white/[0.03]",
         !showAvatar && "pl-12",
         failed && "border-l-2 border-rose-500/70 bg-rose-500/5",
+        // Unconfirmed send: dimmed until the server ACKs. The honest cue that
+        // "on my screen" is not yet "delivered" — a bubble must never look
+        // identical to a persisted message while nothing has confirmed it.
+        pendingAck && !failed && "opacity-60",
       )}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -2705,6 +2716,20 @@ export function MessageBubble({
         </div>
       )}
 
+      {pendingAck && !failed && (
+        <div
+          // Delayed fade-in: a healthy send ACKs in well under a second and
+          // the pill never appears; only a send still waiting after ~800ms
+          // shows "Sending" (fill-mode backwards keeps it invisible through
+          // the delay).
+          className="animate-fade-in absolute -right-2 top-1 flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 text-[11px] text-slate-400"
+          style={{ animationDelay: "0.8s", animationFillMode: "backwards" }}
+          title="Waiting for the server to confirm this message"
+        >
+          <Clock3 className="h-3 w-3" />
+          Sending
+        </div>
+      )}
       {failed && onRetry && (
         <div
           className="absolute -right-2 top-1 flex items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/15 px-1.5 py-0.5 text-xs text-rose-300"

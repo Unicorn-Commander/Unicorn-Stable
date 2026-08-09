@@ -186,6 +186,27 @@ def _typing_payload(
     }
 
 
+def _mark_read_message_uuid(value: Any) -> Any | None:
+    """Coerce mark_read's message_id to a UUID, or None when it isn't one.
+
+    The receipt's message_id is client-supplied. A non-UUID value (an
+    `optimistic-…` id from a bubble the sender's client hadn't reconciled yet,
+    or anything hand-rolled) previously flowed straight into a
+    `Message.id == value` comparison, where the asyncpg UUID bind raises — an
+    uncaught error that tears down the WHOLE websocket, not just the frame.
+    The client now withholds mark_read until the send is ACKed, but the
+    server must not let one malformed frame kill a connection either way.
+    """
+    import uuid as _uuid
+
+    if value is None:
+        return None
+    try:
+        return _uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def _event_body(data: dict[str, Any]) -> dict[str, Any]:
     """Read a client event's fields whether they are flat or under `payload`.
 
@@ -570,7 +591,11 @@ async def _handle_client_events(
                 # a hand-rolled or older flat-framing client still works.
                 body = _event_body(data)
                 room_id = body.get("room_id")
-                message_id = body.get("message_id")
+                # Non-UUID ids (unACKed optimistic bubbles, garbage) become
+                # None — the receipt still advances last_read_at, it just
+                # cannot name a message. Parsing HERE keeps a malformed frame
+                # from raising inside the DB bind and killing the socket.
+                message_id = _mark_read_message_uuid(body.get("message_id"))
                 # Guard like typing_*: only act on a room the caller belongs to,
                 # else a stranger could spoof read-receipts into any room by id.
                 if room_id and room_id in room_ids:
@@ -624,7 +649,9 @@ async def _handle_client_events(
                             "type": "read_receipt",
                             "room_id": room_id,
                             "participant_id": participant_id,
-                            "message_id": message_id,
+                            # message_id is a uuid.UUID after validation —
+                            # back to a string for the wire.
+                            "message_id": str(message_id) if message_id else None,
                             "at": datetime.now(timezone.utc).isoformat(),
                         }),
                     )

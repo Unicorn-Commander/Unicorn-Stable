@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { X, Send, CornerDownRight, MessagesSquare } from "lucide-react";
 import { identityFor } from "@/lib/identity";
+import { newClientMsgId } from "@/lib/sendPipeline";
 import { api, type Message } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { Avatar } from "@/components/Avatar";
@@ -22,6 +23,12 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const qc = useQueryClient();
+  // Idempotency id for the CURRENT draft: pressing send again after a failure
+  // replays the same client_msg_id, so the server dedupes if the first
+  // attempt actually persisted and only its response got lost. Regenerated
+  // whenever the text changes — a same-id send must always mean the same
+  // content — and cleared on success.
+  const replySendRef = useRef<{ clientMsgId: string; text: string } | null>(null);
 
   const { data: replies = [], refetch } = useQuery({
     queryKey: ["thread", parentId],
@@ -57,18 +64,33 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
     const text = reply.trim();
     if (!text || sending) return;
     setSending(true);
+    if (!replySendRef.current || replySendRef.current.text !== text) {
+      replySendRef.current = { clientMsgId: newClientMsgId(), text };
+    }
     try {
       await api.sendMessage(roomId, {
         content: text,
         content_type: "text",
         thread_id: parentId,
+        client_msg_id: replySendRef.current.clientMsgId,
       });
+      replySendRef.current = null;
       setReply("");
       await refetch();
       // Also refresh main room messages so reply_count badge updates
       qc.invalidateQueries({ queryKey: ["room", roomId] });
     } catch (e) {
+      // The draft stays in the composer (only success clears it); say WHY the
+      // reply isn't in the thread instead of un-happening silently.
       console.error("thread reply failed", e);
+      useAppStore.getState().pushToast({
+        title: "Reply not sent",
+        body:
+          (e as { detail?: string; message?: string }).detail ||
+          (e as Error).message ||
+          "Request failed",
+        kind: "error",
+      });
     } finally {
       setSending(false);
     }

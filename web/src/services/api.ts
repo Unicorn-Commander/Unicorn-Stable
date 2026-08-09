@@ -392,6 +392,14 @@ export interface SendMessageRequest {
    * default. Resolved from the client-side modelOverrides store in useChat.
    */
   model?: string;
+  /**
+   * Client-generated idempotency id for the send-ACK protocol (see
+   * lib/sendPipeline.ts). The server stamps it into the message's metadata —
+   * so the WS echo carries it back — and dedupes a retried send on
+   * (room, sender, client_msg_id): a retry after a lost response returns the
+   * already-persisted message instead of double-posting.
+   */
+  client_msg_id?: string;
 }
 
 /** Search operators supported by the backend: from, in, has, before, after. */
@@ -486,40 +494,70 @@ class StableApiClient {
     method: string,
     path: string,
     body?: unknown,
+    opts?: { timeoutMs?: number },
   ): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(await this.getAuthHeaders()),
     };
 
-    const response = await fetch(`${activeBaseUrl()}${path}`, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    // Optional abort deadline. fetch has NO default timeout: a black-holed
+    // request (proxy hang, uvicorn's silent >8KiB-header stall) otherwise
+    // never settles — the send path's promise sat pending forever and its
+    // catch/reconcile never ran, which is exactly how messages got lost
+    // silently. Callers that need a bounded wait pass timeoutMs.
+    let controller: AbortController | undefined;
+    let abortTimer: ReturnType<typeof setTimeout> | undefined;
+    if (opts?.timeoutMs) {
+      controller = new AbortController();
+      abortTimer = setTimeout(() => controller?.abort(), opts.timeoutMs);
+    }
 
-    if (!response.ok) {
-      let detail: string | null = null;
-      try {
-        const errorBody = (await response.json()) as { detail?: string };
-        detail = errorBody.detail ?? null;
-      } catch {
-        /* empty */
+    try {
+      const response = await fetch(`${activeBaseUrl()}${path}`, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller?.signal,
+      });
+
+      if (!response.ok) {
+        let detail: string | null = null;
+        try {
+          const errorBody = (await response.json()) as { detail?: string };
+          detail = errorBody.detail ?? null;
+        } catch {
+          /* empty */
+        }
+
+        const error: ApiError = {
+          status: response.status,
+          message: response.statusText,
+          detail,
+        };
+        throw error;
       }
 
-      const error: ApiError = {
-        status: response.status,
-        message: response.statusText,
-        detail,
-      };
-      throw error;
-    }
+      if (response.status === 204) {
+        return undefined as T;
+      }
 
-    if (response.status === 204) {
-      return undefined as T;
+      return (await response.json()) as T;
+    } catch (err) {
+      if (controller?.signal.aborted) {
+        // Normalize the DOMException into the ApiError shape every caller
+        // already handles; status 0 = "no HTTP response", like a network drop.
+        const timeoutError: ApiError = {
+          status: 0,
+          message: "Request timed out",
+          detail: "The server did not respond in time.",
+        };
+        throw timeoutError;
+      }
+      throw err;
+    } finally {
+      if (abortTimer !== undefined) clearTimeout(abortTimer);
     }
-
-    return response.json() as Promise<T>;
   }
 
   async getHomeSummary(): Promise<HomeSummary> {
@@ -1068,10 +1106,17 @@ class StableApiClient {
     roomId: string,
     data: SendMessageRequest,
   ): Promise<Message> {
+    // Bounded wait: the send pipeline's ACK timer (12s, lib/sendPipeline.ts)
+    // decides when the bubble turns failed; this abort only exists so the
+    // zombie request is eventually torn down instead of holding a socket
+    // forever. Deliberately LONGER than the ACK timer so the state machine
+    // always transitions first — and a late 2xx still upgrades the bubble
+    // (dedupe on client_msg_id makes the late/retry pair collapse safely).
     return this.request<Message>(
       "POST",
       `/api/v1/rooms/${roomId}/messages`,
       data,
+      { timeoutMs: 20_000 },
     );
   }
 
