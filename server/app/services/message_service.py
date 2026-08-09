@@ -16,6 +16,7 @@ from app.models.participant import Participant
 from app.models.room import Room, RoomMember
 from app.models.activity import ActivityEvent, ActivityEventType
 from app.services.livekit_service import LiveKitService
+from app.services.mentions import parse_mentions
 
 logger = structlog.get_logger(__name__)
 
@@ -191,7 +192,13 @@ class MessageService:
                 ).where(RoomMember.room_id == room_id)
             )
         ).all()
-        broad = "@channel" in lower_content or "@here" in lower_content
+        # Broadcast detection is token-based (services/mentions.py), shared
+        # with the push/email fan-outs so every surface agrees. Both @channel
+        # and @here badge every member: the inbox is a durable catch-up
+        # surface (@here's online-only scope applies to the offline push and
+        # email channels, which mentions.py documents).
+        parsed_mentions = parse_mentions(content)
+        broad = parsed_mentions.broadcast
         for member, participant in member_rows:
             if str(member.participant_id) == str(sender_id):
                 continue
@@ -236,11 +243,7 @@ class MessageService:
         room_type_str = room_row[1].value if room_row and room_row[1] else "channel"
 
         if lk_room_name:
-            lower_content = (message.content or "").lower()
-            broad_mention = (
-                "channel" if "@channel" in lower_content else
-                ("here" if "@here" in lower_content else None)
-            )
+            broad_mention = parsed_mentions.broad_kind
             broadcast_data = {
                 "type": "new_message",
                 "room_type": room_type_str,

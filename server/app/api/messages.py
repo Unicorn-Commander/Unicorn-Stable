@@ -237,6 +237,7 @@ async def send_message(
             db=db,
             content=body.content or "",
             room_id=room_id,
+            sender_participant_id=user["participant_id"],
             sender_name=user.get("display_name") or user.get("username") or "Someone",
             sender_email=user.get("email"),
         )
@@ -365,19 +366,24 @@ async def send_message(
     return response
 
 
-_MENTION_RE = None
-
-
 async def _maybe_dispatch_mention_emails(
     db: AsyncSession,
     content: str,
     room_id: uuid.UUID,
+    sender_participant_id: uuid.UUID | str | None,
     sender_name: str,
     sender_email: str | None,
 ) -> None:
-    """Find @mentioned offline humans, queue async emails to each."""
+    """Find @mentioned offline room members, queue async emails to each.
+
+    Recipient resolution is shared with the push path (services/mentions.py):
+    explicit @user handles match the login USERNAME, @channel expands to every
+    human member of THIS room who is not actively online, and @here adds no
+    email targets by design (it addresses people who are present). The sender
+    never emails themself, and non-members are never emailed — the message
+    quote below would otherwise leak room content outside the room.
+    """
     import asyncio as _asyncio
-    import re
 
     from sqlalchemy import select as _select
 
@@ -388,14 +394,12 @@ async def _maybe_dispatch_mention_emails(
         ParticipantStatus as _PS,
         ParticipantType as _PT,
     )
-    from app.models.room import Room as _Room
+    from app.models.room import Room as _Room, RoomMember as _RM
     from app.services.email_sender import GraphEmailSender
+    from app.services.mentions import offline_notify_targets, parse_mentions
 
-    global _MENTION_RE
-    if _MENTION_RE is None:
-        _MENTION_RE = re.compile(r"@([A-Za-z0-9_.\-]{2,64})")
-    handles = {m.lower() for m in _MENTION_RE.findall(content)}
-    if not handles:
+    pm = parse_mentions(content)
+    if not pm.handles and not pm.channel:
         return
 
     cfg = get_settings()
@@ -416,31 +420,40 @@ async def _maybe_dispatch_mention_emails(
 
     rows = (
         await db.execute(
-            _select(_P).where(
+            _select(_P)
+            .join(_RM, _RM.participant_id == _P.id)
+            .where(
+                _RM.room_id == room_id,
+                _P.id != sender_participant_id,
                 _P.participant_type == _PT.HUMAN,
                 _P.status != _PS.ONLINE,
             )
         )
     ).scalars().all()
-    targets = [p for p in rows if (p.username or "").lower() in handles]
+    targets = offline_notify_targets(pm, rows)
     if not targets:
         return
 
     quote = content if len(content) <= 280 else content[:280] + "…"
     link = f"{cfg.public_base_url}/?room={room.id}"
-    subject = f"{sender_name} mentioned you in {room.display_name}"
+    room_label = room.display_name or room.name
 
     async def _send_one(p: _P) -> None:
         try:
             email = await _load_keycloak_email_for_sub(p.keycloak_sub)
             if not email:
                 return
+            # Personally-mentioned recipients read "mentioned you"; members
+            # swept in by @channel see the broadcast for what it is.
+            personal = (p.username or "").casefold() in pm.handles
+            mention_phrase = "you" if personal else "@channel"
+            subject = f"{sender_name} mentioned {mention_phrase} in {room_label}"
             html = f"""
 <!doctype html>
 <html><body style="font-family:-apple-system,system-ui,sans-serif;color:#1e293b;line-height:1.5;">
 <p>Hi {p.display_name or p.username},</p>
-<p><strong>{sender_name}</strong> mentioned you in
-   <strong>{room.display_name}</strong> on Stable:</p>
+<p><strong>{sender_name}</strong> mentioned {mention_phrase} in
+   <strong>{room_label}</strong> on Stable:</p>
 <blockquote style="border-left:3px solid #7c3aed;padding-left:12px;margin:12px 0;color:#475569;">
 {quote}
 </blockquote>
