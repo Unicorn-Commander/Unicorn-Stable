@@ -71,6 +71,7 @@ import {
   isAgentIdentity,
   isVrmSurfaceEligible,
   mapAgentState,
+  resolveCallTilePersona,
 } from "@/lib/presenceFace";
 // ─────────────────────────────────────────────────────────────────────────────
 // Pop-out / Picture-in-Picture module (audit §4a) — web/src/components/Room/popout/.
@@ -351,6 +352,12 @@ function TileControlButton({
 
 interface ParticipantTileProps {
   p: CallParticipant;
+  /**
+   * The Stable room this call lives in — how an agent tile resolves its
+   * PERSONA (`brigade_agent_id` off the room) when the worker joined under a
+   * type-shaped LiveKit identity ("stable-brigade") instead of a persona one.
+   */
+  roomId: string;
   /** Attach ref for the camera track (present only when a video should show). */
   videoRef?: AttachRef;
   /** Event-driven speaking state (active-speaker OR isSpeaking). */
@@ -377,6 +384,7 @@ interface ParticipantTileProps {
 
 function ParticipantTile({
   p,
+  roomId,
   videoRef,
   speaking,
   size = "normal",
@@ -412,11 +420,25 @@ function ParticipantTile({
    * (portrait, emoji). */
   const isAgentTile = isAgentIdentity(p.id) || p.isAgentKind || p.isAgent;
   const faceEligible = isVrmSurfaceEligible({ size, fill, inPopout });
+  /* WHICH CHARACTER this tile draws. The worker's LiveKit identity is
+   * TYPE-shaped (verified on dogfood: it joins as `stable-brigade`;
+   * registry.py accepts as `agent-<agent_type>`) — it does not name the
+   * persona. Keying art off it resolved no puppet, no portrait and no roster
+   * row, which is exactly why Majik rendered as the generic 2D unicorn on
+   * every call. The room's `brigade_agent_id` (the same metadata the server
+   * dispatched the worker from) is the persona fallback; a persona-shaped
+   * identity like `agent-majik` still wins when it resolves art itself. */
+  const roomBrigadeAgentId = useAppStore((s) =>
+    isAgentTile
+      ? (s.rooms.find((r) => r.id === roomId)?.brigade_agent_id ?? null)
+      : null,
+  );
+  const persona = isAgentTile
+    ? resolveCallTilePersona(p.id, p.name, roomBrigadeAgentId)
+    : { slug: p.id.replace(/^agent-/, ""), name: p.name };
   const agent = useAppStore((s) =>
     isAgentTile
-      ? s.agents.find(
-          (candidate) => candidate.id === p.id.replace(/^agent-/, ""),
-        )
+      ? s.agents.find((candidate) => candidate.id === persona.slug)
       : undefined,
   );
 
@@ -566,9 +588,12 @@ function ParticipantTile({
          * the portrait, or the animated unicorn, or initials — but always a
          * face. Humans are untouched and keep the plain <Avatar>. */
         <AgentPresenceFace
+          /* The REAL LiveKit identity — the mouth is driven off this
+           * participant's live audioLevel, so it must never be the persona. */
           participantId={p.id}
-          id={p.id.replace(/^agent-/, "")}
-          name={p.name}
+          /* The PERSONA — what character the art lookups resolve. */
+          id={persona.slug}
+          name={persona.name}
           avatarUrl={agent?.avatar_url}
           emoji={agent?.emoji}
           size={size === "large" ? 96 : 64}
@@ -594,9 +619,9 @@ function ParticipantTile({
         />
       )}
 
-      {/* Name plate. */}
+      {/* Name plate — the persona for agents ("Majik", not "stable-brigade"). */}
       <span className="glass absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md px-2 py-0.5 text-xs font-medium text-slate-100">
-        {p.name}
+        {isAgentTile ? persona.name : p.name}
       </span>
 
       {/* Persistent pin marker, OR a drag grip on hover (grid tiles). */}
@@ -893,18 +918,30 @@ function ScreenShareTile({
 interface AudioChipProps {
   id: string;
   name: string;
+  /** Persona resolution — see ParticipantTile's roomBrigadeAgentId note. */
+  roomId: string;
   isAgent: boolean;
   isSpeaking: boolean;
   isMuted: boolean;
 }
 
-function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
+function AudioChip({ id, name, roomId, isAgent, isSpeaking, isMuted }: AudioChipProps) {
   const ident = identityFor(id.replace(/^agent-/, ""), name);
+  // Same persona resolution as the stage tile: the worker's type-shaped
+  // LiveKit identity ("stable-brigade") names no character, so the chip in
+  // the AUDIO layout — where an audio call now lives — must resolve the
+  // room's resident brigade agent to show Majik's art and name, not initials.
+  const roomBrigadeAgentId = useAppStore((s) =>
+    isAgent
+      ? (s.rooms.find((r) => r.id === roomId)?.brigade_agent_id ?? null)
+      : null,
+  );
+  const persona = isAgent
+    ? resolveCallTilePersona(id, name, roomBrigadeAgentId)
+    : { slug: id.replace(/^agent-/, ""), name };
   const agent = useAppStore((s) =>
     isAgent
-      ? s.agents.find(
-          (candidate) => candidate.id === id.replace(/^agent-/, ""),
-        )
+      ? s.agents.find((candidate) => candidate.id === persona.slug)
       : undefined,
   );
   return (
@@ -921,22 +958,22 @@ function AudioChip({ id, name, isAgent, isSpeaking, isMuted }: AudioChipProps) {
         avatarUrl={
           isAgent
             ? resolveAgentPortrait(
-                id.replace(/^agent-/, ""),
-                name,
+                persona.slug,
+                persona.name,
                 agent?.avatar_url,
               )
             : agent?.avatar_url
         }
         emoji={agent?.emoji}
-        id={id.replace(/^agent-/, "")}
-        name={name}
+        id={persona.slug}
+        name={persona.name}
         size={32}
         ring={isSpeaking}
         className={clsx(isSpeaking && !isMuted && "animate-pulse-soft")}
         alt=""
       />
       <span className="max-w-[10ch] truncate text-xs font-medium text-slate-200">
-        {name}
+        {persona.name}
       </span>
       {isMuted && <MicOff className="h-3.5 w-3.5 shrink-0 text-rose-400" />}
     </div>
@@ -1634,6 +1671,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       <ParticipantTile
         key={p.id}
         p={p}
+        roomId={roomId}
         size={opts?.size ?? "normal"}
         fill={opts?.fill}
         hidden={hidden}
@@ -1877,7 +1915,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           key={p.id}
           id={p.id}
           name={p.name}
-          isAgent={p.isAgent}
+          roomId={roomId}
+          /* Robust agent-ness (identity/kind), not just the roster match —
+           * p.isAgent is false whenever the Brigade roster query misses. */
+          isAgent={isAgentIdentity(p.id) || p.isAgentKind || p.isAgent}
           isSpeaking={speakingIds.has(p.id)}
           isMuted={p.isMuted}
         />

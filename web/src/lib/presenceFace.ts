@@ -16,6 +16,9 @@
  * produce a blank tile.
  */
 
+import { brandAvatarFor } from "@/lib/brandAvatars";
+import { hasPuppet } from "@/lib/puppetRig";
+
 export type PresenceRung = "face" | "portrait" | "unicorn" | "avatar";
 
 export type PresenceExpression =
@@ -55,6 +58,74 @@ export function agentSlugFromIdentity(
   return (identity ?? "").replace(/^agent-/, "");
 }
 
+/** The identity a call tile should draw art for. */
+export interface CallTilePersona {
+  /** Art/catalog slug ("majik") — feeds the puppet/portrait/VRM lookups. */
+  slug: string;
+  /** Display name for the face's alt text and initials fallback. */
+  name: string;
+}
+
+/**
+ * Resolve WHICH CHARACTER an agent tile shows.
+ *
+ * The bug this fixes (Aaron's "2D unicorn avatar that wasn't based on ours"):
+ * the LiveKit worker joins with a TYPE-shaped identity — verified on dogfood
+ * as `stable-brigade`, and `agent-<agent_type>` per the registry's job accept
+ * — NOT a persona-shaped one like `agent-majik`. Keying the art off that
+ * identity resolves no puppet, no portrait, no roster row, so Majik rendered
+ * as the generic procedural UnicornAvatar in every call while his branded
+ * puppet sat unused in `/agent-puppets/majik.webp`.
+ *
+ * Order:
+ *   1. The tile's own identity/name, when it actually resolves art — a
+ *      persona-shaped identity ("agent-majik") keeps working, and a future
+ *      multi-agent call where each worker has its own persona identity is
+ *      attributed correctly.
+ *   2. The ROOM's resident `brigade_agent_id` (server room metadata, already
+ *      on the web Room model) — the same source the server uses to dispatch
+ *      the worker, so it names the persona the worker is speaking as.
+ *   3. The tile's own identity/name unchanged (no art anywhere → the
+ *      procedural rungs, exactly as before).
+ */
+export function resolveCallTilePersona(
+  identity: string | null | undefined,
+  displayName: string | null | undefined,
+  roomBrigadeAgentId?: string | null,
+): CallTilePersona {
+  const ownSlug = agentSlugFromIdentity(identity);
+  const ownName = displayName || ownSlug;
+  if (brandAvatarFor(ownSlug) || brandAvatarFor(displayName ?? null)) {
+    return { slug: ownSlug, name: ownName };
+  }
+  if (roomBrigadeAgentId && brandAvatarFor(roomBrigadeAgentId)) {
+    return {
+      slug: roomBrigadeAgentId,
+      // Canonical display derivation, mirroring the server
+      // (agent_chat_responder: id.replace("-", " ").title()).
+      name: roomBrigadeAgentId
+        .split("-")
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" "),
+    };
+  }
+  return { slug: ownSlug, name: ownName };
+}
+
+/**
+ * Does this (slug, name) have an AUTHORED talking puppet? Re-exported through
+ * the presence module so callers deciding a RUNG don't import the rig table
+ * directly. This is what lets the branded 2D puppet reach the face rung
+ * without the experimental talking-face flag.
+ */
+export function puppetAvailableFor(
+  slug: string | null | undefined,
+  name: string | null | undefined,
+): boolean {
+  return hasPuppet(slug, name);
+}
+
 /**
  * May this tile mount WebGL?
  *
@@ -81,7 +152,7 @@ export function isVrmSurfaceEligible(opts: {
 export const MIN_FACE_BOX_PX = 80;
 
 export interface PresenceRungInput {
-  /** `isTalkingFaceEnabled()` — the master switch. */
+  /** `isTalkingFaceEnabled()` — the switch for the EXPERIMENTAL faces. */
   flagEnabled: boolean;
   /** Which call surface this is. Only "stage" may reach the face rung. */
   surface: PresenceSurface;
@@ -97,6 +168,14 @@ export interface PresenceRungInput {
    * procedural placeholder head rather than nothing.
    */
   vrmSrc: string | null;
+  /**
+   * An AUTHORED branded 2D puppet exists for this agent (puppetRig.ts).
+   * A puppet is SHIPPED PRODUCT, not an experiment: it reaches the face rung
+   * with the flag OFF, and it is the preferred face when it exists — the
+   * generic VRM/procedural heads are for agents we have not drawn yet. The
+   * flag keeps gating exactly those generic/experimental faces.
+   */
+  puppetAvailable?: boolean;
 }
 
 /**
@@ -105,7 +184,7 @@ export interface PresenceRungInput {
  */
 export function selectPresenceRung(input: PresenceRungInput): PresenceRung {
   const faceAllowed =
-    input.flagEnabled &&
+    (input.flagEnabled || !!input.puppetAvailable) &&
     input.surface === "stage" &&
     input.webglOk &&
     input.faceHealthy;

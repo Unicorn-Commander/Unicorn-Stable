@@ -16,9 +16,16 @@
  * that will not decode, a container that has collapsed to nothing. It never
  * renders an empty box.
  *
+ * The face rung is reachable two ways: an agent with an AUTHORED branded 2D
+ * puppet (puppetRig.ts) gets it BY DEFAULT — the talking puppet is shipped
+ * product and the preferred call face — while the `stable.talkingFace.v1`
+ * flag additionally unlocks the generic/experimental faces (VRM, procedural
+ * head) for agents that have no puppet.
+ *
  * The heavy renderer is behind `lazy()`, so the three.js chunk is requested by
- * the browser only when the flag is on AND the tile is stage-class AND WebGL
- * works. A user who never turns the flag on never downloads a byte of it.
+ * the browser only when the face rung is actually reachable for THIS tile
+ * (branded puppet, or flag on) AND the tile is stage-class AND WebGL works.
+ * A user who never hits either condition never downloads a byte of it.
  */
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
@@ -34,6 +41,7 @@ import { isWebglAvailable } from "@/lib/webglSupport";
 import {
   MIN_FACE_BOX_PX,
   agentSlugFromIdentity,
+  puppetAvailableFor,
   selectFallbackRung,
   selectPresenceRung,
   unicornStateFor,
@@ -113,8 +121,17 @@ export function AgentPresenceFace({
    */
   const hostRef = useRef<HTMLSpanElement | null>(null);
   const [boxOk, setBoxOk] = useState(false);
+  /**
+   * A branded 2D puppet is shipped product: it reaches the face rung with the
+   * FLAG OFF. The flag keeps gating only the generic/experimental faces (VRM,
+   * procedural head) for agents that have no authored puppet.
+   */
+  const puppetAvailable = puppetAvailableFor(slug, name);
   const wantsFace =
-    flagEnabled && surface === "stage" && faceHealthy && isWebglAvailable();
+    (flagEnabled || puppetAvailable) &&
+    surface === "stage" &&
+    faceHealthy &&
+    isWebglAvailable();
 
   useEffect(() => {
     if (!wantsFace) return;
@@ -153,6 +170,7 @@ export function AgentPresenceFace({
     faceHealthy,
     portraitSrc,
     vrmSrc,
+    puppetAvailable,
   });
 
   // What the 2D half renders — also the Suspense fallback, so the tile shows the
@@ -191,7 +209,12 @@ export function AgentPresenceFace({
         data-presence-agent={slug}
       >
         {twoD}
-        {debug && <RungBadge rung={rung} reason={debugReason(flagEnabled, surface)} />}
+        {debug && (
+          <RungBadge
+            rung={rung}
+            reason={debugReason(flagEnabled, puppetAvailable, surface)}
+          />
+        )}
       </span>
     );
   }
@@ -216,6 +239,11 @@ export function AgentPresenceFace({
           expression={expression}
           isSpeaking={isSpeaking}
           debug={debug}
+          /* Flag OFF means the tile reached this rung purely on the strength
+           * of its BRANDED puppet — if that puppet fails, fail the rung and
+           * fall to the branded 2D portrait rather than mounting the generic
+           * procedural head nobody opted into. */
+          allowGenericFace={flagEnabled}
           onFail={(why) => {
             console.warn(`[talking-face] face rung failed for ${slug}: ${why}`);
             setFaceHealthy(false);
@@ -226,8 +254,12 @@ export function AgentPresenceFace({
   );
 }
 
-function debugReason(flagEnabled: boolean, surface: PresenceSurface): string {
-  if (!flagEnabled) return "flag off";
+function debugReason(
+  flagEnabled: boolean,
+  puppetAvailable: boolean,
+  surface: PresenceSurface,
+): string {
+  if (!flagEnabled && !puppetAvailable) return "flag off + no puppet";
   if (surface !== "stage") return `surface=${surface}`;
   if (!isWebglAvailable()) return "no webgl";
   return "box too small / face failed";
