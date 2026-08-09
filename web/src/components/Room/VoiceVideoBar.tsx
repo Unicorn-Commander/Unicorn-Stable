@@ -1053,6 +1053,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const setPopoutOpen = useCallUiStore((s) => s.setPopoutOpen);
   const videoPrompted = useCallUiStore((s) => s.videoPrompted);
   const setVideoPrompted = useCallUiStore((s) => s.setVideoPrompted);
+  const setAnyVideoLive = useCallUiStore((s) => s.setAnyVideoLive);
 
   // Real Brigade roster — label/detect agent participants by "agent-<id>".
   const { data: brigadeAgents = [] } = useQuery({
@@ -1224,6 +1225,14 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     () => participants.some((p) => p.videoTrack) || screenShares.length > 0,
     [participants, screenShares],
   );
+
+  // Mirror the REAL video-presence signal into the call-UI store so layout
+  // decisions (CallRoomLayout's audio-first intent) can tell an audio call
+  // from a video call without reaching into LiveKit track state. Cleared on
+  // call change by setActiveCallRoom; kept false while disconnected.
+  useEffect(() => {
+    setAnyVideoLive(isConnected && hasAnyVideo);
+  }, [isConnected, hasAnyVideo, setAnyVideoLive]);
 
   // Session-local tile order for drag-to-reorder (Gallery). Reconciled against
   // the live roster: departed ids drop, new ids append.

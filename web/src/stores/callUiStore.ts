@@ -145,7 +145,15 @@ interface CallUiState {
   chatCollapsed: boolean;
   /**
    * Mobile intent mode for how video + chat coexist on phones. Independent of
-   * desktop `viewModes` (grid/focus/sidebar). Session-scoped; default "video".
+   * desktop `viewModes` (grid/focus/sidebar). Session-scoped.
+   *
+   * Default "split" (call surface + chat), NOT "video": every Stable call
+   * starts audio-only (mic only — VoiceProvider never auto-enables a camera),
+   * and an audio call with an agent must stay in the audio layout with chat
+   * visible rather than opening a full-bleed stage of agent faces. The moment
+   * REAL video exists (`anyVideoLive`) the auto-lift in CallRoomLayout takes
+   * the call to "video" exactly as before; picking Video by hand is the
+   * explicit bring-the-stage-up gesture.
    */
   mobileCallMode: MobileCallMode;
   /**
@@ -178,6 +186,31 @@ interface CallUiState {
   activeCallRoomId: string | null;
   /** Auto-prompt latch: we surfaced "someone turned video on" once already. */
   videoPrompted: boolean;
+  /**
+   * Someone in the call is ACTUALLY publishing video (a camera or a screen
+   * share) right now. Mirrored from VoiceVideoBar's track state so layout
+   * decisions (CallRoomLayout) can distinguish a real video call from an
+   * audio call without reaching into LiveKit. This — not the `showVideo`
+   * preference toggle — is what "video intent" keys off.
+   */
+  anyVideoLive: boolean;
+  /**
+   * Audio-first session hold. When a call starts with no live video, a room
+   * whose PERSISTED view mode is a video-stage mode (a leftover from an
+   * earlier video call) is held at "compact" for this session — in memory
+   * only, never written to storage — so an audio call with an agent opens as
+   * the slim bar + chat, not as a stage of agent faces. `priorMode` is
+   * restored automatically the moment real video appears; any explicit
+   * `setViewMode` (user click or agent ui_command) clears the hold instead.
+   */
+  audioIntentHold: { roomId: string; priorMode: CallViewMode } | null;
+  /**
+   * The hold decision has been made for the current call (applied or judged
+   * unnecessary). One decision per call: without this latch, video dropping
+   * mid-call (camera turned off) would re-trigger the hold and collapse a
+   * stage the user is deliberately looking at.
+   */
+  audioHoldConsumed: boolean;
   /** Transcript buffer (final + the current interim line per speaker). */
   transcript: TranscriptLine[];
   /**
@@ -211,6 +244,16 @@ interface CallUiState {
   focusParticipant: (participantId: string | null) => void;
   setPopoutOpen: (roomId: string, open: boolean) => void;
   setVideoPrompted: (v: boolean) => void;
+  /** Mirror of "someone is publishing camera/screen video right now". */
+  setAnyVideoLive: (v: boolean) => void;
+  /**
+   * Decide (once per call) whether this session starts audio-first. If the
+   * room's mode is a video-stage mode and no video is live, hold it at
+   * "compact" in memory and remember the prior mode for auto-restore.
+   */
+  applyAudioIntentHold: (roomId: string, isStageMode: boolean) => void;
+  /** Video arrived while held → put the room's chosen stage mode back. */
+  liftAudioIntentHold: (roomId: string) => void;
   setSendToMeetingOps: (on: boolean) => void;
   /** Seed session Meeting-Ops flag + call start clock when a call connects. */
   beginCallTranscriptSession: () => void;
@@ -230,7 +273,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   // button in the call controls still toggles it off per session.
   showTranscript: true,
   chatCollapsed: false,
-  mobileCallMode: "video",
+  mobileCallMode: "split",
   mobileCallModeUserOverride: false,
   mobileChatSheet: null,
   hiddenTileIds: new Set(),
@@ -238,6 +281,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   popout: { open: false, ownerRoomId: null },
   activeCallRoomId: null,
   videoPrompted: false,
+  anyVideoLive: false,
+  audioIntentHold: null,
+  audioHoldConsumed: false,
   transcript: [],
   sendToMeetingOps:
     typeof window !== "undefined" ? getSendByDefault() : true,
@@ -249,7 +295,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
     set((state) => {
       const next = { ...state.viewModes, [roomId]: mode };
       persistRecord(VIEW_MODE_KEY, next);
-      return { viewModes: next };
+      // Any EXPLICIT mode choice — a user click or an agent ui_command —
+      // outranks the audio-first hold; auto-restore must not fight it later.
+      return { viewModes: next, audioIntentHold: null };
     }),
 
   getPinnedParticipant: (roomId) => get().pinnedParticipantId[roomId] ?? null,
@@ -290,7 +338,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
 
   resetMobileCallUi: () =>
     set({
-      mobileCallMode: "video",
+      mobileCallMode: "split",
       mobileCallModeUserOverride: false,
       mobileChatSheet: null,
     }),
@@ -310,6 +358,37 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
     set({ popout: { open, ownerRoomId: open ? roomId : null } }),
 
   setVideoPrompted: (v) => set({ videoPrompted: v }),
+
+  setAnyVideoLive: (v) =>
+    set((state) => (state.anyVideoLive === v ? state : { anyVideoLive: v })),
+
+  applyAudioIntentHold: (roomId, isStageMode) =>
+    set((state) => {
+      // One decision per call — see audioHoldConsumed.
+      if (state.audioHoldConsumed) return state;
+      if (!isStageMode) {
+        // Nothing to hold (already an audio-friendly mode) — decision made.
+        return { audioHoldConsumed: true };
+      }
+      const priorMode = state.viewModes[roomId] ?? DEFAULT_CALL_VIEW_MODE;
+      // In-memory only: the user's persisted stage preference survives for
+      // the next call that actually has video (persistRecord is NOT called).
+      return {
+        audioHoldConsumed: true,
+        audioIntentHold: { roomId, priorMode },
+        viewModes: { ...state.viewModes, [roomId]: "compact" },
+      };
+    }),
+
+  liftAudioIntentHold: (roomId) =>
+    set((state) => {
+      const hold = state.audioIntentHold;
+      if (!hold || hold.roomId !== roomId) return state;
+      return {
+        audioIntentHold: null,
+        viewModes: { ...state.viewModes, [roomId]: hold.priorMode },
+      };
+    }),
 
   setSendToMeetingOps: (on) => set({ sendToMeetingOps: on }),
 
@@ -457,10 +536,13 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       focusedParticipantId: null,
       popout: { open: false, ownerRoomId: null },
       videoPrompted: false,
+      anyVideoLive: false,
+      audioIntentHold: null,
+      audioHoldConsumed: false,
       transcript: [],
       callStartedAt: null,
       sendToMeetingOps: getSendByDefault(),
-      mobileCallMode: "video",
+      mobileCallMode: "split",
       mobileCallModeUserOverride: false,
       mobileChatSheet: null,
     }),
@@ -479,12 +561,24 @@ export function setActiveCallRoom(roomId: string | null): void {
   // against a redundant set so this is a no-op when the room is unchanged.
   const prev = useCallUiStore.getState().activeCallRoomId;
   if (prev !== roomId) {
-    useCallUiStore.setState({ activeCallRoomId: roomId });
-    // Fresh call (or hang-up) resets mobile intent so the next join starts in
-    // Video without inheriting the previous session's Split/Chat override.
-    if (roomId !== prev) {
-      useCallUiStore.getState().resetMobileCallUi();
-    }
+    // Fresh call (or hang-up): reset the per-call intent state — mobile
+    // intent back to its audio-first default, live-video mirror cleared, and
+    // the audio-first hold re-armed for the next session. An unlifted hold is
+    // unwound first so the room's real (persisted) preference is what the
+    // next call starts from.
+    useCallUiStore.setState((state) => {
+      const hold = state.audioIntentHold;
+      return {
+        activeCallRoomId: roomId,
+        anyVideoLive: false,
+        audioIntentHold: null,
+        audioHoldConsumed: false,
+        viewModes: hold
+          ? { ...state.viewModes, [hold.roomId]: hold.priorMode }
+          : state.viewModes,
+      };
+    });
+    useCallUiStore.getState().resetMobileCallUi();
   }
 }
 

@@ -99,10 +99,44 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   // floating CallDock represents the call instead.
   const callIsHere = voiceActive && roomId === activeCallRoomId;
 
-  // Mobile Video/Split need a real video stage (not audio-compact chips).
+  // ── Audio-first intent (desktop + mobile) ────────────────────────────────
+  // Every Stable call STARTS audio-only (mic only). "There is video" is the
+  // real `anyVideoLive` signal (someone publishing a camera/share), not the
+  // `showVideo` preference toggle and not a stage mode persisted from an
+  // earlier video call in this room. An audio call — the Majik voice-call
+  // case — must open as the slim bar / chips with chat, with the agent's
+  // face/stage strictly OPT-IN (view switcher, mobile Video intent, or an
+  // agent ui_command), never automatic.
+  const anyVideoLive = useCallUiStore((s) => s.anyVideoLive);
+  const audioIntentHold = useCallUiStore((s) => s.audioIntentHold);
+  const applyAudioIntentHold = useCallUiStore((s) => s.applyAudioIntentHold);
+  const liftAudioIntentHold = useCallUiStore((s) => s.liftAudioIntentHold);
+
+  // Session start with no live video: hold a persisted video-stage mode at
+  // "compact" (in memory — the preference itself survives). One decision per
+  // call; explicit setViewMode from anyone cancels the hold.
+  useEffect(() => {
+    if (!callIsHere || anyVideoLive) return;
+    applyAudioIntentHold(roomId, VIDEO_STAGE_MODES.has(viewMode));
+  }, [callIsHere, anyVideoLive, roomId, viewMode, applyAudioIntentHold]);
+
+  // Real video appeared while held → bring the room's chosen stage back.
+  useEffect(() => {
+    if (!callIsHere || !anyVideoLive) return;
+    if (audioIntentHold?.roomId === roomId) {
+      liftAudioIntentHold(roomId);
+    }
+  }, [callIsHere, anyVideoLive, audioIntentHold, roomId, liftAudioIntentHold]);
+
+  // Mobile Video needs a real video stage (not audio-compact chips); Split
+  // only needs one when there is actually video to stage — an audio-only
+  // Split keeps the compact chips row above chat (the audio layout).
   useEffect(() => {
     if (!callIsHere || isDesktop) return;
-    if (mobileCallMode === "video" || mobileCallMode === "split") {
+    const needsStage =
+      mobileCallMode === "video" ||
+      (mobileCallMode === "split" && anyVideoLive);
+    if (needsStage) {
       if (!showVideo) toggleVideo(true);
       if (!VIDEO_STAGE_MODES.has(viewMode)) {
         setViewMode(roomId, "grid");
@@ -117,6 +151,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     callIsHere,
     isDesktop,
     mobileCallMode,
+    anyVideoLive,
     showVideo,
     viewMode,
     roomId,
@@ -125,21 +160,19 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     setChatCollapsed,
   ]);
 
-  // Default to Video when joining with a stage-worthy mode (camera/share path
-  // already lifts viewMode). Only auto-apply until the user overrides.
+  // Auto-lift to the Video intent only when someone is REALLY publishing
+  // video (camera/share) — not because of the showVideo preference or a
+  // stale stage mode. Only until the user picks a mode themselves.
   useEffect(() => {
     if (!callIsHere || isDesktop || mobileCallModeUserOverride) return;
-    if (VIDEO_STAGE_MODES.has(viewMode) || showVideo) {
-      if (mobileCallMode !== "video") {
-        setMobileCallMode("video");
-      }
+    if (anyVideoLive && mobileCallMode !== "video") {
+      setMobileCallMode("video");
     }
   }, [
     callIsHere,
     isDesktop,
     mobileCallModeUserOverride,
-    viewMode,
-    showVideo,
+    anyVideoLive,
     mobileCallMode,
     setMobileCallMode,
   ]);
