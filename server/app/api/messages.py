@@ -195,6 +195,51 @@ async def _ws_send_participant(
         logger.warning("ws_user_send_failed", exc_info=True)
 
 
+# How far back a retried client_msg_id is matched. Retries happen on a human
+# timescale (the ACK timeout is ~12s; a phone waking from overnight sleep is
+# hours) — one hour comfortably covers every real resend without turning the
+# lookup into a full-history scan. Bounded by ix_messages_room_id_created_at.
+_SEND_DEDUPE_WINDOW_S = 3600
+
+
+async def _find_recent_send_by_client_msg_id(
+    db: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    sender_id: Any,
+    client_msg_id: str,
+) -> Message | None:
+    """The idempotency lookup behind send-ACK retries.
+
+    A client that never received the ACK for a send cannot know whether the
+    message was persisted (response lost) or never arrived (request lost), so
+    its retry replays the SAME client_msg_id. If a recent message from the
+    same sender in the same room already carries that id in its metadata, the
+    original send DID land — return it so the route ACKs with the existing
+    message instead of double-posting. Scoped to (room, sender) so one user's
+    ids can never collide with — or probe — another's.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    window_start = datetime.now(timezone.utc) - timedelta(
+        seconds=_SEND_DEDUPE_WINDOW_S
+    )
+    return (
+        await db.execute(
+            select(Message)
+            .where(
+                Message.room_id == room_id,
+                Message.sender_id == sender_id,
+                Message.is_deleted == False,  # noqa: E712
+                Message.created_at >= window_start,
+                Message.metadata_["client_msg_id"].astext == client_msg_id,
+            )
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 @router.post(
     "/rooms/{room_id}/messages",
     response_model=MessageResponse,
@@ -218,6 +263,32 @@ async def send_message(
     HTTP) so it bypasses the DI-injected rate limit, which is intended.
     """
     svc = _build_message_service(db, livekit)
+
+    # Send-ACK idempotency: a retried client_msg_id whose original send DID
+    # persist (only the response was lost) is acknowledged with the existing
+    # message — and none of the side effects below (agent reply, mentions,
+    # pushes, ws broadcast) fire a second time for it. The id is stamped into
+    # metadata so (a) this lookup can find it and (b) the ws echo carries it
+    # back to the sender as a delivery acknowledgement.
+    client_msg_id = (body.client_msg_id or "").strip() or None
+    metadata = body.metadata
+    if client_msg_id:
+        existing = await _find_recent_send_by_client_msg_id(
+            db,
+            room_id=room_id,
+            sender_id=user["participant_id"],
+            client_msg_id=client_msg_id,
+        )
+        if existing is not None:
+            logger.info(
+                "message_send_deduped",
+                room_id=str(room_id),
+                message_id=str(existing.id),
+                client_msg_id=client_msg_id,
+            )
+            return _msg_to_response(existing)
+        metadata = {**(body.metadata or {}), "client_msg_id": client_msg_id}
+
     # Normalize friendly aliases to the underlying ContentType enum values.
     ct_aliases = {"action": "agent_action", "image": "text", "file": "text"}
     ct = ct_aliases.get(body.content_type, body.content_type)
@@ -226,7 +297,7 @@ async def send_message(
         sender_id=user["participant_id"],
         content=body.content,
         content_type=ct,
-        metadata=body.metadata,
+        metadata=metadata,
         parent_id=body.parent_id,
     )
 

@@ -350,6 +350,14 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     messages.length > 0 ? messages[messages.length - 1]!.id : null;
   useEffect(() => {
     if (!newestMessageId) return;
+    // Never assert "read" off an optimistic bubble: the id isn't a real
+    // message id (the server-side UUID parse would discard/choke on it), and
+    // more importantly the message it names may never be persisted — a read
+    // receipt fanning out for an unACKed send is exactly the "my message
+    // showed my own receipt yet was never saved" silent-loss symptom. Once
+    // the send is ACKed the bubble's id flips to the server id, this effect
+    // re-runs, and the mark_read fires with a real id.
+    if (newestMessageId.startsWith("optimistic-")) return;
     if (document.visibilityState !== "visible") return;
     if (!isAtBottomRef.current) return;
 
@@ -863,8 +871,13 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                       overrideModelLabel={overrideModelLabel}
                     />
                     {/* "Seen by" pill — only on the most recent OWN message that
-                        other participants have read past. Shows up to 3 avatars. */}
+                        other participants have read past. Shows up to 3 avatars.
+                        Never on an unACKed (optimistic) send: nobody can have
+                        seen a message the server hasn't confirmed persisting,
+                        and receipt timestamps landing after the bubble's local
+                        created_at would fake exactly that. */}
                     {message.sender_id === currentUser?.id &&
+                      !message.id.startsWith("optimistic-") &&
                       arrayIndex === messages.length - 1 &&
                       (() => {
                         const seers = participants.filter((p) => {

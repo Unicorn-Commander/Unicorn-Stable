@@ -25,6 +25,14 @@ class MessageCreate(BaseModel):
     # set, the text agent responder forwards it to Brigade as the underlying
     # model for this reply, overriding the persona's default. None = default.
     model: str | None = Field(default=None, max_length=128)
+    # Client-generated idempotency id for the send-ACK protocol. The server
+    # stamps it into the message's metadata (so the WS echo carries it back to
+    # the sender as an acknowledgement) and dedupes a retried send on
+    # (room, sender, client_msg_id) — a retry after a lost response returns
+    # the already-persisted message instead of double-posting. The contract:
+    # one client_msg_id == one logical message; clients must never reuse an id
+    # for different content. Optional — agent/internal/legacy senders omit it.
+    client_msg_id: str | None = Field(default=None, max_length=64)
 
 
 class MessageUpdate(BaseModel):
