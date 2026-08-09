@@ -23,6 +23,8 @@ from fastapi.routing import APIRoute
 
 from app.main import create_app
 
+_HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
+
 # (METHOD, route template) called by agents/agent_runtime/* and
 # agents/triage/agent.py — keep in lockstep with
 # agents/tests/test_tool_backend_routes.py::BACKEND_ROUTE_TEMPLATES.
@@ -51,12 +53,28 @@ class AgentToolRouteMembershipTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         app = create_app()
-        cls.mounted: set[tuple[str, str]] = {
+        # FastAPI >= 0.141 registers included routers lazily (_IncludedRouter),
+        # so app.routes no longer exposes APIRoute objects directly. The
+        # OpenAPI schema is the public, version-stable enumeration of every
+        # mounted (method, path-template) pair — and generating it forces the
+        # lazy routers to resolve. Only the health probes opt out of the
+        # schema (include_in_schema=False), and none of the agent-called
+        # routes below do.
+        mounted: set[tuple[str, str]] = {
+            (method.upper(), path)
+            for path, operations in (app.openapi().get("paths") or {}).items()
+            for method in operations
+            if method.lower() in _HTTP_METHODS
+        }
+        # Older FastAPI (< 0.141) exposes APIRoute objects directly; keep the
+        # union so the test is honest on either resolution model.
+        mounted |= {
             (method, route.path)
             for route in app.routes
             if isinstance(route, APIRoute)
             for method in route.methods
         }
+        cls.mounted = mounted
 
     def test_every_agent_called_route_is_mounted(self) -> None:
         for method, template in AGENT_CALLED_ROUTES:
