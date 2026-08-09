@@ -68,6 +68,22 @@ class AgentSettings(BaseSettings):
     rate_limit_messages_per_minute: int = 60
     rate_limit_tool_calls_per_minute: int = 30
 
+    # Browser-STT fallback ears (agent_runtime/voice_transcripts.py). The web
+    # client captions each human's local mic and publishes `transcript` data
+    # messages; when the worker's own STT plugin is silent, grouped finals are
+    # fed into AgentSession.generate_reply so the agent still hears calls.
+    voice_transcript_replies_enabled: bool = True
+    # Quiet gap that closes one grouped utterance (mid-thought pauses shorter
+    # than this do NOT produce a second reply).
+    voice_transcript_group_window_seconds: float = 1.5
+    # Extra wait before answering when our OWN STT plugin is configured, so a
+    # slow-but-alive plugin final wins the race instead of double-replying.
+    # Set to 0 to answer at the group window when STT is known dead.
+    voice_transcript_stt_grace_seconds: float = 2.0
+    # Recency window: any user_input_transcribed activity newer than this means
+    # the session's own ears work and the browser fallback stands down.
+    voice_transcript_stt_alive_seconds: float = 12.0
+
     @field_validator("log_level", mode="before")
     @classmethod
     def normalize_log_level(cls, v: str) -> str:

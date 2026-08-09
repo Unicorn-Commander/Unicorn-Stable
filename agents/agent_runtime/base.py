@@ -145,6 +145,10 @@ class StableAgent:
         self.chat.on(MessageType.CHAT, self._handle_chat_message)
         self.chat.on(MessageType.COMMAND, self._handle_command_message)
         self.chat.on(MessageType.ACTION_REQUEST, self._handle_action_request)
+        # Live captions from the browsers (Web Speech local-mic STT). The base
+        # hook is a no-op; voice-capable subclasses override on_transcript to
+        # treat human finals as conversation input (see BrigadeBackedAgent).
+        self.chat.on(MessageType.TRANSCRIPT, self._handle_transcript_message)
 
         # 3. Start stage track
         try:
@@ -236,6 +240,12 @@ class StableAgent:
     async def on_user_speech(self, text: str) -> None:
         """Called when user speech is transcribed. Override in subclasses."""
         logger.debug("on_user_speech_default", text_length=len(text))
+
+    async def on_transcript(self, message: dict[str, Any]) -> None:
+        """Called for every ``transcript`` data-channel payload (interims AND
+        finals, humans AND agents — the handler classifies). Default: ignore.
+        """
+        return None
 
     async def on_function_call(self, name: str, args: dict[str, Any]) -> Any:
         """Called when the LLM requests a function/tool call. Override in subclasses."""
@@ -337,6 +347,18 @@ class StableAgent:
             needles.add(str(brigade_id).lower())
             needles.add(str(brigade_id).replace("-", " ").lower())
         return any(f"@{n}" in lc for n in needles if n)
+
+    async def _handle_transcript_message(self, message: dict[str, Any]) -> None:
+        """Forward caption payloads to the subclass hook.
+
+        NO rate limiter here on purpose: interims arrive ~2/sec/speaker and
+        would drain the chat token bucket; the subclass applies the limiter to
+        the grouped utterances it actually answers (VoiceTranscriptResponder).
+        """
+        try:
+            await self.on_transcript(message)
+        except Exception:
+            logger.error("on_transcript_error", exc_info=True)
 
     async def _handle_command_message(self, message: dict[str, Any]) -> None:
         content = message.get("content", "")
