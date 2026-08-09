@@ -12,7 +12,7 @@ from livekit import rtc
 from livekit.agents import AgentSession, JobContext, llm, utils
 
 from agent_runtime.chat import ChatHandler, MessageType
-from agent_runtime.config import AgentSettings, get_agent_settings
+from agent_runtime.config import AgentSettings, api_path, get_agent_settings
 from agent_runtime.stage import StageTrack
 from agent_runtime.tools import ToolRegistry
 
@@ -446,35 +446,25 @@ class StableAgent:
         return self._http
 
     async def _acquire_identity(self) -> None:
-        """Request an agent identity and JWT from the Stable backend."""
-        try:
-            resp = await self._backend_http.post(
-                "/api/agents/register",
-                json={
-                    "agent_type": self.agent_type,
-                    "room_name": self._room_name,
-                },
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            self._identity = body["identity"]
-            self._agent_token = body["token"]
-            self._room_id = body.get("room_id", self._room_name)
-            logger.info(
-                "agent_identity_acquired",
-                identity=self._identity,
-                room_id=self._room_id,
-            )
-        except Exception:
-            # Fall back to a generated identity if the backend is unreachable
-            self._identity = f"agent-{self.agent_type}-{id(self) & 0xFFFF:04x}"
-            self._agent_token = ""
-            self._room_id = self._room_name
-            logger.warning(
-                "agent_identity_fallback",
-                identity=self._identity,
-                exc_info=True,
-            )
+        """Derive the agent's identity locally.
+
+        The scaffold posted to ``/api/agents/register`` here, but the backend
+        never implemented an agent-registration endpoint at any prefix — the
+        call 404'd on every agent start and production has always run on the
+        fallback branch (generated identity, empty token, room_id = LiveKit
+        room name). Keep those exact values, minus the guaranteed-dead HTTP
+        round-trip and the misleading warning it logged. If the backend ever
+        grows a real registration/token-mint surface, reintroduce the call via
+        ``api_path(...)`` so the prefix stays single-sourced.
+        """
+        self._identity = f"agent-{self.agent_type}-{id(self) & 0xFFFF:04x}"
+        self._agent_token = ""
+        self._room_id = self._room_name
+        logger.info(
+            "agent_identity_derived",
+            identity=self._identity,
+            room_id=self._room_id,
+        )
 
     async def _log_agent_event(self, event: str, data: dict[str, Any]) -> None:
         """Send an audit event to the Stable backend."""
@@ -488,7 +478,7 @@ class StableAgent:
             return
         try:
             response = await self._backend_http.post(
-                "/api/v1/internal/agent-events",
+                api_path("internal/agent-events"),
                 json={
                     "agent_identity": self._identity,
                     "agent_type": self.agent_type,

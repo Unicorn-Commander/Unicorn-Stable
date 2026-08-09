@@ -7,6 +7,24 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# The Stable backend mounts EVERY REST router under this versioned prefix
+# (server/app/main.py: ``app.include_router(..., prefix="/api/v1")``). The
+# agent runtime was originally scaffolded against an unversioned "/api/..."
+# surface that never existed, so every backend call it made 404'd. All
+# backend paths in this package MUST be built through :func:`api_path` so the
+# prefix lives in exactly one place and cannot drift per call site again.
+STABLE_API_PREFIX = "/api/v1"
+
+
+def api_path(path: str) -> str:
+    """Build a Stable backend REST path under the versioned API mount.
+
+    ``api_path("rooms")`` and ``api_path("/rooms")`` both yield
+    ``"/api/v1/rooms"``. The result is relative (no scheme/host) — pass it to
+    an ``httpx`` client whose ``base_url`` is ``stable_backend_url``.
+    """
+    return f"{STABLE_API_PREFIX}/{path.lstrip('/')}"
+
 
 class AgentSettings(BaseSettings):
     model_config = SettingsConfigDict(

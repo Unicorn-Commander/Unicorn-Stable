@@ -30,7 +30,7 @@ import httpx
 import structlog
 from livekit.agents import FunctionTool, function_tool
 
-from agent_runtime.config import get_agent_settings
+from agent_runtime.config import api_path, get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -217,12 +217,19 @@ class ToolRegistry:
     # -- built-in tools --
 
     def _register_builtin_tools(self) -> None:
-        """Register the platform-level tools every agent gets."""
+        """Register the platform-level tools every agent gets.
+
+        Every path below targets a route that actually exists on the Stable
+        backend (all mounted under ``/api/v1`` — see config.STABLE_API_PREFIX).
+        server/tests/test_agent_tool_routes.py pins these templates against the
+        real FastAPI route table; agents/tests/test_tool_backend_routes.py pins
+        the URLs these handlers emit. Keep the three in sync.
+        """
 
         @tool(name="send_message", description="Send a chat message to a room on the Stable platform")
         async def send_message(room_id: str, content: str) -> str:
             resp = await self.http.post(
-                f"/api/rooms/{room_id}/messages",
+                api_path(f"rooms/{room_id}/messages"),
                 json={"content": content},
             )
             resp.raise_for_status()
@@ -232,7 +239,7 @@ class ToolRegistry:
         @tool(name="create_room", description="Create a new room on the Stable platform")
         async def create_room(name: str, type: str) -> str:
             resp = await self.http.post(
-                "/api/rooms",
+                api_path("rooms"),
                 json={"name": name, "type": type},
             )
             resp.raise_for_status()
@@ -242,7 +249,7 @@ class ToolRegistry:
         @tool(name="invite_to_room", description="Invite a participant into a room")
         async def invite_to_room(room_id: str, participant_id: str) -> str:
             resp = await self.http.post(
-                f"/api/rooms/{room_id}/invite",
+                api_path(f"rooms/{room_id}/invite"),
                 json={"participant_id": participant_id},
             )
             resp.raise_for_status()
@@ -251,9 +258,14 @@ class ToolRegistry:
 
         @tool(name="summon_agent", description="Bring another AI agent into a room")
         async def summon_agent(agent_type: str, room_id: str) -> str:
+            # The backend's only "bring an agent into a room" surface is the
+            # Brigade invite (the scaffold-era POST /api/agents/summon was
+            # never implemented at any prefix). The route accepts the room by
+            # UUID, slug, or LiveKit name, and rejects unknown agent ids with
+            # a descriptive 404 the LLM can read back.
             resp = await self.http.post(
-                "/api/agents/summon",
-                json={"agent_type": agent_type, "room_id": room_id},
+                api_path(f"rooms/{room_id}/invite-brigade-agent"),
+                json={"brigade_agent_id": agent_type},
             )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()

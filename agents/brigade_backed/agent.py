@@ -36,7 +36,7 @@ from agent_runtime.transcript_publisher import (
     _agent_display_name,
 )
 from agent_runtime.brigade_llm import build_brigade_llm
-from agent_runtime.config import AgentSettings, get_agent_settings
+from agent_runtime.config import AgentSettings, api_path, get_agent_settings
 from agent_runtime.voice_transcripts import VoiceTranscriptResponder
 
 logger = structlog.get_logger(__name__)
@@ -250,7 +250,7 @@ class BrigadeBackedAgent(StableAgent):
                 timeout=httpx.Timeout(30.0, connect=5.0),
             ) as http:
                 resp = await http.post(
-                    "/api/v1/internal/agent-messages",
+                    api_path("internal/agent-messages"),
                     headers={"Authorization": f"Bearer {secret}"},
                     json={
                         "livekit_room_name": self._room_name,
@@ -283,7 +283,7 @@ class BrigadeBackedAgent(StableAgent):
                 timeout=httpx.Timeout(15.0, connect=5.0),
             ) as http:
                 resp = await http.patch(
-                    f"/api/v1/internal/agent-messages/{message_id}",
+                    api_path(f"internal/agent-messages/{message_id}"),
                     headers={"Authorization": f"Bearer {secret}"},
                     json={"content": content, "finalize": finalize},
                 )
@@ -307,7 +307,7 @@ class BrigadeBackedAgent(StableAgent):
                 timeout=httpx.Timeout(10.0, connect=5.0),
             ) as http:
                 await http.post(
-                    "/api/v1/internal/agent-typing",
+                    api_path("internal/agent-typing"),
                     headers={"Authorization": f"Bearer {secret}"},
                     json={
                         "livekit_room_name": self._room_name,
@@ -389,11 +389,13 @@ class BrigadeBackedAgent(StableAgent):
             _http = getattr(self.tools, "http", None)
             if _rid and _http is not None:
                 _resp = await _http.get(
-                    f"/api/rooms/{_rid}/messages",
-                    params={"limit": "20", "order": "desc"},
+                    api_path(f"rooms/{_rid}/messages"),
+                    params={"limit": "20"},
                 )
                 _resp.raise_for_status()
-                _rows = _resp.json() or []
+                # MessageListResponse: {"messages": [...], ...}, newest first.
+                _body = _resp.json() or {}
+                _rows = _body.get("messages", []) if isinstance(_body, dict) else []
                 if isinstance(_rows, list) and _rows:
                     _seed = _ChatContext()
                     _n = 0
@@ -401,7 +403,9 @@ class BrigadeBackedAgent(StableAgent):
                         _text = (_m.get("content") or "").strip()
                         if not _text or _text == "\u2026":
                             continue
-                        if _m.get("content_type") == "action":
+                        # The wire value is "agent_action" ("action" is only
+                        # the request-side alias the backend normalizes).
+                        if _m.get("content_type") in ("action", "agent_action"):
                             continue
                         _role = (
                             "assistant"
