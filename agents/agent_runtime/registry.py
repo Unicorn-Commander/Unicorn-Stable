@@ -10,7 +10,7 @@ import structlog
 from livekit.agents import JobContext, JobRequest
 
 from agent_runtime.base import StableAgent
-from agent_runtime.config import AgentSettings, get_agent_settings
+from agent_runtime.config import AgentSettings, api_path, get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -266,9 +266,13 @@ class AgentRegistry:
         return agent_type
 
     async def _load_remote_configs(self) -> None:
-        """Fetch agent configurations from the Stable backend."""
+        """Fetch agent configurations from the Stable backend.
+
+        GET /api/v1/agents is the backend's agent-config listing (the
+        scaffold-era /api/agents/configs endpoint never existed).
+        """
         try:
-            resp = await self.http.get("/api/agents/configs")
+            resp = await self.http.get(api_path("agents"))
             resp.raise_for_status()
             configs: list[dict[str, Any]] = resp.json()
             logger.info("registry_configs_loaded", count=len(configs))

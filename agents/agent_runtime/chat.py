@@ -10,6 +10,8 @@ from typing import Any, Callable, Coroutine
 import httpx
 import structlog
 
+from agent_runtime.config import api_path
+
 logger = structlog.get_logger(__name__)
 
 
@@ -247,8 +249,11 @@ class ChatHandler:
         """Store the message in the Stable backend for history / audit."""
         try:
             resp = await self.http.post(
-                f"/api/rooms/{self._room_id}/messages",
-                json={"content": content, "sender": self._agent_identity},
+                api_path(f"rooms/{self._room_id}/messages"),
+                json={
+                    "content": content,
+                    "metadata": {"agent_identity": self._agent_identity},
+                },
             )
             resp.raise_for_status()
         except Exception:

@@ -45,7 +45,7 @@ import httpx
 import structlog
 from livekit import rtc
 
-from agent_runtime.config import get_agent_settings
+from agent_runtime.config import api_path, get_agent_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -454,7 +454,7 @@ class VoiceHistoryPersister:
                 linked,
             )
             self._fire(
-                "/api/v1/internal/voice-user-message",
+                api_path("internal/voice-user-message"),
                 {
                     "livekit_room_name": self._lk_room_name,
                     "speaker_identity": identity,
@@ -474,7 +474,7 @@ class VoiceHistoryPersister:
             if not text:
                 return
             self._fire(
-                "/api/v1/internal/agent-messages",
+                api_path("internal/agent-messages"),
                 {
                     "livekit_room_name": self._lk_room_name,
                     "brigade_agent_id": self._brigade_agent_id,
@@ -498,7 +498,7 @@ class VoiceHistoryPersister:
             if not content or not speaker_identity:
                 return
             self._fire(
-                "/api/v1/internal/voice-user-message",
+                api_path("internal/voice-user-message"),
                 {
                     "livekit_room_name": self._lk_room_name,
                     "speaker_identity": speaker_identity,

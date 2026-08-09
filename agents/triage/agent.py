@@ -20,7 +20,7 @@ import structlog
 from livekit.agents import Agent, AgentSession, JobContext
 
 from agent_runtime.base import StableAgent
-from agent_runtime.config import AgentSettings
+from agent_runtime.config import AgentSettings, api_path
 from agent_runtime.tools import tool
 
 logger = structlog.get_logger(__name__)
@@ -213,7 +213,14 @@ class TriageAgent(StableAgent):
         )
 
     def _register_triage_tools(self) -> None:
-        """Register triage-specific tools on top of the built-in platform tools."""
+        """Register triage-specific tools on top of the built-in platform tools.
+
+        Every path targets a real backend route under ``/api/v1`` (the
+        scaffold-era ``/api/integrations/*`` and ``/api/rooms/{id}/status``
+        endpoints never existed at any prefix). The route templates are pinned
+        by server/tests/test_agent_tool_routes.py and the emitted URLs by
+        agents/tests/test_tool_backend_routes.py.
+        """
 
         @tool(
             name="summarize_conversation",
@@ -221,32 +228,58 @@ class TriageAgent(StableAgent):
         )
         async def summarize_conversation(room_id: str) -> str:
             resp = await self.tools.http.get(
-                f"/api/rooms/{room_id}/messages",
-                params={"limit": "50", "order": "desc"},
+                api_path(f"rooms/{room_id}/messages"),
+                params={"limit": "50"},
             )
             resp.raise_for_status()
-            messages: list[dict[str, Any]] = resp.json()
+            # MessageListResponse: {"messages": [...], "cursor": ..., "has_more": ...},
+            # newest first.
+            messages: list[dict[str, Any]] = (resp.json() or {}).get("messages", [])
             if not messages:
                 return "No recent messages to summarize."
 
             text_block = "\n".join(
-                f"{m.get('sender', 'unknown')}: {m.get('content', '')}"
+                f"{m.get('sender_name') or 'unknown'}: {m.get('content', '')}"
                 for m in reversed(messages)
             )
             return f"Recent conversation ({len(messages)} messages):\n{text_block}"
 
         @tool(
             name="create_ticket",
-            description="Create a ticket or task in Project-Ops for tracking work",
+            description=(
+                "Create a task in Project-Ops for tracking work. Requires the "
+                "Project-Ops project number (e.g. P-00042) the task belongs to."
+            ),
         )
-        async def create_ticket(title: str, description: str, priority: str) -> str:
-            resp = await self.tools.http.post(
-                "/api/integrations/project-ops/tickets",
+        async def create_ticket(
+            title: str, description: str, priority: str, project_number: str
+        ) -> str:
+            # The backend's Project-Ops federation is message-anchored: a
+            # Stable message is promoted into a PO task. Post the ticket text
+            # into this room, then promote that message.
+            msg_resp = await self.tools.http.post(
+                api_path(f"rooms/{self._room_id}/messages"),
                 json={
+                    "content": f"Ticket: {title}\n\n{description}",
+                    "content_type": "text",
+                    "metadata": {"source": "triage-agent", "kind": "ticket"},
+                },
+            )
+            msg_resp.raise_for_status()
+            message_id = (msg_resp.json() or {}).get("id")
+            if not message_id:
+                return "Ticket message was created but no message id was returned."
+
+            normalized_priority = priority.upper()
+            if normalized_priority not in {"LOW", "MEDIUM", "HIGH", "URGENT"}:
+                normalized_priority = "MEDIUM"
+            resp = await self.tools.http.post(
+                api_path(f"messages/{message_id}/promote-to-po-task"),
+                json={
+                    "project_number": project_number,
                     "title": title,
                     "description": description,
-                    "priority": priority,
-                    "source": "triage-agent",
+                    "priority": normalized_priority,
                 },
             )
             resp.raise_for_status()
@@ -254,19 +287,36 @@ class TriageAgent(StableAgent):
 
         @tool(
             name="lookup_info",
-            description="Look up information in Center Deep knowledge base",
+            description="Look up information in the knowledge bases attached to this room",
         )
         async def lookup_info(query: str) -> str:
+            # Internal agent surface — authenticated with the shared internal
+            # bearer, not the per-room agent token the registry client carries.
+            secret = (
+                self._settings.internal_agent_secret
+                or self._settings.livekit_api_secret
+            )
             resp = await self.tools.http.post(
-                "/api/integrations/center-deep/search",
-                json={"query": query, "limit": 5},
+                api_path("internal/knowledge/search"),
+                json={
+                    "livekit_room_name": self._room_name,
+                    "brigade_agent_id": self.brigade_agent_id or self.agent_type,
+                    "query": query,
+                    "k": 5,
+                },
+                headers={"Authorization": f"Bearer {secret}"},
             )
             resp.raise_for_status()
-            results: list[dict[str, Any]] = resp.json().get("results", [])
+            body: dict[str, Any] = resp.json() or {}
+            if body.get("status") != "ok":
+                return body.get("notice") or (
+                    "The knowledge base could not be searched right now."
+                )
+            results: list[dict[str, Any]] = body.get("results", [])
             if not results:
                 return f"No results found for: {query}"
             formatted = "\n".join(
-                f"- {r.get('title', 'Untitled')}: {r.get('snippet', '')}"
+                f"- {r.get('filename', 'Untitled')}: {r.get('text', '')}"
                 for r in results
             )
             return f"Found {len(results)} results:\n{formatted}"
@@ -286,9 +336,15 @@ class TriageAgent(StableAgent):
             description="Post a status update visible to the room and logged to the backend",
         )
         async def post_status_update(room_id: str, status: str) -> str:
+            # There is no dedicated status endpoint on the backend; a status
+            # update IS a room message (persisted + broadcast like any other).
             resp = await self.tools.http.post(
-                f"/api/rooms/{room_id}/status",
-                json={"status": status, "source": "triage-agent"},
+                api_path(f"rooms/{room_id}/messages"),
+                json={
+                    "content": f"Status update: {status}",
+                    "content_type": "text",
+                    "metadata": {"source": "triage-agent", "kind": "status_update"},
+                },
             )
             resp.raise_for_status()
             if self.chat is not None:
