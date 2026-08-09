@@ -11,16 +11,22 @@
  * ---------------
  * A three-rung ladder, best first — see `mountBest`:
  *
- *   1. `vrmSrc` set                → the real rigged model, mouth driven through
- *      the rig's own viseme/ARKit morph. Nothing authored yet.
- *   2. `portraitSrc` WITH A RIG    → the 2D portrait puppet. This is the best
- *      rung available today, because the approved portraits already carry the
- *      costume — Majik's hood, Gunny's campaign hat — which is what actually
- *      identifies an agent at call-tile size. See portraitPuppet.ts.
+ *   1. an AUTHORED puppet rig      → the BRANDED 2D portrait puppet. Aaron's
+ *      call (2026-08-08): the branded talking puppet IS the call face — the
+ *      approved portraits carry the costume (Majik's hood, Gunny's campaign
+ *      hat), which is what identifies an agent at call-tile size. It outranks
+ *      a VRM: a generic rigged model must never replace our own character.
+ *      See portraitPuppet.ts.
+ *   2. `vrmSrc` set                → a rigged model, mouth driven through the
+ *      rig's own viseme/ARKit morph — the fallback for agents with no puppet.
+ *      (No brand VRM has been authored yet; the pack is empty.)
  *   3. otherwise                   → the PROCEDURAL head, built from primitives
- *      at runtime. Ours, and on-style, but one skull for everybody.
+ *      at runtime. Ours, and on-style, but one skull for everybody. Only
+ *      mounted when `allowGenericFace` (the talking-face flag) — a tile that
+ *      reached this rung purely on the strength of its branded puppet falls
+ *      back to the 2D branded portrait instead (via `onFail`).
  *
- * Rung 2 is gated on an AUTHORED rig, not on merely having a portrait: most
+ * Rung 1 is gated on an AUTHORED rig, not on merely having a portrait: most
  * agents' art is a neon logo emblem, and the default mouth position against a
  * crest opens a black hole in the middle of a logo.
  *
@@ -107,12 +113,19 @@ export interface VrmAvatarProps {
   participantId: string;
   slug: string;
   name: string;
-  /** Model URL, or null → try the portrait puppet, then the procedural head. */
+  /** Model URL, or null → the branded puppet, then the procedural head. */
   vrmSrc: string | null;
   size: number;
   expression?: PresenceExpression;
   isSpeaking?: boolean;
   debug?: boolean;
+  /**
+   * May this tile mount the GENERIC faces (VRM without a puppet, procedural
+   * head)? True under the talking-face flag; false when the tile reached the
+   * face rung purely on its branded puppet — then a puppet failure steps DOWN
+   * to the 2D branded portrait instead of showing a generic head.
+   */
+  allowGenericFace?: boolean;
   /** Step DOWN the ladder. Called once, with a reason, and never retried. */
   onFail: (reason: string) => void;
 }
@@ -253,6 +266,7 @@ export function VrmAvatar({
   expression = "idle",
   isSpeaking = false,
   debug = false,
+  allowGenericFace = true,
   onFail,
 }: VrmAvatarProps) {
   const { remoteParticipants, version } = useVoice();
@@ -484,22 +498,15 @@ export function VrmAvatar({
     const puppetSpec = puppetForAgent(slug, name);
 
     /**
-     * The ladder, best first. Each rung records why it failed and falls to the
-     * next; `mountPlaceholder` is the floor and cannot fail, so no branch of
-     * this can leave the tile without a face.
+     * The ladder, best first: BRANDED PUPPET → VRM → procedural. Each rung
+     * records why it failed and falls to the next. The branded puppet outranks
+     * a VRM by direction (2026-08-08): our characters' approved artwork is the
+     * call face; a generic model is the stand-in, never the other way around.
+     * The floor depends on `allowGenericFace`: with the flag on, the
+     * procedural head (cannot fail); with it off, `onFail` steps the tile
+     * down to the branded 2D portrait rung instead.
      */
     const mountBest = async () => {
-      if (vrmSrc) {
-        try {
-          await mountVrm(vrmSrc);
-          return;
-        } catch (e) {
-          if (disposed) return;
-          const why = e instanceof Error ? e.message : String(e);
-          console.warn(`[talking-face] model load failed (${vrmSrc}): ${why}`);
-          probeError = why;
-        }
-      }
       if (puppetSpec) {
         try {
           await mountPuppet(puppetSpec);
@@ -508,18 +515,43 @@ export function VrmAvatar({
           if (disposed) return;
           const why = e instanceof Error ? e.message : String(e);
           console.warn(`[talking-face] puppet failed (${puppetSpec.texture}): ${why}`);
+          probeError = why;
+        }
+      }
+      if (vrmSrc) {
+        try {
+          await mountVrm(vrmSrc);
+          return;
+        } catch (e) {
+          if (disposed) return;
+          const why = e instanceof Error ? e.message : String(e);
+          console.warn(`[talking-face] model load failed (${vrmSrc}): ${why}`);
           probeError ??= why;
         }
       }
-      if (!disposed) mountPlaceholder();
+      if (disposed) return;
+      if (allowGenericFace) {
+        mountPlaceholder();
+      } else {
+        onFailRef.current(
+          probeError
+            ? `branded puppet failed (${probeError}) and generic faces are not enabled`
+            : "no branded face assets and generic faces are not enabled",
+        );
+      }
     };
 
     if (vrmSrc || puppetSpec) {
       void mountBest().finally(() => hostWindow.clearTimeout(timeout));
-    } else {
+    } else if (allowGenericFace) {
       // Nothing to load — mount synchronously so the tile is never briefly bare.
       hostWindow.clearTimeout(timeout);
       mountPlaceholder();
+    } else {
+      // Shouldn't be reachable (the rung requires a puppet when the flag is
+      // off) — but if it is, step down rather than render a generic head.
+      hostWindow.clearTimeout(timeout);
+      onFailRef.current("no branded face assets and generic faces are not enabled");
     }
 
     /* ---- sizing ----------------------------------------------------- */
@@ -695,7 +727,7 @@ export function VrmAvatar({
     hostWindow.addEventListener("pagehide", dispose);
 
     return dispose;
-  }, [participantId, slug, name, vrmSrc, debug]);
+  }, [participantId, slug, name, vrmSrc, debug, allowGenericFace]);
 
   return (
     <div

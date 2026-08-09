@@ -18,6 +18,11 @@ class MessageType(StrEnum):
     COMMAND = "command"
     ACTION_REQUEST = "action_request"
     ACTION_RESPONSE = "action_response"
+    # Live-caption lines published by every human browser (Web Speech local-mic
+    # captions) and by agent workers, on the shared "stable" data topic. See
+    # web/src/lib/roomDataProtocol.ts TranscriptMessage — interims arrive ~2/sec
+    # per speaker, so handlers must treat this as a firehose, not as chat.
+    TRANSCRIPT = "transcript"
 
 
 # Map external/server-side wire types onto our internal MessageType.
@@ -35,6 +40,12 @@ _IGNORED_TYPES: set[str] = {
     "pins_changed",
     "reaction",
     "message_deleted",
+    # Web ↔ agent UI seam + canvas events on the same "stable" topic
+    # (roomDataProtocol.ts). ui_command is agent→UI; artifact events are
+    # server→canvas (the server double-tags them with a legacy `type` key).
+    "ui_command",
+    "artifact_created",
+    "artifact_updated",
 }
 
 
@@ -290,12 +301,21 @@ class ChatHandler:
                 return
             msg_type = mapped
 
-        logger.info(
-            "chat_received",
-            msg_type=msg_type,
-            sender=sender,
-            content_preview=str(parsed.get("content", ""))[:80],
-        )
+        if msg_type is MessageType.TRANSCRIPT:
+            # Caption firehose (interims ~2/sec/speaker): debug, never info —
+            # the info line below would be the log flood all over again.
+            logger.debug(
+                "transcript_received",
+                participant=parsed.get("participantId"),
+                is_final=parsed.get("isFinal"),
+            )
+        else:
+            logger.info(
+                "chat_received",
+                msg_type=msg_type,
+                sender=sender,
+                content_preview=str(parsed.get("content", ""))[:80],
+            )
 
         for handler in self._handlers[msg_type]:
             try:

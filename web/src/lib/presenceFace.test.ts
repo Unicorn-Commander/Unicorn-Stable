@@ -4,6 +4,8 @@ import {
   isAgentIdentity,
   isVrmSurfaceEligible,
   mapAgentState,
+  puppetAvailableFor,
+  resolveCallTilePersona,
   selectFallbackRung,
   selectPresenceRung,
   unicornStateFor,
@@ -139,6 +141,94 @@ describe("selectPresenceRung — the fallback ladder", () => {
     // No brand VRM exists yet. If this ever requires a vrmSrc, the flag-on path
     // silently degrades to a static portrait and nobody's mouth moves.
     expect(selectPresenceRung(input({ vrmSrc: null }))).toBe("face");
+  });
+});
+
+describe("selectPresenceRung — the branded puppet is shipped product", () => {
+  it("a branded puppet reaches the face rung with the flag OFF", () => {
+    // Aaron's direction: the branded 2D talking puppet IS the call face —
+    // it must not hide behind the experimental talking-face flag.
+    expect(
+      selectPresenceRung(input({ flagEnabled: false, puppetAvailable: true })),
+    ).toBe("face");
+  });
+
+  it("no puppet + flag off stays exactly the shipped 2D behavior", () => {
+    expect(
+      selectPresenceRung(input({ flagEnabled: false, puppetAvailable: false })),
+    ).toBe("portrait");
+    expect(selectPresenceRung(input({ flagEnabled: false }))).toBe("portrait");
+  });
+
+  it("the puppet still respects surface/webgl/health gates", () => {
+    const base = { flagEnabled: false, puppetAvailable: true } as const;
+    expect(
+      selectPresenceRung(input({ ...base, surface: "filmstrip" })),
+    ).toBe("portrait");
+    expect(selectPresenceRung(input({ ...base, webglOk: false }))).toBe(
+      "portrait",
+    );
+    expect(selectPresenceRung(input({ ...base, faceHealthy: false }))).toBe(
+      "portrait",
+    );
+  });
+});
+
+describe("puppetAvailableFor", () => {
+  it("knows the authored characters and rejects the rest", () => {
+    expect(puppetAvailableFor("majik", "Majik")).toBe(true);
+    expect(puppetAvailableFor("gunny", null)).toBe(true);
+    expect(puppetAvailableFor("brigade", "stable-brigade")).toBe(false);
+    expect(puppetAvailableFor(null, null)).toBe(false);
+  });
+});
+
+describe("resolveCallTilePersona", () => {
+  it("keeps a persona-shaped identity that resolves art", () => {
+    expect(resolveCallTilePersona("agent-majik", "Majik", "gunny")).toEqual({
+      slug: "majik",
+      name: "Majik",
+    });
+  });
+
+  it("falls back to the room's brigade agent for a TYPE-shaped identity", () => {
+    // THE dogfood-verified bug: the worker joins as `stable-brigade` /
+    // `agent-brigade`, which names no character, so Majik rendered as the
+    // generic 2D unicorn on every call.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", "majik"),
+    ).toEqual({ slug: "majik", name: "Majik" });
+    expect(
+      resolveCallTilePersona("stable-brigade", "stable-brigade", "majik"),
+    ).toEqual({ slug: "majik", name: "Majik" });
+  });
+
+  it("derives the canonical display name for multi-word brigade ids", () => {
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", "corporal-qwen")
+        .name,
+    ).toBe("Corporal Qwen");
+  });
+
+  it("leaves the tile alone when nobody has art anywhere", () => {
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", "sgt-nowhere"),
+    ).toEqual({ slug: "brigade", name: "stable-brigade" });
+    expect(resolveCallTilePersona("agent-brigade", "stable-brigade", null)).toEqual(
+      { slug: "brigade", name: "stable-brigade" },
+    );
+  });
+
+  it("resolves display-name art even when the identity is opaque", () => {
+    // The roster sometimes carries the persona in the NAME only.
+    expect(
+      resolveCallTilePersona("agent-b7f2", "Corporal Qwen", null).slug,
+    ).toBe("b7f2");
+    // …but the art still resolves via the name in brandAvatarFor, so the
+    // tile keeps its own slug/name pair (art lookups take both).
+    expect(
+      resolveCallTilePersona("agent-b7f2", "Corporal Qwen", null).name,
+    ).toBe("Corporal Qwen");
   });
 });
 

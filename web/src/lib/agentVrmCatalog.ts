@@ -4,11 +4,14 @@
  * ⚠️ THE PACK IS EMPTY, AND THAT IS THE HONEST STATE OF THE ART PIPELINE.
  * No brand VRM has been authored yet — not for Majik, not for anyone. Until one
  * lands, `resolveAgentVrmUrl` returns null for every agent and the face rung
- * renders the PROCEDURAL head (see proceduralUnicornHead.ts). That head is now
- * drawn to the same rules as the approved portraits — white coat, black ink,
- * gold ridged horn, rainbow mane for Majik — so it is our character rather than
- * a stand-in. What it is NOT is a sculpted rig: no per-agent costume, no
- * visemes, no body. A crafted .vrm still wins the moment one exists.
+ * renders the BRANDED 2D PUPPET when one is authored (puppetRig.ts — the
+ * preferred call face by direction, 2026-08-08), else the PROCEDURAL head
+ * (proceduralUnicornHead.ts). That head is drawn to the same rules as the
+ * approved portraits — white coat, black ink, gold ridged horn, rainbow mane
+ * for Majik — so it is our character rather than a stand-in. What it is NOT is
+ * a sculpted rig: no per-agent costume, no visemes, no body. NOTE: a .vrm now
+ * mounts only for agents WITHOUT an authored puppet (VrmAvatar mounts the
+ * branded puppet first) — the branded artwork outranks a generic model.
  *
  * Adding the first real skin is a one-line change here plus the asset in
  * `web/public/agent-vrm/`:

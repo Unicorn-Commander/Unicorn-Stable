@@ -37,6 +37,7 @@ from agent_runtime.transcript_publisher import (
 )
 from agent_runtime.brigade_llm import build_brigade_llm
 from agent_runtime.config import AgentSettings, get_agent_settings
+from agent_runtime.voice_transcripts import VoiceTranscriptResponder
 
 logger = structlog.get_logger(__name__)
 
@@ -98,6 +99,7 @@ class BrigadeBackedAgent(StableAgent):
         self._lk_agent: Agent | None = None
         self._transcript: TranscriptPublisher | None = None
         self._voice_history: VoiceHistoryPersister | None = None
+        self._voice_responder: VoiceTranscriptResponder | None = None
 
     async def on_message(self, message: dict[str, Any]) -> None:
         """Reply to a chat by streaming from Brigade and posting incrementally.
@@ -208,6 +210,29 @@ class BrigadeBackedAgent(StableAgent):
             agent_id=self._brigade_agent_id,
             chars=len(accumulated),
         )
+
+    async def on_transcript(self, message: dict[str, Any]) -> None:
+        """Feed browser-STT caption payloads to the fallback responder.
+
+        The responder classifies (interim/agent/dup) and groups; only grouped
+        HUMAN finals can become replies, and only when the session's own STT
+        is silent. No responder (voice-only wiring failed, or replies disabled
+        via VOICE_TRANSCRIPT_REPLIES_ENABLED) → captions stay display-only.
+        """
+        responder = self._voice_responder
+        if responder is None:
+            return
+        await responder.on_transcript(message)
+
+    async def _shutdown_steps(self) -> None:
+        responder = self._voice_responder
+        self._voice_responder = None
+        if responder is not None:
+            try:
+                await responder.aclose()
+            except Exception:
+                logger.debug("voice_responder_close_failed", exc_info=True)
+        await super()._shutdown_steps()
 
     async def _post_chat_message(self, content: str) -> str | None:
         """Persist a reply via the internal agent-messages endpoint.
@@ -485,6 +510,54 @@ class BrigadeBackedAgent(StableAgent):
             )
         except Exception:
             logger.warning("voice_history_persister_wire_failed", exc_info=True)
+
+        # --- Browser-STT fallback ears (fix for the mute-agent call) ---
+        # The web publishes each human's local-mic captions as `transcript`
+        # data messages. When our own STT plugin is silent (unloaded, or its
+        # endpoint is down), those finals are the ONLY record of what the human
+        # said — group them and answer through the SAME session pipeline
+        # (generate_reply → Brigade LLM → TTS → captions → history). Fail-safe:
+        # a wiring error leaves voice exactly as it was before this feature.
+        try:
+            if cfg.voice_transcript_replies_enabled:
+                responder_identity = (
+                    getattr(
+                        getattr(ctx.room, "local_participant", None),
+                        "identity",
+                        "",
+                    )
+                    or self.identity
+                    or f"agent-{brigade_agent_id}"
+                )
+                history = self._voice_history
+                self._voice_responder = VoiceTranscriptResponder(
+                    session=session,
+                    room=ctx.room,
+                    agent_identity=responder_identity,
+                    brigade_agent_id=brigade_agent_id,
+                    agent_type=self.agent_type,
+                    stt_configured=stt_plugin is not None,
+                    group_window=cfg.voice_transcript_group_window_seconds,
+                    stt_grace=cfg.voice_transcript_stt_grace_seconds,
+                    stt_alive_window=cfg.voice_transcript_stt_alive_seconds,
+                    persist_user_utterance=(
+                        history.persist_user_utterance if history else None
+                    ),
+                    acquire_rate_slot=self._msg_limiter.acquire,
+                )
+                # Any session STT activity (interim or final) stands the
+                # fallback down — the session is hearing and will reply itself.
+                session.on(
+                    "user_input_transcribed",
+                    self._voice_responder.note_agent_stt_activity,
+                )
+                logger.info(
+                    "voice_transcript_responder_wired",
+                    agent_identity=responder_identity,
+                    stt_configured=stt_plugin is not None,
+                )
+        except Exception:
+            logger.warning("voice_transcript_responder_wire_failed", exc_info=True)
 
         # Shim: provide start(room) the way the old VoicePipelineAgent did, so
         # base.py's existing `self._pipeline.start(ctx.room)` call works.
