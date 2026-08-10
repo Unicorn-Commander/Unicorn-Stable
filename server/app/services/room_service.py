@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -42,6 +45,108 @@ def dm_room_slug(pair_key: str) -> str:
     """Deterministic internal room name for a human DM pair (≤100 chars)."""
     left, right = pair_key.split(":", 1)
     return f"dm-{left}-{right}"
+
+
+def group_slug_base(display_name: str) -> str:
+    """Internal slug candidate for a group DM, derived from its label.
+
+    Mirrors the client's createRoom slugification (lowercase, runs of
+    non-alphanumerics collapse to ``-``) so server-minted group rooms look like
+    the ones CreateDmModal has been minting all along. Collisions are fine —
+    create paths uniquify with a hex suffix.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")[:80]
+    return slug or "group"
+
+
+def group_display_name(labels: Sequence[str]) -> str:
+    """Default group-DM label: ``Group: `` + first three member names.
+
+    Same formula CreateDmModal uses when a user assembles a group by hand, so
+    a group started FROM a DM is named exactly like one started from scratch.
+    """
+    parts = [l.strip() for l in labels if l and l.strip()][:3]
+    return "Group: " + ", ".join(parts) if parts else "Group chat"
+
+
+@dataclass(frozen=True)
+class GroupSeed:
+    """Pure composition plan for converting a 1:1 DM into a NEW group room.
+
+    ``member_ids``            — every participant to write a member row for, in
+                                order (source members first, then extras),
+                                deduplicated.
+    ``agent_ids_to_create``   — brigade agent ids that need a Participant/member
+                                bound because they are NOT already resident in
+                                the source DM.
+    ``canonical_agent_id``    — who answers by default in the new room
+                                (metadata.brigade_agent_id). Last-invited wins,
+                                matching the existing multi-agent convention:
+                                the last NEW selection, else the source DM's
+                                resident agent.
+    ``metadata``              — the new room's server-owned metadata, including
+                                ``origin_dm_id`` (provenance) and a carried
+                                ``model_override`` so the conversation keeps
+                                speaking through the model the DM had picked.
+    """
+
+    member_ids: tuple[str, ...]
+    agent_ids_to_create: tuple[str, ...]
+    canonical_agent_id: str | None
+    metadata: dict[str, Any]
+
+
+def compose_group_seed(
+    source_room_id: str,
+    source_member_ids: Sequence[str],
+    source_agent_ids: Sequence[str],
+    source_metadata: Mapping[str, Any] | None,
+    extra_participant_ids: Sequence[str],
+    new_agent_ids: Sequence[str],
+) -> GroupSeed:
+    """Decide exactly who seeds the new group room (pure — no I/O).
+
+    The source DM's members are the non-negotiable core: BOTH sides of the
+    1:1 (plus any resident agent member rows) come along, then the extra
+    selections. The source room itself is never touched.
+    """
+    meta = dict(source_metadata or {})
+
+    member_ids: list[str] = []
+    seen: set[str] = set()
+    for pid in [*source_member_ids, *extra_participant_ids]:
+        key = str(pid)
+        if key in seen:
+            continue
+        seen.add(key)
+        member_ids.append(key)
+
+    resident = {str(a) for a in source_agent_ids}
+    to_create: list[str] = []
+    for agent_id in new_agent_ids:
+        aid = str(agent_id)
+        if aid in resident or aid in to_create:
+            continue
+        to_create.append(aid)
+
+    # Last-invited wins — computed over the RAW selection order (before the
+    # resident-dedup) so re-picking the resident agent keeps it canonical.
+    canonical: str | None = (
+        str(new_agent_ids[-1]) if new_agent_ids else None
+    ) or (str(meta["brigade_agent_id"]) if meta.get("brigade_agent_id") else None)
+
+    new_meta: dict[str, Any] = {"origin_dm_id": str(source_room_id)}
+    if canonical:
+        new_meta["brigade_agent_id"] = canonical
+    if meta.get("model_override"):
+        new_meta["model_override"] = meta["model_override"]
+
+    return GroupSeed(
+        member_ids=tuple(member_ids),
+        agent_ids_to_create=tuple(to_create),
+        canonical_agent_id=canonical,
+        metadata=new_meta,
+    )
 
 
 class RoomService:
@@ -292,6 +397,234 @@ class RoomService:
             target=str(target_id),
         )
         return room, True
+
+    async def start_group_from_dm(
+        self,
+        source_room_id: uuid.UUID,
+        caller_id: uuid.UUID | str,
+        extra_participant_ids: Sequence[uuid.UUID] = (),
+        new_agent_ids: Sequence[str] = (),
+        agent_names: Mapping[str, str] | None = None,
+        display_name: str | None = None,
+        org_id: str | None = None,
+    ) -> Room:
+        """Start a NEW group DM seeded from an existing 1:1 DM.
+
+        The explicit "start a group with <peer>" conversion: the new
+        ``group_dm`` contains BOTH sides of the source DM (including any
+        resident agent's member row), plus ``extra_participant_ids`` (humans)
+        and ``new_agent_ids`` (brigade agents). The source DM is NEVER
+        mutated — its history stays private to its two members.
+
+        Atomicity: the room row and EVERY membership (both DM principals,
+        extras, and agent participants) commit in one transaction, mirroring
+        ensure_human_dm's invariant — we never mint a group that claims the
+        peer is in it without the peer actually being in it. Only the LiveKit
+        media room is created beforehand (an orphaned empty LiveKit room is
+        harmless; a half-seeded Stable room is a lie).
+
+        ``new_agent_ids`` must already be validated against Brigade by the
+        caller (the API layer does), exactly like invite-brigade-agent.
+        ``agent_names`` maps those ids to display names for participant rows
+        created here; avatar backfill happens post-commit via the existing
+        _ensure_agent_member path.
+        """
+        source = (
+            await self._db.execute(
+                select(Room).where(Room.id == source_room_id)
+            )
+        ).scalar_one_or_none()
+        if source is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Room not found",
+            )
+        if source.room_type != RoomType.DM:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only a 1:1 DM can be turned into a group",
+            )
+
+        member_rows = (
+            await self._db.execute(
+                select(RoomMember, Participant)
+                .join(Participant, Participant.id == RoomMember.participant_id)
+                .where(RoomMember.room_id == source.id)
+                .order_by(RoomMember.joined_at.asc())
+            )
+        ).all()
+        if not any(
+            str(p.id) == str(caller_id) for _m, p in member_rows
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You must be a member of this DM to start a group from it",
+            )
+
+        # Validate the extra humans BEFORE creating anything: all-or-nothing,
+        # so a stale pick fails the whole call cleanly instead of minting a
+        # group missing someone it claims to include.
+        extras: list[Participant] = []
+        if extra_participant_ids:
+            found = (
+                await self._db.execute(
+                    select(Participant).where(
+                        Participant.id.in_(list(extra_participant_ids))
+                    )
+                )
+            ).scalars().all()
+            by_id = {str(p.id): p for p in found}
+            for pid in extra_participant_ids:
+                target = by_id.get(str(pid))
+                if target is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"User not found: {pid}",
+                    )
+                if target.participant_type != ParticipantType.HUMAN:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Agents are added via agent_ids, not participant_ids",
+                    )
+                extras.append(target)
+
+        source_agent_ids = [
+            p.keycloak_sub[len("brigade:"):]
+            for _m, p in member_rows
+            if p.participant_type == ParticipantType.AGENT
+            and (p.keycloak_sub or "").startswith("brigade:")
+        ]
+        seed = compose_group_seed(
+            source_room_id=str(source.id),
+            source_member_ids=[str(p.id) for _m, p in member_rows],
+            source_agent_ids=source_agent_ids,
+            source_metadata=source.metadata_,
+            extra_participant_ids=[str(pid) for pid in extra_participant_ids],
+            new_agent_ids=[str(a) for a in new_agent_ids],
+        )
+
+        # Default label = the same "Group: A, B, C" formula CreateDmModal uses,
+        # over everyone who ISN'T the caller: DM peers first, then extras, then
+        # agents. Clients normally pass their own computed label.
+        names = dict(agent_names or {})
+        label = (display_name or "").strip()[:255]
+        if not label:
+            labels = [
+                (p.display_name or p.username or "")
+                for _m, p in member_rows
+                if str(p.id) != str(caller_id)
+                and p.participant_type != ParticipantType.AGENT
+            ]
+            labels += [(p.display_name or p.username or "") for p in extras]
+            labels += [
+                (p.display_name or p.username or "")
+                for _m, p in member_rows
+                if p.participant_type == ParticipantType.AGENT
+            ]
+            labels += [
+                names.get(a) or a.replace("-", " ").title()
+                for a in seed.agent_ids_to_create
+            ]
+            label = group_display_name(labels)
+
+        # Resolve-or-create the NEW agents' Participant rows (same pseudo-sub
+        # contract as brigade._ensure_agent_member; created inside the SAME
+        # transaction as the room so agent membership is atomic too).
+        new_agent_participants: list[Participant] = []
+        for agent_id in seed.agent_ids_to_create:
+            pseudo_sub = f"brigade:{agent_id}"
+            agent_p = (
+                await self._db.execute(
+                    select(Participant).where(Participant.keycloak_sub == pseudo_sub)
+                )
+            ).scalar_one_or_none()
+            if agent_p is None:
+                agent_p = Participant(
+                    # Explicit id (same uuid4 the column defaults to) so the
+                    # member row below can reference it without waiting on
+                    # flush-time default assignment.
+                    id=uuid.uuid4(),
+                    keycloak_sub=pseudo_sub,
+                    username=f"agent-{agent_id}",
+                    display_name=names.get(agent_id)
+                    or agent_id.replace("-", " ").title(),
+                    participant_type=ParticipantType.AGENT,
+                    status=ParticipantStatus.ONLINE,
+                )
+                self._db.add(agent_p)
+            new_agent_participants.append(agent_p)
+
+        # Internal slug, uniquified exactly like create_room's non-channel path.
+        base = group_slug_base(label)
+        slug = base
+        while (
+            await self._db.execute(select(Room).where(Room.name == slug))
+        ).scalar_one_or_none() is not None:
+            slug = f"{base[:80]}-{uuid.uuid4().hex[:8]}"
+
+        # Media room first — DB rows only exist if this succeeded.
+        lk_room_name = f"stable-{slug}"
+        try:
+            lk_room = await self._livekit.create_room(
+                name=lk_room_name,
+                max_participants=50,
+            )
+        except Exception:
+            logger.warning(
+                "start_group_livekit_create_failed", slug=slug, exc_info=True
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not provision the group's media room",
+            )
+
+        room = Room(
+            name=slug,
+            display_name=label,
+            description=None,
+            room_type=RoomType.GROUP_DM,
+            livekit_room_name=lk_room_name,
+            livekit_sid=getattr(lk_room, "sid", None) or None,
+            max_participants=50,
+            created_by=caller_id,
+            org_id=org_id,
+            metadata_=seed.metadata,
+        )
+        self._db.add(room)
+        try:
+            # One flush gives the room AND any new agent participants their ids.
+            await self._db.flush()
+            new_agent_pids = {str(p.id) for p in new_agent_participants}
+            for pid in [*seed.member_ids, *sorted(new_agent_pids)]:
+                self._db.add(
+                    RoomMember(
+                        room_id=room.id,
+                        participant_id=uuid.UUID(str(pid)),
+                        role=(
+                            MemberRole.OWNER
+                            if str(pid) == str(caller_id)
+                            else MemberRole.MEMBER
+                        ),
+                    )
+                )
+            await self._db.commit()
+        except IntegrityError:
+            await self._db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Could not create the group — please try again",
+            )
+
+        await self._db.refresh(room)
+        logger.info(
+            "group_started_from_dm",
+            room_id=str(room.id),
+            source_room_id=str(source.id),
+            caller=str(caller_id),
+            member_count=len(seed.member_ids) + len(new_agent_participants),
+            canonical_agent=seed.canonical_agent_id,
+        )
+        return room
 
     @staticmethod
     def _is_pure_human_dm_room(room: Room) -> bool:

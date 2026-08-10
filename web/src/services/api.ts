@@ -727,6 +727,53 @@ class StableApiClient {
     };
   }
 
+  /**
+   * Explicitly convert a 1:1 DM into a NEW group room: the server seeds the
+   * group with both DM members (human peer or resident agent) plus these
+   * selections, transactionally — the source DM and its history are never
+   * touched. Returns the new group_dm room to navigate to.
+   */
+  async startGroupFromDm(
+    roomId: string,
+    body: {
+      participant_ids: string[];
+      keycloak_subs: string[];
+      agent_ids: string[];
+      display_name?: string;
+    },
+  ): Promise<Room> {
+    type Raw = {
+      id: string;
+      name: string;
+      display_name: string;
+      description: string | null;
+      room_type: "channel" | "group_dm" | "dm";
+      created_at: string;
+      updated_at: string;
+      member_count: number;
+      origin_room_id?: string;
+    };
+    const r = await this.request<Raw>(
+      "POST",
+      `/api/v1/rooms/${roomId}/start-group`,
+      body,
+    );
+    return {
+      id: r.id,
+      name: r.display_name || r.name,
+      display_name: r.display_name,
+      description: r.description ?? "",
+      type: r.room_type,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      member_count: r.member_count,
+      unread_count: 0,
+      last_message: null,
+      members: [],
+      agents: [],
+    };
+  }
+
   async updateRoom(
     roomId: string,
     patch: { display_name?: string; description?: string; is_archived?: boolean; metadata?: Record<string, unknown> },
