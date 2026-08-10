@@ -1,4 +1,5 @@
 from app.models.agent import AgentConfig, AgentEvent, AgentRun, AgentRunStatus, AgentType
+from app.models.agent_access import AgentAccessEffect, AgentAccessGrant
 from app.models.activity import ActivityEvent, ActivityEventType
 from app.models.artifact import (
     Artifact,
@@ -48,4 +49,6 @@ __all__ = [
     "RoomKnowledge",
     "ActivityEvent",
     "ActivityEventType",
+    "AgentAccessGrant",
+    "AgentAccessEffect",
 ]

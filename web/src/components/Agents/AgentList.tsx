@@ -1,6 +1,7 @@
-import { Bot, Cpu, Star, MessageSquarePlus } from "lucide-react";
+import { Bot, Cpu, Lock, Star, MessageSquarePlus } from "lucide-react";
 import clsx from "clsx";
 import type { Agent } from "@/services/api";
+import { AGENT_LOCK_HINT, isAgentEntitled } from "@/lib/agentEntitlement";
 import {
   AFFIL_META,
   affiliationOf,
@@ -148,13 +149,26 @@ export function AgentList({
                   <Cpu className="h-3 w-3 shrink-0" />
                   <span className="max-w-[9rem] truncate">{agent.model || "—"}</span>
                 </span>
-                <span
-                  className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100"
-                  style={{ color: ident.text }}
-                >
-                  <MessageSquarePlus className="h-3.5 w-3.5" />
-                  Chat
-                </span>
+                {isAgentEntitled(agent) ? (
+                  <span
+                    className="flex shrink-0 items-center gap-1 text-xs font-semibold opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100"
+                    style={{ color: ident.text }}
+                  >
+                    <MessageSquarePlus className="h-3.5 w-3.5" />
+                    Chat
+                  </span>
+                ) : (
+                  // Locked, not hidden: the directory still shows the agent;
+                  // the ACTION affordance says why it won't act. The card
+                  // still opens the profile modal, where Start stays locked.
+                  <span
+                    className="flex shrink-0 items-center gap-1 text-xs font-medium text-slate-500"
+                    title={AGENT_LOCK_HINT}
+                  >
+                    <Lock className="h-3.5 w-3.5" />
+                    {AGENT_LOCK_HINT}
+                  </span>
+                )}
               </div>
             </button>
           </li>

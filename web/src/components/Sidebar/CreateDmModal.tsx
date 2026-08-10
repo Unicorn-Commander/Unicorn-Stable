@@ -2,8 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, X, Check, Bot, User as UserIcon } from "lucide-react";
+import { Search, X, Check, Bot, Lock, User as UserIcon } from "lucide-react";
 import { api, type Room, type BrigadeAgent } from "@/services/api";
+import {
+  AGENT_LOCK_HINT,
+  apiErrorText,
+  isAgentEntitled,
+} from "@/lib/agentEntitlement";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { identityFor } from "@/lib/identity";
 import { Avatar } from "@/components/Avatar";
@@ -89,6 +94,8 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
     );
   }
   function togglePickAgent(a: BrigadeAgent) {
+    // Locked rows render disabled; this keeps any other path honest too.
+    if (!isAgentEntitled(a)) return;
     const candidate: PickedAgent = {
       kind: "agent",
       id: a.id,
@@ -187,7 +194,9 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
       console.error("dm create failed", err);
       useAppStore.getState().pushToast({
         title: "Couldn't start DM",
-        body: (err as Error).message,
+        // apiErrorText surfaces the server's clean detail (e.g. the
+        // entitlement denial "You don't have access to the agent '…'").
+        body: apiErrorText(err, "Something went wrong starting the DM."),
         kind: "error",
       });
     } finally {
@@ -408,6 +417,9 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                   description: a.description,
                 });
                 const selected = picked.find((p) => pickedKey(p) === key);
+                // Locked, not hidden — the list stays a truthful directory;
+                // only the Pick action is gated (server enforces regardless).
+                const locked = !isAgentEntitled(a);
                 const ident = identityFor(a.id, a.name);
                 return (
                   <li
@@ -442,13 +454,17 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                     </div>
                     <button
                       onClick={() => togglePickAgent(a)}
+                      disabled={locked}
+                      title={locked ? AGENT_LOCK_HINT : undefined}
                       className={
-                        selected
-                          ? "focus-ring flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors"
-                          : "focus-ring flex shrink-0 items-center gap-1 rounded-lg border border-line bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-slate-300 transition-colors hover:border-line-strong hover:bg-white/[0.06] hover:text-slate-100"
+                        locked
+                          ? "flex shrink-0 cursor-not-allowed items-center gap-1 rounded-lg border border-line bg-white/[0.02] px-2.5 py-1 text-xs font-medium text-slate-500"
+                          : selected
+                            ? "focus-ring flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors"
+                            : "focus-ring flex shrink-0 items-center gap-1 rounded-lg border border-line bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-slate-300 transition-colors hover:border-line-strong hover:bg-white/[0.06] hover:text-slate-100"
                       }
                       style={
-                        selected
+                        selected && !locked
                           ? {
                               background: ident.soft,
                               borderColor: ident.border,
@@ -457,7 +473,11 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                           : undefined
                       }
                     >
-                      {selected ? (
+                      {locked ? (
+                        <>
+                          <Lock className="h-3 w-3" /> {AGENT_LOCK_HINT}
+                        </>
+                      ) : selected ? (
                         <>
                           <Check className="h-3 w-3" /> Picked
                         </>

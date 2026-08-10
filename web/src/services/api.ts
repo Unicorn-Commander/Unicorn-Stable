@@ -313,6 +313,13 @@ export interface Agent {
     provider?: string | null;
     external?: boolean;
   }[];
+  /**
+   * May the CURRENT user reach this agent? Server-computed from per-user
+   * grants + the instance's AGENT_ACCESS_DEFAULT. Optional (absent on older
+   * servers = entitled). The directory still shows un-entitled agents; action
+   * affordances lock with "Ask an admin" — see lib/agentEntitlement.ts.
+   */
+  entitled?: boolean;
   tool_cost_summary?: {
     total: number;
     paid: number;
@@ -325,6 +332,8 @@ export interface BrigadeAgent {
   id: string;
   name: string;
   description: string;
+  /** May the CURRENT user reach this agent? Absent (older server) = yes. */
+  entitled?: boolean;
 }
 
 /**
@@ -784,6 +793,18 @@ class StableApiClient {
         dispatch: false,
       });
     } catch (err) {
+      // Entitlement denial (403) is not a transient bind failure: retrying
+      // from inside the room hits the same wall, so an "agentless but
+      // re-invitable" room would be a dead end. Remove the husk we just
+      // created and surface the server's message to the caller's toast.
+      if ((err as { status?: number } | null)?.status === 403) {
+        try {
+          await this.request<void>("DELETE", `/api/v1/rooms/${room.id}`);
+        } catch {
+          /* best-effort cleanup — the room is empty either way */
+        }
+        throw err;
+      }
       console.warn("agent-invite failed for new chat", brigadeAgentId, err);
     }
     return { ...room, brigade_agent_id: brigadeAgentId };
