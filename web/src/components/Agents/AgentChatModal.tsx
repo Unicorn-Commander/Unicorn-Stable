@@ -2,9 +2,14 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { X, Search, Check, MessageSquarePlus, Users, Bot, Star } from "lucide-react";
+import { X, Search, Check, Lock, MessageSquarePlus, Users, Bot, Star } from "lucide-react";
 import clsx from "clsx";
 import { api, type Agent } from "@/services/api";
+import {
+  AGENT_LOCK_HINT,
+  apiErrorText,
+  isAgentEntitled,
+} from "@/lib/agentEntitlement";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import {
   AFFIL_META,
@@ -45,9 +50,19 @@ export function AgentChatModal({
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<Set<string>>(
-    () => new Set([focusAgent.id, ...(preselectIds || [])]),
-  );
+  const [selected, setSelected] = useState<Set<string>>(() => {
+    // Never pre-tick an agent the caller isn't entitled to (the focused card
+    // itself may be locked — the modal still opens as a profile, but the
+    // selection starts empty and Start stays disabled).
+    const entitledIds = new Set(
+      agents.filter(isAgentEntitled).map((a) => a.id),
+    );
+    return new Set(
+      [focusAgent.id, ...(preselectIds || [])].filter((id) =>
+        entitledIds.has(id),
+      ),
+    );
+  });
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const panelRef = useModalA11y(true, onClose);
@@ -79,6 +94,10 @@ export function AgentChatModal({
   }, [agents, query, selected]);
 
   function toggle(id: string) {
+    // Locked rows are rendered disabled; this guard keeps keyboard/stale-DOM
+    // paths from selecting one anyway. The server enforces regardless.
+    const agent = agents.find((a) => a.id === id);
+    if (agent && !isAgentEntitled(agent)) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -129,7 +148,9 @@ export function AgentChatModal({
       console.error("start agent chat failed", err);
       useAppStore.getState().pushToast({
         title: "Couldn't start the chat",
-        body: (err as Error).message,
+        // apiErrorText surfaces the server's clean detail (e.g. the
+        // entitlement denial "You don't have access to the agent '…'").
+        body: apiErrorText(err, "Something went wrong starting the chat."),
         kind: "error",
       });
     } finally {
@@ -283,14 +304,18 @@ export function AgentChatModal({
           <ul className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {list.map((a) => {
               const on = selected.has(a.id);
+              const locked = !isAgentEntitled(a);
               const rowIdent = agentIdentity(a);
               return (
                 <li key={a.id}>
                   <button
                     onClick={() => toggle(a.id)}
+                    disabled={locked}
+                    title={locked ? AGENT_LOCK_HINT : undefined}
                     className={clsx(
                       "focus-ring flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
-                      !on && "hover:bg-white/[0.04]",
+                      !on && !locked && "hover:bg-white/[0.04]",
+                      locked && "cursor-not-allowed opacity-60",
                     )}
                     style={on ? { background: rowIdent.soft } : undefined}
                   >
@@ -314,19 +339,26 @@ export function AgentChatModal({
                         {label(a)}
                       </span>
                       <span className="block truncate text-[11px] text-slate-500">
-                        {a.title || prettyDomain(a.domain)}
+                        {locked ? AGENT_LOCK_HINT : a.title || prettyDomain(a.domain)}
                       </span>
                     </span>
-                    <span
-                      className={clsx(
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
-                        on
-                          ? "border-stable-purple bg-stable-purple text-white"
-                          : "border-slate-600",
-                      )}
-                    >
-                      {on && <Check className="h-3 w-3" />}
-                    </span>
+                    {locked ? (
+                      <Lock
+                        className="h-3.5 w-3.5 shrink-0 text-slate-500"
+                        aria-label={AGENT_LOCK_HINT}
+                      />
+                    ) : (
+                      <span
+                        className={clsx(
+                          "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
+                          on
+                            ? "border-stable-purple bg-stable-purple text-white"
+                            : "border-slate-600",
+                        )}
+                      >
+                        {on && <Check className="h-3 w-3" />}
+                      </span>
+                    )}
                   </button>
                 </li>
               );

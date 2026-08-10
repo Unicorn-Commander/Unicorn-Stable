@@ -34,6 +34,7 @@ import {
 import { handleArtifactEvent } from "@/stores/canvasStore";
 import { playCue } from "@/lib/sounds";
 import { HumanTranscriptSession } from "@/lib/humanTranscript";
+import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
 
 /**
  * THE single LiveKit Room for the whole app.
@@ -639,6 +640,18 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         roomHasAgent = await inviteAgent();
       } catch (e) {
         console.error("failed to dispatch agent into voice call", e);
+        if (isEntitlementDenial(e)) {
+          // The server's per-user agent gate said no. The human's call is
+          // fine (someone else in the room may be entitled to summon the
+          // agent) — but toast why THEIR agent won't join, and don't let the
+          // self-heal loop re-hit the same 403 every few seconds.
+          roomHasAgent = false;
+          useAppStore.getState().pushToast({
+            title: "Agent can't join this call",
+            body: apiErrorText(e, "You don't have access to this agent."),
+            kind: "error",
+          });
+        }
       }
 
       // Self-heal: the server skips the dispatch when a previous call's agent

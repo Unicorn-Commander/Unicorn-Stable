@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
-import { Bot, ChevronDown, Search } from "lucide-react";
+import { Bot, ChevronDown, Lock, Search } from "lucide-react";
 import clsx from "clsx";
 import { api, type BrigadeAgent } from "../../services/api";
 import { identityFor } from "@/lib/identity";
+import {
+  AGENT_LOCK_HINT,
+  apiErrorText,
+  isAgentEntitled,
+} from "@/lib/agentEntitlement";
 import { useVoice } from "../../contexts/VoiceProvider";
 import { useCallUiStore } from "@/stores/callUiStore";
 
@@ -96,8 +101,7 @@ export function BrigadeAgentPicker({
         setError(`Invite failed: ${reason}`);
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Invite failed";
-      setError(msg);
+      setError(apiErrorText(e, "Invite failed"));
     } finally {
       setInviting(null);
     }
@@ -174,15 +178,19 @@ export function BrigadeAgentPicker({
                   visibleAgents.map((a) => {
                     const isInvited = invitedIds.has(a.id);
                     const isInviting = inviting === a.id;
+                    // Locked, not hidden: the roster stays a truthful
+                    // directory; only the ACTION is gated (server enforces
+                    // regardless — this just keeps the UI honest).
+                    const locked = !isAgentEntitled(a);
                     const ident = identityFor(a.id, a.name);
                     return (
                       <li key={a.id}>
                         <button
                           type="button"
                           onClick={() => invite(a.id)}
-                          disabled={isInvited || isInviting}
+                          disabled={isInvited || isInviting || locked}
                           className="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.05] focus-ring disabled:cursor-not-allowed disabled:opacity-50"
-                          title={a.description}
+                          title={locked ? AGENT_LOCK_HINT : a.description}
                         >
                           <span className="flex min-w-0 items-center gap-2">
                             <span
@@ -207,18 +215,27 @@ export function BrigadeAgentPicker({
                           <span
                             className={clsx(
                               "shrink-0 text-xs",
-                              isInvited
-                                ? "font-medium text-stable-mint"
-                                : isInviting
-                                  ? "text-slate-500 animate-pulse-soft"
-                                  : "font-medium text-stable-purple-light",
+                              locked
+                                ? "flex items-center gap-1 text-slate-500"
+                                : isInvited
+                                  ? "font-medium text-stable-mint"
+                                  : isInviting
+                                    ? "text-slate-500 animate-pulse-soft"
+                                    : "font-medium text-stable-purple-light",
                             )}
                           >
-                            {isInvited
-                              ? "Invited"
-                              : isInviting
-                                ? "Inviting…"
-                                : "Invite"}
+                            {locked ? (
+                              <>
+                                <Lock className="h-3 w-3" aria-hidden="true" />
+                                {AGENT_LOCK_HINT}
+                              </>
+                            ) : isInvited ? (
+                              "Invited"
+                            ) : isInviting ? (
+                              "Inviting…"
+                            ) : (
+                              "Invite"
+                            )}
                           </span>
                         </button>
                       </li>
