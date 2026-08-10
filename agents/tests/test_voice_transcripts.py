@@ -268,6 +268,8 @@ def make_responder(
     room: SimpleNamespace | None = None,
     stt_configured: bool = False,
     persisted: list | None = None,
+    restart_session=None,
+    direct_reply=None,
     clock=None,
 ) -> tuple[VoiceTranscriptResponder, FakeSession]:
     fake = session or FakeSession()
@@ -285,6 +287,8 @@ def make_responder(
             if persisted is not None
             else None
         ),
+        restart_session=restart_session,
+        direct_reply=direct_reply,
         clock=clock or (lambda: 0.0),
     )
     return responder, fake
@@ -322,7 +326,9 @@ def test_stt_alive_stands_the_fallback_down() -> None:
         responder, session = make_responder(
             stt_configured=True, clock=lambda: now["t"]
         )
-        responder.note_agent_stt_activity(object())  # heard at t=100
+        responder.note_agent_stt_activity(
+            SimpleNamespace(transcript="real words")
+        )  # heard at t=100
         now["t"] = 105.0  # within the 12s alive window
         await responder._handle_utterance(utterance())
         assert session.replies == []
@@ -330,6 +336,26 @@ def test_stt_alive_stands_the_fallback_down() -> None:
         now["t"] = 150.0  # alive window expired → fallback takes over
         await responder._handle_utterance(utterance("are you there"))
         assert session.replies == ["are you there"]
+
+    asyncio.run(run())
+
+
+def test_empty_stt_events_do_not_count_as_alive() -> None:
+    """NeverFatalSTT degrades a dead endpoint into EMPTY finals. Those must
+    not stand the browser fallback down — otherwise the agent is deaf on both
+    paths at once (the 2026-08-10 shape, one layer up)."""
+
+    async def run() -> None:
+        now = {"t": 100.0}
+        responder, session = make_responder(
+            stt_configured=True, clock=lambda: now["t"]
+        )
+        responder.note_agent_stt_activity(SimpleNamespace(transcript=""))
+        responder.note_agent_stt_activity(SimpleNamespace(transcript="   "))
+        responder.note_agent_stt_activity(object())  # no transcript attr at all
+        now["t"] = 101.0
+        await responder._handle_utterance(utterance("still hear me?"))
+        assert session.replies == ["still hear me?"]
 
     asyncio.run(run())
 
@@ -373,6 +399,123 @@ def test_inflight_latch_drops_overlapping_utterances() -> None:
         release.set()
         await first
         assert session.replies == ["first"]  # second was dropped, not queued
+
+    asyncio.run(run())
+
+
+class DeadSession:
+    """generate_reply raises exactly what a closed AgentSession raises."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def generate_reply(self, *, user_input: str):
+        self.attempts += 1
+        raise RuntimeError("AgentSession isn't running")
+
+
+def test_dead_session_restarts_once_and_replays_the_utterance() -> None:
+    """The 2026-08-10 failure, fixed: session closed itself → ONE restart →
+    the same utterance replays through the fresh session → persist happens
+    exactly once, only after the reply is scheduled."""
+
+    async def run() -> None:
+        dead = DeadSession()
+        fresh = FakeSession()
+        restarts: list[int] = []
+
+        async def restart():
+            restarts.append(1)
+            return fresh
+
+        persisted: list = []
+        responder, _ = make_responder(
+            session=dead,  # type: ignore[arg-type]
+            persisted=persisted,
+            restart_session=restart,
+        )
+        await responder._handle_utterance(utterance("hello majik"))
+
+        assert dead.attempts == 1
+        assert restarts == [1]
+        assert fresh.replies == ["hello majik"]  # replayed on the NEW session
+        assert fresh.handle.waited
+        assert persisted == [("aaron_uuid", "hello majik")]  # once
+        # Later utterances go straight to the fresh session — no re-restart.
+        await responder._handle_utterance(utterance("second thought"))
+        assert restarts == [1]
+        assert fresh.replies == ["hello majik", "second thought"]
+
+    asyncio.run(run())
+
+
+def test_restart_failure_falls_back_to_the_direct_path() -> None:
+    async def run() -> None:
+        direct_calls: list[str] = []
+
+        async def restart():
+            return None  # rebuild failed
+
+        async def direct(text: str, on_commit) -> bool:
+            direct_calls.append(text)
+            on_commit()  # a reply exists → commit the user turn
+            return True
+
+        persisted: list = []
+        responder, _ = make_responder(
+            session=DeadSession(),  # type: ignore[arg-type]
+            persisted=persisted,
+            restart_session=restart,
+            direct_reply=direct,
+        )
+        await responder._handle_utterance(utterance("anyone home"))
+        assert direct_calls == ["anyone home"]
+        assert persisted == [("aaron_uuid", "anyone home")]
+
+    asyncio.run(run())
+
+
+def test_total_failure_persists_nothing() -> None:
+    """The persist contract: no reply on ANY path → the user's line is NOT
+    written to the reply-suppressing history route. Persist-then-fail was the
+    incident's worst outcome — silence in both modalities."""
+
+    async def run() -> None:
+        async def restart():
+            return None
+
+        async def direct(text: str, on_commit) -> bool:
+            return False  # Brigade down too
+
+        persisted: list = []
+        responder, _ = make_responder(
+            session=DeadSession(),  # type: ignore[arg-type]
+            persisted=persisted,
+            restart_session=restart,
+            direct_reply=direct,
+        )
+        await responder._handle_utterance(utterance("is this thing on"))
+        assert persisted == []
+
+    asyncio.run(run())
+
+
+def test_session_error_before_scheduling_does_not_persist() -> None:
+    """A live-session failure that is NOT a dead-session RuntimeError stays on
+    the session's own error handling — and must not persist the user line."""
+
+    class ExplodingSession:
+        def generate_reply(self, *, user_input: str):
+            raise ValueError("LLM exploded mid-flight")
+
+    async def run() -> None:
+        persisted: list = []
+        responder, _ = make_responder(
+            session=ExplodingSession(),  # type: ignore[arg-type]
+            persisted=persisted,
+        )
+        await responder._handle_utterance(utterance("hello"))
+        assert persisted == []
 
     asyncio.run(run())
 

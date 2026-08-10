@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import structlog
@@ -100,6 +100,8 @@ class BrigadeBackedAgent(StableAgent):
         self._transcript: TranscriptPublisher | None = None
         self._voice_history: VoiceHistoryPersister | None = None
         self._voice_responder: VoiceTranscriptResponder | None = None
+        self._tts_plugin: Any | None = None
+        self._restart_lock: asyncio.Lock = asyncio.Lock()
 
     async def on_message(self, message: dict[str, Any]) -> None:
         """Reply to a chat by streaming from Brigade and posting incrementally.
@@ -350,11 +352,28 @@ class BrigadeBackedAgent(StableAgent):
             stt_plugin = get_stt_plugin(self._stt_provider, settings=cfg)
         except Exception as e:
             logger.info("brigade_backed_no_stt", reason=str(e))
+        # A failing STT endpoint must never take the SESSION down with it.
+        # Incident 2026-08-10: the whisper base_url answered 404, each VAD
+        # segment emitted an unrecoverable stt_error, and after
+        # max_unrecoverable_errors (3) the AgentSession CLOSED itself
+        # (CloseReason.ERROR) — killing TTS and the whole reply pipeline ~20s
+        # into the call. NeverFatalSTT converts recognize failures into empty
+        # finals (the agent is deaf, loudly logged, and the browser-transcript
+        # fallback still hears), instead of poisoning the session.
+        if stt_plugin is not None:
+            try:
+                if not stt_plugin.capabilities.streaming:
+                    stt_plugin = NeverFatalSTT(stt_plugin)
+            except Exception:
+                logger.warning("stt_resilience_wrap_failed", exc_info=True)
         try:
             from plugins.tts import get_tts_plugin
             tts_plugin = get_tts_plugin(self._tts_provider, personality=brigade_agent_id, settings=cfg)
         except Exception as e:
             logger.info("brigade_backed_no_tts", reason=str(e))
+        # Kept for the emergency direct-reply path (Brigade text + TTS publish
+        # when the session is dead and could not be restarted).
+        self._tts_plugin = tts_plugin
 
         agent_kwargs: dict[str, Any] = {
             "instructions": (
@@ -468,17 +487,9 @@ class BrigadeBackedAgent(StableAgent):
                     self._lk_agent.set_caption_publisher(self._transcript)
             except Exception:
                 logger.debug("caption_publisher_attach_failed", exc_info=True)
-            # livekit-agents 1.6 AgentSession events (verified in-container):
-            #   user_input_transcribed -> UserInputTranscribedEvent
-            #       (.transcript, .is_final, .speaker_id) = human STT.
-            #   conversation_item_added -> ConversationItemAddedEvent
-            #       (.item: ChatMessage with .role/.text_content) = replies.
-            session.on(
-                "user_input_transcribed", self._transcript.on_user_transcript
-            )
-            session.on(
-                "conversation_item_added", self._transcript.on_conversation_item
-            )
+            # Listener attachment happens once for the whole session in
+            # _wire_session_events below (shared with the emergency restart
+            # path, so a fresh session hears/captions/persists identically).
             logger.info(
                 "transcript_publisher_wired",
                 agent_identity=agent_identity,
@@ -500,12 +511,6 @@ class BrigadeBackedAgent(StableAgent):
                 livekit_room_name=ctx.room.name,
                 brigade_agent_id=brigade_agent_id,
                 linked_participant_getter=linked_participant,
-            )
-            session.on(
-                "user_input_transcribed", self._voice_history.on_user_transcript
-            )
-            session.on(
-                "conversation_item_added", self._voice_history.on_conversation_item
             )
             logger.info(
                 "voice_history_persister_wired",
@@ -548,12 +553,10 @@ class BrigadeBackedAgent(StableAgent):
                         history.persist_user_utterance if history else None
                     ),
                     acquire_rate_slot=self._msg_limiter.acquire,
-                )
-                # Any session STT activity (interim or final) stands the
-                # fallback down — the session is hearing and will reply itself.
-                session.on(
-                    "user_input_transcribed",
-                    self._voice_responder.note_agent_stt_activity,
+                    # Session-death recovery (incident 2026-08-10): one
+                    # restart attempt, then the bounded direct path.
+                    restart_session=self.restart_voice_session,
+                    direct_reply=self._direct_voice_reply,
                 )
                 logger.info(
                     "voice_transcript_responder_wired",
@@ -562,6 +565,12 @@ class BrigadeBackedAgent(StableAgent):
                 )
         except Exception:
             logger.warning("voice_transcript_responder_wire_failed", exc_info=True)
+
+        # ALL session listeners in one place — shared with restart_voice_session
+        # so a fresh session is wired identically (captions, history, the
+        # responder's STT-alive signal, and the LOUD error/close reporters that
+        # the 2026-08-10 incident lacked).
+        self._wire_session_events(session)
 
         # Shim: provide start(room) the way the old VoicePipelineAgent did, so
         # base.py's existing `self._pipeline.start(ctx.room)` call works.
@@ -580,6 +589,242 @@ class BrigadeBackedAgent(StableAgent):
             has_tts=tts_plugin is not None,
         )
         return session
+
+    # ------------------------------------------------------------------ #
+    # Session lifecycle visibility + recovery (incident 2026-08-10)
+    # ------------------------------------------------------------------ #
+
+    def _wire_session_events(self, session: AgentSession) -> None:
+        """Attach every listener a voice session needs.
+
+        One place, used at build AND at emergency restart, so a fresh session
+        captions, persists, feeds the responder's STT-alive signal, and —
+        crucially — REPORTS its own death. The 2026-08-10 session close was
+        invisible: no close/error listener existed and the structlog chain
+        swallowed tracebacks, so the only symptom was generate_reply throwing
+        "AgentSession isn't running" 22 seconds later.
+        """
+        if self._transcript is not None:
+            session.on(
+                "user_input_transcribed", self._transcript.on_user_transcript
+            )
+            session.on(
+                "conversation_item_added", self._transcript.on_conversation_item
+            )
+        if self._voice_history is not None:
+            session.on(
+                "user_input_transcribed", self._voice_history.on_user_transcript
+            )
+            session.on(
+                "conversation_item_added",
+                self._voice_history.on_conversation_item,
+            )
+        if self._voice_responder is not None:
+            session.on(
+                "user_input_transcribed",
+                self._voice_responder.note_agent_stt_activity,
+            )
+        session.on("error", self._on_session_error)
+        session.on("close", self._on_session_close)
+
+    def _on_session_error(self, ev: Any) -> None:
+        """LOUD ErrorEvent reporter (sync listener; must never raise)."""
+        try:
+            err = getattr(ev, "error", None)
+            logger.error(
+                "voice_session_error",
+                recoverable=getattr(err, "recoverable", None),
+                error_type=getattr(err, "type", None),
+                error=repr(getattr(err, "error", err)),
+                source=type(getattr(ev, "source", None)).__name__,
+                room=self._room_name,
+            )
+        except Exception:  # pragma: no cover
+            logger.error("voice_session_error_report_failed", exc_info=True)
+
+    def _on_session_close(self, ev: Any) -> None:
+        """LOUD CloseEvent reporter — reason + error, the missing black box."""
+        try:
+            reason = getattr(ev, "reason", None)
+            logger.error(
+                "voice_session_closed",
+                reason=str(getattr(reason, "value", reason)),
+                error=repr(getattr(ev, "error", None)),
+                room=self._room_name,
+            )
+        except Exception:  # pragma: no cover
+            logger.error("voice_session_close_report_failed", exc_info=True)
+
+    async def restart_voice_session(self) -> AgentSession | None:
+        """ONE fresh AgentSession after the current one died. None on failure.
+
+        Builds a NEW Agent from the dead one's own components (same Brigade
+        LLM, TTS, resilient STT, VAD — and its chat_ctx, so the conversation
+        memory survives the restart) rather than re-binding the old Agent
+        object, and wires the identical listener set. Serialized by a lock so
+        overlapping utterances can't spawn competing sessions.
+        """
+        ctx = self._job_ctx
+        old_agent = self._lk_agent
+        if ctx is None or old_agent is None:
+            logger.warning("voice_session_restart_unavailable")
+            return None
+        async with self._restart_lock:
+            old_session = self._session
+            try:
+                agent_kwargs: dict[str, Any] = {
+                    "instructions": old_agent.instructions,
+                    "llm": old_agent.llm,
+                }
+                for component in ("stt", "tts", "vad"):
+                    value = getattr(old_agent, component, None)
+                    if value is not None:
+                        agent_kwargs[component] = value
+                try:
+                    chat_ctx = old_agent.chat_ctx
+                    if chat_ctx is not None:
+                        agent_kwargs["chat_ctx"] = chat_ctx.copy()
+                except Exception:
+                    logger.debug("restart_chat_ctx_copy_failed", exc_info=True)
+
+                fresh_agent = _CaptioningAgent(**agent_kwargs)
+                if self._transcript is not None:
+                    fresh_agent.set_caption_publisher(self._transcript)
+
+                session = AgentSession()
+                self._wire_session_events(session)
+                await session.start(agent=fresh_agent, room=ctx.room)
+            except Exception:
+                logger.error("voice_session_restart_failed", exc_info=True)
+                return None
+
+            self._lk_agent = fresh_agent
+            self._session = session
+            self._pipeline = session
+            logger.warning(
+                "voice_session_restarted",
+                room=self._room_name,
+                brigade_agent_id=self._brigade_agent_id,
+            )
+            # Put the old session out of its misery quietly, AFTER the swap.
+            if old_session is not None and old_session is not session:
+                closer = getattr(old_session, "aclose", None)
+                if callable(closer):
+                    try:
+                        await closer()
+                    except Exception:
+                        logger.debug("old_session_close_failed", exc_info=True)
+            return session
+
+    async def _direct_voice_reply(
+        self, text: str, on_commit: Callable[[], None]
+    ) -> bool:
+        """LAST-RESORT reply when the session is dead and restart failed.
+
+        A deliberate, bounded fork of the pipeline — logged loudly by the
+        caller as ``voice_reply_via_direct_path`` — so the agent is never
+        visibly present and mute: Brigade text (non-streaming) → commit the
+        user turn → persist the reply text → caption it → best-effort spoken
+        audio on a directly-published track. Text delivery is the guarantee;
+        audio is attempted on top.
+        """
+        cfg = self._settings
+        if not cfg.brigade_base_url or not cfg.brigade_api_key:
+            logger.warning("direct_reply_brigade_unconfigured")
+            return False
+        url = (cfg.brigade_base_url or "").rstrip("/") + "/chat/completions"
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0)
+            ) as http:
+                resp = await http.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {cfg.brigade_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self._brigade_agent_id,
+                        "messages": [{"role": "user", "content": text}],
+                        "user": self._human_user_id or self.identity,
+                        "stream": False,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json() or {}
+                reply = (
+                    (data.get("choices") or [{}])[0]
+                    .get("message", {})
+                    .get("content")
+                    or ""
+                ).strip()
+        except Exception:
+            logger.error("direct_reply_brigade_failed", exc_info=True)
+            return False
+        if not reply:
+            logger.warning("direct_reply_empty")
+            return False
+
+        # A reply exists: commit the user turn first so history keeps order.
+        on_commit()
+        await self._post_chat_message(reply)
+        if self._transcript is not None:
+            try:
+                self._transcript.publish_agent_final(reply)
+            except Exception:
+                logger.debug("direct_reply_caption_failed", exc_info=True)
+        await self._speak_text_direct(reply)
+        return True
+
+    async def _speak_text_direct(self, text: str) -> None:
+        """Best-effort TTS → a directly-published audio track. Never raises."""
+        tts = self._tts_plugin
+        ctx = self._job_ctx
+        if tts is None or ctx is None:
+            logger.warning("direct_reply_no_tts", has_tts=tts is not None)
+            return
+        try:
+            from livekit import rtc
+
+            source: Any | None = None
+            publication: Any | None = None
+            try:
+                async for chunk in tts.synthesize(text):
+                    frame = getattr(chunk, "frame", None)
+                    if frame is None:
+                        continue
+                    if source is None:
+                        source = rtc.AudioSource(
+                            frame.sample_rate, frame.num_channels
+                        )
+                        track = rtc.LocalAudioTrack.create_audio_track(
+                            "voice-direct-reply", source
+                        )
+                        options = rtc.TrackPublishOptions(
+                            source=rtc.TrackSource.SOURCE_MICROPHONE
+                        )
+                        publication = await ctx.room.local_participant.publish_track(
+                            track, options
+                        )
+                    await source.capture_frame(frame)
+                if source is not None:
+                    await source.wait_for_playout()
+            finally:
+                if publication is not None:
+                    try:
+                        await ctx.room.local_participant.unpublish_track(
+                            publication.sid
+                        )
+                    except Exception:
+                        logger.debug("direct_reply_unpublish_failed", exc_info=True)
+                if source is not None:
+                    try:
+                        await source.aclose()
+                    except Exception:
+                        pass
+            logger.info("direct_reply_spoken", chars=len(text))
+        except Exception:
+            logger.error("direct_reply_tts_failed", exc_info=True)
 
     def _resolve_brigade_agent_id(self, ctx: JobContext) -> str:
         # Prefer the DISPATCH (job) metadata — it reliably carries

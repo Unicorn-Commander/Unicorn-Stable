@@ -19,13 +19,20 @@ from triage.agent import TriageAgent
 # Structured logging
 # ---------------------------------------------------------------------------
 
-def _configure_logging(log_level: str) -> None:
-    """Set up structlog with human-readable console output in dev,
-    JSON in production (when LOG_LEVEL is not DEBUG)."""
+def build_processors(is_debug: bool) -> list[Any]:
+    """The structlog processor chain, extracted so tests can prove tracebacks
+    actually render.
 
-    is_debug = log_level == "DEBUG"
-
-    processors: list[Any] = [
+    THE SWALLOW THIS FIXES (found live, 2026-08-10): the JSON chain had no
+    exc_info formatter, so every ``logger.error(..., exc_info=True)`` — every
+    ``voice_transcript_reply_failed``, every ``voice_ctx_seed_skipped`` —
+    serialized as ``"exc_info": true`` with NO traceback text. The one signal
+    that would have named the failing exception in prod was structurally
+    discarded. ``format_exc_info`` renders the traceback into an
+    ``exception`` key on the JSON line; the dev ConsoleRenderer formats
+    exc_info itself and must NOT be combined with it.
+    """
+    shared: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
@@ -33,14 +40,23 @@ def _configure_logging(log_level: str) -> None:
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
     ]
-
     if is_debug:
-        processors.append(structlog.dev.ConsoleRenderer())
-    else:
-        processors.append(structlog.processors.JSONRenderer())
+        return [*shared, structlog.dev.ConsoleRenderer()]
+    return [
+        *shared,
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer(),
+    ]
+
+
+def _configure_logging(log_level: str) -> None:
+    """Set up structlog with human-readable console output in dev,
+    JSON in production (when LOG_LEVEL is not DEBUG)."""
+
+    is_debug = log_level == "DEBUG"
 
     structlog.configure(
-        processors=processors,
+        processors=build_processors(is_debug),
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),

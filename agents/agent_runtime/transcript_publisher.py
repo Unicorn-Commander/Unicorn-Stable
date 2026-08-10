@@ -313,6 +313,31 @@ class TranscriptPublisher:
         except Exception:
             logger.debug("transcript_agent_publish_failed", exc_info=True)
 
+    def publish_agent_final(self, text: str) -> None:
+        """Publish a committed agent caption line OUTSIDE the session events.
+
+        Used by the emergency direct-reply path (the session is dead, so no
+        ``conversation_item_added`` will ever fire for this reply). Same
+        envelope, same segmenting, same never-raise contract as
+        ``on_conversation_item``.
+        """
+        try:
+            content = (text or "").strip()
+            if not content:
+                return
+            self._agent_seq += 1
+            segment_id = f"{self._agent_identity}-{self._agent_seq}-{_now_ms()}"
+            self._publish(
+                participant_id=self._agent_identity,
+                name=self._agent_name,
+                text=content,
+                is_final=True,
+                segment_id=segment_id,
+                source="agent",
+            )
+        except Exception:
+            logger.debug("transcript_agent_publish_failed", exc_info=True)
+
     def begin_agent_interim(self) -> "_AgentInterim":
         """Start a new streaming interim caption for one agent utterance.
 

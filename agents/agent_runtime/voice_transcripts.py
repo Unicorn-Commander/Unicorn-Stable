@@ -327,6 +327,8 @@ class VoiceTranscriptResponder:
         stt_alive_window: float = 12.0,
         persist_user_utterance: Callable[[str, str], None] | None = None,
         acquire_rate_slot: Callable[[], Awaitable[bool]] | None = None,
+        restart_session: Callable[[], Awaitable[Any | None]] | None = None,
+        direct_reply: Callable[[str, Callable[[], None]], Awaitable[bool]] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._session = session
@@ -343,6 +345,14 @@ class VoiceTranscriptResponder:
         self._stt_alive_window = max(0.0, float(stt_alive_window))
         self._persist_user_utterance = persist_user_utterance
         self._acquire_rate_slot = acquire_rate_slot
+        # Session-death recovery (incident 2026-08-10): the AgentSession can
+        # close itself (unrecoverable STT errors → CloseReason.ERROR) and
+        # generate_reply then raises "AgentSession isn't running". The owner
+        # provides: restart_session() → a fresh started session (or None),
+        # and direct_reply(text, on_commit) → the bounded emergency path
+        # (Brigade text + TTS publish) when even a restart fails.
+        self._restart_session = restart_session
+        self._direct_reply = direct_reply
         self._clock = clock
         self._last_stt_activity: float | None = None
         self._drain_task: asyncio.Task[None] | None = None
@@ -353,13 +363,18 @@ class VoiceTranscriptResponder:
     # Inputs
     # ------------------------------------------------------------------ #
 
-    def note_agent_stt_activity(self, _ev: Any = None) -> None:
+    def note_agent_stt_activity(self, ev: Any = None) -> None:
         """AgentSession ``user_input_transcribed`` listener (sync, never raises).
 
-        Any event — interim or final — proves the session's own ears work, so
-        the browser fallback stands down while this stays fresh.
+        Only NON-EMPTY transcripts count as "the session's ears work". This
+        matters because NeverFatalSTT degrades a broken STT endpoint into
+        empty finals — if those counted as activity, a dead STT would stand
+        the browser fallback down while producing nothing, and the agent
+        would be deaf in both paths at once.
         """
         try:
+            if not (getattr(ev, "transcript", "") or "").strip():
+                return
             self._last_stt_activity = self._clock()
         except Exception:  # pragma: no cover — clock() failing is hypothetical
             pass
@@ -479,11 +494,24 @@ class VoiceTranscriptResponder:
                 chars=len(utterance.text),
                 preview=utterance.text[:80],
             )
-            # History parity with the agent-STT path: the human's spoken line
-            # lands in room history via the reply-suppressing internal route
-            # (the same one VoiceHistoryPersister uses). Only when WE are the
-            # ones answering — otherwise a healthy STT path would double-write.
-            if self._persist_user_utterance is not None:
+
+            # PERSIST CONTRACT (incident 2026-08-10): the human's spoken line
+            # is written to history ONLY once a reply is actually committed on
+            # some path. The voice-user-message route suppresses the server's
+            # text reply, so persisting a line we then fail to answer produces
+            # the worst outcome — silence in BOTH modalities. `commit` is
+            # invoked by whichever reply path succeeds, exactly once, at the
+            # earliest moment the reply is guaranteed (scheduled on a live
+            # session / Brigade text obtained) so history keeps user→agent
+            # order.
+            committed = False
+
+            def commit() -> None:
+                nonlocal committed
+                if committed or self._persist_user_utterance is None:
+                    committed = True
+                    return
+                committed = True
                 try:
                     self._persist_user_utterance(
                         utterance.participant_id, utterance.text
@@ -492,35 +520,110 @@ class VoiceTranscriptResponder:
                     logger.debug("voice_transcript_persist_failed", exc_info=True)
 
             try:
-                await asyncio.wait_for(
-                    self._speak_reply(utterance.text),
+                delivered = await asyncio.wait_for(
+                    self._speak_reply(utterance.text, commit),
                     timeout=self._REPLY_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 logger.warning("voice_transcript_reply_timeout")
+                delivered = False
             except Exception:
                 logger.error("voice_transcript_reply_failed", exc_info=True)
+                delivered = False
+            if not delivered:
+                logger.error(
+                    "voice_transcript_reply_failed_all_paths",
+                    speaker=utterance.participant_id,
+                    chars=len(utterance.text),
+                    persisted=committed,
+                )
 
-    async def _speak_reply(self, text: str) -> None:
+    async def _speak_reply(
+        self, text: str, on_commit: Callable[[], None]
+    ) -> bool:
+        """Deliver one spoken reply; True only if SOME path succeeded.
+
+        Ladder (incident 2026-08-10 — "AgentSession isn't running"):
+          1. The session pipeline (``generate_reply``): Brigade LLM → TTS →
+             caption tee → history listeners. The shared path; nothing forked.
+          2. The session is DEAD (RuntimeError from generate_reply — the
+             session closes itself after max_unrecoverable_errors STT/LLM/TTS
+             failures): ask the owner for ONE restart and replay the
+             utterance through the fresh session.
+          3. Restart failed: the bounded emergency fork — the owner's
+             direct_reply (Brigade text + persist + captions + best-effort
+             TTS publish), clearly logged ``voice_reply_via_direct_path``.
+             The agent must never sit visibly present and mute.
+        """
+        try:
+            await self._speak_via_session(self._session, text, on_commit)
+            return True
+        except RuntimeError as exc:
+            # "AgentSession isn't running" — the session closed under us.
+            logger.warning(
+                "voice_session_not_running",
+                error=str(exc),
+                will_restart=self._restart_session is not None,
+            )
+        except Exception:
+            # A live session failed mid-generation (LLM/TTS trouble). The
+            # session's own error handling owns that case; don't restart-loop
+            # on top of it.
+            logger.error("voice_transcript_session_reply_failed", exc_info=True)
+            return False
+
+        if self._restart_session is not None:
+            fresh: Any | None = None
+            try:
+                fresh = await self._restart_session()
+            except Exception:
+                logger.error("voice_session_restart_failed", exc_info=True)
+            if fresh is not None:
+                self._session = fresh
+                try:
+                    await self._speak_via_session(fresh, text, on_commit)
+                    logger.info("voice_reply_after_session_restart", chars=len(text))
+                    return True
+                except Exception:
+                    logger.error(
+                        "voice_reply_replay_failed_after_restart", exc_info=True
+                    )
+
+        if self._direct_reply is not None:
+            try:
+                if await self._direct_reply(text, on_commit):
+                    logger.warning("voice_reply_via_direct_path", chars=len(text))
+                    return True
+            except Exception:
+                logger.error("voice_direct_reply_failed", exc_info=True)
+
+        return False
+
+    async def _speak_via_session(
+        self, session: Any, text: str, on_commit: Callable[[], None]
+    ) -> None:
         """``AgentSession.generate_reply(user_input=...)`` — THE shared pipeline.
 
         This is the same entry the session's own turn loop uses: Brigade LLM →
         TTS playout, with the reply teed into live captions
         (``transcription_node``) and persisted by the ``conversation_item_added``
         listeners. Version-tolerant across livekit-agents 1.x return shapes
-        (SpeechHandle, awaitable, or awaitable→SpeechHandle).
+        (SpeechHandle, awaitable, or awaitable→SpeechHandle). Raises on any
+        failure so the caller can walk the recovery ladder.
         """
-        generate = getattr(self._session, "generate_reply", None)
+        generate = getattr(session, "generate_reply", None)
         if not callable(generate):
-            logger.warning(
-                "voice_transcript_no_generate_reply",
-                session_type=type(self._session).__name__,
+            raise RuntimeError(
+                f"session {type(session).__name__} has no generate_reply"
             )
-            return
 
         result: Any = generate(user_input=text)
         if inspect.isawaitable(result):
             result = await result
+        # The reply is now scheduled on a LIVE session: the user turn may be
+        # committed to history (the assistant item lands after it, keeping
+        # conversational order).
+        on_commit()
         # Hold the latch through playout when the handle exposes a waiter.
         for waiter_name in ("wait_for_playout", "join"):
             waiter = getattr(result, waiter_name, None)
