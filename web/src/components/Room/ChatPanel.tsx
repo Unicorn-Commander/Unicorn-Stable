@@ -639,7 +639,12 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // room because message #31 happened to be sent in it.
     const hadPriorHumanMessage =
       hasMore || messages.some((m) => m.sender_type === "human");
-    void sendMessage(content, threadId, attachments, extraMetadata).then(() => {
+    void sendMessage(content, threadId, attachments, extraMetadata).then((outcome) => {
+      // Only a server-confirmed send earns follow-up work. The promise now
+      // settles at the send's TERMINAL state (acked/failed, spanning the
+      // automatic retry) — renaming a room after a message that was never
+      // delivered would be titling it off nothing.
+      if (outcome !== "acked") return;
       // Auto-title agent DMs: after the first human message, replace the
       // default "chat with <agent>" with a one-line summary ≤42 chars, and set
       // metadata.auto_titled so we never overwrite a user rename (the server

@@ -32,6 +32,17 @@
  *  user is still looking at the message they just sent. */
 export const SEND_ACK_TIMEOUT_MS = 12_000;
 
+/** POST attempts a send may consume before failure is DECLARED: the original
+ *  request plus ONE automatic retry. A manual Retry tap re-begins the entry
+ *  (attempts keeps counting up), so it deliberately gets no further automatic
+ *  retry of its own — one tap, one attempt, a predictable outcome. */
+export const MAX_AUTOMATIC_SEND_ATTEMPTS = 2;
+
+/** What the failed pill/toast say when nothing NACKed but nothing ACKed
+ *  either — the ACK deadline (or the reconnect sweep) is the failing party. */
+export const ACK_TIMEOUT_ERROR =
+  "Not delivered — the server never confirmed this message.";
+
 /** The optimistic-id namespace. Every pre-ACK bubble id starts with this —
  *  several call sites (unread divider, new-message counter, mark_read gate)
  *  key off the prefix, so it must stay stable. */
@@ -49,6 +60,10 @@ export interface OutgoingSendRequest {
     size: number;
   }[];
   extraMetadata?: Record<string, unknown>;
+  /** Wire content_type of the send. Optional because `failed_request`
+   *  snapshots persisted before this field existed lack it — consumers
+   *  re-derive it from `attachments` when absent. */
+  content_type?: "text" | "action" | "image" | "file";
 }
 
 export type PendingSendState = "pending" | "failed";
@@ -280,6 +295,227 @@ export class PendingSendTracker {
     if (handle !== undefined) {
       this.cancel(handle);
       this.timers.delete(clientMsgId);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------
+ * Automatic-retry policy.
+ * ---------------------------------------------------------------------- */
+
+/** Whether a rejected POST is worth the ONE automatic replay.
+ *
+ *  Retryable: no HTTP response at all — network drop, our own abort deadline
+ *  (`status: 0`), or a non-HTTP rejection (fetch's TypeError) — and server
+ *  5xx, where the server may not have processed the send (the client_msg_id
+ *  dedupe makes replaying safe either way). NOT retryable: any other real
+ *  HTTP answer. A 4xx is the server understanding the request and refusing it
+ *  — replaying the identical bytes replays the refusal — and 429 explicitly
+ *  asks us to back off, so an instant replay would be exactly wrong. Those
+ *  fail visibly at once instead of burning a second ACK window first.
+ */
+export function isRetryableSendError(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === "number") {
+    return status === 0 || status >= 500;
+  }
+  return true;
+}
+
+/** Does this send still have its automatic retry to spend? */
+export function autoRetryRemaining(send: TrackedSend): boolean {
+  return send.attempts < MAX_AUTOMATIC_SEND_ATTEMPTS;
+}
+
+/* ------------------------------------------------------------------------
+ * The send flow: tracker + POST + automatic retry, behind injected effects.
+ *
+ * useChat used to inline this state machine across sendMessage / retryMessage
+ * / the tracker's onTimeout, which meant the ACK/timeout/retry races could
+ * only be exercised through the hook. Pulling it here (framework-free,
+ * injectable clock/timers/POST) makes the four scenarios that matter —
+ * confirmed, REST-failure, timeout, send-while-disconnected — unit-testable
+ * exactly as they run in production.
+ * ---------------------------------------------------------------------- */
+
+/** How a send ended. `acked` = the server confirmed persisting it (POST 2xx,
+ *  WS echo, or resync found it); `failed` = declared visibly failed. A late
+ *  ACK can still upgrade a `failed` bubble afterwards — server persistence is
+ *  ground truth. */
+export type SendOutcome = "acked" | "failed";
+
+/** The identity a dispatch registers — same shape `PendingSendTracker.begin`
+ *  takes. */
+export interface SendIdentity {
+  roomId: string;
+  clientMsgId: string;
+  optimisticId: string;
+  request: OutgoingSendRequest;
+}
+
+export interface SendFlowOptions {
+  /** Perform the REST POST for this attempt. Resolves with the server's
+   *  message on 2xx; rejects on failure. Injected so tests never touch the
+   *  network and the hook wires the real api client + store reads. */
+  post: (send: TrackedSend) => Promise<unknown>;
+  /** The server confirmed this send via OUR POST resolving — reconcile the
+   *  optimistic bubble. Runs even when another ACK path (echo/resync) beat
+   *  this one, so it MUST be idempotent (the bubble lookup makes it so). */
+  onAcked: (send: TrackedSend, serverMessage: unknown) => void;
+  /** The send is now DECLARED failed — make it visible (failed pill + toast).
+   *  Called exactly once per declaration; a manual retry that fails again is
+   *  a new declaration. */
+  onFailed: (send: TrackedSend, error: string) => void;
+  /** Human-readable message for a rejected POST. */
+  describeError?: (err: unknown) => string;
+  timeoutMs?: number;
+  now?: () => number;
+  schedule?: (fn: () => void, ms: number) => unknown;
+  cancel?: (handle: unknown) => void;
+}
+
+function defaultDescribeError(err: unknown): string {
+  const apiErr = err as { detail?: string; message?: string } | null;
+  return apiErr?.detail || apiErr?.message || "Send failed";
+}
+
+export class SendFlow {
+  private readonly tracker: PendingSendTracker;
+  private readonly opts: SendFlowOptions;
+  /** Resolves a dispatch's terminal outcome (see `SendOutcome`). */
+  private readonly outcomes = new Map<string, (outcome: SendOutcome) => void>();
+
+  constructor(opts: SendFlowOptions) {
+    this.opts = opts;
+    this.tracker = new PendingSendTracker({
+      timeoutMs: opts.timeoutMs,
+      now: opts.now,
+      schedule: opts.schedule,
+      cancel: opts.cancel,
+      // The ACK deadline fired with nothing confirming this send — the exact
+      // silent-loss shape (request black-holed, response lost, refresh hung).
+      // The entry is already `failed` when this runs; spend the automatic
+      // retry if it remains, else declare.
+      onTimeout: (send) => {
+        if (autoRetryRemaining(send)) {
+          this.retry(send);
+          return;
+        }
+        this.declareFailed(send, ACK_TIMEOUT_ERROR);
+      },
+    });
+  }
+
+  /**
+   * Register a send (or a manual retry of one) and fire its POST.
+   *
+   * The returned promise resolves at the send's TERMINAL state — server-
+   * confirmed or visibly failed — never rejects, and spans the automatic
+   * retry, so callers sequencing "after the send" work (auto-title) can gate
+   * it on the outcome instead of firing on attempts that went nowhere.
+   */
+  dispatch(send: SendIdentity): Promise<SendOutcome> {
+    const entry = this.tracker.begin(send);
+    const promise = new Promise<SendOutcome>((resolve) => {
+      // A re-dispatch of the same clientMsgId (manual retry) replaces the
+      // resolver; the superseded promise resolved at ITS terminal state
+      // already (failed) — that is what made the retry reachable.
+      this.outcomes.set(send.clientMsgId, resolve);
+    });
+    void this.post(entry);
+    return promise;
+  }
+
+  /** An ACK from any path (POST 2xx via `post`, WS echo, resync). Resolves
+   *  the entry exactly once; later calls return null (idempotent). */
+  ack(clientMsgId: string): TrackedSend | null {
+    const entry = this.tracker.ack(clientMsgId);
+    if (entry) this.settleOutcome(clientMsgId, "acked");
+    return entry;
+  }
+
+  /**
+   * Reconnect-time deadline sweep (see PendingSendTracker.sweepOverdue): every
+   * pending send past the ACK window is declared failed HERE — with the same
+   * visible effects as a live timeout. No automatic retry from a sweep, on
+   * purpose: the sweep runs after an arbitrary suspension (a phone asleep for
+   * hours), where a silent replay could land long after the user stopped
+   * watching — and past the server's dedupe window, where a replay whose
+   * original DID land double-posts. Stranded sends surface as Retry instead.
+   */
+  sweepOverdue(roomId?: string): TrackedSend[] {
+    const swept = this.tracker.sweepOverdue(roomId);
+    for (const send of swept) {
+      this.declareFailed(send, ACK_TIMEOUT_ERROR);
+    }
+    return swept;
+  }
+
+  get(clientMsgId: string): TrackedSend | undefined {
+    return this.tracker.get(clientMsgId);
+  }
+
+  pendingFor(roomId: string): TrackedSend[] {
+    return this.tracker.pendingFor(roomId);
+  }
+
+  private retry(send: TrackedSend): void {
+    const retried = this.tracker.begin({
+      roomId: send.roomId,
+      clientMsgId: send.clientMsgId,
+      optimisticId: send.optimisticId,
+      request: send.request,
+    });
+    void this.post(retried);
+  }
+
+  private async post(entry: TrackedSend): Promise<void> {
+    // The attempt this POST belongs to. A rejection landing after a NEWER
+    // attempt took over (the deadline fired mid-flight and auto-retried, or
+    // the user tapped Retry) must not touch the newer attempt's state.
+    const attemptAtStart = entry.attempts;
+    try {
+      const serverMessage = await this.opts.post(entry);
+      // An ACK always resolves, even over `failed` — the server persisting
+      // the message is ground truth and a late 2xx upgrades the bubble.
+      this.ack(entry.clientMsgId);
+      this.opts.onAcked(entry, serverMessage);
+    } catch (err) {
+      const current = this.tracker.get(entry.clientMsgId);
+      // Already resolved: another path ACKed it (server has it) — a stale
+      // rejection must never mark a delivered message failed.
+      if (!current) return;
+      if (current.attempts !== attemptAtStart) return;
+      if (
+        current.state === "pending" &&
+        autoRetryRemaining(current) &&
+        isRetryableSendError(err)
+      ) {
+        this.retry(current);
+        return;
+      }
+      // Transition pending → failed; null means the deadline beat this
+      // rejection and already declared (don't declare twice).
+      const settled = this.tracker.fail(entry.clientMsgId);
+      if (settled) {
+        this.declareFailed(
+          settled,
+          (this.opts.describeError ?? defaultDescribeError)(err),
+        );
+      }
+    }
+  }
+
+  private declareFailed(send: TrackedSend, error: string): void {
+    this.opts.onFailed(send, error);
+    this.settleOutcome(send.clientMsgId, "failed");
+  }
+
+  private settleOutcome(clientMsgId: string, outcome: SendOutcome): void {
+    const resolve = this.outcomes.get(clientMsgId);
+    if (resolve) {
+      this.outcomes.delete(clientMsgId);
+      resolve(outcome);
     }
   }
 }
