@@ -403,8 +403,31 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
 .proof-number .proof-word{font-size:clamp(2.6rem,6vw,4.6rem)!important;line-height:1;letter-spacing:-.02em}
 
 </style>
-    <!-- Analytics: Umami (self-hosted) -->
-    <script defer src="https://analytics.unicorncommander.ai/script.js" data-website-id="222f12bf-b802-4755-9000-e566350702a5"></script>
+    <!-- Analytics: Umami (self-hosted) — first-party deployments ONLY.
+         This page is baked into every web image, including self-hosted
+         installs whose CSP (deploy/selfhost/nginx.selfhost.conf.template)
+         rightly blocks analytics.unicorncommander.ai — an unconditional tag
+         there is a guaranteed console error, and anywhere else it is a
+         pointless request that leaks visitor IPs to our host. So the script
+         is injected at runtime, only when the page is actually served on one
+         of our own domains: the dogfood + flagship hosts and the per-org
+         tenants under stable.unicorncommander.ai (deploy/per-org). Everyone
+         else gets silence, not errors. -->
+    <script>
+      (function () {
+        var host = String(location.hostname || "").toLowerCase();
+        var firstParty =
+          host === "stable.magicunicorn.dev" ||
+          host === "stable.unicorncommander.ai" ||
+          /(^|\.)stable\.unicorncommander\.ai$/.test(host);
+        if (!firstParty) return;
+        var s = document.createElement("script");
+        s.defer = true;
+        s.src = "https://analytics.unicorncommander.ai/script.js";
+        s.setAttribute("data-website-id", "222f12bf-b802-4755-9000-e566350702a5");
+        document.head.appendChild(s);
+      })();
+    </script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
