@@ -99,6 +99,18 @@ interface VoiceContextValue {
 const VoiceContext = createContext<VoiceContextValue | null>(null);
 
 /**
+ * Lab/verification seam — NOT for app code.
+ *
+ * The face lab (src/faceLab.tsx, served as /face-lab.html in dev) mounts
+ * AgentPresenceFace under a SYNTHETIC voice context so "does the mouth
+ * actually move on agent audio" is answerable headlessly, without LiveKit.
+ * App code must keep consuming through <VoiceProvider>/useVoice(); anything
+ * else importing these is a review flag.
+ */
+export { VoiceContext as VoiceContextForLab };
+export type { VoiceContextValue };
+
+/**
  * Bind a transcript packet to the LiveKit participant that actually sent it.
  *
  * Human peers may caption only themselves. Agent workers may caption

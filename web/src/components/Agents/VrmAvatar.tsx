@@ -32,11 +32,19 @@
  *
  * WHAT DRIVES THE MOUTH (phase 1)
  * -------------------------------
- * LiveKit's `RemoteParticipant.audioLevel`, sampled inside the render loop.
- * Nothing in `agents/` ships for this — no viseme stream, no TTS hook, no
- * rebuild of the agent worker. The level is read off a ref and applied to the
- * morph IMPERATIVELY; it never becomes React state, because 60 setState calls a
- * second would re-render the whole tile subtree and cost more than the renderer.
+ * A WebAudio analyser over the participant's SUBSCRIBED audio track
+ * (livekit-client `createAudioAnalyser`), sampled inside the render loop, with
+ * `RemoteParticipant.audioLevel` as the fallback when no track/AudioContext is
+ * available. The fallback alone was the shipped v1 and it is why a mounted
+ * puppet could still read as a still image: `audioLevel` is only written when
+ * the SFU's active-speaker ORDERING changes (see Room.handleActiveSpeakersUpdate
+ * — "updates are sent only when there's a change to speaker ordering"), so one
+ * long agent TTS utterance in a 1:1 call freezes the level — and the mouth —
+ * for the whole sentence. The analyser reads the audio itself at frame rate.
+ *
+ * The level is read off refs and applied to the morph IMPERATIVELY; it never
+ * becomes React state, because 60 setState calls a second would re-render the
+ * whole tile subtree and cost more than the renderer.
  *
  * Phase 2 swaps the INPUT for a phoneme-timed schedule off the data channel. The
  * output half (alias resolution, curve, smoothing — lib/mouthShape.ts) does not
@@ -57,12 +65,15 @@ import {
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { LoadingManager } from "three";
 import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
+import { createAudioAnalyser, Track } from "livekit-client";
+import type { RemoteAudioTrack } from "livekit-client";
 import { useVoice } from "@/contexts/VoiceProvider";
 import { identityFor } from "@/lib/identity";
 import { MAX_VRM_BYTES, VRM_LOAD_TIMEOUT_MS } from "@/lib/resolveVrmSrc";
 import {
   blinkAmount,
   idleMouthOpen,
+  mouthOpenFromAnalyserVolume,
   mouthOpenFromLevel,
   resolveMouthMorph,
   smoothLevel,
@@ -89,8 +100,16 @@ export interface TalkingFaceProbe {
   source: "vrm" | "puppet" | "placeholder";
   /** Which morph/expression the mouth is driving, or "jaw-bone". */
   driver: string;
-  /** Raw LiveKit audioLevel this frame. */
+  /** Raw level this frame (analyser volume, or LiveKit audioLevel). */
   level: number;
+  /**
+   * Where `level` comes from. "analyser" = WebAudio over the subscribed audio
+   * track (frame-rate, per-syllable). "participant" = the SFU-fed
+   * `audioLevel` fallback, which freezes between speaker-ordering changes —
+   * if a live call reports "participant" while the agent is audibly talking,
+   * the track/AudioContext hookup is what to investigate.
+   */
+  levelSource: "analyser" | "participant";
   /** 0..1 applied to the mouth this frame. */
   mouthOpen: number;
   /** Rolling average over the last second. */
@@ -273,9 +292,17 @@ export function VrmAvatar({
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   /* The participant handle lives in a REF, not in state. The render loop reads
-   * `.audioLevel` off it 60 times a second; routing that through React would
-   * re-render the tile on every frame. */
-  const participantRef = useRef<{ audioLevel: number } | null>(null);
+   * levels off it 60 times a second; routing that through React would
+   * re-render the tile on every frame. Duck-typed (not RemoteParticipant) so
+   * the face lab can drive it with a fake — the loop only ever touches these
+   * members. */
+  const participantRef = useRef<{
+    audioLevel: number;
+    getTrackPublication?: (
+      source: Track.Source,
+    ) => { track?: unknown } | undefined;
+    audioTrackPublications?: Map<string, { track?: unknown }>;
+  } | null>(null);
   useEffect(() => {
     /* `version` is in the deps on purpose and is otherwise unused: the LiveKit
      * SDK hands back the SAME participant object across joins/leaves, so an
@@ -572,6 +599,89 @@ export function VrmAvatar({
     const ro = new ResizeObserver(resize);
     ro.observe(host);
 
+    /* ---- level source: analyser over the subscribed track ----------- *
+     * Rebuilt whenever the participant's audio track changes (subscribe
+     * churn, device handoff). The per-frame check is property reads; the
+     * expensive create runs only on an actual change. If no track is
+     * available — or the AudioContext is suspended (autoplay policy) — the
+     * loop falls back to `participant.audioLevel` and keeps trying. */
+    let levelAnalyser: ReturnType<typeof createAudioAnalyser> | null = null;
+    let analysedTrackId: string | null = null;
+    let lastResumeAttempt = 0;
+
+    const audioTrackOf = (
+      participant: typeof participantRef.current,
+    ): { mediaStreamTrack: MediaStreamTrack; kind?: string } | null => {
+      if (!participant) return null;
+      try {
+        const micPub = participant.getTrackPublication?.(
+          Track.Source.Microphone,
+        );
+        const firstAudioPub = participant.audioTrackPublications
+          ?.values()
+          .next().value;
+        const track = (micPub?.track ?? firstAudioPub?.track) as
+          | { mediaStreamTrack?: unknown; kind?: string }
+          | undefined;
+        if (
+          track &&
+          track.mediaStreamTrack instanceof MediaStreamTrack &&
+          (track.kind === undefined || track.kind === "audio")
+        ) {
+          return track as { mediaStreamTrack: MediaStreamTrack; kind?: string };
+        }
+      } catch {
+        /* duck-typed access — a shape we don't know is just "no track" */
+      }
+      return null;
+    };
+
+    const teardownAnalyser = () => {
+      const current = levelAnalyser;
+      levelAnalyser = null;
+      analysedTrackId = null;
+      if (current) {
+        void current.cleanup().catch(() => {});
+      }
+    };
+
+    const ensureAnalyser = (now: number) => {
+      const track = audioTrackOf(participantRef.current);
+      const trackId = track?.mediaStreamTrack.id ?? null;
+      if (trackId !== analysedTrackId) {
+        teardownAnalyser();
+        analysedTrackId = trackId;
+        if (track) {
+          try {
+            /* createAudioAnalyser only touches `.mediaStreamTrack` when not
+             * cloning, so the structural check above is the real contract.
+             * Window widened from the library's -100..-80 default: that
+             * window saturates on any speech and the mouth would pin open. */
+            levelAnalyser = createAudioAnalyser(track as RemoteAudioTrack, {
+              cloneTrack: false,
+              fftSize: 256,
+              smoothingTimeConstant: 0.6,
+              minDecibels: -90,
+              maxDecibels: -20,
+            });
+          } catch (e) {
+            levelAnalyser = null;
+            console.warn(
+              `[talking-face] audio analyser unavailable for ${participantId}:`,
+              e,
+            );
+          }
+        }
+      }
+      // Autoplay policy can leave a fresh AudioContext suspended; a suspended
+      // graph reports all-zero bins. Nudge it, at most once a second.
+      const ctx = levelAnalyser?.analyser.context;
+      if (ctx && ctx.state === "suspended" && now - lastResumeAttempt > 1000) {
+        lastResumeAttempt = now;
+        void (ctx as AudioContext).resume().catch(() => {});
+      }
+    };
+
     /* ---- the loop --------------------------------------------------- */
     let smoothed = 0;
     let frames = 0;
@@ -599,10 +709,25 @@ export function VrmAvatar({
         fpsWindowFrames = 0;
       }
 
-      const raw = participantRef.current?.audioLevel ?? 0;
+      ensureAnalyser(now);
+      const analyserLive =
+        levelAnalyser !== null &&
+        levelAnalyser.analyser.context.state === "running";
+      let raw: number;
+      let levelSource: TalkingFaceProbe["levelSource"];
+      if (analyserLive && levelAnalyser) {
+        raw = levelAnalyser.calculateVolume();
+        levelSource = "analyser";
+      } else {
+        raw = participantRef.current?.audioLevel ?? 0;
+        levelSource = "participant";
+      }
       smoothed = smoothLevel(smoothed, raw, 0.3);
       const elapsed = now - startedAt;
-      const driven = mouthOpenFromLevel(smoothed);
+      const driven =
+        levelSource === "analyser"
+          ? mouthOpenFromAnalyserVolume(smoothed)
+          : mouthOpenFromLevel(smoothed);
       const mouth = driven > 0 ? driven : idleMouthOpen(elapsed);
 
       if (driver) {
@@ -627,6 +752,7 @@ export function VrmAvatar({
         source: probeSource,
         driver: driver?.label ?? "none",
         level: raw,
+        levelSource,
         mouthOpen: mouth,
         fps,
         frames,
@@ -703,6 +829,7 @@ export function VrmAvatar({
       if (disposed) return;
       disposed = true;
       stopLoop();
+      teardownAnalyser();
       hostWindow.clearInterval(watchdog);
       hostWindow.clearTimeout(timeout);
       abort.abort();
@@ -743,7 +870,7 @@ export function VrmAvatar({
         <span className="pointer-events-none absolute left-1 top-1 whitespace-pre rounded bg-black/75 px-1.5 py-1 font-mono text-[10px] leading-tight text-amber-300">
           {`${hud.source}${hud.source === "placeholder" ? " (procedural, no VRM)" : ""}\n` +
             `${hud.fps.toFixed(0)} fps · ${hud.ticker}\n` +
-            `lvl ${hud.level.toFixed(3)} → mouth ${hud.mouthOpen.toFixed(2)}\n` +
+            `lvl ${hud.level.toFixed(3)} (${hud.levelSource}) → mouth ${hud.mouthOpen.toFixed(2)}\n` +
             `drv ${hud.driver}${hud.error ? `\nerr ${hud.error}` : ""}`}
         </span>
       )}

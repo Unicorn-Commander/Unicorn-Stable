@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  ANALYSER_FULL_SPEECH,
+  ANALYSER_NOISE_FLOOR,
   MOUTH_NOISE_FLOOR,
   MOUTH_NORMAL_SPEECH,
   blinkAmount,
   idleMouthOpen,
+  mouthOpenFromAnalyserVolume,
   mouthOpenFromLevel,
   resolveMouthMorph,
   smoothLevel,
@@ -103,6 +106,36 @@ describe("mouthOpenFromLevel", () => {
   it("never leaves 0..1, whatever it is handed", () => {
     for (const level of [NaN, Infinity, -Infinity, 1e9, -1e9, 0.0001, 1]) {
       const open = mouthOpenFromLevel(level);
+      expect(open).toBeGreaterThanOrEqual(0);
+      expect(open).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe("mouthOpenFromAnalyserVolume", () => {
+  it("gates silence to fully closed", () => {
+    expect(mouthOpenFromAnalyserVolume(0)).toBe(0);
+    expect(mouthOpenFromAnalyserVolume(ANALYSER_NOISE_FLOOR)).toBe(0);
+    expect(mouthOpenFromAnalyserVolume(ANALYSER_NOISE_FLOOR * 0.5)).toBe(0);
+  });
+
+  it("reaches fully open at conversational analyser RMS", () => {
+    expect(mouthOpenFromAnalyserVolume(ANALYSER_FULL_SPEECH)).toBe(1);
+    expect(mouthOpenFromAnalyserVolume(0.9)).toBe(1);
+  });
+
+  it("is monotonic through the speech band", () => {
+    let previous = -1;
+    for (let v = ANALYSER_NOISE_FLOOR; v <= ANALYSER_FULL_SPEECH; v += 0.02) {
+      const open = mouthOpenFromAnalyserVolume(v);
+      expect(open).toBeGreaterThanOrEqual(previous);
+      previous = open;
+    }
+  });
+
+  it("never leaves 0..1, whatever it is handed", () => {
+    for (const volume of [NaN, Infinity, -Infinity, 1e9, -1, 0.5, 1]) {
+      const open = mouthOpenFromAnalyserVolume(volume);
       expect(open).toBeGreaterThanOrEqual(0);
       expect(open).toBeLessThanOrEqual(1);
     }

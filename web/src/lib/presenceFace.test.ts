@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_AGENT_FACE_CONTEXTS,
   agentSlugFromIdentity,
   isAgentIdentity,
   isVrmSurfaceEligible,
@@ -9,6 +10,7 @@ import {
   selectFallbackRung,
   selectPresenceRung,
   unicornStateFor,
+  withinAgentFaceBudget,
   type PresenceRungInput,
 } from "./presenceFace";
 
@@ -171,6 +173,25 @@ describe("selectPresenceRung — the branded puppet is shipped product", () => {
     expect(selectPresenceRung(input({ ...base, faceHealthy: false }))).toBe(
       "portrait",
     );
+  });
+});
+
+describe("withinAgentFaceBudget", () => {
+  it("allows the typical call shapes — one agent, a couple of agents", () => {
+    // THE regression: a 1:1 Majik call in Gallery had zero face-eligible
+    // tiles, so "in video it was just the static avatar image".
+    expect(withinAgentFaceBudget(1)).toBe(true);
+    expect(withinAgentFaceBudget(2)).toBe(true);
+    expect(withinAgentFaceBudget(MAX_AGENT_FACE_CONTEXTS)).toBe(true);
+  });
+
+  it("refuses agent swarms — the unbounded-context case the role gate feared", () => {
+    expect(withinAgentFaceBudget(MAX_AGENT_FACE_CONTEXTS + 1)).toBe(false);
+    expect(withinAgentFaceBudget(12)).toBe(false);
+  });
+
+  it("zero agents means no budget question at all", () => {
+    expect(withinAgentFaceBudget(0)).toBe(false);
   });
 });
 

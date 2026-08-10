@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face lab</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0f1117;
+        color: #c9cbd6;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      header { padding: 14px 18px 8px; }
+      h1 { margin: 0 0 2px; font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+      p { margin: 0; color: #7d8194; }
+      #stage {
+        width: 320px; height: 320px; margin: 12px 18px;
+        border: 1px solid #262a38; border-radius: 12px; overflow: hidden;
+      }
+      #result { padding: 0 18px 18px; white-space: pre; }
+      #result[data-verdict="PASS"] { color: #7ce38b; }
+      #result[data-verdict="FAIL"] { color: #ff7b72; }
+      #result[data-verdict="SKIP"] { color: #e3b341; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Talking-face lab — mount + mouth verification</h1>
+      <p>
+        ?source=analyser (default: synthetic WebAudio track) ·
+        ?source=participant (SFU audioLevel fallback) — result below and in
+        console as FACELAB_RESULT
+      </p>
+    </header>
+    <div id="stage"></div>
+    <div id="result">running…</div>
+    <script type="module" src="/src/faceLab.tsx"></script>
+  </body>
+</html>

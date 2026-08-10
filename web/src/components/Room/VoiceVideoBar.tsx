@@ -72,6 +72,7 @@ import {
   isVrmSurfaceEligible,
   mapAgentState,
   resolveCallTilePersona,
+  withinAgentFaceBudget,
 } from "@/lib/presenceFace";
 // ─────────────────────────────────────────────────────────────────────────────
 // Pop-out / Picture-in-Picture module (audit §4a) — web/src/components/Room/popout/.
@@ -358,6 +359,12 @@ interface ParticipantTileProps {
    * type-shaped LiveKit identity ("stable-brigade") instead of a persona one.
    */
   roomId: string;
+  /**
+   * The call's agent-tile count is within MAX_AGENT_FACE_CONTEXTS, so agent
+   * tiles may take the face rung on ANY stage surface (Gallery/sidebar), not
+   * only the Speaker big tile. Computed once per call surface by the parent.
+   */
+  agentFaceBudgetOk: boolean;
   /** Attach ref for the camera track (present only when a video should show). */
   videoRef?: AttachRef;
   /** Event-driven speaking state (active-speaker OR isSpeaking). */
@@ -385,6 +392,7 @@ interface ParticipantTileProps {
 function ParticipantTile({
   p,
   roomId,
+  agentFaceBudgetOk,
   videoRef,
   speaking,
   size = "normal",
@@ -419,7 +427,21 @@ function ParticipantTile({
    * unmistakably an agent. The roster is still consulted, but only to ENRICH
    * (portrait, emoji). */
   const isAgentTile = isAgentIdentity(p.id) || p.isAgentKind || p.isAgent;
-  const faceEligible = isVrmSurfaceEligible({ size, fill, inPopout });
+  /* Face-eligibility. Two ways in:
+   *   1. ROLE — the Speaker/Spotlight big tile, a stage-fill layout, a
+   *      pop-out (`isVrmSurfaceEligible`, unchanged).
+   *   2. BUDGET — an AGENT tile on any stage surface (Gallery, sidebar,
+   *      Presentation filmstrip) while the call's agent-tile count is within
+   *      MAX_AGENT_FACE_CONTEXTS. This is the fix for "in video it was just
+   *      the static avatar image": Gallery — the mode every show-video path
+   *      lifts to — passed size "normal" and was therefore NEVER face
+   *      eligible, so the branded talking puppet could not mount anywhere
+   *      but the Speaker big tile. Tiles physically smaller than
+   *      MIN_FACE_BOX_PX (the w-32 filmstrip) still refuse a renderer
+   *      before any WebGL context exists, and humans never mount WebGL. */
+  const faceEligible =
+    isVrmSurfaceEligible({ size, fill, inPopout }) ||
+    (isAgentTile && agentFaceBudgetOk);
   /* WHICH CHARACTER this tile draws. The worker's LiveKit identity is
    * TYPE-shaped (verified on dogfood: it joins as `stable-brigade`;
    * registry.py accepts as `agent-<agent_type>`) — it does not name the
@@ -1263,6 +1285,19 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     [participants, screenShares],
   );
 
+  // WebGL-face budget: agent tiles may talk on ANY stage surface while the
+  // call has few enough agents that one context each stays cheap. Counts the
+  // same robust agent-ness the tiles use (identity/kind/roster).
+  const agentFaceBudgetOk = useMemo(
+    () =>
+      withinAgentFaceBudget(
+        participants.filter(
+          (p) => isAgentIdentity(p.id) || p.isAgentKind || p.isAgent,
+        ).length,
+      ),
+    [participants],
+  );
+
   // Mirror the REAL video-presence signal into the call-UI store so layout
   // decisions (CallRoomLayout's audio-first intent) can tell an audio call
   // from a video call without reaching into LiveKit track state. Cleared on
@@ -1672,6 +1707,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         key={p.id}
         p={p}
         roomId={roomId}
+        agentFaceBudgetOk={agentFaceBudgetOk}
         size={opts?.size ?? "normal"}
         fill={opts?.fill}
         hidden={hidden}
