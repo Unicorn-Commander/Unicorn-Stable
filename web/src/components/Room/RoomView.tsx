@@ -24,6 +24,7 @@ import { ParticipantStrip } from "./ParticipantStrip";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
+import { StartGroupModal } from "./StartGroupModal";
 import { ThreadPanel } from "./ThreadPanel";
 import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
@@ -94,6 +95,10 @@ export function RoomView({ roomId }: RoomViewProps) {
   const setParticipants = useAppStore((s) => s.setParticipants);
   const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // "Start a group with <peer>…" — the EXPLICIT DM→group conversion. 1:1 DMs
+  // deliberately have no Invite (inviting silently converted the private
+  // room); this replacement creates a NEW group room instead.
+  const [startGroupOpen, setStartGroupOpen] = useState(false);
   // Header agent-switcher (agent rooms only): shows the room's current agent
   // and opens the Brigade picker — inviting another agent re-routes replies to
   // it (last-invited wins; @mention any member agent to address it directly).
@@ -335,6 +340,14 @@ export function RoomView({ roomId }: RoomViewProps) {
         name: dmAgentName,
       })
     : null;
+  // Who "Start a group with …" names: the agent for agent DMs, the person for
+  // human DMs. The display_name fallback strips the "DM with " prefix so a
+  // pre-members render never yields "Start a group with DM with Alice".
+  const dmPeerLabel = dmAgentId
+    ? dmAgentName
+    : dmPeer?.display_name ||
+      (roomDetail?.display_name || "").replace(/^DM with /, "") ||
+      "them";
 
   async function saveTopic() {
     const next = topicDraft.trim();
@@ -732,7 +745,11 @@ export function RoomView({ roomId }: RoomViewProps) {
               <div
                 ref={overflowMenuRef}
                 role="menu"
-                className="glass-heavy absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-xl py-1 shadow-pop animate-fade-in"
+                className={clsx(
+                  "glass-heavy absolute right-0 top-full z-50 mt-1 overflow-hidden rounded-xl py-1 shadow-pop animate-fade-in",
+                  // DMs carry the longer "Start a group with <name>…" entry.
+                  isDm ? "w-60" : "w-44",
+                )}
               >
                 {/* Phones: model switcher lives here (its inline trigger is
                     hidden < md). Rendered as a labeled row; its own popover
@@ -827,6 +844,27 @@ export function RoomView({ roomId }: RoomViewProps) {
                   Rename channel
                 </button>
                 )}
+                {/* 1:1 DMs: the explicit group conversion. EVERY viewport —
+                    DM headers have no Invite button (removed on purpose:
+                    inviting silently converted the private DM), so this
+                    labeled entry is the one place the affordance lives. It
+                    creates a NEW group room; this DM stays private. */}
+                {isDm && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setStartGroupOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+                >
+                  <UserPlus className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 truncate">
+                    Start a group with {dmPeerLabel}…
+                  </span>
+                </button>
+                )}
+                {isDm && <div className="my-1 h-px bg-white/[0.06]" />}
                 {!isDm && <div className="my-1 h-px bg-white/[0.06] md:hidden" />}
                 <button
                   role="menuitem"
@@ -873,6 +911,17 @@ export function RoomView({ roomId }: RoomViewProps) {
       </AnimatePresence>
 
       <AnimatePresence>
+        {startGroupOpen && (
+          <StartGroupModal
+            roomId={roomId}
+            peerLabel={dmPeerLabel}
+            residentAgentId={dmAgentId}
+            onClose={() => setStartGroupOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {leaveOpen && (
           <LeaveRoomModal
             roomName={displayName}
@@ -897,10 +946,18 @@ export function RoomView({ roomId }: RoomViewProps) {
         )}
         {/* The call surface (resizable video grid / audio bar) + chat, composed
             so chat always coexists BESIDE the video (never an overlay). Owns the
-            agent stage + chat panel; reads the call/view-mode state itself. */}
+            agent stage + chat panel; reads the call/view-mode state itself.
+            In a 1:1 DM (including during a DM call) the invite affordance is
+            the EXPLICIT start-a-group flow — a plain invite would silently
+            convert the private DM, which is exactly what the UX wave removed.
+            The live call keeps running in THIS room either way: the modal
+            overlays it, and navigating to the new group leaves the call owned
+            here (VoiceProvider persists it; CallDock stands in). */}
         <CallRoomLayout
           roomId={roomId}
-          onInviteAgent={() => setInviteOpen(true)}
+          onInviteAgent={() =>
+            isDm ? setStartGroupOpen(true) : setInviteOpen(true)
+          }
         />
 
         <AnimatePresence>

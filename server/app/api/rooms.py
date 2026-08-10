@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
@@ -313,6 +313,153 @@ async def ensure_human_dm(
         online_count=info["online_count"],
     )
     return EnsureHumanDmResponse(**base.model_dump(), created=created)
+
+
+class StartGroupBody(BaseModel):
+    """Selections to seed alongside the DM's own members. All optional —
+    the DM's two sides always come along; these are the additions."""
+
+    participant_ids: list[uuid.UUID] = Field(default_factory=list, max_length=48)
+    # People who exist in Keycloak but never signed into Stable (the picker's
+    # "hasn't signed in yet" rows) — resolved to Participants exactly like the
+    # invite endpoint does.
+    keycloak_subs: list[str] = Field(default_factory=list, max_length=48)
+    agent_ids: list[str] = Field(default_factory=list, max_length=16)
+    # Client-computed label (the standing "Group: A, B, C" formula). Optional:
+    # the server derives the same formula from member names when absent.
+    display_name: str | None = Field(None, max_length=255)
+
+
+class StartGroupResponse(RoomResponse):
+    """The freshly created group room; ``origin_room_id`` is the source DM."""
+
+    origin_room_id: uuid.UUID
+
+
+@router.post(
+    "/rooms/{room_id}/start-group",
+    response_model=StartGroupResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_group_from_dm(
+    room_id: uuid.UUID,
+    body: StartGroupBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+    _rl: Annotated[
+        None, Depends(rate_limit("room_create", "rate_limit_room_create_per_min"))
+    ] = None,
+) -> StartGroupResponse:
+    """Start a NEW group DM from an existing 1:1 DM (explicit conversion).
+
+    The new ``group_dm`` is seeded with both sides of the DM (human peer or
+    resident agent) plus the selected people/agents. The source DM is never
+    mutated — its history stays private. This is deliberately NOT the invite
+    endpoint's silent DM→group promotion: the private room keeps its walls and
+    the group is a new room with no prior history.
+
+    One transactional server route (rather than client-side create+invite
+    orchestration) so a partial failure can never mint a group that claims to
+    include the peer without the peer — the room row and every membership
+    commit together.
+    """
+    # Validate requested agents against Brigade up front (same contract as
+    # invite-brigade-agent) and learn their display names for participant rows.
+    agent_names: dict[str, str] = {}
+    if body.agent_ids:
+        from app.api.brigade import _fetch_brigade_agents
+
+        roster = await _fetch_brigade_agents()
+        known = {a.id: a for a in roster}
+        for agent_id in body.agent_ids:
+            if agent_id not in known:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Unknown Brigade agent: {agent_id}",
+                )
+            agent_names[agent_id] = known[agent_id].name
+
+    # Resolve Keycloak-only picks into Participants (create-on-demand, same
+    # path as the invite endpoint). Participants are global rows, not room
+    # membership, so creating them ahead of the transaction is safe.
+    extra_ids: list[uuid.UUID] = list(body.participant_ids)
+    if body.keycloak_subs:
+        from app.api.users import resolve_or_create_participant
+        from app.config import get_settings
+
+        for sub in body.keycloak_subs:
+            try:
+                resolved = await resolve_or_create_participant(
+                    db, get_settings(), sub
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+                )
+            extra_ids.append(resolved.id)
+
+    svc = _build_room_service(db, livekit, presence)
+    room = await svc.start_group_from_dm(
+        source_room_id=room_id,
+        caller_id=user["participant_id"],
+        extra_participant_ids=extra_ids,
+        new_agent_ids=body.agent_ids,
+        agent_names=agent_names,
+        display_name=body.display_name,
+        org_id=settings.instance_org_id,
+    )
+
+    # Post-commit, best-effort: run the canonical agent-binding pass for the
+    # requested agents. Membership already exists (written in the transaction
+    # above), so this is the avatar/display backfill the invite path does —
+    # a failure here costs a picture, never the binding.
+    if body.agent_ids:
+        from app.api.brigade import _ensure_agent_member
+
+        for agent_id in body.agent_ids:
+            try:
+                await _ensure_agent_member(db, str(room.id), agent_id)
+            except Exception:
+                logger.warning(
+                    "start_group_agent_backfill_failed",
+                    room_id=str(room.id),
+                    agent_id=agent_id,
+                    exc_info=True,
+                )
+
+    # Tell every added human (peer + extras) about their new room, same event
+    # the invite endpoint emits, so open sidebars pick the group up live.
+    try:
+        from app.api.messages import _ws_send_participant
+
+        members = await svc.get_members(room.id, caller_id=user["participant_id"])
+        for m in members:
+            if m.get("is_self") or m.get("participant_type") == "agent":
+                continue
+            await _ws_send_participant(
+                str(m["participant_id"]),
+                {
+                    "type": "room_invited",
+                    "payload": {
+                        "room_id": str(room.id),
+                        "inviter_name": user.get("display_name")
+                        or user.get("username"),
+                    },
+                },
+            )
+    except Exception:
+        logger.debug("start_group_ws_notify_failed", exc_info=True)
+
+    info = await svc.get_room(room.id)
+    base = _room_to_response(
+        info["room"],
+        member_count=info["member_count"],
+        online_count=info["online_count"],
+    )
+    return StartGroupResponse(**base.model_dump(), origin_room_id=room_id)
 
 
 @router.get("/rooms/browse", response_model=list[RoomResponse])
