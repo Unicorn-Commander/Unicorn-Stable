@@ -10,15 +10,26 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_current_user, get_db, get_redis, rate_limit, require_room_member
+from app.deps import (
+    get_current_user,
+    get_db,
+    get_livekit,
+    get_redis,
+    rate_limit,
+    require_room_member,
+)
 from app.models.participant import Participant, ParticipantType
 from app.models.push_subscription import PushSubscription
 from app.models.room import Room, RoomMember, RoomType
+# Reuse the webhook's parser so the identity wire format (username_<uuid>)
+# has one reader, not a second regex that can drift from it.
+from app.api.webhooks import _extract_participant_id
 # Imported as a MODULE, not `from … import RING_TIMEOUT_S`, on purpose: a
 # value-binding here would be a second copy of the ring deadline that could
 # drift from the one the service actually arms its timer with. One clock.
 from app.services import call_service as _cs
 from app.services.call_service import CallService
+from app.services.livekit_service import LiveKitService
 from app.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -45,14 +56,15 @@ def _svc(redis: Redis) -> CallService:
 class CalleeStateOut(BaseModel):
     id: str
     display_name: str
-    #: ringing | offline | busy | unknown
+    #: ringing | offline | busy | unknown | in_call
     state: str
 
 
 class RingResponse(BaseModel):
     call_id: str | None
     room_id: str
-    #: ringing | unreachable
+    #: ringing | unreachable | in_call ("in_call": everyone you would ring is
+    #: already ON this room's call — don't wait for an answer, just join)
     state: str
     started_at: str | None
     expires_at: str | None
@@ -73,6 +85,32 @@ async def _room_or_404(db: AsyncSession, room_id: uuid.UUID) -> Room:
     return room
 
 
+async def _in_call_participant_ids(livekit: LiveKitService, room: Room) -> set[str]:
+    """Participant ids CONNECTED to this room's LiveKit call right now.
+
+    The media plane is the only honest source for "on the line": Redis room
+    presence conflates "has the app open" with "in the call" (both the WS
+    handler and the LiveKit webhook write it), and the ring-window busy latch
+    dies 45s after the call is answered. Ringing someone who is already on the
+    line is pure noise — their in-call device suppresses the banner while
+    every OTHER device rings for a conversation they are already having.
+
+    Best-effort by design: if the LiveKit API cannot be reached, ringing must
+    keep working, so the answer degrades to "nobody provably in the call".
+    """
+    try:
+        info = await livekit.get_room(room.livekit_room_name)
+    except Exception:
+        logger.warning("call_livekit_occupancy_probe_failed", room_id=str(room.id), exc_info=True)
+        return set()
+    ids: set[str] = set()
+    for p in info.get("participants", []):
+        pid = _extract_participant_id(getattr(p, "identity", "") or "")
+        if pid:
+            ids.add(pid)
+    return ids
+
+
 @router.post("/rooms/{room_id}/call/ring", response_model=RingResponse)
 async def ring_room(
     room_id: uuid.UUID,
@@ -82,11 +120,19 @@ async def ring_room(
     user: Annotated[dict[str, Any], Depends(require_room_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
     _rl: Annotated[
         None, Depends(rate_limit("call_ring", "rate_limit_token_mint_per_min"))
     ] = None,
 ) -> RingResponse:
-    """Ring the other member(s) of a DM. Never rings a channel."""
+    """Ring the other member(s) of a DM. Never rings a channel.
+
+    A member who is already ON this room's call is never rung — the response
+    comes back `in_call` and the client simply joins. That is what makes
+    switching devices mid-call a one-click move instead of a fresh offer that
+    rings the peer's other devices (or, worse, reads your own live call as
+    "<peer> is busy" and locks you out of it).
+    """
     room = await _room_or_404(db, room_id)
 
     if room.room_type == RoomType.CHANNEL:
@@ -150,17 +196,28 @@ async def ring_room(
             "id": str(p.id), "display_name": p.display_name or p.username,
             "push_reachable": p.id in push_ids,
         } for p in rows],
+        in_call_participant_ids=await _in_call_participant_ids(livekit, room),
     )
 
-    if call["state"] == "ringing":
+    # `resumed` = the service handed back an offer that is ALREADY live (the
+    # caller re-rang mid-window, e.g. from a second device). Its timeout task
+    # is armed and its pushes were sent the first time — doing either again
+    # would double the no-answer clock and the OS notifications.
+    if call["state"] == "ringing" and not call.get("resumed"):
         # Server-side no-answer clock. The client's timer is derived from the
         # `expires_at` this same call published, so the two agree by
         # construction rather than by two constants happening to match.
         svc.arm_timeout(str(call["call_id"]))
         try:
             from app.services.push_service import dispatch_call_pushes
+            # A member who is already ON the call gets no OS push — "X is
+            # calling" about the call they are sitting in. Everyone else keeps
+            # the existing push behaviour (a busy callee may still answer from
+            # the notification).
+            state_by_id = {str(t["id"]): t["state"] for t in call["targets"]}
+            push_rows = [p for p in rows if state_by_id.get(str(p.id)) != "in_call"]
             await dispatch_call_pushes(
-                db=db, targets=rows, room=room, caller_name=caller_name,
+                db=db, targets=push_rows, room=room, caller_name=caller_name,
                 call_id=str(call["call_id"]), settings=get_settings(),
             )
         except Exception:

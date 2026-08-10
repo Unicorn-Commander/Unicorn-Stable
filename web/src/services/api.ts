@@ -126,15 +126,19 @@ export interface RoomMember {
 export interface RingTarget {
   id: string;
   display_name: string;
-  /** ringing | offline | busy | unknown */
+  /** ringing | offline | busy | unknown | in_call */
   state: string;
 }
 
 export interface RingResponse {
-  /** null when nobody was rung (everyone offline/busy) — there is no call. */
+  /** null when nobody was rung (everyone offline/busy/in_call) — no offer. */
   call_id: string | null;
   room_id: string;
-  /** ringing | unreachable */
+  /**
+   * ringing | unreachable | in_call. "in_call" = everyone we would ring is
+   * already ON this room's call — nothing to wait for, just join it (this is
+   * how moving a live call to another device works).
+   */
   state: string;
   started_at: string | null;
   expires_at: string | null;

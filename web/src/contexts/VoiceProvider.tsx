@@ -9,11 +9,16 @@ import {
 } from "react";
 import { Room, RoomEvent, ConnectionState, Track } from "livekit-client";
 import type {
+  DisconnectReason,
   RemoteParticipant,
   LocalParticipant,
   RemoteTrack,
   RemoteAudioTrack,
 } from "livekit-client";
+import {
+  isMovedToAnotherDevice,
+  MOVED_TO_ANOTHER_DEVICE_TOAST,
+} from "@/lib/callHandoff";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -453,7 +458,20 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         .on(RoomEvent.Reconnected, onState)
         .on(RoomEvent.Reconnecting, () => setIsConnecting(true))
         .on(RoomEvent.ConnectionStateChanged, onState)
-        .on(RoomEvent.Disconnected, () => {
+        .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
+          // DUPLICATE_IDENTITY = this same person joined the call from
+          // ANOTHER device, and LiveKit handed the identity over — a device
+          // handoff, not a failure. Tear this leg down fully (disconnect()
+          // also flushes the transcript export this leg accumulated) and say
+          // what happened; the call button is the move-it-back affordance
+          // (the server answers a re-ring of a live call with `in_call` →
+          // plain join). Guarded on roomRef so a late event from an already-
+          // replaced Room can never tear down the CURRENT call.
+          if (roomRef.current === r && isMovedToAnotherDevice(reason)) {
+            disconnect();
+            useAppStore.getState().pushToast(MOVED_TO_ANOTHER_DEVICE_TOAST);
+            return;
+          }
           setIsConnected(false);
           setVoiceActive(false);
           sync(r);
