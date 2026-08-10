@@ -921,6 +921,13 @@ async def remove_brigade_agent(
                 _RM.participant_id == agent_p.id,
             )
         )
+        # A kick must also revoke the RESPONDER binding: the text responder
+        # answers as metadata.brigade_agent_id, so leaving it pointing at the
+        # evicted agent means the "kicked" agent keeps replying in the room.
+        meta = dict(room.metadata_ or {})
+        if meta.get("brigade_agent_id") == brigade_agent_id:
+            meta.pop("brigade_agent_id", None)
+            room.metadata_ = meta  # reassign, not mutate — JSONB change detection
         await db.commit()
 
     # Best-effort eviction from LiveKit. Identity is whatever the worker

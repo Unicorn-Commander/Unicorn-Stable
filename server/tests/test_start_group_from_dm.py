@@ -388,3 +388,24 @@ class StartGroupFromDmServiceTests(IsolatedAsyncioTestCase):
         # Peer first, caller excluded — the standing CreateDmModal formula.
         self.assertEqual(room.display_name, "Group: Alice")
         self.assertTrue(room.name.startswith("group-alice"))
+
+
+class KickClearsResponderBindingTest(TestCase):
+    """Kicking the resident agent must clear metadata.brigade_agent_id.
+
+    The text responder answers as the room's metadata binding — if the kick
+    leaves it pointing at the evicted agent, the agent keeps replying after
+    removal (the kickability requirement fails silently).
+    """
+
+    def test_metadata_binding_cleared_on_kick(self) -> None:
+        import inspect
+
+        import app.api.brigade as brigade_api
+
+        source = inspect.getsource(brigade_api.remove_brigade_agent)
+        # The kick path must both drop the member row AND clear the binding
+        # (reassigned, not mutated, for JSONB change detection).
+        self.assertIn('meta.get("brigade_agent_id") == brigade_agent_id', source)
+        self.assertIn('meta.pop("brigade_agent_id", None)', source)
+        self.assertIn("room.metadata_ = meta", source)
