@@ -85,6 +85,36 @@ export function mouthOpenFromLevel(level: number): number {
 }
 
 /**
+ * Same job for a CLIENT-SIDE WebAudio analyser volume
+ * (livekit-client `createAudioAnalyser().calculateVolume()`, 0..1 RMS over
+ * frequency bins).
+ *
+ * Why a second mapping exists at all: `participant.audioLevel` is written by
+ * the SFU's active-speaker updates, which livekit-client only applies when
+ * the SPEAKER ORDERING changes ("updates are sent only when there's a change
+ * to speaker ordering" — Room.handleActiveSpeakersUpdate). During one long
+ * agent TTS utterance in a two-party call the ordering never changes, the
+ * level freezes at its initial value, and a mouth driven from it holds one
+ * position for the whole sentence — a face that is provably "on" and still
+ * reads as a static image. The analyser samples the SUBSCRIBED audio track
+ * itself at frame rate, so it modulates per syllable.
+ *
+ * The scales differ — analyser RMS for speech sits roughly 0.05..0.5 against
+ * `audioLevel`'s 0.05..0.2 — hence separate floor/full constants rather than
+ * reusing `mouthOpenFromLevel`'s.
+ */
+export const ANALYSER_NOISE_FLOOR = 0.03;
+export const ANALYSER_FULL_SPEECH = 0.4;
+
+export function mouthOpenFromAnalyserVolume(volume: number): number {
+  if (!Number.isFinite(volume) || volume <= ANALYSER_NOISE_FLOOR) return 0;
+  const span = ANALYSER_FULL_SPEECH - ANALYSER_NOISE_FLOOR;
+  const normalized = (volume - ANALYSER_NOISE_FLOOR) / span;
+  const curved = Math.sqrt(Math.min(1, Math.max(0, normalized)));
+  return Math.min(1, Math.max(0, curved));
+}
+
+/**
  * Idle life. A face frozen at exactly 0 reads as a crash, so the jaw breathes a
  * hair when nobody is talking. Amplitude is deliberately below what a viewer
  * consciously notices — it is there to prove the loop is alive.

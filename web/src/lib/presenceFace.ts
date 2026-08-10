@@ -151,6 +151,29 @@ export function isVrmSurfaceEligible(opts: {
  */
 export const MIN_FACE_BOX_PX = 80;
 
+/**
+ * How many AGENT face contexts one call surface may mount at once.
+ *
+ * Why this exists (Aaron, 2026-08-09: "in video it was just the static avatar
+ * image"): `isVrmSurfaceEligible` gates by ROLE, and only the Speaker/
+ * Spotlight big tile (size "large" / fill) has the role — so in GALLERY, the
+ * view every "show video" path actually lands on (mobile Video forces grid;
+ * the camera nudge and the ViewModeSwitcher lift to grid), no agent tile was
+ * ever face-eligible and the branded puppet never mounted. The role gate
+ * exists to stop UNBOUNDED WebGL contexts (a dozen filmstrip tiles on a
+ * phone); a BUDGET achieves the same protection while letting the one agent
+ * in a 1:1 Majik call talk in Gallery. Humans never mount WebGL regardless,
+ * so the budget counts AGENT tiles only. Tiles that are eligible but
+ * physically small are still refused by MIN_FACE_BOX_PX before any context
+ * is created.
+ */
+export const MAX_AGENT_FACE_CONTEXTS = 3;
+
+/** May EVERY agent tile on this surface take the face rung? */
+export function withinAgentFaceBudget(agentTileCount: number): boolean {
+  return agentTileCount > 0 && agentTileCount <= MAX_AGENT_FACE_CONTEXTS;
+}
+
 export interface PresenceRungInput {
   /** `isTalkingFaceEnabled()` — the switch for the EXPERIMENTAL faces. */
   flagEnabled: boolean;
