@@ -202,12 +202,87 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/** Error from the avatar API, carrying the HTTP status so the retry policy
+ *  (and any caller) can classify it. `status` is null when the request never
+ *  produced a response at all — DNS/socket/CORS failure. */
+export class AvatarApiError extends Error {
+  readonly status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "AvatarApiError";
+    this.status = status;
+  }
+}
+
+/* Retry policy for the avatar READ path.
+ *
+ * This endpoint was once observed being hammered ~30× under a 401 — every
+ * invocation site (login sync, settings mounts) re-fetched with the same dead
+ * token and nothing anywhere classified the failure. The policy lives here, at
+ * the single seam every request funnels through, so no caller can reintroduce
+ * the storm:
+ *
+ *   - 401/403 NEVER retry. An expired or missing session does not heal
+ *     because the client asks again; it heals on re-login/token refresh, and
+ *     until then every extra request is pure load. All other 4xx are caller
+ *     bugs and equally unretriable — except 408/429, which are the server
+ *     saying "later", i.e. transient by definition.
+ *   - Transient failures (no response at all, 408/429, any 5xx) retry with
+ *     exponential backoff: 500ms → 1s → 2s, capped, 4 attempts total.
+ *   - Mutations (upload/reset/refresh) never auto-retry: they are one user
+ *     gesture each, surfaced in the Settings UI, and blind-retrying a POST is
+ *     how you get double writes.
+ */
+export const AVATAR_RETRY_MAX_ATTEMPTS = 4;
+export const AVATAR_RETRY_BASE_DELAY_MS = 500;
+export const AVATAR_RETRY_MAX_DELAY_MS = 4_000;
+
+export function isRetriableAvatarError(err: unknown): boolean {
+  if (!(err instanceof AvatarApiError)) return false;
+  if (err.status === null) return true; // network blip — the only guess-free retry
+  if (err.status === 408 || err.status === 429) return true;
+  return err.status >= 500;
+}
+
+/** Backoff before retry N (1-based): 500ms, 1s, 2s, … capped. */
+export function avatarRetryDelayMs(attempt: number): number {
+  return Math.min(
+    AVATAR_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1),
+    AVATAR_RETRY_MAX_DELAY_MS,
+  );
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= AVATAR_RETRY_MAX_ATTEMPTS || !isRetriableAvatarError(err)) {
+        throw err;
+      }
+      await sleep(avatarRetryDelayMs(attempt));
+    }
+  }
+}
+
 async function call<T>(method: string, path: string): Promise<T> {
-  const resp = await fetch(`${avatarApiBase()}${path}`, {
-    method,
-    headers: await authHeaders(),
-  });
-  if (!resp.ok) throw new Error(await errorText(resp));
+  let resp: Response;
+  try {
+    resp = await fetch(`${avatarApiBase()}${path}`, {
+      method,
+      headers: await authHeaders(),
+    });
+  } catch (err) {
+    // fetch() itself rejected: no response, no status. Distinguished from an
+    // HTTP error so the retry policy can treat it as transient.
+    throw new AvatarApiError(
+      err instanceof Error ? err.message : "Network error",
+      null,
+    );
+  }
+  if (!resp.ok) throw new AvatarApiError(await errorText(resp), resp.status);
   return (await resp.json()) as T;
 }
 
@@ -222,7 +297,11 @@ async function errorText(resp: Response): Promise<string> {
 }
 
 export function fetchMyAvatar(): Promise<AvatarState> {
-  return call<AvatarState>("GET", "/api/v1/participants/me/avatar");
+  // Read-only and safe to repeat — the one avatar request that retries
+  // (transient failures only; see the policy block above).
+  return withRetry(() =>
+    call<AvatarState>("GET", "/api/v1/participants/me/avatar"),
+  );
 }
 
 /** Upload an override. Multipart — do NOT set Content-Type, the browser must
@@ -234,7 +313,9 @@ export async function uploadMyAvatar(file: File): Promise<AvatarState> {
     `${avatarApiBase()}/api/v1/participants/me/avatar`,
     { method: "POST", headers: await authHeaders(), body: fd },
   );
-  if (!resp.ok) throw new Error(await errorText(resp));
+  // Single-shot on purpose: an upload is one user gesture with a visible
+  // error line — never auto-retried (see the retry policy above).
+  if (!resp.ok) throw new AvatarApiError(await errorText(resp), resp.status);
   return (await resp.json()) as AvatarState;
 }
 
@@ -272,6 +353,11 @@ export function refreshMyOpsCenterAvatar(): Promise<AvatarState> {
  * endpoint is quiet when there is nothing new). Any resulting URL is pushed
  * into the store, and the two render sites agree again. Never awaited by the
  * shell: a failure here must not block (or visibly error) the app.
+ *
+ * Failure behavior is inherited from the module retry policy: transient
+ * errors back off and give up after a few tries; a 401/403 fails the sync
+ * immediately and silently — a dead session is repaired by re-auth, not by
+ * background requests.
  */
 export async function syncMyAvatar(
   onUpdate: (effectiveUrl: string) => void,
