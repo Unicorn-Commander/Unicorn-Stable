@@ -316,8 +316,15 @@ class StableWebSocket {
     const resume = (): void => {
       if (this.intentionalClose) return;
       if (this.ws?.readyState === WebSocket.OPEN) {
-        // Socket appears live — verify with a ping and let listeners resync.
-        this.send("ping", {});
+        // Socket appears live — but a backgrounded tab's socket is often a
+        // zombie the browser still reports OPEN (frozen with the tab, upstream
+        // long gone, onclose never fired). Verify with a DEADLINED ping: if
+        // nothing comes back inside the pong window the probe tears it down
+        // and reconnects (see probeLiveness). Listeners resync either way.
+        // Pre-auth sockets are skipped — the auth-ack watchdog owns that phase.
+        if (this._connected) {
+          this.probeLiveness(this.ws, this.connectGeneration);
+        }
         this.emit("resumed", {} as WsEventPayload);
         return;
       }
@@ -363,6 +370,9 @@ class StableWebSocket {
     this.reconnectAttempts = 0;
     this.cancelReconnect();
     this.clearAuthAckTimeout();
+    // The old socket's heartbeat must not survive it: a leftover probe
+    // deadline would fire against whatever socket is current by then.
+    this.stopHeartbeat();
     // Force a new generation so any in-flight open is abandoned.
     this.connectGeneration++;
     this.endConnecting();
@@ -786,7 +796,7 @@ class StableWebSocket {
         // full grace period instead of jumping straight to "sign in again".
         this.failedAttempts = 0;
         this.stalled = false;
-        this.startHeartbeat();
+        this.startHeartbeat(socket, generation);
         this.emit("connected", {} as WsEventPayload);
         return;
       }
@@ -945,14 +955,56 @@ class StableWebSocket {
     }
   }
 
-  private startHeartbeat(): void {
+  private startHeartbeat(socket: WebSocket, generation: number): void {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(() => {
-      this.send("ping", {});
-      this.heartbeatTimeout = setTimeout(() => {
-        this.ws?.close();
-      }, HEARTBEAT_TIMEOUT_MS - HEARTBEAT_INTERVAL_MS);
+      this.probeLiveness(socket, generation);
     }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  /**
+   * Send a liveness probe and arm its deadline. ANY inbound frame — the pong,
+   * or real traffic — clears the deadline (onmessage calls
+   * resetHeartbeatTimeout). If NOTHING arrives, the socket is a zombie: a
+   * dead upstream behind a TCP session the browser still reports OPEN.
+   *
+   * The deadline used to just call `this.ws?.close()` and wait for the
+   * browser's onclose to do the real recovery — but on a wedged socket the
+   * close handshake gets no answer and onclose can take the transport
+   * timeout (up to minutes) to fire. All that time `_connected` stayed true:
+   * the Realtime segment said connected, no reconnect was armed, and every
+   * live event (incl. the echo-ACK path for sends) silently went nowhere.
+   * Now the deadline itself detaches + declares, exactly like the handshake
+   * and auth-ack watchdogs above: the state flips to reconnecting
+   * immediately, and the reconnect's `connected` event drives the resync +
+   * overdue-send sweep.
+   */
+  private probeLiveness(socket: WebSocket, generation: number): void {
+    if (!this.owns(socket, generation)) return;
+    this.send("ping", {});
+    // Never stack deadlines: a resume-probe landing between heartbeat ticks
+    // replaces the armed one (the freshest probe's window is the one that
+    // matters — and it can only extend, never shorten, the current window).
+    this.resetHeartbeatTimeout();
+    this.heartbeatTimeout = setTimeout(() => {
+      this.heartbeatTimeout = null;
+      if (!this.owns(socket, generation)) return;
+      // Detach BEFORE closing — recovery must not depend on an event from a
+      // socket we know is wedged (same rationale as startHandshakeTimeout).
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      try {
+        socket.close();
+      } catch {
+        /* already torn down */
+      }
+      this.ws = null;
+      this.stopHeartbeat();
+      this.lastFailureCause = "transport";
+      this.retryLater(generation);
+    }, HEARTBEAT_TIMEOUT_MS - HEARTBEAT_INTERVAL_MS);
   }
 
   private resetHeartbeatTimeout(): void {

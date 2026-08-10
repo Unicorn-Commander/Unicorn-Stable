@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACK_TIMEOUT_ERROR,
+  MAX_AUTOMATIC_SEND_ATTEMPTS,
   PendingSendTracker,
   SEND_ACK_TIMEOUT_MS,
+  SendFlow,
+  type SendOutcome,
   ackedSendMetadata,
+  autoRetryRemaining,
   clientMsgIdOf,
   failedSendMetadata,
+  isRetryableSendError,
   newClientMsgId,
   optimisticIdFor,
   pendingSendMetadata,
@@ -262,5 +268,281 @@ describe("send metadata transitions", () => {
     expect(a).not.toBe(b);
     expect(optimisticIdFor(a)).toBe(`optimistic-${a}`);
     expect(optimisticIdFor(a).startsWith("optimistic-")).toBe(true);
+  });
+});
+
+describe("automatic-retry policy", () => {
+  it("no HTTP response (network drop / abort deadline) and 5xx are retryable", () => {
+    expect(isRetryableSendError({ status: 0, message: "Request timed out" })).toBe(true);
+    expect(isRetryableSendError({ status: 500 })).toBe(true);
+    expect(isRetryableSendError({ status: 503 })).toBe(true);
+    // Non-ApiError rejections are the network layer's (fetch's TypeError).
+    expect(isRetryableSendError(new TypeError("Failed to fetch"))).toBe(true);
+    expect(isRetryableSendError(undefined)).toBe(true);
+  });
+
+  it("a real HTTP refusal is NOT retryable — replaying it replays the refusal", () => {
+    expect(isRetryableSendError({ status: 403, detail: "muted" })).toBe(false);
+    expect(isRetryableSendError({ status: 422 })).toBe(false);
+    // 429 explicitly asks us to back off; an instant replay is exactly wrong.
+    expect(isRetryableSendError({ status: 429 })).toBe(false);
+  });
+
+  it("exactly one automatic retry: attempts 1 has it, attempts 2 does not", () => {
+    const at = (attempts: number): TrackedSend => ({
+      roomId: "r",
+      clientMsgId: "c",
+      optimisticId: optimisticIdFor("c"),
+      request: { content: "x" },
+      startedAt: 0,
+      attempts,
+      state: "pending",
+    });
+    expect(autoRetryRemaining(at(1))).toBe(true);
+    expect(autoRetryRemaining(at(MAX_AUTOMATIC_SEND_ATTEMPTS))).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------------
+ * SendFlow — the four scenarios the silent-loss bug demands, exercised
+ * against the REAL state machine with an injected POST + clock.
+ * ---------------------------------------------------------------------- */
+
+interface FlowPost {
+  send: TrackedSend;
+  resolve: (serverMessage: unknown) => void;
+  reject: (err: unknown) => void;
+}
+
+function flowHarness(opts: { timeoutMs?: number } = {}) {
+  let nowMs = 5_000_000;
+  const timers = new Map<number, { fn: () => void; at: number }>();
+  let nextHandle = 1;
+  const posts: FlowPost[] = [];
+  const acked: Array<{ send: TrackedSend; serverMessage: unknown }> = [];
+  const failed: Array<{ send: TrackedSend; error: string }> = [];
+
+  const flow = new SendFlow({
+    timeoutMs: opts.timeoutMs ?? SEND_ACK_TIMEOUT_MS,
+    now: () => nowMs,
+    schedule: (fn, ms) => {
+      const handle = nextHandle++;
+      timers.set(handle, { fn, at: nowMs + ms });
+      return handle;
+    },
+    cancel: (handle) => {
+      timers.delete(handle as number);
+    },
+    post: (send) =>
+      new Promise((resolve, reject) => {
+        posts.push({ send, resolve, reject });
+      }),
+    onAcked: (send, serverMessage) => acked.push({ send, serverMessage }),
+    onFailed: (send, error) => failed.push({ send, error }),
+  });
+
+  /** Let settled post promises run their continuations. */
+  const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  /** Advance the injected clock, firing due timers, then flush. */
+  async function advance(ms: number) {
+    nowMs += ms;
+    for (const [handle, timer] of [...timers.entries()]) {
+      if (timer.at <= nowMs) {
+        timers.delete(handle);
+        timer.fn();
+      }
+    }
+    await flush();
+  }
+
+  /** Wall clock moves, timers do NOT fire — a suspended tab. */
+  function freezeAdvance(ms: number) {
+    nowMs += ms;
+  }
+
+  const identity = (n: number, roomId = "room-1") => ({
+    roomId,
+    clientMsgId: `cid-${n}`,
+    optimisticId: optimisticIdFor(`cid-${n}`),
+    request: { content: `message ${n}` },
+  });
+
+  return { flow, posts, acked, failed, advance, freezeAdvance, flush, identity };
+}
+
+/** Outcome promise → resolved value or "pending", without awaiting forever. */
+async function outcomeOf(p: Promise<SendOutcome>): Promise<SendOutcome | "pending"> {
+  return Promise.race([
+    p,
+    new Promise<"pending">((r) => setTimeout(() => r("pending"), 0)),
+  ]);
+}
+
+describe("SendFlow", () => {
+  it("confirmed send: POST 2xx ACKs, reconciles once, outcome=acked, no failure ever", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    expect(h.posts).toHaveLength(1);
+    h.posts[0]!.resolve({ id: "srv-1" });
+    await h.flush();
+
+    expect(await outcomeOf(outcome)).toBe("acked");
+    expect(h.acked).toHaveLength(1);
+    expect(h.acked[0]!.serverMessage).toEqual({ id: "srv-1" });
+    expect(h.failed).toHaveLength(0);
+    // Deadline disarmed: nothing fires later.
+    await h.advance(SEND_ACK_TIMEOUT_MS * 3);
+    expect(h.failed).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);
+  });
+
+  it("REST-failure send: one automatic replay of the SAME client_msg_id, then a visible failure", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    h.posts[0]!.reject({ status: 0, message: "Request timed out", detail: "The server did not respond in time." });
+    await h.flush();
+
+    // The retry is automatic, immediate, and replays the same id.
+    expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]!.send.clientMsgId).toBe("cid-1");
+    expect(h.posts[1]!.send.attempts).toBe(2);
+    expect(await outcomeOf(outcome)).toBe("pending"); // not declared yet
+    expect(h.failed).toHaveLength(0);
+
+    h.posts[1]!.reject({ status: 0, message: "Request timed out", detail: "The server did not respond in time." });
+    await h.flush();
+
+    expect(await outcomeOf(outcome)).toBe("failed");
+    expect(h.failed).toHaveLength(1);
+    expect(h.failed[0]!.error).toBe("The server did not respond in time.");
+    expect(h.failed[0]!.send.attempts).toBe(2);
+  });
+
+  it("a deterministic HTTP refusal fails visibly at once — no blind replay", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    h.posts[0]!.reject({ status: 403, message: "Forbidden", detail: "You are muted in this room." });
+    await h.flush();
+
+    expect(h.posts).toHaveLength(1);
+    expect(await outcomeOf(outcome)).toBe("failed");
+    expect(h.failed).toHaveLength(1);
+    expect(h.failed[0]!.error).toBe("You are muted in this room.");
+  });
+
+  it("timeout send: black-holed request → deadline retries once → second deadline declares failed; a late 2xx still upgrades", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    // Nothing settles. The ACK deadline spends the automatic retry.
+    await h.advance(SEND_ACK_TIMEOUT_MS);
+    expect(h.posts).toHaveLength(2);
+    expect(h.failed).toHaveLength(0);
+
+    // The retry black-holes too: the second deadline declares, visibly.
+    await h.advance(SEND_ACK_TIMEOUT_MS);
+    expect(h.posts).toHaveLength(2);
+    expect(h.failed).toHaveLength(1);
+    expect(h.failed[0]!.error).toBe(ACK_TIMEOUT_ERROR);
+    expect(await outcomeOf(outcome)).toBe("failed");
+
+    // The ORIGINAL request finally lands: server persistence is ground truth,
+    // the reconcile upgrades the bubble — and no new attempt is spawned.
+    h.posts[0]!.resolve({ id: "srv-late" });
+    await h.flush();
+    expect(h.acked).toHaveLength(1);
+    expect(h.posts).toHaveLength(2);
+  });
+
+  it("send-while-disconnected: the POST rejects at the network layer and the send fails VISIBLY after its replay", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    h.posts[0]!.reject(new TypeError("Failed to fetch"));
+    await h.flush();
+    expect(h.posts).toHaveLength(2); // the one automatic replay
+    h.posts[1]!.reject(new TypeError("Failed to fetch"));
+    await h.flush();
+
+    expect(await outcomeOf(outcome)).toBe("failed");
+    expect(h.failed).toHaveLength(1); // failed pill + toast: never a silent drop
+    expect(h.failed[0]!.error).toBe("Failed to fetch");
+  });
+
+  it("stale rejection of a superseded attempt cannot fail the newer attempt", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    // Deadline fires while POST #1 is still in flight → automatic retry owns
+    // the send now.
+    await h.advance(SEND_ACK_TIMEOUT_MS);
+    expect(h.posts).toHaveLength(2);
+
+    // POST #1 finally rejects — attempt guard must ignore it: no failure
+    // declared, no third attempt spawned.
+    h.posts[0]!.reject(new TypeError("Failed to fetch"));
+    await h.flush();
+    expect(h.failed).toHaveLength(0);
+    expect(h.posts).toHaveLength(2);
+
+    // The retry succeeds: delivered.
+    h.posts[1]!.resolve({ id: "srv-1" });
+    await h.flush();
+    expect(await outcomeOf(outcome)).toBe("acked");
+    expect(h.failed).toHaveLength(0);
+  });
+
+  it("an external ACK (WS echo / resync) resolves the send; the in-flight POST's later rejection is ignored", async () => {
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+
+    // The echo carrying our client_msg_id arrives before the POST settles.
+    expect(h.flow.ack("cid-1")).not.toBeNull();
+    expect(await outcomeOf(outcome)).toBe("acked");
+
+    // The POST's connection then dies. The server HAS the message — nothing
+    // may mark it failed, nothing may replay it.
+    h.posts[0]!.reject(new TypeError("Failed to fetch"));
+    await h.flush();
+    expect(h.failed).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);
+  });
+
+  it("manual retry (re-dispatch) gets no second automatic replay — one tap, one attempt", async () => {
+    const h = flowHarness();
+    const first = h.flow.dispatch(h.identity(1));
+    h.posts[0]!.reject({ status: 403, detail: "nope" });
+    await h.flush();
+    expect(await outcomeOf(first)).toBe("failed");
+
+    const second = h.flow.dispatch(h.identity(1));
+    expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]!.send.attempts).toBe(2);
+    h.posts[1]!.reject({ status: 0, message: "Request timed out" });
+    await h.flush();
+
+    expect(h.posts).toHaveLength(2); // retryable error, but the budget is spent
+    expect(await outcomeOf(second)).toBe("failed");
+    expect(h.failed).toHaveLength(2); // each declaration was visible
+  });
+
+  it("sweepOverdue declares stranded sends failed visibly — and never replays them", async () => {
+    // A suspended tab: the deadline timer never fired, wall time moved on.
+    const h = flowHarness();
+    const outcome = h.flow.dispatch(h.identity(1));
+    h.freezeAdvance(SEND_ACK_TIMEOUT_MS + 60_000);
+
+    const swept = h.flow.sweepOverdue();
+    expect(swept.map((s) => s.clientMsgId)).toEqual(["cid-1"]);
+    expect(h.failed).toHaveLength(1);
+    expect(h.failed[0]!.error).toBe(ACK_TIMEOUT_ERROR);
+    expect(await outcomeOf(outcome)).toBe("failed");
+    // No hidden replay from a sweep — the original POST is the only one.
+    await h.flush();
+    expect(h.posts).toHaveLength(1);
   });
 });
