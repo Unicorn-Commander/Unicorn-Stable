@@ -9,7 +9,6 @@ import {
   Position,
   MarkerType,
   useReactFlow,
-  getNodesBounds,
   type Node,
   type Edge,
   type NodeProps,
@@ -37,6 +36,7 @@ import {
   TIER_META,
   tierOf,
   prettyDomain,
+  type Tier,
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
@@ -207,6 +207,24 @@ function OrgGraphNode(props: NodeProps) {
 }
 
 const nodeTypes = { orgAgent: OrgGraphNode };
+
+/**
+ * MiniMap dot fill per model tier — the sRGB twins of TIER_META's `*-400` dot
+ * tokens (Tailwind v4 oklch values), because an SVG rect fill takes no
+ * Tailwind class, and leaning on the `--color-*` CSS vars would tie minimap
+ * correctness to which utilities happen to survive Tailwind's tree-shaking.
+ * If a node ever reaches the minimap without agent data, fall back to the
+ * brand purple rather than to invisible.
+ */
+const MINIMAP_TIER_FILL: Record<Tier, string> = {
+  local: "#00d492", // emerald-400
+  frontier: "#a684ff", // violet-400
+  flexible: "#00d3f2", // cyan-400
+};
+function minimapNodeColor(n: Node): string {
+  const agent = (n.data as Partial<OrgNodeData> | undefined)?.agent;
+  return agent ? MINIMAP_TIER_FILL[tierOf(agent)] : "#8b5cf6";
+}
 // pointerEvents none — with the hit strip gone (interactionWidth: 0, see the
 // edge map) the visible hairline itself still hit-tests via visibleStroke,
 // and a pan that starts exactly on it is swallowed. Decorative lines should
@@ -312,7 +330,11 @@ function ViewportController({
         return true;
       }
 
-      const bounds = getNodesBounds(ns);
+      // The INSTANCE method, not the standalone import: it reads through the
+      // store's nodeLookup (measured dimensions, absolute positions), and the
+      // standalone version logs a dev-console warning telling us to do exactly
+      // this.
+      const bounds = rf.getNodesBounds(ns);
       if (!bounds.width || !bounds.height) return false;
 
       // What zoom would fitView land on? Mirror its padding so the choice is
@@ -741,10 +763,15 @@ function OrgChartCanvas({
         </Panel>
         <ZoomControls variant={variant} onReset={requestOverview} />
         <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#2b2b44" />
+        {/* Node dots appear here only because useOrgLayout stamps
+            initialWidth/initialHeight on every node — the MiniMap draws
+            nothing for a user node without dimensions (see the note there
+            before touching either side). Dot colors track the model-tier
+            legend the nodes themselves wear. */}
         <MiniMap
           pannable
           zoomable
-          nodeColor="#8b5cf6"
+          nodeColor={minimapNodeColor}
           maskColor="rgba(8,8,15,0.72)"
           className="!overflow-hidden !rounded-xl !border !border-stable-glass-border !shadow-soft [--xy-minimap-background-color:rgba(11,11,21,0.9)]"
         />
