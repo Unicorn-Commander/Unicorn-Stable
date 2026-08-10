@@ -115,6 +115,18 @@ class Settings(BaseSettings):
     # to avoid double-replies (see agent_runtime/base.py).
     stable_text_agent_path_enabled: bool = True
 
+    # -- Per-user agent access control (see services/agent_access.py) --
+    # Instance-wide default when a (user, agent) pair has NO grant row:
+    #   "open"   → every instance member may reach every agent (today's
+    #              behavior; dogfood keeps working unchanged). Per-agent
+    #              deny-grants carve agents away from specific users.
+    #   "closed" → nothing is reachable without an explicit allow-grant
+    #              (customer orgs). Per-agent allow-grants open pairs up.
+    # Grants always win over the default, in both directions. Only these two
+    # values are accepted — a typo must fail boot loudly, not silently pick a
+    # direction for a security control.
+    agent_access_default: str = "open"
+
     # Slack-shaped incoming webhook secret. When set, enables
     # POST /webhooks/incoming/{secret}/{room_name} so external services
     # (Brigade tripwires, GitHub, Sentry, anything that speaks the Slack
@@ -262,6 +274,17 @@ class Settings(BaseSettings):
     # uc-1). Agents use the same WHISPER_BASE_URL env var.
     whisper_base_url: str = "http://192.168.10.68:8011/v1"
     whisper_model: str = "whisper-1"
+
+    @field_validator("agent_access_default")
+    @classmethod
+    def validate_agent_access_default(cls, v: str) -> str:
+        norm = (v or "").strip().lower() or "open"
+        if norm not in ("open", "closed"):
+            raise ValueError(
+                "AGENT_ACCESS_DEFAULT must be 'open' or 'closed', got "
+                f"{v!r} — refusing to guess a direction for an access control."
+            )
+        return norm
 
     @field_validator("cors_origins", mode="before")
     @classmethod

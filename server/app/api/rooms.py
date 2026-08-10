@@ -563,6 +563,27 @@ async def invite_member(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
             )
 
+    # ENTITLEMENT: this generic invite route can also add an AGENT-typed
+    # Participant (pseudo-sub ``brigade:<id>``) as a room member — a second
+    # way to bind an agent that would bypass the gate on
+    # /invite-brigade-agent. Same rule, same audit log: a human caller must
+    # be entitled to the agent they are binding. Human targets are untouched,
+    # and the agents worker's own invite_to_room calls (agent-typed
+    # principal) pass through inside ensure_agent_access.
+    from app.models.participant import ParticipantType as _PT_inv
+    from app.services.agent_access import (
+        agent_id_for_participant,
+        ensure_agent_access,
+    )
+
+    if target.participant_type == _PT_inv.AGENT:
+        await ensure_agent_access(
+            db,
+            user,
+            agent_id_for_participant(target.keycloak_sub),
+            surface="room_member_invite",
+        )
+
     membership = await svc.join_room(
         room_id=room_id,
         participant_id=target.id,

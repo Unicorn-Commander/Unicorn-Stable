@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 
 from app.deps import get_current_user, get_db, get_livekit, get_redis, rate_limit
+from app.services.agent_access import ensure_agent_access, entitled_agent_ids
 from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
 
@@ -29,6 +30,10 @@ class BrigadeAgent(BaseModel):
     id: str
     name: str
     description: str = ""
+    # May THIS caller reach this agent (grants + AGENT_ACCESS_DEFAULT)?
+    # Annotation only — enforcement is server-side on the invite path. The
+    # client renders un-entitled agents locked ("Ask an admin"), not hidden.
+    entitled: bool = True
 
 
 class BrigadeRosterAgent(BaseModel):
@@ -74,6 +79,12 @@ class BrigadeRosterAgent(BaseModel):
     # | "unknown"; see services/agent_availability.py for the truth table.
     availability: str = "unknown"
     availability_reason: str = "unknown"
+    # May THIS caller reach this agent (grants + AGENT_ACCESS_DEFAULT)? The
+    # org chart still shows everyone — it's a directory — but the client's
+    # action affordances (Chat/Call) lock on entitled=False with an
+    # "Ask an admin" hint. Enforcement is server-side on the invite path;
+    # this flag only keeps the UI honest.
+    entitled: bool = True
 
 
 class InviteAgentRequest(BaseModel):
@@ -265,17 +276,45 @@ async def _fetch_brigade_agents() -> list[BrigadeAgent]:
     ]
 
 
+async def _entitlement_set(
+    db: AsyncSession, user: dict[str, Any], agent_ids: list[str]
+) -> set[str] | None:
+    """The agent ids this caller may reach, or None meaning "all of them".
+
+    None (skip annotation) for non-human principals: the worker's service
+    account is never entitlement-gated, so its roster must not be filtered
+    either. Fail-open on lookup errors — the roster is a read surface and the
+    invite path re-checks authoritatively.
+    """
+    if user.get("participant_type") == "agent":
+        return None
+    try:
+        return await entitled_agent_ids(
+            db, participant_id=user["participant_id"], agent_ids=agent_ids
+        )
+    except Exception:
+        logger.warning("agent_entitlement_annotation_failed", exc_info=True)
+        return None
+
+
 @router.get("/brigade/agents", response_model=list[BrigadeAgent])
 async def list_brigade_agents(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[BrigadeAgent]:
     """List all Brigade agents (models) available to invite into rooms.
 
     Returns the upstream roster from Brigade (all agents configured in its
     database), not Stable's own agent_config table. This is deliberate —
-    Brigade is the source of truth for agents.
+    Brigade is the source of truth for agents. Each entry carries `entitled`
+    for THIS caller (see BrigadeAgent.entitled).
     """
-    return await _fetch_brigade_agents()
+    agents = await _fetch_brigade_agents()
+    allowed = await _entitlement_set(db, user, [a.id for a in agents])
+    if allowed is not None:
+        for a in agents:
+            a.entitled = a.id in allowed
+    return agents
 
 
 def _brigade_native_base() -> str:
@@ -383,6 +422,7 @@ async def _fetch_brigade_roster(redis: Redis) -> list[BrigadeRosterAgent]:
 async def list_brigade_roster(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     redis: Annotated[Redis, Depends(get_redis)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[BrigadeRosterAgent]:
     """The rich agent roster for the org-chart view (rank/title/model/tools).
 
@@ -390,8 +430,14 @@ async def list_brigade_roster(
     without needing that room's member roster — the sidebar shows agent threads
     for rooms that are not open, and `/members` is only polled for the ACTIVE
     room, so a per-room-only signal would leave every collapsed thread dark.
+    Also carries `entitled` for THIS caller (see BrigadeRosterAgent.entitled).
     """
-    return await _fetch_brigade_roster(redis)
+    roster = await _fetch_brigade_roster(redis)
+    allowed = await _entitlement_set(db, user, [a.id for a in roster])
+    if allowed is not None:
+        for a in roster:
+            a.entitled = a.id in allowed
+    return roster
 
 
 class ChatModel(BaseModel):
@@ -686,6 +732,19 @@ async def invite_brigade_agent(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You must be a member of this room to invite an agent",
         )
+
+    # ENTITLEMENT: the caller must be allowed to use THIS agent (per-user
+    # grants + AGENT_ACCESS_DEFAULT). This is the single funnel for every
+    # human path that establishes agent access — agent-DM creation ("New
+    # chat" binds via dispatch=False), inviting an agent into a room, and the
+    # call-time voice dispatch (dispatch=True) — so gating here closes all
+    # three. The agents WORKER also calls this route (summon_agent) but
+    # authenticates as an agent-typed service account, which
+    # ensure_agent_access passes through untouched.
+    await ensure_agent_access(
+        db, user, body.brigade_agent_id, surface="agent_invite"
+    )
+
     # Only allow a model_override the switcher actually offers, so a caller can't
     # pin an arbitrary or expensive cloud lane on the conversation.
     if body.model and body.model not in {m["id"] for m in _SWITCHER_MODELS}:

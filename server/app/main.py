@@ -15,6 +15,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.agents import router as agents_router
+from app.api.agent_access import router as agent_access_router
 from app.api.agent_events import router as agent_events_router
 from app.api.artifacts import router as artifacts_router
 from app.api.internal_artifacts import router as internal_artifacts_router
@@ -346,6 +347,7 @@ def create_app() -> FastAPI:
     app.include_router(stt_router, prefix="/api/v1", tags=["STT"])
     app.include_router(agents_router, prefix="/api/v1", tags=["Agents"])
     app.include_router(agent_events_router, prefix="/api/v1", tags=["Agent Audit"])
+    app.include_router(agent_access_router, prefix="/api/v1", tags=["Agent Access"])
     app.include_router(brigade_router, prefix="/api/v1", tags=["Brigade"])
     app.include_router(artifacts_router, prefix="/api/v1", tags=["Artifacts"])
     # Internal agent-surface routers (/api/v1/internal/*). Agents reach these
