@@ -44,6 +44,14 @@ export function useDirectCall() {
       try {
         const res = await api.ringRoom(roomId);
 
+        // The other side is ALREADY on this room's call — this is a (re)join
+        // (moving the call to this device), not an offer. No outgoing card,
+        // no ring: connect, and LiveKit hands this identity's media over.
+        if (res.state === "in_call") {
+          await connect();
+          return;
+        }
+
         if (res.state !== "ringing") {
           // Nobody was rung. Say WHY, per person, and do not join an empty
           // room — a caller alone in a LiveKit room with no explanation is

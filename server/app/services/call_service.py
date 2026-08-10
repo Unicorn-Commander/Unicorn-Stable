@@ -41,7 +41,7 @@ _STATE_GRACE_S: int = 30
 _CALL_KEY = "call:{call_id}"
 _BUSY_KEY = "callring:{participant_id}"
 
-CalleeState = Literal["ringing", "offline", "busy", "unknown"]
+CalleeState = Literal["ringing", "offline", "busy", "unknown", "in_call"]
 Resolution = Literal["accepted", "declined", "canceled", "timeout"]
 
 #: Presence facts we are willing to assert. "unknown" is NOT a synonym for
@@ -100,15 +100,70 @@ class CallService:
 
     # -- busy latch -------------------------------------------------------
 
-    async def _is_busy(self, participant_id: str) -> bool:
+    async def _busy_call_id(self, participant_id: str) -> str | None:
+        """The call id this participant is currently latched to, if any."""
         try:
-            return bool(await self._redis.exists(_BUSY_KEY.format(participant_id=participant_id)))
+            raw = await self._redis.get(_BUSY_KEY.format(participant_id=participant_id))
         except Exception:
             # Can't prove busy → don't claim busy. Worst case we ring someone
             # who is already talking, and their client suppresses it
             # (incomingCallStore drops a ring while `voiceActive`).
             logger.warning("call_busy_probe_failed", participant_id=participant_id, exc_info=True)
+            return None
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return str(raw)
+
+    @staticmethod
+    def _is_party(call: dict[str, Any], participant_id: str) -> bool:
+        """Is this participant the caller of, or a callee on, this call?"""
+        if str(call.get("caller_id")) == participant_id:
+            return True
+        return participant_id in {str(t["id"]) for t in call.get("targets", [])}
+
+    async def _busy_with_someone_else(self, participant_id: str, caller_id: str) -> bool:
+        """Is `participant_id` engaged in a call that does NOT involve `caller_id`?
+
+        "Busy" is a verdict shown to the caller and it must mean "talking to
+        someone who isn't you". A latch pointing at a call the CALLER is party
+        to (their own ring, or a ring aimed at them) must not count — that is
+        the device-handoff lockout: you switch devices mid-call, the leftover
+        latch of your own call marks your peer "busy", and you can never move
+        back. Calls you are party to are always yours to (re)join.
+
+        A latch whose call record cannot be read keeps the busy verdict: the
+        latch itself is evidence of an engagement, and without the record we
+        cannot prove that engagement involves the caller.
+        """
+        latched = await self._busy_call_id(participant_id)
+        if latched is None:
             return False
+        engaged = await self.get_call(latched)
+        if engaged is not None and self._is_party(engaged, caller_id):
+            return False
+        return True
+
+    async def _own_ringing_call(self, caller_id: str, room_id: str) -> dict[str, Any] | None:
+        """The caller's OWN still-ringing offer in this room, if one exists.
+
+        Re-issuing the ring (second device, double click) must not stack a
+        second offer on top of a live one — the callee's devices would ring
+        twice for one conversation. The live offer is simply handed back.
+        """
+        latched = await self._busy_call_id(caller_id)
+        if latched is None:
+            return None
+        call = await self.get_call(latched)
+        if (
+            call is not None
+            and call.get("state") == "ringing"
+            and str(call.get("caller_id")) == caller_id
+            and str(call.get("room_id")) == room_id
+        ):
+            return call
+        return None
 
     async def _mark_busy(self, participant_id: str, call_id: str, ttl: int) -> None:
         await self._redis.set(
@@ -182,6 +237,7 @@ class CallService:
         caller_name: str,
         caller_avatar_url: str | None,
         callees: list[dict[str, Any]],
+        in_call_participant_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Offer a call to `callees` and return the caller's feedback record.
 
@@ -189,20 +245,51 @@ class CallService:
         resolved and authorized by the caller. Agents are not rung: an agent is
         dispatched into a call, it does not answer a phone.
 
+        `in_call_participant_ids` — participants currently CONNECTED to this
+        room's LiveKit call (the route probes the media plane, the one source
+        of truth for "on the line right now"). Such a callee is not rung: they
+        already answered. Their state is "in_call", and when every callee is
+        in the call the overall state is "in_call" — the caller's client just
+        JOINS. This is the device-handoff path: switching devices mid-call is
+        a join, not a fresh offer, so nobody's other devices ring and no busy
+        latch is minted for a conversation that is already happening.
+
         Returns the record the caller's UI renders as "Ringing Shafen…" /
         "Shafen is offline" — every callee gets a state, so the caller is never
         left staring at nothing.
         """
+        # Same caller, same room, offer still live → hand the live offer back
+        # (marked `resumed` so the route neither re-arms the timeout nor
+        # re-pushes) instead of stacking a second ring on the same person.
+        resumed = await self._own_ringing_call(caller_id, room_id)
+        if resumed is not None:
+            resumed["resumed"] = True
+            logger.info(
+                "call_ring_resumed",
+                call_id=resumed["call_id"],
+                room_id=room_id,
+                caller_id=caller_id,
+            )
+            return resumed
+
         call_id = str(uuid.uuid4())
         started = _now()
         expires = started + timedelta(seconds=RING_TIMEOUT_S)
+        in_call = in_call_participant_ids or set()
 
         targets: list[dict[str, Any]] = []
         for c in callees:
             cid = str(c["id"])
             state: CalleeState
+            if cid in in_call:
+                targets.append({
+                    "id": cid,
+                    "display_name": c.get("display_name") or "Someone",
+                    "state": "in_call",
+                })
+                continue
             fact = await self.presence_of(cid)
-            if await self._is_busy(cid):
+            if await self._busy_with_someone_else(cid, caller_id):
                 state = "busy"
             elif fact == "offline":
                 # A push subscription is a real reachability plane even when
@@ -218,6 +305,18 @@ class CallService:
             targets.append({"id": cid, "display_name": c.get("display_name") or "Someone", "state": state})
 
         rung = [t for t in targets if t["state"] in ("ringing", "unknown")]
+        already_in_call = [t for t in targets if t["state"] == "in_call"]
+
+        if not rung and already_in_call:
+            # Everyone we would ring is already ON the call. This is a join
+            # (typically the caller switching devices), not an offer: no
+            # record, no latches, no publishes, no pushes. The client's move
+            # is to connect to the room's LiveKit call, full stop.
+            state = "in_call"
+        elif rung:
+            state = "ringing"
+        else:
+            state = "unreachable"
 
         call = {
             "call_id": call_id,
@@ -230,14 +329,22 @@ class CallService:
             "started_at": started.isoformat(),
             "expires_at": expires.isoformat(),
             "targets": targets,
-            "state": "ringing" if rung else "unreachable",
+            "state": state,
         }
 
         if not rung:
             # Nobody to ring. No state is stored and no timer is armed: an
             # offer with no recipient is not a pending call, and leaving a
             # record behind would busy-latch a caller who never got through.
-            logger.info("call_ring_unreachable", call_id=call_id, room_id=room_id, targets=targets)
+            # (Holds for "in_call" too — joining an ongoing call needs no
+            # signalling; /tokens/livekit authorizes the join on its own.)
+            logger.info(
+                "call_ring_not_offered",
+                call_id=call_id,
+                room_id=room_id,
+                state=state,
+                targets=targets,
+            )
             return call
 
         ttl = RING_TIMEOUT_S + _STATE_GRACE_S
