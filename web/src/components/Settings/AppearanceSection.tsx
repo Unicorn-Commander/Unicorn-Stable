@@ -18,9 +18,26 @@
  * happen — see the handoff notes.
  */
 import { useState } from "react";
-import { Check, Monitor, Moon, Palette, Sun } from "lucide-react";
+import {
+  Box,
+  Check,
+  Image as ImageIcon,
+  Monitor,
+  Moon,
+  Palette,
+  Smile,
+  Sparkles,
+  Sun,
+  type LucideIcon,
+} from "lucide-react";
 import { applyTheme, getStoredTheme, resolveTheme, type ThemeChoice } from "@/lib/theme";
 import { PALETTES, useThemeStore, type PaletteId } from "@/stores/themeStore";
+import {
+  FACE_STYLE_META,
+  FACE_STYLE_ORDER,
+  type FaceStyle,
+} from "@/lib/facePreference";
+import { useFacePrefStore } from "@/stores/facePrefStore";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { AvatarSection } from "@/components/Settings/AvatarSection";
 
@@ -90,6 +107,8 @@ export function AppearanceSection() {
         </div>
       </div>
 
+      <AgentFacesRow />
+
       <div className="mt-2.5 rounded-xl border border-line bg-surface-1/60 p-3.5">
         <p className="text-sm text-slate-200">Section preview</p>
         <p className="mt-0.5 mb-3 text-xs text-slate-500">
@@ -117,6 +136,85 @@ export function AppearanceSection() {
       </div>
     </section>
     </>
+  );
+}
+
+const FACE_STYLE_ICONS: Record<FaceStyle, LucideIcon> = {
+  auto: Sparkles,
+  puppet: Smile,
+  vrm: Box,
+  portrait: ImageIcon,
+};
+
+/**
+ * Agent faces — how agents look on call tiles. One GLOBAL choice (v1), stored
+ * per user like the palette (stores/facePrefStore); the per-tile cycle button
+ * on agent call tiles writes the same value. The choice is a style request:
+ * an agent that lacks the chosen style falls down the face ladder, and the
+ * WebGL/box-size/context-budget physics gates always apply.
+ */
+function AgentFacesRow() {
+  const style = useFacePrefStore((s) => s.style);
+  const setStyle = useFacePrefStore((s) => s.setStyle);
+  return (
+    <div className="mt-2.5 rounded-xl border border-line bg-surface-1/60 p-3.5">
+      <div className="mb-3 min-w-0">
+        <p className="flex items-center gap-1.5 text-sm text-slate-200">
+          <Smile className="h-3.5 w-3.5 text-slate-500" /> Agent faces
+        </p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          How agents appear on call tiles. One choice for all agents — if an
+          agent doesn&rsquo;t have the style you picked, the best available
+          face shows instead.
+        </p>
+      </div>
+
+      <div
+        role="radiogroup"
+        aria-label="Agent faces"
+        className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+      >
+        {FACE_STYLE_ORDER.map((id) => {
+          const meta = FACE_STYLE_META[id];
+          const Icon = FACE_STYLE_ICONS[id];
+          const active = style === id;
+          return (
+            <button
+              key={id}
+              role="radio"
+              aria-checked={active}
+              onClick={() => setStyle(id)}
+              className={`focus-ring flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
+                active
+                  ? "border-stable-purple/60 bg-stable-purple/10"
+                  : "border-line bg-surface-2/50 hover:border-line-strong"
+              }`}
+            >
+              <span
+                aria-hidden="true"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line bg-surface-1/80 text-slate-300"
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium text-slate-100">
+                  {meta.label}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">
+                  {meta.blurb}
+                </span>
+              </span>
+              {active && (
+                <Check
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 shrink-0 text-stable-purple-light"
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

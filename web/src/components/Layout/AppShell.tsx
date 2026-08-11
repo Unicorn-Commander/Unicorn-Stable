@@ -31,6 +31,7 @@ import {
 } from "@/components/Sidebar/sidebarModel";
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
+import { useFacePrefStore } from "@/stores/facePrefStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -187,9 +188,14 @@ export function AppShell() {
   // lived in the modal, your saved palette would not appear until you opened
   // Settings, which is not "saved" in any sense a user would accept.
   const scopePalette = useThemeStore((s) => s.scopeToUser);
+  // Face-style preference is stored per user exactly like the palette, and for
+  // the same reason: restored here, not in the settings modal, so it applies
+  // to the first call tile of the session, not the first visit to Settings.
+  const scopeFacePref = useFacePrefStore((s) => s.scopeToUser);
   useEffect(() => {
     scopePalette(currentUser?.id ?? null);
-  }, [currentUser?.id, scopePalette]);
+    scopeFacePref(currentUser?.id ?? null);
+  }, [currentUser?.id, scopePalette, scopeFacePref]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const [switcherOpen, setSwitcherOpen] = useState(false);
