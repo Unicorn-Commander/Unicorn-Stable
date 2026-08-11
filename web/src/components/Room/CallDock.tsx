@@ -5,6 +5,7 @@ import { useVoice } from "@/contexts/VoiceProvider";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { identityFor } from "@/lib/identity";
+import { shouldShowCallDock } from "@/lib/callAwareness";
 
 /**
  * CallDock — the persistent, app-level representation of a LIVE call while you
@@ -41,9 +42,12 @@ export function CallDock() {
   void version;
 
   // Only stand in for the call when it's live AND we're not already looking at
-  // its room (there the real call surface is on screen).
-  if (!isConnected || !activeCallRoomId) return null;
-  if (activeRoomId === activeCallRoomId) return null;
+  // its room (there the real call surface is on screen). The gate is a pure
+  // function (lib/callAwareness) so its truth table is unit-tested.
+  if (!shouldShowCallDock({ isConnected, activeCallRoomId, activeRoomId })) {
+    return null;
+  }
+  if (!activeCallRoomId) return null; // narrow for TS — gate already required it
 
   const callRoom = rooms.find((r) => r.id === activeCallRoomId);
   const roomName = callRoom?.name ?? "your call";
