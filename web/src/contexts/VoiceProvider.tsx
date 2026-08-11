@@ -452,6 +452,23 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       roomRef.current = r;
       joinCuePlayedRef.current = false;
 
+      // Ownership guard for every handler below. LiveKit events are delivered
+      // asynchronously, so a Room that has been SUPERSEDED — a call-switch, a
+      // terminal teardown, or an abandoned failed connect (whose listeners
+      // survive `roomRef.current = null`) — can still fire long after. Letting
+      // a stale room's Disconnected/ConnectionStateChanged run these handlers
+      // clobbered the LIVE call's state (isConnected → false with nothing to
+      // flip it back until the next state change), which wrongly hid the
+      // CallDock and CallRoomLayout while audio kept playing: an invisible,
+      // uncontrollable call. Events from anything but the CURRENT room are
+      // dropped wholesale.
+      const own =
+        <A extends unknown[]>(fn: (...args: A) => void) =>
+        (...args: A): void => {
+          if (roomRef.current !== r) return;
+          fn(...args);
+        };
+
       const onState = () => {
         setIsConnected(r.state === ConnectionState.Connected);
         setIsConnecting(
@@ -461,44 +478,76 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         sync(r);
       };
 
-      r.on(RoomEvent.Connected, onState)
+      r.on(RoomEvent.Connected, own(onState))
         // Join chime: once per connect (ref-guarded), never on reconnects.
-        .on(RoomEvent.Connected, () => {
-          if (joinCuePlayedRef.current) return;
-          joinCuePlayedRef.current = true;
-          playCue("call-join");
-        })
-        .on(RoomEvent.Reconnected, onState)
-        .on(RoomEvent.Reconnecting, () => setIsConnecting(true))
-        .on(RoomEvent.ConnectionStateChanged, onState)
-        .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
-          // DUPLICATE_IDENTITY = this same person joined the call from
-          // ANOTHER device, and LiveKit handed the identity over — a device
-          // handoff, not a failure. Tear this leg down fully (disconnect()
-          // also flushes the transcript export this leg accumulated) and say
-          // what happened; the call button is the move-it-back affordance
-          // (the server answers a re-ring of a live call with `in_call` →
-          // plain join). Guarded on roomRef so a late event from an already-
-          // replaced Room can never tear down the CURRENT call.
-          if (roomRef.current === r && isMovedToAnotherDevice(reason)) {
+        .on(
+          RoomEvent.Connected,
+          own(() => {
+            if (joinCuePlayedRef.current) return;
+            joinCuePlayedRef.current = true;
+            playCue("call-join");
+          }),
+        )
+        .on(RoomEvent.Reconnected, own(onState))
+        .on(
+          RoomEvent.Reconnecting,
+          own(() => setIsConnecting(true)),
+        )
+        .on(RoomEvent.ConnectionStateChanged, own(onState))
+        .on(
+          RoomEvent.Disconnected,
+          own((reason?: DisconnectReason) => {
+            // DUPLICATE_IDENTITY = this same person joined the call from
+            // ANOTHER device, and LiveKit handed the identity over — a device
+            // handoff, not a failure. Tear this leg down fully (disconnect()
+            // also flushes the transcript export this leg accumulated) and say
+            // what happened; the call button is the move-it-back affordance
+            // (the server answers a re-ring of a live call with `in_call` →
+            // plain join).
+            if (isMovedToAnotherDevice(reason)) {
+              disconnect();
+              useAppStore.getState().pushToast(MOVED_TO_ANOTHER_DEVICE_TOAST);
+              return;
+            }
+            // Any other Disconnected is TERMINAL for this leg (LiveKit emits
+            // Reconnecting for transient drops). The old code only flipped
+            // isConnected/voiceActive here, which wedged the rest of the call
+            // state: `activeCallRoomId` stayed pointed at a dead call forever
+            // (so the NEXT call in the same room skipped setActiveCallRoom's
+            // per-call reset), the browser-STT session kept the mic hot, and
+            // the accumulated transcript was never flushed. Run the one true
+            // teardown instead — it is what an explicit hang-up runs.
             disconnect();
-            useAppStore.getState().pushToast(MOVED_TO_ANOTHER_DEVICE_TOAST);
-            return;
-          }
-          setIsConnected(false);
-          setVoiceActive(false);
-          sync(r);
-        })
-        .on(RoomEvent.ParticipantConnected, () => sync(r))
-        .on(RoomEvent.ParticipantDisconnected, () => sync(r))
-        .on(RoomEvent.LocalTrackPublished, () => sync(r))
-        .on(RoomEvent.LocalTrackUnpublished, () => sync(r))
-        .on(RoomEvent.TrackMuted, () => sync(r))
-        .on(RoomEvent.TrackUnmuted, () => sync(r))
+          }),
+        )
+        .on(
+          RoomEvent.ParticipantConnected,
+          own(() => sync(r)),
+        )
+        .on(
+          RoomEvent.ParticipantDisconnected,
+          own(() => sync(r)),
+        )
+        .on(
+          RoomEvent.LocalTrackPublished,
+          own(() => sync(r)),
+        )
+        .on(
+          RoomEvent.LocalTrackUnpublished,
+          own(() => sync(r)),
+        )
+        .on(
+          RoomEvent.TrackMuted,
+          own(() => sync(r)),
+        )
+        .on(
+          RoomEvent.TrackUnmuted,
+          own(() => sync(r)),
+        )
         // The core SDK does NOT auto-play remote audio — attach it ourselves so
         // the agent/peers are audible. Video is attached by the tiles in
         // VoiceVideoBar. Screen-share audio is a special case (see below).
-        .on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
+        .on(RoomEvent.TrackSubscribed, own((track: RemoteTrack) => {
           if (track.kind === Track.Kind.Audio) {
             if (track.source === Track.Source.ScreenShareAudio) {
               // Route through the claim-aware sink: audible in every view mode
@@ -514,8 +563,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             }
           }
           sync(r);
-        })
-        .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+        }))
+        .on(RoomEvent.TrackUnsubscribed, own((track: RemoteTrack) => {
           if (track.kind === Track.Kind.Audio) {
             if (track.source === Track.Source.ScreenShareAudio) {
               // Clear any claim, pending re-attach, + our global-sink element for
@@ -530,16 +579,19 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             }
           }
           sync(r);
-        })
-        .on(RoomEvent.AudioPlaybackStatusChanged, () => {
-          setAudioBlocked(!r.canPlaybackAudio);
-        })
+        }))
+        .on(
+          RoomEvent.AudioPlaybackStatusChanged,
+          own(() => {
+            setAudioBlocked(!r.canPlaybackAudio);
+          }),
+        )
         // Room data channel: transcript lines + agent UI commands. Transcript
         // packets feed the live-transcript panel; ui_command packets drive the
         // call UI but ONLY when the sender is an agent (the AG-UI seam).
         .on(
           RoomEvent.DataReceived,
-          (payload: Uint8Array, participant?: RemoteParticipant) => {
+          own((payload: Uint8Array, participant?: RemoteParticipant) => {
             const msg = decodeRoomData(payload);
             if (!msg) return;
             // Artifact events are tagged with `event` (not `type`); handle them
@@ -561,7 +613,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
               if (!isAgentParticipant(participant)) return;
               dispatchUiCommand(msg, roomId);
             }
-          },
+          }),
         );
 
       // Tell the imperative uiCommandBus which room agent commands apply to
@@ -587,8 +639,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       const humanSession = new HumanTranscriptSession(r);
       humanTranscriptRef.current = humanSession;
       humanSession.start();
-      r.on(RoomEvent.ParticipantConnected, () => humanSession.reevaluate());
-      r.on(RoomEvent.ParticipantDisconnected, () => humanSession.reevaluate());
+      r.on(RoomEvent.ParticipantConnected, own(() => humanSession.reevaluate()));
+      r.on(
+        RoomEvent.ParticipantDisconnected,
+        own(() => humanSession.reevaluate()),
+      );
       // Pause local Web Speech when a remote human is the active speaker so
       // their audio through speakers is not captioned as the local user.
       r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
@@ -683,6 +738,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to connect to room";
+      // Full teardown through the ONE hang-up path, not ad-hoc flag clearing.
+      // The old cleanup nulled roomRef but left the failed Room's listeners
+      // attached (a late async Disconnected from it could then clobber a LATER
+      // call's state) and left `activeCallRoomId` pointing at a room that
+      // never got its call — setActiveCallRoom(roomId) runs BEFORE the await
+      // above — so every activeCallRoomId consumer believed a call was live
+      // here, and the next call in this room skipped its per-call reset.
+      // disconnect() detaches the listeners, resets all of it, and is a no-op
+      // for the parts a pre-connect failure never set up.
+      disconnect();
       setError(message);
       // Nothing renders `error` inline yet — without a toast a failed connect
       // is a silently dead Start-call button. Keep the state for future inline
@@ -691,9 +756,6 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         title: "Couldn't start the call",
         body: message,
       });
-      roomRef.current = null;
-      connectingRef.current = false;
-      setIsConnecting(false);
       return;
     }
     connectingRef.current = false;

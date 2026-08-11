@@ -20,6 +20,7 @@ import {
 } from "@/hooks/usePanelResize";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { CallRoomLayout } from "./CallRoomLayout";
+import { LiveCallBanner } from "./LiveCallBanner";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
@@ -946,6 +947,12 @@ export function RoomView({ roomId }: RoomViewProps) {
           />
         )}
       </AnimatePresence>
+
+      {/* "Call in progress — Join" strip: this room has a live call this
+          device is not on (it moved to the phone, or others are talking).
+          Self-gating via the shared live-calls source of truth, so it can
+          mount unconditionally between the header and the chat. */}
+      <LiveCallBanner roomId={roomId} />
 
       <div className="flex min-h-0 flex-1">
         {(participantPanelOpen || pinsOpen || threadMessageId) && (

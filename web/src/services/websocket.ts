@@ -147,6 +147,25 @@ export interface WsCallResolvedEvent {
   by_participant_id: string | null;
 }
 
+/**
+ * Room-scoped occupancy fact from the server's LiveKit webhook: somebody
+ * joined or left a room's call, and this is the occupancy AFTER that change.
+ * Distinct on purpose from `call_started` (a RING — "someone is calling YOU",
+ * delivered per-user): this event carries no offer and must never raise the
+ * incoming-call banner. It feeds the shared live-calls source of truth
+ * (sidebar badges / in-room banner / cross-room toast — see useLiveCalls).
+ */
+export interface WsCallOccupancyEvent {
+  room_id: string;
+  room_type: "dm" | "group_dm" | "channel";
+  room_name: string;
+  /** Occupancy after the join/leave. 0 ⇒ the call ended. */
+  participant_count: number;
+  has_agent?: boolean;
+  /** Who JOINED (participant-id space). null/absent on leaves. */
+  by?: { id: string | null; display_name: string | null } | null;
+}
+
 export type WsEventPayload =
   | WsMessageEvent
   | WsTypingEvent
@@ -156,7 +175,8 @@ export type WsEventPayload =
   | WsRoomUpdateEvent
   | WsCallStartedEvent
   | WsCallRingStateEvent
-  | WsCallResolvedEvent;
+  | WsCallResolvedEvent
+  | WsCallOccupancyEvent;
 
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 30000;
