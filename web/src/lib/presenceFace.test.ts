@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_AGENT_FACE_CONTEXTS,
   agentSlugFromIdentity,
+  faceMountPlan,
   isAgentIdentity,
   isVrmSurfaceEligible,
   mapAgentState,
@@ -11,8 +12,10 @@ import {
   selectPresenceRung,
   unicornStateFor,
   withinAgentFaceBudget,
+  type FaceMountPlanInput,
   type PresenceRungInput,
 } from "./presenceFace";
+import { FACE_STYLE_ORDER, type FaceStyle } from "./facePreference";
 
 /** The happy path: everything on, everything available. */
 function input(over: Partial<PresenceRungInput> = {}): PresenceRungInput {
@@ -176,6 +179,176 @@ describe("selectPresenceRung — the branded puppet is shipped product", () => {
   });
 });
 
+describe("faceMountPlan — preference × availability × flag", () => {
+  const plan = (over: Partial<FaceMountPlanInput> = {}) =>
+    faceMountPlan({
+      style: "auto",
+      puppetAvailable: true,
+      vrmAvailable: false,
+      genericAllowed: false,
+      ...over,
+    });
+
+  it("auto is the shipped ladder: puppet → vrm → placeholder(flag)", () => {
+    expect(
+      plan({ vrmAvailable: true, genericAllowed: true }),
+    ).toEqual(["puppet", "vrm", "placeholder"]);
+    expect(plan()).toEqual(["puppet"]);
+    expect(plan({ puppetAvailable: false })).toEqual([]);
+    expect(plan({ puppetAvailable: false, genericAllowed: true })).toEqual([
+      "placeholder",
+    ]);
+  });
+
+  it("puppet means 2D: an authored puppet or nothing — never a 3D surprise", () => {
+    expect(plan({ style: "puppet" })).toEqual(["puppet"]);
+    // No puppet → EMPTY, even with a VRM and the flag on: the user asked for
+    // 2D, so the tile takes the still-portrait ladder instead.
+    expect(
+      plan({
+        style: "puppet",
+        puppetAvailable: false,
+        vrmAvailable: true,
+        genericAllowed: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it("vrm tries the model first and keeps the puppet as the fallback", () => {
+    expect(plan({ style: "vrm", vrmAvailable: true })).toEqual([
+      "vrm",
+      "puppet",
+    ]);
+    // No VRM authored (today's reality — the pack is empty): the choice
+    // degrades to the puppet rather than to nothing.
+    expect(plan({ style: "vrm" })).toEqual(["puppet"]);
+  });
+
+  it("portrait refuses the face rung entirely", () => {
+    expect(
+      plan({
+        style: "portrait",
+        puppetAvailable: true,
+        vrmAvailable: true,
+        genericAllowed: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it("the procedural head NEVER mounts on preference alone — flag only", () => {
+    for (const style of FACE_STYLE_ORDER) {
+      const p = plan({
+        style,
+        puppetAvailable: false,
+        vrmAvailable: false,
+        genericAllowed: false,
+      });
+      expect(p).not.toContain("placeholder");
+      expect(p).toEqual([]);
+    }
+  });
+});
+
+describe("selectPresenceRung — face-style preference", () => {
+  it("omitted style is auto, bit for bit", () => {
+    // Every gate combination must agree with an explicit "auto" — the
+    // preference must not change a single pre-preference outcome by default.
+    for (const flagEnabled of [true, false]) {
+      for (const puppetAvailable of [true, false]) {
+        for (const webglOk of [true, false]) {
+          for (const portraitSrc of ["/p.png", null]) {
+            const base = input({
+              flagEnabled,
+              puppetAvailable,
+              webglOk,
+              portraitSrc,
+            });
+            expect(selectPresenceRung(base)).toBe(
+              selectPresenceRung({ ...base, style: "auto" }),
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it("portrait style never reaches the face rung", () => {
+    expect(
+      selectPresenceRung(input({ style: "portrait", puppetAvailable: true })),
+    ).toBe("portrait");
+    expect(
+      selectPresenceRung(
+        input({ style: "portrait", puppetAvailable: true, portraitSrc: null }),
+      ),
+    ).toBe("unicorn");
+  });
+
+  it("puppet style with no puppet degrades to the 2D ladder", () => {
+    expect(
+      selectPresenceRung(
+        input({ style: "puppet", puppetAvailable: false, flagEnabled: true }),
+      ),
+    ).toBe("portrait");
+  });
+
+  it("vrm style rides the puppet when no model exists (probe says why)", () => {
+    expect(
+      selectPresenceRung(
+        input({ style: "vrm", puppetAvailable: true, flagEnabled: false }),
+      ),
+    ).toBe("face");
+    // …and with neither asset nor flag, the 2D ladder — never a blank canvas.
+    expect(
+      selectPresenceRung(
+        input({ style: "vrm", puppetAvailable: false, flagEnabled: false }),
+      ),
+    ).toBe("portrait");
+  });
+
+  it("NO style may loosen a physics gate", () => {
+    const styles: FaceStyle[] = [...FACE_STYLE_ORDER];
+    for (const style of styles) {
+      const rich = { style, puppetAvailable: true, vrmSrc: "/m.vrm" } as const;
+      expect(
+        selectPresenceRung(input({ ...rich, surface: "filmstrip" })),
+      ).not.toBe("face");
+      expect(selectPresenceRung(input({ ...rich, webglOk: false }))).not.toBe(
+        "face",
+      );
+      expect(
+        selectPresenceRung(input({ ...rich, faceHealthy: false })),
+      ).not.toBe("face");
+    }
+  });
+
+  it("still never returns a rung that renders nothing, under every style", () => {
+    const rungs = new Set<string>();
+    for (const style of FACE_STYLE_ORDER) {
+      for (const flagEnabled of [true, false]) {
+        for (const puppetAvailable of [true, false]) {
+          for (const webglOk of [true, false]) {
+            for (const portraitSrc of ["/p.png", null]) {
+              rungs.add(
+                selectPresenceRung({
+                  flagEnabled,
+                  surface: "stage",
+                  webglOk,
+                  faceHealthy: true,
+                  portraitSrc,
+                  vrmSrc: null,
+                  puppetAvailable,
+                  style,
+                }),
+              );
+            }
+          }
+        }
+      }
+    }
+    expect([...rungs].sort()).toEqual(["face", "portrait", "unicorn"]);
+  });
+});
+
 describe("withinAgentFaceBudget", () => {
   it("allows the typical call shapes — one agent, a couple of agents", () => {
     // THE regression: a 1:1 Majik call in Gallery had zero face-eligible
@@ -250,6 +423,62 @@ describe("resolveCallTilePersona", () => {
     expect(
       resolveCallTilePersona("agent-b7f2", "Corporal Qwen", null).name,
     ).toBe("Corporal Qwen");
+  });
+
+  it("falls back to the room's ONE agent member when metadata is missing", () => {
+    // THE group-DM bug (Aaron, 2026-08-10): a group room whose list row never
+    // learned `brigade_agent_id` (in-room invite, stale list) left the
+    // type-shaped worker unresolvable, and Majik rendered as the generic head
+    // with the "brigade" identity hue — green hair. The membership roster is
+    // written at invite time and names him.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", null, [
+        { slug: "majik", name: "Majik" },
+      ]),
+    ).toEqual({ slug: "majik", name: "Majik" });
+    // A member row with no display name gets the canonical derivation.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", null, [
+        { slug: "corporal-qwen" },
+      ]),
+    ).toEqual({ slug: "corporal-qwen", name: "Corporal Qwen" });
+  });
+
+  it("room metadata still outranks the member roster", () => {
+    // metadata is the server's "canonical responder" (most-recently-invited);
+    // the roster is the fallback for when that copy is stale or unwritten.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", "gunny", [
+        { slug: "majik", name: "Majik" },
+      ]).slug,
+    ).toBe("gunny");
+  });
+
+  it("declines to guess between TWO artful agent members", () => {
+    // One worker tile, two possible characters: either pick would be a coin
+    // flip wearing a costume. The generic rungs are more honest.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", null, [
+        { slug: "majik", name: "Majik" },
+        { slug: "gunny", name: "Gunny" },
+      ]),
+    ).toEqual({ slug: "brigade", name: "stable-brigade" });
+  });
+
+  it("ignores agent members whose art does not resolve", () => {
+    // An artless bot member must not block the one drawn character…
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", null, [
+        { slug: "webhook-notifier-x9" },
+        { slug: "majik", name: "Majik" },
+      ]).slug,
+    ).toBe("majik");
+    // …and a roster of only artless members changes nothing.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", null, [
+        { slug: "webhook-notifier-x9" },
+      ]),
+    ).toEqual({ slug: "brigade", name: "stable-brigade" });
   });
 });
 

@@ -52,13 +52,20 @@ export function catalogKey(
 /**
  * A model URL for this agent, or null. Null is the normal answer today; the
  * caller must treat it as "render the placeholder head", not as an error.
+ *
+ * `userOptIn` is the face-style preference saying "vrm": an AUTHORED model
+ * (server `avatar_vrm_url` or the pack) is per-agent art, so a user who
+ * explicitly chose 3D gets it without the experimental flag. The flag keeps
+ * gating what it always gated — the GENERIC faces (see faceMountPlan, which
+ * never adds the procedural head on preference alone).
  */
 export function resolveAgentVrmUrl(
   agentId?: string | null,
   name?: string | null,
   serverVrmUrl?: string | null,
+  opts?: { userOptIn?: boolean },
 ): string | null {
-  if (!isTalkingFaceEnabled()) return null;
+  if (!isTalkingFaceEnabled() && !opts?.userOptIn) return null;
   if (serverVrmUrl) return resolveVrmSrc(serverVrmUrl);
   const path = PACK[catalogKey(agentId, name)];
   return path ? resolveVrmSrc(path) : null;

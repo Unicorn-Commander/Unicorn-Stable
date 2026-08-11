@@ -14,12 +14,22 @@
  *
  * Rung 4 always renders, which is the point: no branch of this ladder can
  * produce a blank tile.
+ *
+ * The user's face-style preference (lib/facePreference.ts) slots in ABOVE the
+ * ladder, never around it: it reorders/filters what the face rung may mount
+ * (`faceMountPlan`) and can refuse the face rung entirely ("portrait"), but
+ * every physics gate — surface class, WebGL, box size, context budget — and
+ * every fallback rung below stays exactly as it was.
  */
 
 import { brandAvatarFor } from "@/lib/brandAvatars";
 import { hasPuppet } from "@/lib/puppetRig";
+import type { FaceStyle } from "@/lib/facePreference";
 
 export type PresenceRung = "face" | "portrait" | "unicorn" | "avatar";
+
+/** What the WebGL rung can actually mount, in the probe's vocabulary. */
+export type FaceSource = "puppet" | "vrm" | "placeholder";
 
 export type PresenceExpression =
   | "idle"
@@ -66,6 +76,24 @@ export interface CallTilePersona {
   name: string;
 }
 
+/** One agent MEMBER of the room, as the membership roster knows it. */
+export interface RoomAgentMember {
+  /** Brigade persona id ("majik"), already stripped of any `agent-` prefix. */
+  slug: string;
+  /** The member row's display name, when the roster has one. */
+  name?: string | null;
+}
+
+/** "corporal-qwen" → "Corporal Qwen" — mirrors the server's display derivation
+ *  (agent_chat_responder: id.replace("-", " ").title()). */
+function displayNameForBrigadeId(id: string): string {
+  return id
+    .split("-")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 /**
  * Resolve WHICH CHARACTER an agent tile shows.
  *
@@ -85,13 +113,25 @@ export interface CallTilePersona {
  *   2. The ROOM's resident `brigade_agent_id` (server room metadata, already
  *      on the web Room model) — the same source the server uses to dispatch
  *      the worker, so it names the persona the worker is speaking as.
- *   3. The tile's own identity/name unchanged (no art anywhere → the
+ *   3. The room's agent MEMBER roster, when it names EXACTLY ONE agent whose
+ *      art resolves. This is the group-room fix (Aaron, 2026-08-10: Majik in
+ *      a group DM rendered "our style but green hair" — the generic head keyed
+ *      off the type-shaped worker identity): the room-list row's
+ *      `brigade_agent_id` is metadata that an in-room invite does not refresh
+ *      on the client, while the member roster is created at invite time and
+ *      invalidated on every membership event, so it names the persona even
+ *      when the metadata copy is stale or was never written. Guarded to
+ *      exactly one artful agent member: with two agents in the room and one
+ *      type-shaped worker tile, picking either would be a coin flip wearing a
+ *      costume — the generic rungs are more honest than the wrong character.
+ *   4. The tile's own identity/name unchanged (no art anywhere → the
  *      procedural rungs, exactly as before).
  */
 export function resolveCallTilePersona(
   identity: string | null | undefined,
   displayName: string | null | undefined,
   roomBrigadeAgentId?: string | null,
+  roomAgentMembers?: readonly RoomAgentMember[] | null,
 ): CallTilePersona {
   const ownSlug = agentSlugFromIdentity(identity);
   const ownName = displayName || ownSlug;
@@ -101,13 +141,17 @@ export function resolveCallTilePersona(
   if (roomBrigadeAgentId && brandAvatarFor(roomBrigadeAgentId)) {
     return {
       slug: roomBrigadeAgentId,
-      // Canonical display derivation, mirroring the server
-      // (agent_chat_responder: id.replace("-", " ").title()).
-      name: roomBrigadeAgentId
-        .split("-")
-        .filter(Boolean)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" "),
+      name: displayNameForBrigadeId(roomBrigadeAgentId),
+    };
+  }
+  const artful = (roomAgentMembers ?? []).filter(
+    (m) => m.slug && (brandAvatarFor(m.slug) || brandAvatarFor(m.name ?? null)),
+  );
+  if (artful.length === 1) {
+    const member = artful[0]!;
+    return {
+      slug: member.slug,
+      name: member.name || displayNameForBrigadeId(member.slug),
     };
   }
   return { slug: ownSlug, name: ownName };
@@ -174,6 +218,60 @@ export function withinAgentFaceBudget(agentTileCount: number): boolean {
   return agentTileCount > 0 && agentTileCount <= MAX_AGENT_FACE_CONTEXTS;
 }
 
+export interface FaceMountPlanInput {
+  /** The user's face-style preference (stores/facePrefStore). */
+  style: FaceStyle;
+  /** An AUTHORED branded 2D puppet exists for this persona (puppetRig.ts). */
+  puppetAvailable: boolean;
+  /** A resolvable VRM asset exists (server `avatar_vrm_url` or the pack). */
+  vrmAvailable: boolean;
+  /**
+   * `isTalkingFaceEnabled()` — may the GENERIC faces mount (the procedural
+   * head, which is one skull for everybody)? The preference never overrides
+   * this: choosing "3D model" is a request for THIS agent's authored assets,
+   * not an opt-in to the experimental placeholder.
+   */
+  genericAllowed: boolean;
+}
+
+/**
+ * preference × availability → the ordered list of sources the WebGL rung may
+ * try for this tile. EMPTY means the face rung is not worth mounting and the
+ * tile renders the 2D ladder (portrait → unicorn → initials) instead — which
+ * is how "unavailable falls down the existing ladder, never a blank tile" is
+ * made structural rather than hoped for.
+ *
+ *   auto     — today's shipped ladder: branded puppet first, then a VRM, then
+ *              (flag only) the procedural head.
+ *   puppet   — the user asked for 2D. An authored puppet or nothing: with no
+ *              puppet the tile takes the STILL portrait rung rather than
+ *              surprising a 2D request with a 3D render.
+ *   vrm      — the user asked for 3D. VRM first; a tile that can't mount one
+ *              (no asset, or the load fails) falls to the puppet, then 2D —
+ *              the probe's `preferred`/`source` pair says why.
+ *   portrait — no face rung at all; the static picture ladder.
+ *
+ * Physics is out of scope on purpose: WebGL support, the stage-surface gate,
+ * box size and the context budget are applied by the caller
+ * (selectPresenceRung / AgentPresenceFace) exactly as before — a preference
+ * can only choose among faces physics already allows.
+ */
+export function faceMountPlan(input: FaceMountPlanInput): FaceSource[] {
+  const puppet: FaceSource[] = input.puppetAvailable ? ["puppet"] : [];
+  const vrm: FaceSource[] = input.vrmAvailable ? ["vrm"] : [];
+  const placeholder: FaceSource[] = input.genericAllowed ? ["placeholder"] : [];
+  switch (input.style) {
+    case "portrait":
+      return [];
+    case "puppet":
+      return puppet;
+    case "vrm":
+      return [...vrm, ...puppet, ...placeholder];
+    case "auto":
+      return [...puppet, ...vrm, ...placeholder];
+  }
+}
+
 export interface PresenceRungInput {
   /** `isTalkingFaceEnabled()` — the switch for the EXPERIMENTAL faces. */
   flagEnabled: boolean;
@@ -199,6 +297,14 @@ export interface PresenceRungInput {
    * flag keeps gating exactly those generic/experimental faces.
    */
   puppetAvailable?: boolean;
+  /**
+   * The user's face-style preference. Omitted = "auto", which reproduces the
+   * pre-preference ladder bit for bit. "portrait" refuses the face rung
+   * outright; "puppet"/"vrm" reach it only when their faceMountPlan is
+   * non-empty (so a style with nothing to mount degrades to the 2D ladder
+   * instead of an empty WebGL canvas).
+   */
+  style?: FaceStyle;
 }
 
 /**
@@ -206,8 +312,14 @@ export interface PresenceRungInput {
  * attributable to one condition rather than to a boolean soup.
  */
 export function selectPresenceRung(input: PresenceRungInput): PresenceRung {
+  const plan = faceMountPlan({
+    style: input.style ?? "auto",
+    puppetAvailable: !!input.puppetAvailable,
+    vrmAvailable: !!input.vrmSrc,
+    genericAllowed: input.flagEnabled,
+  });
   const faceAllowed =
-    (input.flagEnabled || !!input.puppetAvailable) &&
+    plan.length > 0 &&
     input.surface === "stage" &&
     input.webglOk &&
     input.faceHealthy;
