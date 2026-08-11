@@ -27,6 +27,10 @@ import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useVoice } from "@/contexts/VoiceProvider";
 import {
+  homeSummaryQueryKey,
+  LIVE_CALLS_POLL_MS,
+} from "@/hooks/useLiveCalls";
+import {
   agentFeed,
   agentSubtitle,
   rankedFleet,
@@ -144,10 +148,13 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
   const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const pushToast = useAppStore((s) => s.pushToast);
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  // Key comes from the shared helper so this query and useLiveCalls (sidebar
+  // badges / in-room banner / call toast) are ONE cache entry + ONE poll by
+  // construction — call_occupancy WS nudges patch it for all of them at once.
   const { data: homeSummary } = useQuery({
-    queryKey: ["home-summary", activeInstanceId],
+    queryKey: homeSummaryQueryKey(activeInstanceId),
     queryFn: () => api.getHomeSummary(),
-    refetchInterval: 30_000,
+    refetchInterval: LIVE_CALLS_POLL_MS,
   });
 
   const { isConnected } = useVoice();

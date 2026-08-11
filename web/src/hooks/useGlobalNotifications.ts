@@ -1,19 +1,29 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
+import { useCallUiStore } from "@/stores/callUiStore";
+import { useFederationStore } from "@/stores/federationStore";
 import { useIncomingCallStore } from "@/stores/incomingCallStore";
 import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
 import {
   ws,
+  WsCallOccupancyEvent,
   WsCallStartedEvent,
   WsCallResolvedEvent,
   WsCallRingStateEvent,
   WsEventPayload,
   WsMessageEvent,
 } from "@/services/websocket";
+import type { HomeSummary } from "@/services/api";
 import { loadPrefs } from "@/components/Layout/SettingsModal";
 import { getNotifyLevel } from "@/utils/mute";
 import { messageMentionsUser } from "@/utils/unreadModel";
+import {
+  applyOccupancyEvent,
+  isFreshCallStart,
+  shouldToastCallStart,
+} from "@/lib/callAwareness";
+import { homeSummaryQueryKey } from "@/hooks/useLiveCalls";
 import { playCue } from "@/lib/sounds";
 import { ensurePushSubscription } from "@/lib/webpush";
 import { useGlobalPresence } from "@/hooks/useGlobalPresence";
@@ -211,6 +221,12 @@ export function useGlobalNotifications() {
       if (event.room_type === "channel") {
         // Channel calls don't RING (too broad an audience for an interruptive
         // banner) — downgrade to the regular toast + notify cue.
+        // NOTE: currently UNREACHABLE — the only call_started producer is the
+        // DM ring (api/calls.py 400s channels), and channel call starts are
+        // announced by the `call_occupancy` handler below instead. Kept as a
+        // defensive downgrade against an older/other server; if a channel
+        // ring producer ever appears, reconcile with the occupancy toast so
+        // one call start cannot announce twice.
         playCue("notify");
         if (loadPrefs().inAppToasts) {
           pushToast({
@@ -277,6 +293,78 @@ export function useGlobalNotifications() {
       if (e.reason) {
         settleOutgoingFromResolution(String(e.call_id), e.reason, null);
       }
+    });
+
+    // Room-scoped occupancy nudges from the LiveKit webhook — the realtime
+    // half of the shared live-calls source of truth (useLiveCalls owns the
+    // 30s poll half). ONE listener app-wide: it patches the shared query
+    // cache, so the sidebar badges, the in-room banner and Home all move
+    // together, immediately, with no per-surface polling. This event is a
+    // FACT, not an offer — it must never touch the incoming-call store.
+    const unsubCallOccupancy = ws.on("call_occupancy", (data: WsEventPayload) => {
+      const e = data as unknown as WsCallOccupancyEvent;
+      if (!e?.room_id || typeof e.participant_count !== "number") return;
+      const key = homeSummaryQueryKey(
+        useFederationStore.getState().activeInstanceId,
+      );
+      const cached = queryClient.getQueryData<HomeSummary>(key);
+
+      // The cross-room "a call started" toast (only a JOIN by the FIRST
+      // participant of a room the cache didn't list as live qualifies —
+      // never the poll, never a mid-call join, never a webhook retry).
+      // Decided BEFORE the cache patch, against what we believed until now.
+      const app = useAppStore.getState();
+      const toastable = shouldToastCallStart({
+        freshStart: isFreshCallStart(cached?.live_calls, e),
+        roomId: e.room_id,
+        byParticipantId: e.by?.id ?? null,
+        selfParticipantId: app.currentParticipantId,
+        selfUserId: app.currentUser?.id ?? null,
+        connectedCallRoomId: app.voiceActive
+          ? useCallUiStore.getState().activeCallRoomId
+          : null,
+        viewingRoomId: app.activeRoomId,
+        documentVisible: document.visibilityState === "visible",
+        ringingRoomId: useIncomingCallStore.getState().call?.roomId ?? null,
+        notifyLevel: getNotifyLevel(e.room_id),
+      });
+      if (toastable) {
+        playCue("notify");
+        if (loadPrefs().inAppToasts) {
+          const who = e.by?.display_name || "Someone";
+          const room = e.room_name || "a room";
+          pushToast({
+            title: `${who} started a call`,
+            body: `in ${e.room_type === "channel" ? `#${room}` : room} — tap to open and join`,
+            roomId: e.room_id,
+          });
+        }
+      }
+
+      // Patch the shared cache from the event itself (it carries the full
+      // entry), so every consumer updates without a refetch round-trip. If no
+      // summary has landed yet there is nothing to patch — inventing one
+      // would hand Home's other widgets fake-empty data; the first poll is
+      // already in flight and will carry this room.
+      if (cached) {
+        queryClient.setQueryData<HomeSummary>(key, {
+          ...cached,
+          live_calls: applyOccupancyEvent(cached.live_calls ?? [], e),
+        });
+      }
+    });
+
+    // Occupancy nudges are lossy across a socket gap. On every RE-connect,
+    // refetch the shared summary so a call that started or ended while we
+    // were offline is reflected promptly instead of at the next 30s poll.
+    // The first connection of the app's life skips it — the initial fetch is
+    // the same request.
+    let occupancySynced = ws.connected;
+    const unsubOccupancyResync = ws.on("connected", () => {
+      if (occupancySynced) {
+        void queryClient.invalidateQueries({ queryKey: ["home-summary"] });
+      }
+      occupancySynced = true;
     });
 
     const unsubRead = ws.on("read_receipt", (data: WsEventPayload) => {
@@ -415,6 +503,8 @@ export function useGlobalNotifications() {
       unsubCallStarted();
       unsubRingState();
       unsubCallResolved();
+      unsubCallOccupancy();
+      unsubOccupancyResync();
       unsubReaction();
       unsubRead();
       unsubMsgUpdate();

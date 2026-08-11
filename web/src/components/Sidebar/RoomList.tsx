@@ -63,6 +63,7 @@ import {
   type FolderSection,
 } from "@/stores/categoryStore";
 import { useVoice } from "@/contexts/VoiceProvider";
+import { useLiveCalls } from "@/hooks/useLiveCalls";
 import {
   buildSidebarModel,
   isPrivateChannel,
@@ -75,6 +76,7 @@ import {
 } from "./sidebarModel";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
+import { LiveCallBadge } from "./LiveCallBadge";
 import { NewChatButton } from "./NewChatButton";
 import { ViewSwitcher } from "./ViewSwitcher";
 import { resolveDefaultAgent } from "./newChat";
@@ -129,6 +131,10 @@ export function RoomList() {
   // Live call rejoin (Meetings empty/rail) — same source as Home.
   const { isConnected } = useVoice();
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
+  // Which rooms have a live call RIGHT NOW — the one shared source of truth
+  // (home-summary poll + call_occupancy WS nudges). Read once here; every row
+  // renderer below does a map lookup, so there is no per-row polling.
+  const { byRoomId: liveCallByRoomId } = useLiveCalls();
   // Draft pencils: bump on every draft save/clear so rows stay truthful.
   useDraftVersion();
   // Model view: classic mode always builds the full tree.
@@ -867,6 +873,7 @@ export function RoomList() {
                 >
                   {room.name}
                 </span>
+                <LiveCallBadge call={liveCallByRoomId[room.id]} />
                 {muted && (
                   <BellOff
                     aria-label="Muted"
@@ -986,6 +993,7 @@ export function RoomList() {
                 )}
               </span>
               <div className="flex shrink-0 items-center gap-1.5">
+                <LiveCallBadge call={liveCallByRoomId[room.id]} />
                 {hasDraft(room.id) && <DraftPencil />}
                 {room.last_message && (
                   <span className="text-[10px] tabular-nums text-slate-500">
@@ -1020,6 +1028,9 @@ export function RoomList() {
     const latest = threads[0];
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = threads.reduce((n, r) => n + unreadFor(r), 0);
+    // A live call in ANY thread with this person badges the collapsed row;
+    // the expanded thread rows carry their own badge.
+    const liveThread = threads.find((r) => liveCallByRoomId[r.id]);
     const menuOpen = menuKey === entry.key;
     const cat = peopleFiled?.[entry.key];
     const others = (participantsByRoom[latest?.id ?? ""] ?? []).filter(
@@ -1101,6 +1112,11 @@ export function RoomList() {
                   {name}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  <LiveCallBadge
+                    call={
+                      liveThread ? liveCallByRoomId[liveThread.id] : undefined
+                    }
+                  />
                   {latest && hasDraft(latest.id) && <DraftPencil />}
                   {latest?.last_message && (
                     <span className="text-[10px] tabular-nums text-slate-500">
@@ -1245,6 +1261,7 @@ export function RoomList() {
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium">{room.name}</span>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  <LiveCallBadge call={liveCallByRoomId[room.id]} />
                   {hasDraft(room.id) && <DraftPencil />}
                   {room.member_count > 0 && (
                     <span className="text-[10px] tabular-nums text-slate-600">
