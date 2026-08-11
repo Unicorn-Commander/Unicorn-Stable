@@ -38,12 +38,21 @@ async def livekit_webhook(
     db: Annotated[AsyncSession, Depends(get_db)],
     presence: Annotated[PresenceService, Depends(get_presence)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
 ) -> dict[str, str]:
     """
     Receive and process LiveKit webhook events.
 
     Handles: participant_joined, participant_left, room_started,
     room_finished, track_published.
+
+    Joins/leaves additionally fan a room-scoped ``call_occupancy`` frame out to
+    the room's members (see :func:`_broadcast_call_occupancy`) — the webhook is
+    the one place the server learns occupancy changed the moment it happens,
+    which is what lets the client's live-call surfaces (sidebar badges,
+    in-room banner, call-started toast) move in real time instead of at the
+    next /home/summary poll.
     """
     body = await request.body()
     auth_header = request.headers.get("Authorization", "")
@@ -73,13 +82,13 @@ async def livekit_webhook(
     )
 
     if event_type == "participant_joined":
-        await _handle_participant_joined(event, db, presence)
+        await _handle_participant_joined(event, db, presence, redis, livekit)
     elif event_type == "participant_left":
-        await _handle_participant_left(event, db, presence)
+        await _handle_participant_left(event, db, presence, redis, livekit)
     elif event_type == "room_started":
         await _handle_room_started(event, db)
     elif event_type == "room_finished":
-        await _handle_room_finished(event, db)
+        await _handle_room_finished(event, db, redis)
     elif event_type == "track_published":
         await _handle_track_published(event)
     else:
@@ -88,10 +97,89 @@ async def livekit_webhook(
     return {"status": "ok"}
 
 
+async def _broadcast_call_occupancy(
+    redis: Redis,
+    livekit: LiveKitService | None,
+    room: Room,
+    *,
+    by: dict[str, Any] | None = None,
+    count_override: int | None = None,
+) -> None:
+    """Tell the room's members what this room's call occupancy is NOW.
+
+    Published on the ``room:{id}`` channel every websocket member is already
+    subscribed to, as a flat ``call_occupancy`` frame (the same wire shape as
+    typing/presence). Count 0 means the call ended.
+
+    This is deliberately a DIFFERENT event from ``call_started`` — that one is
+    a ring ("someone is calling YOU", per-user, carries an offer the client
+    answers). This one is a room FACT with no offer, so no client can mistake
+    it for a ring; it exists because ringing only covers DMs, while channel
+    calls, un-rung joins, and every call END had no realtime signal at all.
+
+    Occupancy is re-probed from LiveKit (the same honest source
+    api/calls.py uses) rather than counted incrementally, so a lost webhook
+    can never make the number drift. `count_override` skips the probe for
+    events that already assert the answer (room_finished ⇒ 0).
+
+    Best-effort BY DESIGN: awareness must never break presence bookkeeping or
+    the webhook 200, so every failure lands in a log, not an exception. The
+    30s /home/summary poll remains the reconciling backstop.
+    """
+    try:
+        if count_override is not None:
+            count = count_override
+            has_agent = False
+        else:
+            if livekit is None:
+                return
+            info = await livekit.get_room(room.livekit_room_name)
+            participants = info.get("participants", [])
+            count = len(participants)
+            has_agent = any(
+                str(getattr(p, "identity", "")).startswith("agent-")
+                for p in participants
+            )
+        payload = {
+            "type": "call_occupancy",
+            "room_id": str(room.id),
+            "room_type": room.room_type.value,
+            "room_name": room.display_name,
+            "participant_count": count,
+            "has_agent": has_agent,
+            "by": by,
+        }
+        await redis.publish(f"room:{room.id}", json.dumps(payload))
+    except Exception:
+        logger.warning(
+            "call_occupancy_broadcast_failed",
+            room_id=str(room.id),
+            exc_info=True,
+        )
+
+
+def _joined_by(event: Any, participant_id: str | None) -> dict[str, Any]:
+    """Name the joiner for the ``call_occupancy`` frame.
+
+    ``id`` is the Stable participant UUID when the identity carries one
+    (humans — what the client compares against itself to suppress "you
+    started a call" toasts); agents and unknown identities get ``id: None``
+    but keep a human-readable display name.
+    """
+    identity = str(getattr(event.participant, "identity", "") or "")
+    name = str(getattr(event.participant, "name", "") or "")
+    if not name:
+        # ``username_<uuid>`` → username; anything else stands as-is.
+        name = identity.rsplit("_", 1)[0] if participant_id else identity
+    return {"id": participant_id, "display_name": name or None}
+
+
 async def _handle_participant_joined(
     event: Any,
     db: AsyncSession,
     presence: PresenceService,
+    redis: Redis,
+    livekit: LiveKitService,
 ) -> None:
     """Handle a participant joining a LiveKit room."""
     if not event.participant or not event.room:
@@ -130,11 +218,20 @@ async def _handle_participant_joined(
             participant.status = ParticipantStatus.ONLINE
             await db.commit()
 
+    # A join changes call occupancy whoever joined (agents included — they
+    # count on /home/summary too), so the broadcast is NOT gated on having
+    # resolved a participant id.
+    await _broadcast_call_occupancy(
+        redis, livekit, room, by=_joined_by(event, participant_id)
+    )
+
 
 async def _handle_participant_left(
     event: Any,
     db: AsyncSession,
     presence: PresenceService,
+    redis: Redis,
+    livekit: LiveKitService,
 ) -> None:
     """Handle a participant leaving a LiveKit room."""
     if not event.participant or not event.room:
@@ -176,6 +273,10 @@ async def _handle_participant_left(
 
         await presence.set_offline(participant_id)
 
+    # Re-probed occupancy: the last leaver takes this to 0, which is the
+    # room-scoped "the call ended" signal the clients key off.
+    await _broadcast_call_occupancy(redis, livekit, room)
+
 
 async def _handle_room_started(
     event: Any,
@@ -203,6 +304,7 @@ async def _handle_room_started(
 async def _handle_room_finished(
     event: Any,
     db: AsyncSession,
+    redis: Redis,
 ) -> None:
     """Handle a LiveKit room being destroyed."""
     if not event.room:
@@ -218,6 +320,10 @@ async def _handle_room_finished(
     if room:
         room.livekit_sid = None
         await db.commit()
+        # The room is gone, so its call occupancy is definitionally 0 — no
+        # probe. Backstop for a lost/ignored final participant_left, so no
+        # client is left believing a call is live in a destroyed room.
+        await _broadcast_call_occupancy(redis, None, room, count_override=0)
 
 
 async def _handle_track_published(event: Any) -> None:
