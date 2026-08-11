@@ -9,7 +9,9 @@
  *
  * WHAT IT RENDERS
  * ---------------
- * A three-rung ladder, best first — see `mountBest`:
+ * The caller's `mountOrder` (AgentPresenceFace's `faceMountPlan` — the user's
+ * face-style preference × asset availability × the flag), walked best first in
+ * `mountBest`. Under the default "auto" style that is the shipped ladder:
  *
  *   1. an AUTHORED puppet rig      → the BRANDED 2D portrait puppet. Aaron's
  *      call (2026-08-08): the branded talking puppet IS the call face — the
@@ -21,10 +23,14 @@
  *      rig's own viseme/ARKit morph — the fallback for agents with no puppet.
  *      (No brand VRM has been authored yet; the pack is empty.)
  *   3. otherwise                   → the PROCEDURAL head, built from primitives
- *      at runtime. Ours, and on-style, but one skull for everybody. Only
- *      mounted when `allowGenericFace` (the talking-face flag) — a tile that
- *      reached this rung purely on the strength of its branded puppet falls
- *      back to the 2D branded portrait instead (via `onFail`).
+ *      at runtime. Ours, and on-style, but one skull for everybody. In the
+ *      order only under the talking-face flag — never on preference alone —
+ *      so a tile that reached this rung on its branded assets falls back to
+ *      the 2D branded portrait instead (via `onFail`).
+ *
+ * A "vrm" style preference moves rung 2 to the front; "puppet" drops the 3D
+ * rungs entirely. The probe's `preferred` + `source` pair records what was
+ * asked for vs. what actually mounted.
  *
  * Rung 1 is gated on an AUTHORED rig, not on merely having a portrait: most
  * agents' art is a neon logo emblem, and the default mouth position against a
@@ -78,7 +84,8 @@ import {
   resolveMouthMorph,
   smoothLevel,
 } from "@/lib/mouthShape";
-import type { PresenceExpression } from "@/lib/presenceFace";
+import type { FaceSource, PresenceExpression } from "@/lib/presenceFace";
+import type { FaceStyle } from "@/lib/facePreference";
 import { puppetForAgent } from "@/lib/puppetRig";
 import { buildPortraitPuppet } from "./portraitPuppet";
 import {
@@ -98,6 +105,13 @@ export interface TalkingFaceProbe {
   /** "vrm" = a real rigged model. "puppet" = a rigged 2D portrait.
    *  "placeholder" = the procedural head. */
   source: "vrm" | "puppet" | "placeholder";
+  /**
+   * The user's face-style preference this tile mounted under. Read next to
+   * `source`: `preferred:"vrm", source:"puppet"` is a tile that COULD NOT
+   * honor the choice and fell down the ladder (with `error` saying why when a
+   * load actually failed, vs. simply no asset).
+   */
+  preferred: FaceStyle;
   /** Which morph/expression the mouth is driving, or "jaw-bone". */
   driver: string;
   /** Raw level this frame (analyser volume, or LiveKit audioLevel). */
@@ -139,15 +153,27 @@ export interface VrmAvatarProps {
   isSpeaking?: boolean;
   debug?: boolean;
   /**
-   * May this tile mount the GENERIC faces (VRM without a puppet, procedural
-   * head)? True under the talking-face flag; false when the tile reached the
-   * face rung purely on its branded puppet — then a puppet failure steps DOWN
-   * to the 2D branded portrait instead of showing a generic head.
+   * WHAT to mount, in order — `faceMountPlan(style × availability × flag)`,
+   * computed by AgentPresenceFace. Sources whose asset turns out to be missing
+   * here (no puppet spec, no vrmSrc) are skipped; "placeholder" appears only
+   * when the talking-face flag allows the generic head. Defaults to the
+   * pre-preference auto ladder so a caller that has no styling opinion (the
+   * face lab) keeps the shipped behavior.
    */
-  allowGenericFace?: boolean;
+  mountOrder?: readonly FaceSource[];
+  /** The user's face-style preference, surfaced through the probe so a live
+   *  tile answers "what did you ask for vs. what did you get" in one read. */
+  preferred?: FaceStyle;
   /** Step DOWN the ladder. Called once, with a reason, and never retried. */
   onFail: (reason: string) => void;
 }
+
+/** The pre-preference ladder: puppet → vrm → procedural. */
+const DEFAULT_MOUNT_ORDER: readonly FaceSource[] = [
+  "puppet",
+  "vrm",
+  "placeholder",
+];
 
 /* ------------------------------------------------------------------ *
  * Model fetch — hardened, because a glTF is a request generator.
@@ -285,11 +311,16 @@ export function VrmAvatar({
   expression = "idle",
   isSpeaking = false,
   debug = false,
-  allowGenericFace = true,
+  mountOrder = DEFAULT_MOUNT_ORDER,
+  preferred = "auto",
   onFail,
 }: VrmAvatarProps) {
   const { remoteParticipants, version } = useVoice();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // Value key for the effect deps: the ORDER is what matters, not the array's
+  // identity (AgentPresenceFace memoizes it, but the contract should not
+  // depend on that).
+  const mountOrderKey = mountOrder.join(">");
 
   /* The participant handle lives in a REF, not in state. The render loop reads
    * levels off it 60 times a second; routing that through React would
@@ -525,60 +556,73 @@ export function VrmAvatar({
     const puppetSpec = puppetForAgent(slug, name);
 
     /**
-     * The ladder, best first: BRANDED PUPPET → VRM → procedural. Each rung
-     * records why it failed and falls to the next. The branded puppet outranks
-     * a VRM by direction (2026-08-08): our characters' approved artwork is the
-     * call face; a generic model is the stand-in, never the other way around.
-     * The floor depends on `allowGenericFace`: with the flag on, the
-     * procedural head (cannot fail); with it off, `onFail` steps the tile
-     * down to the branded 2D portrait rung instead.
+     * The ladder is the caller's `mountOrder` — `faceMountPlan(preference ×
+     * availability × flag)` — walked best first. Under "auto" that is the
+     * shipped BRANDED PUPPET → VRM → procedural order (the branded puppet
+     * outranks a VRM by direction, 2026-08-08: our characters' approved
+     * artwork is the call face; a generic model is the stand-in, never the
+     * other way around). A style preference reorders or shortens it — "vrm"
+     * tries the model first; "puppet" has no 3D fallback at all. Each rung
+     * records why it failed and falls to the next; a ladder that runs out
+     * calls `onFail`, which steps the tile down to the 2D portrait rung.
+     * The procedural head appears in the order only when the talking-face
+     * flag allows generic faces, so it can never mount on preference alone.
      */
+    const effectiveOrder = mountOrder.filter(
+      (source) =>
+        (source === "puppet" && !!puppetSpec) ||
+        (source === "vrm" && !!vrmSrc) ||
+        source === "placeholder",
+    );
+
     const mountBest = async () => {
-      if (puppetSpec) {
-        try {
-          await mountPuppet(puppetSpec);
+      for (const source of effectiveOrder) {
+        if (disposed) return;
+        if (source === "puppet" && puppetSpec) {
+          try {
+            await mountPuppet(puppetSpec);
+            return;
+          } catch (e) {
+            if (disposed) return;
+            const why = e instanceof Error ? e.message : String(e);
+            console.warn(`[talking-face] puppet failed (${puppetSpec.texture}): ${why}`);
+            probeError ??= why;
+          }
+        } else if (source === "vrm" && vrmSrc) {
+          try {
+            await mountVrm(vrmSrc);
+            return;
+          } catch (e) {
+            if (disposed) return;
+            const why = e instanceof Error ? e.message : String(e);
+            console.warn(`[talking-face] model load failed (${vrmSrc}): ${why}`);
+            probeError ??= why;
+          }
+        } else if (source === "placeholder") {
+          mountPlaceholder();
           return;
-        } catch (e) {
-          if (disposed) return;
-          const why = e instanceof Error ? e.message : String(e);
-          console.warn(`[talking-face] puppet failed (${puppetSpec.texture}): ${why}`);
-          probeError = why;
-        }
-      }
-      if (vrmSrc) {
-        try {
-          await mountVrm(vrmSrc);
-          return;
-        } catch (e) {
-          if (disposed) return;
-          const why = e instanceof Error ? e.message : String(e);
-          console.warn(`[talking-face] model load failed (${vrmSrc}): ${why}`);
-          probeError ??= why;
         }
       }
       if (disposed) return;
-      if (allowGenericFace) {
-        mountPlaceholder();
-      } else {
-        onFailRef.current(
-          probeError
-            ? `branded puppet failed (${probeError}) and generic faces are not enabled`
-            : "no branded face assets and generic faces are not enabled",
-        );
-      }
+      onFailRef.current(
+        probeError
+          ? `face mount failed (${probeError}) and no further fallback is enabled`
+          : "no mountable face for this style (no assets, generic faces not enabled)",
+      );
     };
 
-    if (vrmSrc || puppetSpec) {
-      void mountBest().finally(() => hostWindow.clearTimeout(timeout));
-    } else if (allowGenericFace) {
+    if (effectiveOrder[0] === "placeholder") {
       // Nothing to load — mount synchronously so the tile is never briefly bare.
       hostWindow.clearTimeout(timeout);
       mountPlaceholder();
+    } else if (effectiveOrder.length > 0) {
+      void mountBest().finally(() => hostWindow.clearTimeout(timeout));
     } else {
-      // Shouldn't be reachable (the rung requires a puppet when the flag is
-      // off) — but if it is, step down rather than render a generic head.
+      // Shouldn't be reachable (AgentPresenceFace refuses the face rung when
+      // the plan is empty) — but if it is, step down rather than render
+      // an empty canvas.
       hostWindow.clearTimeout(timeout);
-      onFailRef.current("no branded face assets and generic faces are not enabled");
+      onFailRef.current("no mountable face for this style");
     }
 
     /* ---- sizing ----------------------------------------------------- */
@@ -750,6 +794,7 @@ export function VrmAvatar({
 
       const probe: TalkingFaceProbe = {
         source: probeSource,
+        preferred,
         driver: driver?.label ?? "none",
         level: raw,
         levelSource,
@@ -854,7 +899,11 @@ export function VrmAvatar({
     hostWindow.addEventListener("pagehide", dispose);
 
     return dispose;
-  }, [participantId, slug, name, vrmSrc, debug, allowGenericFace]);
+    // `mountOrder` (the array) is represented by `mountOrderKey` — the order's
+    // VALUE is the dependency, not the array identity, so a parent that
+    // rebuilds an identical plan does not tear down a live WebGL scene.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participantId, slug, name, vrmSrc, debug, mountOrderKey, preferred]);
 
   return (
     <div
@@ -868,7 +917,7 @@ export function VrmAvatar({
     >
       {debug && hud && (
         <span className="pointer-events-none absolute left-1 top-1 whitespace-pre rounded bg-black/75 px-1.5 py-1 font-mono text-[10px] leading-tight text-amber-300">
-          {`${hud.source}${hud.source === "placeholder" ? " (procedural, no VRM)" : ""}\n` +
+          {`${hud.source}${hud.source === "placeholder" ? " (procedural, no VRM)" : ""} · pref ${hud.preferred}\n` +
             `${hud.fps.toFixed(0)} fps · ${hud.ticker}\n` +
             `lvl ${hud.level.toFixed(3)} (${hud.levelSource}) → mouth ${hud.mouthOpen.toFixed(2)}\n` +
             `drv ${hud.driver}${hud.error ? `\nerr ${hud.error}` : ""}`}

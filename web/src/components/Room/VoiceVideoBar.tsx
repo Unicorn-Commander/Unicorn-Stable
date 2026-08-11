@@ -38,6 +38,10 @@ import {
   MessageSquare,
   RefreshCw,
   Plus,
+  Sparkles,
+  Smile,
+  Box,
+  Image as ImageIcon,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
@@ -73,7 +77,10 @@ import {
   mapAgentState,
   resolveCallTilePersona,
   withinAgentFaceBudget,
+  type RoomAgentMember,
 } from "@/lib/presenceFace";
+import { FACE_STYLE_META, type FaceStyle } from "@/lib/facePreference";
+import { useFacePrefStore } from "@/stores/facePrefStore";
 // ─────────────────────────────────────────────────────────────────────────────
 // Pop-out / Picture-in-Picture module (audit §4a) — web/src/components/Room/popout/.
 // Integrated and typechecked against the module's REAL exports (CONTRACT.md), no
@@ -347,6 +354,53 @@ function TileControlButton({
   );
 }
 
+/** Current-state icon for the face-style cycle control. */
+const FACE_STYLE_ICON: Record<FaceStyle, LucideIcon> = {
+  auto: Sparkles,
+  puppet: Smile,
+  vrm: Box,
+  portrait: ImageIcon,
+};
+
+/**
+ * FaceStyleTileButton — the per-tile face-style affordance ("the Unicorn's
+ * window"). Cycles auto → 2D puppet → 3D model → portrait and writes the
+ * GLOBAL preference (stores/facePrefStore) — one choice for every agent tile,
+ * deliberately, per the v1 scope; per-agent overrides are the noted v2.
+ *
+ * Same glass-chip idiom as TileControlButton, with the responsive touch-target
+ * treatment RoomView's header buttons use (`p-2.5 md:p-1.5`): a full 44px
+ * button on touch layouts — where the cluster is always visible and fingers
+ * are blunt — compacting to the cluster's 24px beside its siblings on md+.
+ * A negative-margin hit hack was tried first and rejected: the tile is
+ * overflow-hidden, so an inflated hit box just gets clipped at the tile edge.
+ */
+function FaceStyleTileButton({
+  onCycled,
+}: {
+  /** Receives the NEW style's label, for the tile's transient toast. */
+  onCycled: (label: string) => void;
+}) {
+  const style = useFacePrefStore((s) => s.style);
+  const cycleStyle = useFacePrefStore((s) => s.cycleStyle);
+  const Icon = FACE_STYLE_ICON[style];
+  const meta = FACE_STYLE_META[style];
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onCycled(FACE_STYLE_META[cycleStyle()].label);
+      }}
+      aria-label={`Agent face style: ${meta.label}. Activate to switch`}
+      title={`Agent face style — now “${meta.label}”. Cycles Auto → 2D puppet → 3D model → Portrait, for agent faces everywhere (also in Settings → Appearance)`}
+      className="glass focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-200 transition-colors hover:text-white md:h-6 md:w-6"
+    >
+      <Icon className="h-3.5 w-3.5 md:h-3 md:w-3" />
+    </button>
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * ParticipantTile — one camera/avatar tile with the full interaction set.
  * ------------------------------------------------------------------ */
@@ -455,8 +509,30 @@ function ParticipantTile({
       ? (s.rooms.find((r) => r.id === roomId)?.brigade_agent_id ?? null)
       : null,
   );
+  /* The room's agent MEMBERS — persona fallback #3. `brigade_agent_id` above
+   * comes off the sidebar LIST row, which an in-room invite does not refresh
+   * (BrigadeAgentPicker heals it now, but a room invited before that fix, or a
+   * list that simply hasn't refetched, still reads null). The membership
+   * roster is created server-side at invite time and re-fetched on every
+   * member event, so it names the resident persona — this is what fixed the
+   * group-DM call where Majik rendered as the green generic head. */
+  const roomMembers = useAppStore((s) =>
+    isAgentTile ? s.participants[roomId] : undefined,
+  );
+  const agentMembers = useMemo<RoomAgentMember[]>(
+    () =>
+      (roomMembers ?? [])
+        .filter((m) => m.participant_type === "agent")
+        .map((m) => ({
+          slug:
+            (m as { brigade_agent_id?: string }).brigade_agent_id ||
+            (m.username ?? "").replace(/^agent-/, ""),
+          name: m.display_name,
+        })),
+    [roomMembers],
+  );
   const persona = isAgentTile
-    ? resolveCallTilePersona(p.id, p.name, roomBrigadeAgentId)
+    ? resolveCallTilePersona(p.id, p.name, roomBrigadeAgentId, agentMembers)
     : { slug: p.id.replace(/^agent-/, ""), name: p.name };
   const agent = useAppStore((s) =>
     isAgentTile
@@ -563,6 +639,21 @@ function ParticipantTile({
   /** The tile is showing a video element with nothing in it. */
   const videoIsBlank = showVideoEl && isAgentTile && !videoHasPicture;
 
+  /* Transient "Face: …" toast after the per-tile style cycle — the immediate
+   * confirmation of what the click just did, since the face itself may take a
+   * beat to remount. State is per tile; the PREFERENCE it announces is global. */
+  const [faceStyleFlash, setFaceStyleFlash] = useState<string | null>(null);
+  const faceFlashTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(faceFlashTimer.current), []);
+  const flashFaceStyle = useCallback((label: string) => {
+    setFaceStyleFlash(label);
+    window.clearTimeout(faceFlashTimer.current);
+    faceFlashTimer.current = window.setTimeout(
+      () => setFaceStyleFlash(null),
+      1600,
+    );
+  }, []);
+
   // Pinned wins (purple) over the identity-hued speaking glow.
   const ringStyle: CSSProperties | undefined = isPinned
     ? {
@@ -646,6 +737,17 @@ function ParticipantTile({
         {isAgentTile ? persona.name : p.name}
       </span>
 
+      {/* Transient confirmation of a face-style cycle. aria-live so the mode
+          change is announced, pointer-events-none so it never eats a click. */}
+      {faceStyleFlash && (
+        <span
+          aria-live="polite"
+          className="glass pointer-events-none absolute bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md px-2.5 py-1 text-[11px] font-semibold text-slate-100"
+        >
+          Face: {faceStyleFlash}
+        </span>
+      )}
+
       {/* Persistent pin marker, OR a drag grip on hover (grid tiles). */}
       {isPinned ? (
         <span className="absolute left-1.5 top-1.5 flex items-center gap-1 rounded-md bg-stable-purple/30 px-1.5 py-0.5 text-[10px] font-semibold text-stable-purple-light ring-1 ring-stable-purple/50">
@@ -685,6 +787,10 @@ function ParticipantTile({
             : "transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100",
         )}
       >
+        {/* Agent tiles only: cycle the face style (writes the global
+            preference). First in the cluster — it's about the face the tile
+            shows, so it reads before the layout controls. */}
+        {isAgentTile && <FaceStyleTileButton onCycled={flashFaceStyle} />}
         {onTogglePin && (
           <TileControlButton
             icon={isPinned ? PinOff : Pin}
@@ -958,8 +1064,25 @@ function AudioChip({ id, name, roomId, isAgent, isSpeaking, isMuted }: AudioChip
       ? (s.rooms.find((r) => r.id === roomId)?.brigade_agent_id ?? null)
       : null,
   );
+  // Member-roster fallback, same as ParticipantTile — the audio layout must
+  // not name the character differently than the video tile does.
+  const roomMembers = useAppStore((s) =>
+    isAgent ? s.participants[roomId] : undefined,
+  );
+  const agentMembers = useMemo<RoomAgentMember[]>(
+    () =>
+      (roomMembers ?? [])
+        .filter((m) => m.participant_type === "agent")
+        .map((m) => ({
+          slug:
+            (m as { brigade_agent_id?: string }).brigade_agent_id ||
+            (m.username ?? "").replace(/^agent-/, ""),
+          name: m.display_name,
+        })),
+    [roomMembers],
+  );
   const persona = isAgent
-    ? resolveCallTilePersona(id, name, roomBrigadeAgentId)
+    ? resolveCallTilePersona(id, name, roomBrigadeAgentId, agentMembers)
     : { slug: id.replace(/^agent-/, ""), name };
   const agent = useAppStore((s) =>
     isAgent

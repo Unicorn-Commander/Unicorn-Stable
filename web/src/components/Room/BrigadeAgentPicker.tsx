@@ -10,6 +10,8 @@ import {
 } from "@/lib/agentEntitlement";
 import { useVoice } from "../../contexts/VoiceProvider";
 import { useCallUiStore } from "@/stores/callUiStore";
+import { useAppStore } from "@/stores/appStore";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface Props {
   /** The LiveKit room name the user is currently in. */
@@ -82,6 +84,8 @@ export function BrigadeAgentPicker({
     };
   }, []);
 
+  const qc = useQueryClient();
+
   const invite = async (agentId: string) => {
     setInviting(agentId);
     try {
@@ -95,6 +99,18 @@ export function BrigadeAgentPicker({
         (result.reason ?? "").startsWith("agent_already_in_room");
       if (result.dispatched || skipped) {
         setInvitedIds((prev) => new Set(prev).add(agentId));
+        /* The server just persisted `metadata.brigade_agent_id` — and the
+         * client's ROOM-LIST row is what a call tile resolves its persona
+         * from (VoiceVideoBar → resolveCallTilePersona). Without this heal
+         * the row stayed stale until the 60s list poll, which is how an
+         * agent invited into a live group call rendered as the generic head
+         * instead of its branded puppet. Optimistic store write first (the
+         * call is live NOW), then the refetches for every other reader. */
+        useAppStore.getState().updateRoom(roomName, {
+          brigade_agent_id: agentId,
+        });
+        void qc.invalidateQueries({ queryKey: ["rooms"] });
+        void qc.invalidateQueries({ queryKey: ["room", roomName] });
         onInvited?.(agentId);
       } else {
         const reason = result.reason || "dispatch_failed";

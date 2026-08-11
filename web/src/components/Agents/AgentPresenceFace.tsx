@@ -22,6 +22,12 @@
  * flag additionally unlocks the generic/experimental faces (VRM, procedural
  * head) for agents that have no puppet.
  *
+ * On top of that sits the USER'S face-style preference (stores/facePrefStore:
+ * auto | puppet | vrm | portrait). It decides WHAT the face rung mounts first
+ * (`faceMountPlan`) and may refuse the rung entirely ("portrait"); it never
+ * loosens a physics gate, and "auto" is bit-identical to the ladder that
+ * shipped before the preference existed.
+ *
  * The heavy renderer is behind `lazy()`, so the three.js chunk is requested by
  * the browser only when the face rung is actually reachable for THIS tile
  * (branded puppet, or flag on) AND the tile is stage-class AND WebGL works.
@@ -41,6 +47,7 @@ import { isWebglAvailable } from "@/lib/webglSupport";
 import {
   MIN_FACE_BOX_PX,
   agentSlugFromIdentity,
+  faceMountPlan,
   puppetAvailableFor,
   selectFallbackRung,
   selectPresenceRung,
@@ -48,6 +55,8 @@ import {
   type PresenceExpression,
   type PresenceSurface,
 } from "@/lib/presenceFace";
+import { useFacePrefStore } from "@/stores/facePrefStore";
+import type { FaceStyle } from "@/lib/facePreference";
 
 // Lazy — this import is the ONLY edge from the app graph into three.js.
 const VrmAvatar = lazy(() => import("@/components/Agents/VrmAvatar"));
@@ -92,22 +101,38 @@ export function AgentPresenceFace({
   const slug = agentSlugFromIdentity(id || participantId);
   const flagEnabled = isTalkingFaceEnabled();
   const debug = isTalkingFaceDebugEnabled();
+  /**
+   * The user's face-style preference — a live store subscription, so cycling
+   * the style from a tile control or Settings restyles every mounted agent
+   * tile without a reload (unlike the talking-face flag, which is
+   * read-once-per-document on purpose).
+   */
+  const faceStyle = useFacePrefStore((s) => s.style);
 
   const portraitSrc = useMemo(
     () => resolveAgentPortrait(slug, name, avatarUrl),
     [slug, name, avatarUrl],
   );
   const vrmSrc = useMemo(
-    () => resolveAgentVrmUrl(slug, name, vrmUrl),
-    [slug, name, vrmUrl],
+    // An explicit "vrm" choice resolves authored models without the flag —
+    // per-agent art the user asked for. The generic head stays flag-only.
+    () => resolveAgentVrmUrl(slug, name, vrmUrl, { userOptIn: faceStyle === "vrm" }),
+    [slug, name, vrmUrl, faceStyle],
   );
 
   /**
    * A face that has failed once stays failed for the life of this tile. Retrying
    * a decode every render would spin a broken model forever, and a WebGL context
    * that could not be created will not be creatable a frame later either.
+   *
+   * A style CHANGE is the one amnesty: it is a deliberate user action that
+   * changes what would be mounted, so the failure verdict of the old style must
+   * not pin the new one to the 2D ladder.
    */
   const [faceHealthy, setFaceHealthy] = useState(true);
+  useEffect(() => {
+    setFaceHealthy(true);
+  }, [faceStyle]);
 
   /**
    * Does the tile actually have room?
@@ -127,8 +152,25 @@ export function AgentPresenceFace({
    * procedural head) for agents that have no authored puppet.
    */
   const puppetAvailable = puppetAvailableFor(slug, name);
+  /**
+   * What the WebGL rung would mount, in order, under the user's style. Empty
+   * (e.g. style "portrait", or "puppet" for an agent with no authored puppet)
+   * means the face rung is refused up front — no three.js chunk is requested
+   * and the 2D ladder renders, which is the "unavailable falls down the
+   * ladder" contract.
+   */
+  const mountPlan = useMemo(
+    () =>
+      faceMountPlan({
+        style: faceStyle,
+        puppetAvailable,
+        vrmAvailable: !!vrmSrc,
+        genericAllowed: flagEnabled,
+      }),
+    [faceStyle, puppetAvailable, vrmSrc, flagEnabled],
+  );
   const wantsFace =
-    (flagEnabled || puppetAvailable) &&
+    mountPlan.length > 0 &&
     surface === "stage" &&
     faceHealthy &&
     isWebglAvailable();
@@ -171,6 +213,7 @@ export function AgentPresenceFace({
     portraitSrc,
     vrmSrc,
     puppetAvailable,
+    style: faceStyle,
   });
 
   // What the 2D half renders — also the Suspense fallback, so the tile shows the
@@ -207,12 +250,13 @@ export function AgentPresenceFace({
         )}
         data-presence-rung={rung}
         data-presence-agent={slug}
+        data-face-pref={faceStyle}
       >
         {twoD}
         {debug && (
           <RungBadge
             rung={rung}
-            reason={debugReason(flagEnabled, puppetAvailable, surface)}
+            reason={debugReason(faceStyle, mountPlan.length > 0, surface)}
           />
         )}
       </span>
@@ -228,6 +272,7 @@ export function AgentPresenceFace({
       )}
       data-presence-rung="face"
       data-presence-agent={slug}
+      data-face-pref={faceStyle}
     >
       <Suspense fallback={twoD}>
         <VrmAvatar
@@ -239,11 +284,13 @@ export function AgentPresenceFace({
           expression={expression}
           isSpeaking={isSpeaking}
           debug={debug}
-          /* Flag OFF means the tile reached this rung purely on the strength
-           * of its BRANDED puppet — if that puppet fails, fail the rung and
-           * fall to the branded 2D portrait rather than mounting the generic
-           * procedural head nobody opted into. */
-          allowGenericFace={flagEnabled}
+          /* WHAT the rung may mount, in order, under the user's style — the
+           * procedural head appears here only when the flag allows it, so a
+           * tile that reached this rung on the strength of its BRANDED assets
+           * fails DOWN to the 2D portrait rather than mounting the generic
+           * head nobody opted into. */
+          mountOrder={mountPlan}
+          preferred={faceStyle}
           onFail={(why) => {
             console.warn(`[talking-face] face rung failed for ${slug}: ${why}`);
             setFaceHealthy(false);
@@ -255,11 +302,12 @@ export function AgentPresenceFace({
 }
 
 function debugReason(
-  flagEnabled: boolean,
-  puppetAvailable: boolean,
+  style: FaceStyle,
+  planNonEmpty: boolean,
   surface: PresenceSurface,
 ): string {
-  if (!flagEnabled && !puppetAvailable) return "flag off + no puppet";
+  if (style === "portrait") return "style=portrait";
+  if (!planNonEmpty) return `style=${style}: nothing mountable (flag off + no assets)`;
   if (surface !== "stage") return `surface=${surface}`;
   if (!isWebglAvailable()) return "no webgl";
   return "box too small / face failed";
