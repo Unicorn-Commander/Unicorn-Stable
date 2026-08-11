@@ -25,6 +25,7 @@ import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { StartGroupModal } from "./StartGroupModal";
+import type { StartGroupPick } from "./startGroupModel";
 import { ThreadPanel } from "./ThreadPanel";
 import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
@@ -97,8 +98,15 @@ export function RoomView({ roomId }: RoomViewProps) {
   const [inviteOpen, setInviteOpen] = useState(false);
   // "Start a group with <peer>…" — the EXPLICIT DM→group conversion. 1:1 DMs
   // deliberately have no Invite (inviting silently converted the private
-  // room); this replacement creates a NEW group room instead.
+  // room); this replacement creates a NEW group room instead. `startGroupSeed`
+  // pre-picks a selection when the flow was entered by choosing a specific
+  // agent (the Brigade picker in a human DM routes here instead of binding).
   const [startGroupOpen, setStartGroupOpen] = useState(false);
+  const [startGroupSeed, setStartGroupSeed] = useState<StartGroupPick[]>([]);
+  function openStartGroup(seed: StartGroupPick[] = []) {
+    setStartGroupSeed(seed);
+    setStartGroupOpen(true);
+  }
   // Header agent-switcher (agent rooms only): shows the room's current agent
   // and opens the Brigade picker — inviting another agent re-routes replies to
   // it (last-invited wins; @mention any member agent to address it directly).
@@ -629,6 +637,12 @@ export function RoomView({ roomId }: RoomViewProps) {
                           roomName={roomDetail?.id ?? roomId}
                           defaultOpen
                           onInvited={() => setAgentSwitchOpen(false)}
+                          onStartGroup={(a) => {
+                            setAgentSwitchOpen(false);
+                            openStartGroup([
+                              { kind: "agent", id: a.id, name: a.name },
+                            ]);
+                          }}
                         />
                       </div>
                     </>
@@ -854,7 +868,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                   role="menuitem"
                   onClick={() => {
                     setOverflowOpen(false);
-                    setStartGroupOpen(true);
+                    openStartGroup();
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
                 >
@@ -916,6 +930,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             roomId={roomId}
             peerLabel={dmPeerLabel}
             residentAgentId={dmAgentId}
+            initialPicks={startGroupSeed}
             onClose={() => setStartGroupOpen(false)}
           />
         )}
@@ -956,7 +971,7 @@ export function RoomView({ roomId }: RoomViewProps) {
         <CallRoomLayout
           roomId={roomId}
           onInviteAgent={() =>
-            isDm ? setStartGroupOpen(true) : setInviteOpen(true)
+            isDm ? openStartGroup() : setInviteOpen(true)
           }
         />
 
@@ -1034,7 +1049,18 @@ export function RoomView({ roomId }: RoomViewProps) {
               <ErrorBoundary label="the participants panel">
                 <ParticipantStrip roomId={roomId} />
                 <div className="border-t border-line shrink-0">
-                  <BrigadeAgentPicker roomName={roomDetail?.id ?? roomId} />
+                  {/* In a human 1:1 DM (in-room OR mid-call) the picker never
+                      direct-binds — it hands the chosen agent to the explicit
+                      start-a-group flow, pre-picked. This mount was the field
+                      path that converted a human DM into an agent thread. */}
+                  <BrigadeAgentPicker
+                    roomName={roomDetail?.id ?? roomId}
+                    onStartGroup={(a) =>
+                      openStartGroup([
+                        { kind: "agent", id: a.id, name: a.name },
+                      ])
+                    }
+                  />
                 </div>
               </ErrorBoundary>
             </motion.div>

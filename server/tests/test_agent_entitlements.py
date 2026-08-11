@@ -79,6 +79,12 @@ def _scalars_result(values: list[object]) -> MagicMock:
     return res
 
 
+def _count_result(value: int) -> MagicMock:
+    res = MagicMock()
+    res.scalar_one.return_value = value
+    return res
+
+
 class ResolveAgentAccessTests(IsolatedAsyncioTestCase):
     async def _resolve(self, *, mode: str, grant: AgentAccessGrant | None):
         db = AsyncMock()
@@ -225,11 +231,17 @@ class AgentIdForParticipantTests(IsolatedAsyncioTestCase):
 
 class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
     def _room(self) -> SimpleNamespace:
+        # The "New chat with The Colonel" room at bind time: a bare dm (no
+        # dm_pair, creator is the only human, no binding yet). The human-DM
+        # bind guard runs its member-count query on this shape and passes.
+        from app.models.room import RoomType
+
         rid = _uuid()
         return SimpleNamespace(
             id=rid,
             name="chat-with-colonel",
             livekit_room_name="stable-chat-with-colonel",
+            room_type=RoomType.DM,
             metadata_={},
         )
 
@@ -241,11 +253,13 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
         room = self._room()
         db = AsyncMock()
         # Execute order inside the route for a DENIED caller:
-        #   1. room resolve, 2. caller membership, 3. the grant lookup.
+        #   1. room resolve, 2. caller membership, 3. the human-DM guard's
+        #   member count (bare dm → 1 human → passes), 4. the grant lookup.
         db.execute = AsyncMock(
             side_effect=[
                 _scalar_result(room),
                 _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
+                _count_result(1),  # human-DM guard count
                 _scalar_result(grant),
             ]
         )
@@ -293,6 +307,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
             side_effect=[
                 _scalar_result(room),
                 _scalar_result(SimpleNamespace(id=_uuid())),
+                _count_result(1),  # human-DM guard count (bare dm passes)
                 _scalar_result(_grant("the-colonel", AgentAccessEffect.DENY)),
             ]
         )
@@ -335,6 +350,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
             side_effect=[
                 _scalar_result(room),  # room resolve
                 _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
+                _count_result(1),  # human-DM guard count (bare dm passes)
                 _scalar_result(None),  # grant lookup (none)
                 _scalar_result(room),  # metadata persist re-lookup
             ]

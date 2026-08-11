@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronDown, Lock, Search } from "lucide-react";
 import clsx from "clsx";
 import { api, type BrigadeAgent } from "../../services/api";
@@ -10,12 +11,22 @@ import {
 } from "@/lib/agentEntitlement";
 import { useVoice } from "../../contexts/VoiceProvider";
 import { useCallUiStore } from "@/stores/callUiStore";
+import { isHumanPairDm } from "./startGroupModel";
 
 interface Props {
   /** The LiveKit room name the user is currently in. */
   roomName: string;
   /** Called when an agent is successfully invited. */
   onInvited?: (agentId: string) => void;
+  /**
+   * Called INSTEAD of a direct bind when the room is a human 1:1 DM —
+   * hosts open the start-a-group flow with this agent pre-picked. Binding
+   * an agent onto a human DM stamps `brigade_agent_id` on it and
+   * reclassifies the private thread as an agent conversation (the
+   * Shafen/Majik bug); the server refuses it (409) regardless, this
+   * callback is the UX that routes the intent somewhere that works.
+   */
+  onStartGroup?: (agent: { id: string; name: string }) => void;
   /** Optional additional class names. */
   className?: string;
   /** Start with the agent list expanded (e.g. when hosted in a popover). */
@@ -39,6 +50,7 @@ interface Props {
 export function BrigadeAgentPicker({
   roomName,
   onInvited,
+  onStartGroup,
   className = "",
   defaultOpen = false,
 }: Props) {
@@ -49,6 +61,23 @@ export function BrigadeAgentPicker({
   const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState<string | null>(null);
   const [invitedIds, setInvitedIds] = useState<Set<string>>(new Set());
+  // Human-1:1-DM detection. Shares RoomView's query keys (the host passes the
+  // room UUID), so these are cache reads for the active room. Failed or not-
+  // yet-loaded queries leave the flag false — the direct bind then runs and
+  // the server's 409 backstop (agent_bind_refused_human_dm) has the final word.
+  const { data: pickerRoom } = useQuery({
+    queryKey: ["room", roomName],
+    queryFn: () => api.getRoom(roomName),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const { data: pickerMembers } = useQuery({
+    queryKey: ["room-members", roomName],
+    queryFn: () => api.getRoomMembers(roomName),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const humanPairDm = isHumanPairDm(pickerRoom, pickerMembers);
   // Only ask the server to dispatch a LiveKit voice worker when a call is
   // actually live IN THE ROOM WE'RE INVITING TO. The call now persists across
   // navigation, so a global "is any call live" flag would wrongly request a
@@ -81,6 +110,18 @@ export function BrigadeAgentPicker({
       cancelled = true;
     };
   }, []);
+
+  // Human 1:1 DM: never direct-bind. Hand the picked agent to the host's
+  // start-a-group flow (pre-picked); with no host wiring, fall through to the
+  // direct invite and let the server's 409 refusal surface in the error line.
+  const requestStartGroup = (a: BrigadeAgent) => {
+    if (onStartGroup) {
+      setOpen(false);
+      onStartGroup({ id: a.id, name: a.name || a.id });
+    } else {
+      void invite(a.id);
+    }
+  };
 
   const invite = async (agentId: string) => {
     setInviting(agentId);
@@ -134,7 +175,9 @@ export function BrigadeAgentPicker({
         <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md gradient-bg text-white">
           <Bot className="h-3 w-3" />
         </span>
-        <span className="min-w-0 flex-1 truncate">Invite a Brigade agent</span>
+        <span className="min-w-0 flex-1 truncate">
+          {humanPairDm ? "Add an agent — starts a group" : "Invite a Brigade agent"}
+        </span>
         <ChevronDown
           className={clsx(
             "h-3.5 w-3.5 shrink-0 text-slate-500 transition-transform",
@@ -159,6 +202,13 @@ export function BrigadeAgentPicker({
             </p>
           ) : (
             <>
+              {humanPairDm && (
+                <p className="border-b border-line bg-stable-purple/[0.06] px-3 py-2 text-[11px] leading-snug text-slate-400">
+                  This is a private 1:1 chat. Picking an agent starts a{" "}
+                  <span className="font-medium text-slate-200">new group</span>{" "}
+                  with both of you — this DM stays human-only.
+                </p>
+              )}
               <div className="relative border-b border-line p-2">
                 <Search className="pointer-events-none absolute left-4 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
                 <input
@@ -187,10 +237,18 @@ export function BrigadeAgentPicker({
                       <li key={a.id}>
                         <button
                           type="button"
-                          onClick={() => invite(a.id)}
+                          onClick={() =>
+                            humanPairDm ? requestStartGroup(a) : invite(a.id)
+                          }
                           disabled={isInvited || isInviting || locked}
                           className="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.05] focus-ring disabled:cursor-not-allowed disabled:opacity-50"
-                          title={locked ? AGENT_LOCK_HINT : a.description}
+                          title={
+                            locked
+                              ? AGENT_LOCK_HINT
+                              : humanPairDm
+                                ? "Starts a new group with both of you and this agent"
+                                : a.description
+                          }
                         >
                           <span className="flex min-w-0 items-center gap-2">
                             <span
@@ -233,6 +291,8 @@ export function BrigadeAgentPicker({
                               "Invited"
                             ) : isInviting ? (
                               "Inviting…"
+                            ) : humanPairDm ? (
+                              "Add to group…"
                             ) : (
                               "Invite"
                             )}
