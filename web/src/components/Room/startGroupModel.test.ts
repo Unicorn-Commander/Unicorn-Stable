@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeStartGroupPayload,
   groupLabelFromPicks,
+  isHumanPairDm,
   pickKey,
   togglePick,
   type StartGroupAgentPick,
@@ -126,5 +127,44 @@ describe("composeStartGroupPayload", () => {
       { existingParticipantIds: ["p-me", "p-peer"] },
     );
     expect(payload.participant_ids).toEqual(["p-new"]);
+  });
+});
+
+describe("isHumanPairDm (agent-bind routing guard)", () => {
+  const me = { is_self: true, participant_type: "human" as const };
+  const peer = { is_self: false, participant_type: "human" as const };
+  const agentMember = { is_self: false, participant_type: "agent" as const };
+
+  it("is true for a human 1:1 DM with a loaded human peer", () => {
+    expect(isHumanPairDm({ type: "dm" }, [me, peer])).toBe(true);
+  });
+
+  it("treats a member row without participant_type as human (legacy rows)", () => {
+    expect(isHumanPairDm({ type: "dm" }, [me, { is_self: false }])).toBe(true);
+  });
+
+  it("is false for an agent DM (brigade_agent_id present)", () => {
+    expect(
+      isHumanPairDm({ type: "dm", brigade_agent_id: "majik" }, [me, peer]),
+    ).toBe(false);
+  });
+
+  it("is false for group_dm and channel rooms", () => {
+    expect(isHumanPairDm({ type: "group_dm" }, [me, peer])).toBe(false);
+    expect(isHumanPairDm({ type: "channel" }, [me, peer])).toBe(false);
+  });
+
+  it("is false when the only other member is an agent", () => {
+    // A dm-type room whose peer is an agent member but whose binding was
+    // cleared — no human peer to start a group with.
+    expect(isHumanPairDm({ type: "dm" }, [me, agentMember])).toBe(false);
+  });
+
+  it("is false while room or members are not loaded (server 409 backstops)", () => {
+    expect(isHumanPairDm(undefined, [me, peer])).toBe(false);
+    expect(isHumanPairDm(null, [me, peer])).toBe(false);
+    expect(isHumanPairDm({ type: "dm" }, undefined)).toBe(false);
+    expect(isHumanPairDm({ type: "dm" }, [])).toBe(false);
+    expect(isHumanPairDm({ type: "dm" }, [me])).toBe(false);
   });
 });

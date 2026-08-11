@@ -110,6 +110,40 @@ class InviteAgentResponse(BaseModel):
     reason: str | None = None
 
 
+# Stable, machine-readable prefix for the human-DM bind refusal (409). Clients
+# may branch on `detail.startswith(HUMAN_DM_AGENT_BIND_REFUSED)`.
+HUMAN_DM_AGENT_BIND_REFUSED = "agent_bind_refused_human_dm"
+
+
+def _is_human_pair_dm(
+    room_type: str,
+    metadata: dict[str, Any] | None,
+    human_member_count: int,
+) -> bool:
+    """True when binding a resident agent would CONVERT a human 1:1 DM.
+
+    Stamping ``metadata.brigade_agent_id`` on a room reclassifies it as an
+    agent conversation everywhere (sidebar, home, quick switcher key off
+    ``dm + brigade_agent_id``), so a bind onto a HUMAN pair DM makes the
+    private human thread vanish from Chats — the Shafen/Majik field bug.
+    That conversion must go through POST /rooms/{id}/start-group, which
+    creates a NEW group room and leaves the DM untouched.
+
+    A human pair DM is: ``room_type == "dm"``, NO existing agent binding, and
+    either the canonical ``dm_pair`` stamp (every ensure-DM room) or at least
+    two human members (legacy pre-``dm_pair`` DMs). Agent DMs pass because
+    they carry ``brigade_agent_id`` from birth — and at the moment of that
+    birth ("New chat" binds right after create) they have neither ``dm_pair``
+    nor a second human, so first-bind passes too.
+    """
+    if room_type != "dm":
+        return False
+    meta = metadata or {}
+    if meta.get("brigade_agent_id"):
+        return False  # already an agent conversation — rebind/redispatch is fine
+    return bool(meta.get("dm_pair")) or human_member_count >= 2
+
+
 # ---------------------------------------------------------------------------
 # AGENT AVATAR RESOLUTION
 #
@@ -732,6 +766,54 @@ async def invite_brigade_agent(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You must be a member of this room to invite an agent",
         )
+
+    # HUMAN 1:1 DM GUARD (server backstop; the web client routes these to the
+    # start-a-group flow before ever calling this route). Binding a resident
+    # agent here would silently convert the private human DM into an agent
+    # conversation — see _is_human_pair_dm. Applies to every caller of this
+    # route, including old clients, scripts, and the agents worker's
+    # summon_agent tool.
+    from app.models.room import RoomType as _RT_guard
+
+    _meta_guard = dict(_resolved_room.metadata_ or {})
+    if _resolved_room.room_type == _RT_guard.DM and not _meta_guard.get(
+        "brigade_agent_id"
+    ):
+        from sqlalchemy import func as _func_guard
+        from app.models.participant import (
+            Participant as _P_guard,
+            ParticipantType as _PT_guard,
+        )
+
+        _human_count = int(
+            (
+                await db.execute(
+                    _sel_rr(_func_guard.count())
+                    .select_from(_RM_auth)
+                    .join(_P_guard, _P_guard.id == _RM_auth.participant_id)
+                    .where(
+                        _RM_auth.room_id == _resolved_room.id,
+                        _P_guard.participant_type == _PT_guard.HUMAN,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        if _is_human_pair_dm("dm", _meta_guard, _human_count):
+            logger.info(
+                "agent_bind_refused_human_dm",
+                room_id=str(_resolved_room.id),
+                brigade_agent_id=body.brigade_agent_id,
+                caller=str(user.get("participant_id")),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{HUMAN_DM_AGENT_BIND_REFUSED}: This is a private 1:1 "
+                    "chat. Use 'Start a group' to bring an agent into the "
+                    "conversation — the DM itself stays human-only."
+                ),
+            )
 
     # ENTITLEMENT: the caller must be allowed to use THIS agent (per-user
     # grants + AGENT_ACCESS_DEFAULT). This is the single funnel for every

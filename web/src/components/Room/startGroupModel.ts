@@ -105,3 +105,35 @@ export function composeStartGroupPayload(
 
   return { participant_ids, keycloak_subs, agent_ids };
 }
+
+/**
+ * Is this room a HUMAN 1:1 DM — the kind a resident-agent bind must never
+ * touch? Binding stamps `brigade_agent_id` on the room, which reclassifies
+ * it as an agent conversation everywhere (sidebar/home/quick-switcher key
+ * off `dm + brigade_agent_id`), so the private human thread vanishes from
+ * Chats. Entry points use this to route "add an agent" to the explicit
+ * start-a-group flow instead; the server refuses the bind regardless
+ * (409 `agent_bind_refused_human_dm`).
+ *
+ * True only when the room is a `dm` with NO resident agent AND a human
+ * peer is actually identifiable in the loaded members. With members not
+ * yet loaded this stays false — the caller falls through to the direct
+ * bind and the server backstop has the final word.
+ */
+export function isHumanPairDm(
+  room:
+    | { type?: string; brigade_agent_id?: string | null }
+    | null
+    | undefined,
+  members:
+    | readonly {
+        participant_type?: string | null;
+        is_self?: boolean;
+      }[]
+    | undefined,
+): boolean {
+  if (!room || room.type !== "dm" || room.brigade_agent_id) return false;
+  return (members ?? []).some(
+    (m) => !m.is_self && (m.participant_type ?? "human") !== "agent",
+  );
+}

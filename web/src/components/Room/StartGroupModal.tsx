@@ -23,6 +23,13 @@ interface StartGroupModalProps {
   peerLabel: string;
   /** Brigade id of the DM's resident agent, if this is an agent DM. */
   residentAgentId?: string | null;
+  /**
+   * Pre-picked selections. Used when the flow was entered by choosing a
+   * specific agent elsewhere (e.g. the Brigade picker inside a human 1:1 DM
+   * routes here with that agent already selected), so the intent survives
+   * the hand-off.
+   */
+  initialPicks?: StartGroupPick[];
   onClose: () => void;
 }
 
@@ -41,6 +48,7 @@ export function StartGroupModal({
   roomId,
   peerLabel,
   residentAgentId,
+  initialPicks,
   onClose,
 }: StartGroupModalProps) {
   const navigate = useNavigate();
@@ -48,7 +56,9 @@ export function StartGroupModal({
   const [tab, setTab] = useState<Tab>("people");
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [picked, setPicked] = useState<StartGroupPick[]>([]);
+  const [picked, setPicked] = useState<StartGroupPick[]>(
+    () => initialPicks ?? [],
+  );
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useModalA11y(true, onClose);
