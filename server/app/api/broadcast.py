@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from urllib.parse import quote, urlencode
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
@@ -231,7 +232,12 @@ async def mint_broadcast_token(
     )
     info = _to_info(row)
     info["token"] = raw
-    info["url_path"] = f"/broadcast/{room.id}/{body.participant_identity}?token={raw}"
+    # Percent-encode the identity: it is user-influenced (username_<uuid>), and a
+    # username containing / ? or # would otherwise break or confuse the path.
+    info["url_path"] = (
+        f"/broadcast/{room.id}/{quote(body.participant_identity, safe='')}"
+        f"?{urlencode({'token': raw})}"
+    )
     return info
 
 
