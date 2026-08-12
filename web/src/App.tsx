@@ -35,6 +35,14 @@ const BroadcastPage = lazy(() =>
     default: module.BroadcastPage,
   })),
 );
+// The guest surface (invite redemption + the guest-scoped room shell). Lazy for
+// the same bundle reason as BroadcastPage — it pulls livekit-client — and, more
+// importantly, so nothing under it is even fetched for an ordinary member.
+const GuestApp = lazy(() =>
+  import("@/components/Guest/GuestApp").then((module) => ({
+    default: module.GuestApp,
+  })),
+);
 
 function AppLoading() {
   return (
@@ -414,6 +422,36 @@ export function App() {
           element={
             <Suspense fallback={null}>
               <BroadcastPage />
+            </Suspense>
+          }
+        />
+        {/* THE SECOND SPLIT ABOVE AUTH — same reason, different audience.
+         *
+         * A guest has NO Unicorn Commander account and never will. A route
+         * inside AuthGate would fire a top-level Keycloak redirect at them, and
+         * the internal realm brokers the customer realm with
+         * `idp-create-user-if-unique` set to ALTERNATIVE and `trust_email=true`
+         * — so that round trip does not merely fail, it SILENTLY MINTS A REAL
+         * SUITE ACCOUNT for a stranger invited to one video call. The guest
+         * credential is a Stable row and touches no IdP at all.
+         *
+         * It is also why "hide the sidebar for guests" was never an option: a
+         * guest-scoped shell built inside the app tree still mounts the app
+         * tree. Splitting here means the channel browser, the agent roster, the
+         * knowledge panels and the search surfaces are not rendered-and-hidden,
+         * they are NOT IMPORTED — there is no state a URL edit can reach them
+         * from. AuthGate's dev-mode mock-user seeding is inside that subtree
+         * too, so it cannot fire for a guest either.
+         *
+         * The canonical shape is `/guest/:inviteToken?p=1`, but the whole
+         * `/guest/*` subtree is claimed: a truncated or typo'd invite must land
+         * on the redeem page, which answers with the one uniform refusal, not
+         * fall through to `*` and bounce a stranger into a login screen. */}
+        <Route
+          path="/guest/*"
+          element={
+            <Suspense fallback={<AppLoading />}>
+              <GuestApp />
             </Suspense>
           }
         />

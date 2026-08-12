@@ -20,7 +20,8 @@ export interface WsMessageEvent {
     id: string;
     room_id: string;
     sender_id: string;
-    sender_type: "human" | "agent" | "system";
+    /** "guest" for a room guest — see RoomMember.participant_type. */
+    sender_type: "human" | "agent" | "system" | "guest";
     sender_name: string;
     sender_avatar: string | null;
     content: string;
