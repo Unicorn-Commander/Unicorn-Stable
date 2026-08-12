@@ -158,6 +158,15 @@ async def _broadcast_call_occupancy(
         )
 
 
+def _is_broadcast_identity(identity: str) -> bool:
+    """True for subscribe-only broadcast viewers (OBS browser sources).
+
+    These join hidden, publish nothing, and must not affect presence or the
+    call-occupancy fan-out — otherwise a silent OBS source announces itself as
+    a participant and can flip presence for a UUID it does not own.
+    """
+    return str(identity or "").startswith("broadcast-")
+
 def _joined_by(event: Any, participant_id: str | None) -> dict[str, Any]:
     """Name the joiner for the ``call_occupancy`` frame.
 
@@ -186,6 +195,9 @@ async def _handle_participant_joined(
         return
 
     identity = event.participant.identity
+    if _is_broadcast_identity(identity):
+        # Subscribe-only OBS viewer: no presence, no occupancy fan-out.
+        return
     room_name = event.room.name
 
     logger.info(
@@ -238,6 +250,9 @@ async def _handle_participant_left(
         return
 
     identity = event.participant.identity
+    if _is_broadcast_identity(identity):
+        # Subscribe-only OBS viewer: no presence, no occupancy fan-out.
+        return
     room_name = event.room.name
 
     logger.info(
