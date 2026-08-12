@@ -27,6 +27,14 @@ const CallDock = lazy(() =>
     default: module.CallDock,
   })),
 );
+// The OBS broadcast feed. Lazy for the same reason as the rest — it pulls the
+// LiveKit runtime in, and a static import here would put livekit-client into
+// the app's INITIAL bundle graph (see scripts/check-bundle-budget.mjs).
+const BroadcastPage = lazy(() =>
+  import("@/components/Broadcast/BroadcastPage").then((module) => ({
+    default: module.BroadcastPage,
+  })),
+);
 
 function AppLoading() {
   return (
@@ -331,12 +339,13 @@ function LandingGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-export function App() {
+/**
+ * The whole authenticated product, unchanged: LandingGate → AuthGate →
+ * providers → routes → CallDock. Extracted verbatim so a route can be served
+ * from OUTSIDE it (see App) without touching anything inside it.
+ */
+function StableApp() {
   return (
-    // reducedMotion="user": every framer-motion transform/entrance in the tree
-    // collapses to opacity-only when the OS asks for reduced motion (the CSS
-    // animate-* utilities are neutralized in globals.css).
-    <MotionConfig reducedMotion="user">
     <LandingGate>
     <AuthGate>
       <Suspense fallback={<AppLoading />}>
@@ -368,6 +377,48 @@ export function App() {
       </Suspense>
     </AuthGate>
     </LandingGate>
+  );
+}
+
+export function App() {
+  return (
+    // reducedMotion="user": every framer-motion transform/entrance in the tree
+    // collapses to opacity-only when the OS asks for reduced motion (the CSS
+    // animate-* utilities are neutralized in globals.css).
+    <MotionConfig reducedMotion="user">
+      {/* THE ONE SPLIT ABOVE AUTH.
+       *
+       * /broadcast/* is loaded by an OBS browser source, which has no human at
+       * the keyboard and therefore cannot complete AuthGate's top-level
+       * Keycloak redirect (nor should it: the broadcast token IS the
+       * credential, and it opens exactly one endpoint). A route added inside
+       * the app tree would be bounced to the IdP and never render a frame.
+       *
+       * So the split happens HERE, before LandingGate and AuthGate, and the
+       * authenticated tree below is byte-for-byte what it was — it just moved
+       * behind the `*` route. AuthGate's dev-mode mock-user seeding is inside
+       * that subtree too, so it cannot fire for a broadcast feed either.
+       *
+       * The Suspense fallback is `null` ON PURPOSE: AppLoading's spinner would
+       * be composited into a live stream while the chunk loads.
+       *
+       * The canonical shape is
+       *   /broadcast/:roomId/:participantIdentity?token=…&bg=…&audio=…
+       * but the whole `/broadcast/*` subtree is claimed: a typo'd URL must go
+       * quietly black inside OBS, not fall through to `*` and paint a Keycloak
+       * login page into the stream. The page reads none of these params — the
+       * join response is the only authority on room and participant. */}
+      <Routes>
+        <Route
+          path="/broadcast/*"
+          element={
+            <Suspense fallback={null}>
+              <BroadcastPage />
+            </Suspense>
+          }
+        />
+        <Route path="*" element={<StableApp />} />
+      </Routes>
     </MotionConfig>
   );
 }

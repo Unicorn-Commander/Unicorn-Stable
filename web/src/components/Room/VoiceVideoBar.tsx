@@ -41,6 +41,7 @@ import {
   Sparkles,
   Smile,
   Box,
+  Radio,
   Image as ImageIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -49,13 +50,16 @@ import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useIsDesktop } from "@/hooks/usePanelResize";
+import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
+import { buildBroadcastUrl } from "@/lib/broadcast";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   useCallUiStore,
   uiCommandBus,
   DEFAULT_CALL_VIEW_MODE,
 } from "@/stores/callUiStore";
 import { isAgentParticipant, type CallViewMode } from "@/lib/roomDataProtocol";
-import { api, type BrigadeAgent } from "@/services/api";
+import { api, type ApiError, type BrigadeAgent } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
   runScreenShareAction,
@@ -441,6 +445,21 @@ interface ParticipantTileProps {
   onPopOut?: () => void;
   /** This tile is currently being rendered INSIDE its pop-out window. */
   inPopout?: boolean;
+  /**
+   * Mint + copy an OBS broadcast URL for this participant. Supplied ONLY to a
+   * room OWNER (minting a no-login URL to someone else's camera is an
+   * owner-level act); the server's 403 is the backstop, not the rule.
+   */
+  onCopyBroadcastUrl?: () => void;
+  /**
+   * A live broadcast link exists for this participant right now.
+   *
+   * Shown to EVERYONE, deliberately. Broadcast viewers join LiveKit
+   * `hidden=True` so an OBS feed never shows up as a participant — which,
+   * with a no-login URL, would mean being streamed to the internet with no
+   * indication anywhere. The feed stays invisible; the FACT of it does not.
+   */
+  isBroadcasting?: boolean;
 }
 
 function ParticipantTile({
@@ -459,6 +478,8 @@ function ParticipantTile({
   showGrip,
   onPopOut,
   inPopout,
+  onCopyBroadcastUrl,
+  isBroadcasting,
 }: ParticipantTileProps) {
   const pip = usePipTile();
   const fs = useFullscreen();
@@ -748,6 +769,22 @@ function ParticipantTile({
         </span>
       )}
 
+      {/* CONSENT, not chrome. Top-centre so it never collides with the pin
+          (top-left) or the control cluster (top-right), and so it is the first
+          thing you see on your own tile. Always visible — never hover-revealed,
+          never hidden inside a pop-out: being streamed is not a detail. */}
+      {isBroadcasting && (
+        <span
+          className="pointer-events-none absolute left-1/2 top-1.5 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-pop"
+          title={`${p.name} is being broadcast to an external feed right now`}
+        >
+          <span aria-hidden="true" className="text-[8px] leading-none">
+            ●
+          </span>
+          Broadcasting
+        </span>
+      )}
+
       {/* Persistent pin marker, OR a drag grip on hover (grid tiles). */}
       {isPinned ? (
         <span className="absolute left-1.5 top-1.5 flex items-center gap-1 rounded-md bg-stable-purple/30 px-1.5 py-0.5 text-[10px] font-semibold text-stable-purple-light ring-1 ring-stable-purple/50">
@@ -791,6 +828,21 @@ function ParticipantTile({
             preference). First in the cluster — it's about the face the tile
             shows, so it reads before the layout controls. */}
         {isAgentTile && <FaceStyleTileButton onCycled={flashFaceStyle} />}
+        {/* Owner-only: mint a URL an OBS browser source can point at. Solves
+            the window-id orphaning that made pop-out capture unusable on a
+            live show — see components/Broadcast/BroadcastPage.tsx. */}
+        {onCopyBroadcastUrl && (
+          <TileControlButton
+            icon={Radio}
+            label={`Copy broadcast URL for ${p.name}`}
+            title={`Copy broadcast URL — a no-login page showing only ${p.name}’s camera, for an OBS browser source. Treat it as a credential: anyone with the link can watch until it expires or you revoke it.`}
+            active={isBroadcasting}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopyBroadcastUrl();
+            }}
+          />
+        )}
         {onTogglePin && (
           <TileControlButton
             icon={isPinned ? PinOff : Pin}
@@ -1252,6 +1304,86 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       );
     },
     [brigadeAgents],
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Broadcast feeds (OBS)
+   * ---------------------------------------------------------------- */
+
+  // Who is being streamed right now — the consent surface, read by every
+  // member. Drives the "● Broadcasting" badge on the tiles below.
+  const { isBroadcasting, refresh: refreshBroadcasts } =
+    useRoomBroadcasts(roomId);
+
+  // Minting is OWNER-only on the server. Read the caller's own membership row
+  // (server-flagged is_self, the only reliable "this is me" marker — the
+  // Keycloak id never equals the participant UUID) so a member never sees a
+  // control that can only 403.
+  const roomMembers = useAppStore((s) => s.participants[roomId]);
+  const isRoomOwner =
+    roomMembers?.find((m) => m.is_self)?.role === "owner";
+
+  const [mintingFor, setMintingFor] = useState<string | null>(null);
+
+  /**
+   * Mint a broadcast token for ONE participant and put the absolute URL on the
+   * clipboard, ready to paste into an OBS browser source.
+   *
+   * Minted on demand rather than reusing an existing token: the raw value is
+   * returned exactly once (the server stores only its SHA-256), so there is no
+   * "show me the link again" — copying is minting.
+   */
+  const copyBroadcastUrl = useCallback(
+    async (identity: string, label: string) => {
+      if (mintingFor) return;
+      setMintingFor(identity);
+      try {
+        const minted = await api.mintBroadcastToken({
+          room: roomId,
+          participant_identity: identity,
+          participant_label: label,
+          label: `OBS · ${label}`,
+        });
+        const url = buildBroadcastUrl({
+          origin: window.location.origin,
+          roomId: minted.room_id,
+          participantIdentity: minted.participant_identity,
+          token: minted.token,
+        });
+        const copied = await copyTextToClipboard(url);
+        refreshBroadcasts();
+        useAppStore.getState().pushToast(
+          copied
+            ? {
+                title: `Broadcast URL copied — ${label}`,
+                body: "Paste it into an OBS browser source. It is a credential: anyone with the link can watch this camera until it expires or you revoke it.",
+                kind: "success",
+              }
+            : {
+                // The clipboard API is absent in an insecure context (plain-HTTP
+                // LAN self-hosts). Never swallow that — the URL is minted and
+                // unrecoverable, so it has to be readable somewhere.
+                title: "Couldn't reach the clipboard — copy this URL by hand",
+                body: url,
+                kind: "error",
+                sticky: true,
+              },
+        );
+      } catch (error) {
+        const err = error as ApiError;
+        useAppStore.getState().pushToast({
+          title: "Couldn't create the broadcast URL",
+          body:
+            (typeof err?.detail === "string" && err.detail) ||
+            err?.message ||
+            "Request failed",
+          kind: "error",
+        });
+      } finally {
+        setMintingFor(null);
+      }
+    },
+    [mintingFor, roomId, refreshBroadcasts],
   );
 
   const attachTrack = useAttachTrack();
@@ -1825,11 +1957,24 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       : !showChips && !hidden && !!p.videoTrack;
     const isPinned = pinnedId === p.id;
     const feedKey = camFeedKey(p.id);
+    // `p.id` is "local" for yourself — a UI label, not a LiveKit identity. A
+    // broadcast token is scoped to the REAL identity ("<username>_<pid>"), so
+    // minting one against "local" would produce a URL that renders nobody.
+    const lkIdentity = p.isLocal ? (localParticipant?.identity ?? null) : p.id;
+    // "You" is likewise a UI label; the token's participant_label is what the
+    // owner reads back in the token list, so it has to name a person.
+    const lkLabel = p.isLocal ? (localParticipant?.name || p.name) : p.name;
     return (
       <ParticipantTile
         key={p.id}
         p={p}
         roomId={roomId}
+        isBroadcasting={isBroadcasting(lkIdentity)}
+        onCopyBroadcastUrl={
+          isRoomOwner && lkIdentity
+            ? () => void copyBroadcastUrl(lkIdentity, lkLabel)
+            : undefined
+        }
         agentFaceBudgetOk={agentFaceBudgetOk}
         size={opts?.size ?? "normal"}
         fill={opts?.fill}

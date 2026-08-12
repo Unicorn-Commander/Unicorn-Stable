@@ -189,6 +189,60 @@ export interface UserPreferences {
   onboarding_checklist?: Record<string, boolean>;
 }
 
+/* ------------------------------------------------------------------ *
+ * Broadcast feeds — see server/app/api/broadcast.py and lib/broadcast.ts.
+ *
+ * Only the MANAGEMENT half lives on this client. The join call that an OBS
+ * browser source makes is a bare fetch inside BroadcastPage, deliberately:
+ * getAuthHeaders() below unconditionally reaches for a Keycloak token, and the
+ * whole point of a broadcast link is that there is no session to reach for.
+ * ------------------------------------------------------------------ */
+
+/** Metadata only. The raw token exists exactly once, in the mint response. */
+export interface BroadcastTokenInfo {
+  id: string;
+  room_id: string;
+  /** LiveKit identity of the person being broadcast ("<username>_<pid>"). */
+  participant_identity: string;
+  participant_label: string | null;
+  token_prefix: string;
+  allow_audio: boolean;
+  label: string | null;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  active: boolean;
+}
+
+export interface MintBroadcastTokenRequest {
+  /** room id, livekit_room_name, or slug. */
+  room: string;
+  participant_identity: string;
+  participant_label?: string;
+  ttl_hours?: number;
+  allow_audio?: boolean;
+  label?: string;
+}
+
+export interface MintBroadcastTokenResponse extends BroadcastTokenInfo {
+  /** Returned ONCE. Treat as a credential: it renders a live camera with no login. */
+  token: string;
+  url_path: string;
+}
+
+export interface ActiveBroadcast {
+  participant_identity: string;
+  participant_label: string | null;
+  allow_audio: boolean;
+  expires_at: string | null;
+}
+
+export interface ActiveBroadcasts {
+  room_id: string;
+  broadcasting: ActiveBroadcast[];
+}
+
 export interface Message {
   id: string;
   room_id: string;
@@ -1802,6 +1856,55 @@ class StableApiClient {
     return this.request<DocumentContent>(
       "GET",
       `/api/v1/knowledge/collections/${collectionId}/documents/${documentId}/chunks`,
+    );
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Broadcast feeds
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Mint an OBS-ready feed URL for one participant. ROOM OWNER ONLY — the
+   * server 403s anyone else, because minting a no-login URL to someone else's
+   * live camera is an owner-level act, not a member-level one. The UI hides the
+   * control for non-owners; this 403 is the backstop, not the rule.
+   */
+  async mintBroadcastToken(
+    body: MintBroadcastTokenRequest,
+  ): Promise<MintBroadcastTokenResponse> {
+    return this.request<MintBroadcastTokenResponse>(
+      "POST",
+      "/api/v1/broadcast/tokens",
+      body,
+    );
+  }
+
+  /** A room's broadcast tokens (metadata only — never the raw token). Owner only. */
+  async listBroadcastTokens(room: string): Promise<BroadcastTokenInfo[]> {
+    return this.request<BroadcastTokenInfo[]>(
+      "GET",
+      `/api/v1/broadcast/tokens?room=${encodeURIComponent(room)}`,
+    );
+  }
+
+  /** Revoke instantly and evict the live viewer. Owner only. */
+  async revokeBroadcastToken(tokenId: string): Promise<void> {
+    await this.request<void>(
+      "DELETE",
+      `/api/v1/broadcast/tokens/${encodeURIComponent(tokenId)}`,
+    );
+  }
+
+  /**
+   * Who currently has a live feed in this room — THE CONSENT SURFACE, readable
+   * by any member rather than just the owner. Broadcast viewers join LiveKit
+   * `hidden=True`, so the feed is invisible in the call by design; that makes
+   * this the only way a participant can learn they are being streamed.
+   */
+  async getActiveBroadcasts(room: string): Promise<ActiveBroadcasts> {
+    return this.request<ActiveBroadcasts>(
+      "GET",
+      `/api/v1/broadcast/active?room=${encodeURIComponent(room)}`,
     );
   }
 
