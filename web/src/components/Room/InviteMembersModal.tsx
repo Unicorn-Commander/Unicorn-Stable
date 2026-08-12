@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Search, UserPlus, X } from "lucide-react";
+import { Check, Copy, Link2, Search, UserPlus, X } from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
@@ -11,12 +11,19 @@ import { Avatar } from "@/components/Avatar";
 interface InviteMembersModalProps {
   roomId: string;
   roomName: string;
+  /**
+   * Open the guest-access console instead. Passed only for a room OWNER —
+   * minting a guest link is owner-only server-side, so a member must not be
+   * offered a door that answers 403. Absent = the entry is not rendered.
+   */
+  onOpenGuestAccess?: () => void;
   onClose: () => void;
 }
 
 export function InviteMembersModal({
   roomId,
   roomName,
+  onOpenGuestAccess,
   onClose,
 }: InviteMembersModalProps) {
   const [query, setQuery] = useState("");
@@ -218,6 +225,29 @@ export function InviteMembersModal({
             </button>
           </div>
         </div>
+
+        {/* The other kind of invite. Everything above adds someone WITH an
+            account (or asks them to make one); this hands a link to someone who
+            never will — an outside guest for a show. Same intent, different
+            door, so it belongs next to the first one rather than only in a
+            menu. Owner-only: see `onOpenGuestAccess`. */}
+        {onOpenGuestAccess && (
+          <button
+            onClick={onOpenGuestAccess}
+            className="focus-ring mt-3 flex w-full items-start gap-2 rounded-xl border border-line bg-slate-950/50 p-3 text-left transition-colors hover:border-stable-purple/40 hover:bg-stable-purple/10"
+          >
+            <Link2 className="mt-0.5 h-4 w-4 shrink-0 text-stable-purple-light" />
+            <span>
+              <span className="block text-sm text-slate-200">
+                Guest access — someone with no account
+              </span>
+              <span className="block text-xs text-slate-500">
+                A link that lets an outsider into this room for a while, with no
+                sign-up. Treat it like a password.
+              </span>
+            </span>
+          </button>
+        )}
         </div>
       </motion.div>
     </motion.div>

@@ -14,6 +14,13 @@ import type {
   KbDocument,
   KnowledgeSearchHit,
 } from "@/types/knowledge";
+import type {
+  GuestInviteRow,
+  GuestRevokeResult,
+  GuestSessionRow,
+  MintGuestInviteBody,
+  MintGuestInviteResponse,
+} from "@/lib/guestInvite";
 import { useFederationStore } from "@/stores/federationStore";
 
 /**
@@ -250,6 +257,24 @@ export interface ActiveBroadcasts {
   room_id: string;
   broadcasting: ActiveBroadcast[];
 }
+
+/* ------------------------------------------------------------------ *
+ * Guest access — the OWNER half. See server/app/api/guests.py and
+ * lib/guestInvite.ts, which owns these shapes and the logic over them.
+ *
+ * The guest's own half never comes through this client at all: getAuthHeaders()
+ * below unconditionally reaches for a Keycloak token, and the entire point of a
+ * guest is that there is no Keycloak session to reach for. It has its own
+ * client in services/guestApi.ts.
+ * ------------------------------------------------------------------ */
+
+export type {
+  GuestInviteRow,
+  GuestRevokeResult,
+  GuestSessionRow,
+  MintGuestInviteBody,
+  MintGuestInviteResponse,
+};
 
 export interface Message {
   id: string;
@@ -1914,6 +1939,89 @@ class StableApiClient {
     return this.request<ActiveBroadcasts>(
       "GET",
       `/api/v1/broadcast/active?room=${encodeURIComponent(room)}`,
+    );
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Guest access (owner surface)
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Mint a guest link for this room. ROOM OWNER ONLY — membership is
+   * deliberately not enough, because a guest link puts a stranger in the room
+   * with camera, microphone and read access. The UI hides the control for
+   * non-owners; the server's 403 is the backstop, not the rule.
+   *
+   * The `token` on the response exists EXACTLY ONCE: the server stores only its
+   * SHA-256, so there is no "show me that link again". Callers must treat the
+   * response as a credential in hand — copy it, then drop it.
+   *
+   * A 404 here means guest access is switched off instance-wide
+   * (`GUEST_ACCESS_ENABLED`), which the server shapes as "no such route" on
+   * purpose rather than advertising a disabled feature.
+   */
+  async mintGuestInvite(
+    roomId: string,
+    body: MintGuestInviteBody,
+  ): Promise<MintGuestInviteResponse> {
+    return this.request<MintGuestInviteResponse>(
+      "POST",
+      `/api/v1/rooms/${encodeURIComponent(roomId)}/guest-invites`,
+      body,
+    );
+  }
+
+  /** A room's guest links (metadata only — never the raw token). Owner only. */
+  async listGuestInvites(roomId: string): Promise<GuestInviteRow[]> {
+    return this.request<GuestInviteRow[]>(
+      "GET",
+      `/api/v1/rooms/${encodeURIComponent(roomId)}/guest-invites`,
+    );
+  }
+
+  /**
+   * Who has actually redeemed ONE link. Owner only.
+   *
+   * Scoped to an invite rather than to the room: there is no room-wide session
+   * route, so a host's "who is in here on a guest link" list is a fan-out over
+   * the invites — see `mergeGuestSessionPages`.
+   */
+  async listGuestSessions(
+    roomId: string,
+    inviteId: string,
+  ): Promise<GuestSessionRow[]> {
+    return this.request<GuestSessionRow[]>(
+      "GET",
+      `/api/v1/rooms/${encodeURIComponent(roomId)}/guest-invites/${encodeURIComponent(inviteId)}/sessions`,
+    );
+  }
+
+  /**
+   * Kill the link AND everyone who used it. Owner only.
+   *
+   * Revoked means revoked, and it is already true when this resolves: the row
+   * is marked, the membership row is deleted, every live socket is force-
+   * disconnected and LiveKit evicts the publishers. `sessions_terminated` is how
+   * many guests that actually hung up on.
+   */
+  async revokeGuestInvite(
+    roomId: string,
+    inviteId: string,
+  ): Promise<GuestRevokeResult> {
+    return this.request<GuestRevokeResult>(
+      "DELETE",
+      `/api/v1/rooms/${encodeURIComponent(roomId)}/guest-invites/${encodeURIComponent(inviteId)}`,
+    );
+  }
+
+  /** Boot ONE guest without killing the link for everyone else. Owner only. */
+  async revokeGuestSession(
+    roomId: string,
+    sessionId: string,
+  ): Promise<GuestRevokeResult> {
+    return this.request<GuestRevokeResult>(
+      "DELETE",
+      `/api/v1/rooms/${encodeURIComponent(roomId)}/guest-sessions/${encodeURIComponent(sessionId)}`,
     );
   }
 
