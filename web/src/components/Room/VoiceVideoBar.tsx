@@ -1,4 +1,6 @@
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { isGuestCallIdentity } from "@/lib/guest";
+import { GuestBadge } from "@/components/ui/GuestBadge";
 import {
   useMemo,
   useCallback,
@@ -530,6 +532,15 @@ function ParticipantTile({
       ? (s.rooms.find((r) => r.id === roomId)?.brigade_agent_id ?? null)
       : null,
   );
+  /* Is this tile a room GUEST? A LiveKit token carries no guest marker — a
+   * guest joins with an ordinary identity on purpose, so presence and the
+   * occupancy webhook treat them like anyone else — so the badge has to come
+   * from the member roster, joined on `<username>_<participant id>`. Computed
+   * INSIDE the selector so the subscription's value is a stable boolean rather
+   * than a new array on every store write. */
+  const isGuestTile = useAppStore((s) =>
+    isGuestCallIdentity(p.id, s.participants[roomId]),
+  );
   /* The room's agent MEMBERS — persona fallback #3. `brigade_agent_id` above
    * comes off the sidebar LIST row, which an in-room invite does not refresh
    * (BrigadeAgentPicker heals it now, but a room invited before that fix, or a
@@ -754,8 +765,9 @@ function ParticipantTile({
       )}
 
       {/* Name plate — the persona for agents ("Majik", not "stable-brigade"). */}
-      <span className="glass absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md px-2 py-0.5 text-xs font-medium text-slate-100">
-        {isAgentTile ? persona.name : p.name}
+      <span className="glass absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1.5 truncate rounded-md px-2 py-0.5 text-xs font-medium text-slate-100">
+        <span className="truncate">{isAgentTile ? persona.name : p.name}</span>
+        {isGuestTile && <GuestBadge />}
       </span>
 
       {/* Transient confirmation of a face-style cycle. aria-live so the mode
@@ -1116,6 +1128,11 @@ function AudioChip({ id, name, roomId, isAgent, isSpeaking, isMuted }: AudioChip
       ? (s.rooms.find((r) => r.id === roomId)?.brigade_agent_id ?? null)
       : null,
   );
+  /* Same roster join as the video tile — the audio layout must not disagree
+   * with it about who in the call is a guest. */
+  const isGuestChip = useAppStore((s) =>
+    isGuestCallIdentity(id, s.participants[roomId]),
+  );
   // Member-roster fallback, same as ParticipantTile — the audio layout must
   // not name the character differently than the video tile does.
   const roomMembers = useAppStore((s) =>
@@ -1172,6 +1189,7 @@ function AudioChip({ id, name, roomId, isAgent, isSpeaking, isMuted }: AudioChip
       <span className="max-w-[10ch] truncate text-xs font-medium text-slate-200">
         {persona.name}
       </span>
+      {isGuestChip && <GuestBadge />}
       {isMuted && <MicOff className="h-3.5 w-3.5 shrink-0 text-rose-400" />}
     </div>
   );

@@ -27,6 +27,8 @@ import { agentPresence } from "@/lib/agentStatus";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
 import { livekitIdentityForMember } from "@/lib/broadcast";
+import { isGuestParticipant } from "@/lib/guest";
+import { GuestBadge } from "@/components/ui/GuestBadge";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -301,6 +303,11 @@ function HumanMemberRow({
           <span className="ml-1 text-[10px] text-slate-500">(you)</span>
         )}
       </span>
+      {/* From the SERVER's participant_type, never the display name (the guest
+          chose it) and never the `guest-<hex>` username convention. A guest can
+          read this room's whole history and may be on camera in it, so whoever
+          is looking at the roster gets told, plainly, in the list itself. */}
+      {isGuestParticipant(member.participant_type) && <GuestBadge />}
       {broadcasting && <BroadcastingBadge name={member.display_name} />}
       {member.is_muted && (
         <span title="Muted — can't post">
