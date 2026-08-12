@@ -1297,3 +1297,41 @@
     animation: none;
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Broadcast feeds (/broadcast/:room/:identity)
+ *
+ * These pages are composited into a LIVE STREAM by an OBS browser source, so
+ * the document must contribute nothing of its own — no app surface colour, no
+ * aurora field, no scrollbars, no rubber-band. Stamped on <html> and <body> by
+ * BroadcastPage on mount and removed on unmount.
+ *
+ * Unlayered on purpose (like the reduced-motion block above): these must beat
+ * the base-layer body rules, and !important alone would still lose to a
+ * utilities-layer background were one ever applied to <body>.
+ * ------------------------------------------------------------------ */
+html.stable-broadcast,
+body.stable-broadcast {
+  margin: 0;
+  background: #000 !important;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+/* ?bg=transparent — the page itself disappears so OBS can lay the feed over
+   whatever is beneath it in the scene. */
+html.stable-broadcast-transparent,
+body.stable-broadcast-transparent {
+  background: transparent !important;
+}
+
+/* The living gradient behind the whole app would otherwise tint every feed. */
+body.stable-broadcast::before {
+  display: none !important;
+}
+
+/* #root is height-limited by --app-height for the chat shell; a feed fills the
+   OBS canvas instead. */
+body.stable-broadcast #root {
+  height: 100%;
+}
