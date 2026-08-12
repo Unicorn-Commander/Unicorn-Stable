@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from html import escape as _html_escape
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -437,6 +438,43 @@ async def send_message(
     return response
 
 
+def render_mention_email_html(
+    *,
+    recipient_name: str,
+    sender_name: str,
+    mention_phrase: str,
+    room_label: str,
+    quote: str,
+    link: str,
+) -> str:
+    """Render the mention email, escaping every interpolated value.
+
+    All of these are user-controlled: display names and room labels are
+    user-set, and ``quote`` is raw message text. Interpolating them raw (as
+    this did until 2026-08-12) let anyone who can post in a room inject
+    arbitrary markup into an email sent FROM a trusted internal address to
+    other members — most usefully a convincing button pointing anywhere they
+    like. Script tags are stripped by mail clients; a link is not, which is
+    what makes this a phishing vector rather than a cosmetic bug.
+
+    Extracted as a pure function so the escaping is directly testable; the
+    caller is async and DB-bound.
+    """
+    e = _html_escape
+    return f"""
+<!doctype html>
+<html><body style="font-family:-apple-system,system-ui,sans-serif;color:#1e293b;line-height:1.5;">
+<p>Hi {e(recipient_name)},</p>
+<p><strong>{e(sender_name)}</strong> mentioned {e(mention_phrase)} in
+   <strong>{e(room_label)}</strong> on Stable:</p>
+<blockquote style="border-left:3px solid #7c3aed;padding-left:12px;margin:12px 0;color:#475569;">
+{e(quote)}
+</blockquote>
+<p><a href="{e(link, quote=True)}" style="display:inline-block;padding:10px 18px;background:#7c3aed;
+   color:#fff;text-decoration:none;border-radius:6px;">Open Stable</a></p>
+</body></html>
+"""
+
 async def _maybe_dispatch_mention_emails(
     db: AsyncSession,
     content: str,
@@ -519,19 +557,14 @@ async def _maybe_dispatch_mention_emails(
             personal = (p.username or "").casefold() in pm.handles
             mention_phrase = "you" if personal else "@channel"
             subject = f"{sender_name} mentioned {mention_phrase} in {room_label}"
-            html = f"""
-<!doctype html>
-<html><body style="font-family:-apple-system,system-ui,sans-serif;color:#1e293b;line-height:1.5;">
-<p>Hi {p.display_name or p.username},</p>
-<p><strong>{sender_name}</strong> mentioned {mention_phrase} in
-   <strong>{room_label}</strong> on Stable:</p>
-<blockquote style="border-left:3px solid #7c3aed;padding-left:12px;margin:12px 0;color:#475569;">
-{quote}
-</blockquote>
-<p><a href="{link}" style="display:inline-block;padding:10px 18px;background:#7c3aed;
-   color:#fff;text-decoration:none;border-radius:6px;">Open Stable</a></p>
-</body></html>
-"""
+            html = render_mention_email_html(
+                recipient_name=p.display_name or p.username,
+                sender_name=sender_name,
+                mention_phrase=mention_phrase,
+                room_label=room_label,
+                quote=quote,
+                link=link,
+            )
             await sender.send(
                 to=email,
                 subject=subject,
