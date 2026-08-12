@@ -563,3 +563,52 @@ describe("isGuestSessionToken", () => {
     expect(isGuestSessionToken("")).toBe(false);
   });
 });
+
+describe("capability flags come off the wire shape the server actually sends", () => {
+  // Until 2026-08-12 readCapabilities() only looked at a nested
+  // `capabilities` object. The server sends these as TOP-LEVEL booleans, so
+  // the map was permanently empty and guestCan() always returned its
+  // fallback — the client never learned what the invite granted.
+  const wire = (over: Record<string, unknown> = {}) => ({
+    session_token: "sgs-aaaaaaaaaaaaaaaaaaaa",
+    room_id: "11111111-1111-1111-1111-111111111111",
+    participant_id: "22222222-2222-2222-2222-222222222222",
+    display_name: "Ada",
+    allow_agent_trigger: false,
+    allow_mention_email: false,
+    history_from: "2026-08-12T00:00:00Z",
+    ...over,
+  });
+
+  it("reads allow_agent_trigger as the 'agent' capability", () => {
+    const denied = guestSessionFromRedeem(wire());
+    expect(guestCan(denied, "agent", true)).toBe(false);
+    const granted = guestSessionFromRedeem(wire({ allow_agent_trigger: true }));
+    expect(guestCan(granted, "agent", false)).toBe(true);
+  });
+
+  it("reads allow_mention_email as the 'mention_email' capability", () => {
+    const denied = guestSessionFromRedeem(wire());
+    expect(guestCan(denied, "mention_email", true)).toBe(false);
+    const granted = guestSessionFromRedeem(wire({ allow_mention_email: true }));
+    expect(guestCan(granted, "mention_email", false)).toBe(true);
+  });
+
+  it("still honours a nested capabilities object, and lets it win", () => {
+    const s = guestSessionFromRedeem(
+      wire({ allow_agent_trigger: false, capabilities: { agent: true } }),
+    );
+    expect(guestCan(s, "agent", false)).toBe(true);
+  });
+
+  it("an absent flag still falls back rather than reading as denied", () => {
+    const s = guestSessionFromRedeem({
+      session_token: "sgs-bbbbbbbbbbbbbbbbbbbb",
+      room_id: "11111111-1111-1111-1111-111111111111",
+      participant_id: "22222222-2222-2222-2222-222222222222",
+      display_name: "Ada",
+    });
+    expect(guestCan(s, "agent", true)).toBe(true);
+    expect(guestCan(s, "agent", false)).toBe(false);
+  });
+});

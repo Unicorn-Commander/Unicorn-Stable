@@ -159,14 +159,34 @@ function readHistoryBoundaryMs(raw: Record<string, unknown>): number | null {
   return null;
 }
 
+/** The server's top-level capability booleans, mapped to the capability keys
+ *  this client asks about. `agent` is what gates offering an "ask the agent"
+ *  affordance; `mention_email` is advisory only and enforced server-side. */
+const TOP_LEVEL_CAPABILITIES: Record<string, string> = {
+  allow_agent_trigger: "agent",
+  allow_mention_email: "mention_email",
+};
+
 /** Per-invite capability flags, if the server sent any. Non-boolean entries are
- *  dropped rather than coerced, for the same reason as {@link readBool}. */
+ *  dropped rather than coerced, for the same reason as {@link readBool}.
+ *
+ *  The server sends these as TOP-LEVEL booleans on /guest/redeem and /guest/me
+ *  (`allow_agent_trigger`, `allow_mention_email`) — reading only a nested
+ *  `capabilities` object, as this did until 2026-08-12, left the map
+ *  permanently empty, so {@link guestCan} always returned its fallback and the
+ *  client never learned what the invite actually granted. The nested form is
+ *  still honoured and wins, so a server that later sends one keeps working. */
 function readCapabilities(raw: Record<string, unknown>): Record<string, boolean> {
-  const source = raw.capabilities;
-  if (!isRecord(source)) return {};
   const out: Record<string, boolean> = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (typeof value === "boolean") out[key] = value;
+  for (const [field, capability] of Object.entries(TOP_LEVEL_CAPABILITIES)) {
+    const value = raw[field];
+    if (typeof value === "boolean") out[capability] = value;
+  }
+  const source = raw.capabilities;
+  if (isRecord(source)) {
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value === "boolean") out[key] = value;
+    }
   }
   return out;
 }
