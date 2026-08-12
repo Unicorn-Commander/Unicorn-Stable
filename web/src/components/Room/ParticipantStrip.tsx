@@ -25,6 +25,8 @@ import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
+import { livekitIdentityForMember } from "@/lib/broadcast";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -242,6 +244,27 @@ function MemberMenu({
   );
 }
 
+/**
+ * "● Broadcasting" — a live, no-login feed of this person exists right now.
+ *
+ * Duplicated intentionally onto the roster as well as the call tile: a
+ * broadcast token can be minted (and shows here) before anyone joins a call,
+ * and the roster is on screen far more of the time than the video stage.
+ */
+function BroadcastingBadge({ name }: { name: string }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-rose-500/90 px-1.5 py-0.5 text-[9px] font-semibold text-white"
+      title={`${name} is being broadcast to an external feed right now`}
+    >
+      <span aria-hidden="true" className="text-[7px] leading-none">
+        ●
+      </span>
+      Live
+    </span>
+  );
+}
+
 function HumanMemberRow({
   member,
   online,
@@ -249,6 +272,7 @@ function HumanMemberRow({
   myRole,
   favorite,
   onToggleFavorite,
+  broadcasting,
 }: {
   member: RoomMember;
   online: boolean;
@@ -256,6 +280,7 @@ function HumanMemberRow({
   myRole: ModRole | null;
   favorite: boolean;
   onToggleFavorite: (participantId: string) => void;
+  broadcasting: boolean;
 }) {
   const participantId =
     member.participant_id || member.user_id || member.id || "";
@@ -276,6 +301,7 @@ function HumanMemberRow({
           <span className="ml-1 text-[10px] text-slate-500">(you)</span>
         )}
       </span>
+      {broadcasting && <BroadcastingBadge name={member.display_name} />}
       {member.is_muted && (
         <span title="Muted — can't post">
           <MicOff className="h-3 w-3 shrink-0 text-rose-400/70" />
@@ -386,6 +412,18 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   });
   const favoriteIds = preferences?.favorite_people_ids ?? [];
   const favoriteSet = new Set(favoriteIds);
+
+  // Consent surface: who currently has a live broadcast feed. The roster knows
+  // members, /broadcast/active answers in LiveKit identities, so rebuild the
+  // server's "<username>_<participant id>" to line the two up.
+  const { isBroadcasting } = useRoomBroadcasts(roomId);
+  const memberIsBroadcasting = (member: RoomMember) =>
+    isBroadcasting(
+      livekitIdentityForMember(
+        member.username,
+        member.participant_id || member.user_id,
+      ),
+    );
 
   // The caller's own membership row (server-flagged is_self) decides whether to
   // show moderation controls at all. Only owners/admins moderate.
@@ -709,6 +747,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                   member.participant_id || member.user_id || member.id || "",
                 )}
                 onToggleFavorite={(id) => void toggleFavorite(id)}
+                broadcasting={memberIsBroadcasting(member)}
               />
             ))}
           </ul>
@@ -732,6 +771,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                   member.participant_id || member.user_id || member.id || "",
                 )}
                 onToggleFavorite={(id) => void toggleFavorite(id)}
+                broadcasting={memberIsBroadcasting(member)}
               />
             ))}
           </ul>
