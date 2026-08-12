@@ -31,6 +31,7 @@ from app.api.messages import router as messages_router
 from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gateway
 from app.api.broadcast import router as broadcast_router
 from app.api.calls import router as calls_router
+from app.api.guests import router as guests_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
 from app.api.tts import router as tts_router
@@ -346,6 +347,14 @@ def create_app() -> FastAPI:
     # /broadcast/join that is deliberately the ONLY route accepting a
     # broadcast token (see api/broadcast.py for the threat model).
     app.include_router(broadcast_router, prefix="/api/v1", tags=["Broadcast"])
+    # Guest access: OWNER-authenticated invite mint/list/revoke, an
+    # unauthenticated /guest/redeem that is the ONLY route accepting an invite
+    # token, and a two-endpoint guest self-service surface. Guest SESSIONS are
+    # accepted by a handful of opted-in routes elsewhere (messages, members,
+    # LiveKit token, /ws) and refused everywhere else by deps.get_current_user.
+    # Read app/api/guests.py + the guest section of app/deps.py before adding
+    # anything a guest can reach.
+    app.include_router(guests_router, prefix="/api/v1", tags=["Guests"])
     app.include_router(calls_router, prefix="/api/v1", tags=["Calls"])
     app.include_router(tts_router, prefix="/api/v1", tags=["TTS"])
     app.include_router(transcripts_router, prefix="/api/v1", tags=["Transcripts"])

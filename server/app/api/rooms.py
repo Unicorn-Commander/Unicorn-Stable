@@ -21,6 +21,7 @@ from app.deps import (
     get_settings_dep,
     rate_limit,
     require_room_member,
+    require_room_member_or_guest,
 )
 from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageResponse
@@ -1019,12 +1020,23 @@ def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
 @router.get("/rooms/{room_id}/members", response_model=list[RoomMemberResponse])
 async def list_members(
     room_id: uuid.UUID,
-    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    user: Annotated[dict[str, Any], Depends(require_room_member_or_guest)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
 ) -> list[RoomMemberResponse]:
-    """List members of a room. Caller must be a member of the room."""
+    """List members of a room. Caller must be a member — or a GUEST of it.
+
+    Safe to expose to a guest because ``RoomService.get_members`` returns only
+    the identity facts a call needs (username, display name, participant type,
+    role, avatar, presence) — never an email address and never a Keycloak
+    subject. It is a room roster, not a realm export.
+
+    ``participant_type`` on each row is ``"guest"`` for guests, which is how a
+    client distinguishes a real member from an outsider whose display name they
+    chose themselves. Clients MUST badge on that field rather than trusting the
+    name string.
+    """
     svc = _build_room_service(db, livekit, presence)
     members = await svc.get_members(room_id, caller_id=user["participant_id"])
     return [_member_to_response(m) for m in members]

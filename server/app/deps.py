@@ -11,6 +11,13 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.guest_auth import (
+    GUEST_SESSION_PREFIX,
+    GuestAuthError,
+    guest_user_dict,
+    is_guest_credential,
+    verify_guest_session,
+)
 from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import Settings, get_settings
 
@@ -63,6 +70,17 @@ async def get_current_user(
 
     Returns a user dict with: sub, email, username, display_name, roles, participant_type, participant_id.
     Also ensures the Participant row exists in the database (upsert on first login).
+
+    🔴 THIS DEPENDENCY MUST NEVER ACCEPT A GUEST CREDENTIAL. ~100 routes name it
+    explicitly, so teaching it about guests would hand a guest token every one
+    of them in a single edit — including every route written after that edit.
+    Guest-reachable routes opt in ONE AT A TIME via ``get_guest_or_member``
+    below. That inversion is what makes a route that does not exist yet
+    guest-proof by default, with no reviewer vigilance required.
+
+    (2026-08-09 precedent: Knowledge-Ops was found granting read scope to every
+    OIDC principal, so merely passing the proxy silently meant "authorized".
+    Authentication must never imply authorization.)
     """
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -73,6 +91,18 @@ async def get_current_user(
         )
 
     token = auth_header.removeprefix("Bearer ").strip()
+
+    # Structural default-deny. A guest credential is not a JWT, so it would
+    # fail validation below anyway — but relying on "it happens to not parse"
+    # is an accident, not a boundary. Refusing it BY NAME here means the
+    # rejection is intentional, greppable, and directly testable.
+    if is_guest_credential(token):
+        logger.info("guest_credential_rejected", route_kind="member_only")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Guest credentials are not accepted on this endpoint",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     try:
         claims = await validate_token(
@@ -115,6 +145,134 @@ async def get_current_user(
 
     user_identity["participant_id"] = participant.id
     return user_identity
+
+
+# ---------------------------------------------------------------------------
+# Guest access — the OPT-IN half of the default-deny arrangement
+# ---------------------------------------------------------------------------
+#
+# GUEST ACCESS IS AN ACCESS MODE ON A ROOM, NOT A NEW PRODUCT SURFACE.
+#
+# A guest is an outsider with no Unicorn Commander account who redeemed a room
+# owner's invite link. They may do exactly this and nothing else:
+#
+#   * read and post messages in THEIR room
+#   * open a WebSocket scoped to THEIR room
+#   * mint a LiveKit token for THEIR room (they are a guest ON the show, so
+#     camera/mic is the point)
+#   * see THEIR room's member list
+#   * see their own guest record (GET /guest/me)
+#
+# They must not reach any other room, the room list/channel browser, either
+# message-search endpoint, the agent roster/binding/tools, knowledge bases,
+# uploads, admin, entitlements, gateway key administration, or any Keycloak
+# identity / suite entitlement / cross-app federation. All of that is enforced
+# by ABSENCE: those routes depend on get_current_user, which refuses a guest
+# credential by name. Nothing was added to them, and nothing needs to be.
+#
+# Adding a guest-reachable route means changing that route's dependency here on
+# purpose. If you are reading this because you are about to do that: the room
+# scope check is NOT optional — use require_room_member_or_guest (path-param
+# rooms) or call ensure_guest_room_scope() explicitly once you have resolved
+# the room.
+
+
+def is_guest(user: dict[str, Any]) -> bool:
+    """True when this principal is an ephemeral room guest, not a member."""
+    return bool(user.get("is_guest"))
+
+
+def ensure_guest_room_scope(
+    user: dict[str, Any], room_id: uuid.UUID | str
+) -> None:
+    """Refuse a guest asking about any room but the one their credential names.
+
+    THE DOUBLE GATE. Guests are also real ``RoomMember`` rows, so the ordinary
+    membership check already confines them — but membership is data that other
+    code paths can write, while ``guest_room_id`` comes off the session row that
+    authorized this very request. Checking both means a stray or maliciously
+    created membership row still cannot widen a guest's reach.
+
+    A no-op for members, so it is safe to call unconditionally.
+    """
+    if not is_guest(user):
+        return
+    if str(user.get("guest_room_id") or "") != str(room_id):
+        logger.info(
+            "guest_room_scope_denied",
+            session_id=str(user.get("guest_session_id")),
+            requested_room=str(room_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This guest link is not valid for that room",
+        )
+
+
+async def get_guest_or_member(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Accept EITHER a real member (Keycloak JWT) OR a room guest session.
+
+    Returns the same dict shape ``get_current_user`` returns, so a handler body
+    keeps working after swapping the dependency; guests additionally carry
+    ``is_guest`` / ``guest_room_id`` (see auth/guest_auth.guest_user_dict).
+
+    Deliberately NOT the default for anything. Name it only on routes that have
+    been reasoned about individually, and pair it with a room scope check.
+    """
+    auth_header = request.headers.get("Authorization") or ""
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = auth_header.removeprefix("Bearer ").strip()
+
+    if not token.startswith(GUEST_SESSION_PREFIX):
+        # Not a guest session (including a raw INVITE token, which is never an
+        # API credential) — fall through to the ordinary member path, which
+        # refuses guest credentials by name.
+        return await get_current_user(request, settings, db)
+
+    if not settings.guest_access_enabled:
+        # Kill switch: existing sessions stop authenticating immediately.
+        logger.info("guest_session_refused", reason="feature_disabled")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Guest access is disabled on this server",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        principal = await verify_guest_session(token, db)
+    except GuestAuthError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return guest_user_dict(principal)
+
+
+async def require_guest(
+    user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
+) -> dict[str, Any]:
+    """Guest-ONLY dependency, for the small ``/guest/*`` self-service surface.
+
+    A member reaching these would get a meaningless answer (they have no guest
+    session), so refuse rather than return something confusing.
+    """
+    if not is_guest(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This endpoint requires a guest session",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +337,28 @@ async def require_room_member(
     Returns the same user dict ``get_current_user`` returns, so existing
     handler bodies keep working after swapping the dependency.
     """
+    await ensure_room_member(db, room_id, user)
+    return user
+
+
+async def require_room_member_or_guest(
+    room_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Like ``require_room_member``, but also admits a guest OF THIS ROOM.
+
+    Two gates, both required for a guest:
+
+      1. the session's own ``guest_room_id`` must be this room (the credential
+         is scoped to one room and cannot be pointed at another), and
+      2. the ordinary ``room_members`` check must pass.
+
+    Swap ``require_room_member`` → this ONLY on routes a guest is meant to
+    reach. Everything left on ``require_room_member`` stays member-only,
+    because that path runs ``get_current_user``, which refuses guests.
+    """
+    ensure_guest_room_scope(user, room_id)
     await ensure_room_member(db, room_id, user)
     return user
 
@@ -300,6 +480,54 @@ def rate_limit(
 
     async def _dep(
         user: Annotated[dict[str, Any], Depends(get_current_user)],
+        redis: Annotated[Redis, Depends(get_redis)],
+        settings: Annotated[Settings, Depends(get_settings_dep)],
+    ) -> None:
+        if not settings.rate_limit_enabled:
+            return
+        limit = int(getattr(settings, limit_attr, 0) or 0)
+        await _rate_limit_hit(
+            redis,
+            bucket=bucket,
+            identifier=str(user["participant_id"]),
+            limit=limit,
+            window_seconds=window_seconds,
+            fail_open=effective_fail_open,
+        )
+
+    return _dep
+
+
+def rate_limit_principal(
+    bucket: str,
+    limit_attr: str,
+    *,
+    window_seconds: int = 60,
+    fail_open: bool | None = None,
+) -> Callable[..., Any]:
+    """``rate_limit`` for routes that also admit guests.
+
+    WHY THIS EXISTS AT ALL: ``rate_limit`` above hard-depends on
+    ``get_current_user``, which refuses guest credentials — so putting it on a
+    guest-reachable route would 401 every guest at the rate limiter even though
+    the route's own principal dependency accepted them. This is the same class
+    of trap that made ``deps.rate_limit()`` unusable on ``/broadcast/join``.
+
+    WHY IT IS A NEAR-COPY RATHER THAN A PARAMETERIZED FACTORY: this module uses
+    ``from __future__ import annotations``, so FastAPI resolves the inner
+    dependency's annotations with ``get_type_hints`` against MODULE GLOBALS. A
+    closed-over ``principal_dep`` name would not resolve and the route would
+    fail to register. The dependency callable has to be named literally.
+
+    Still keyed on ``participant_id``, which every guest has (a real, ephemeral
+    Participant row) — never on the presented secret.
+    """
+    effective_fail_open = (
+        (bucket not in _FAIL_CLOSED_BUCKETS) if fail_open is None else fail_open
+    )
+
+    async def _dep(
+        user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
         redis: Annotated[Redis, Depends(get_redis)],
         settings: Annotated[Settings, Depends(get_settings_dep)],
     ) -> None:

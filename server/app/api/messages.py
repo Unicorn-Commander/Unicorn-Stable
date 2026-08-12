@@ -17,12 +17,17 @@ from sqlalchemy.orm import aliased, selectinload
 from app.api._internal_auth import verify_internal_bearer
 from app.config import get_settings
 from app.deps import (
+    ensure_guest_room_scope,
     ensure_room_member,
     get_current_user,
     get_db,
+    get_guest_or_member,
     get_livekit,
+    is_guest,
     rate_limit,
+    rate_limit_principal,
     require_room_member,
+    require_room_member_or_guest,
 )
 from app.schemas.message import (
     PendingApprovalItem,
@@ -248,20 +253,35 @@ async def _find_recent_send_by_client_msg_id(
 async def send_message(
     room_id: uuid.UUID,
     body: MessageCreate,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     request: Request = None,  # type: ignore[assignment]
     _rl: Annotated[
-        None, Depends(rate_limit("msg_send", "rate_limit_message_send_per_min"))
+        None,
+        Depends(rate_limit_principal("msg_send", "rate_limit_message_send_per_min")),
     ] = None,
 ) -> MessageResponse:
     """Send a message to a room.
 
-    Membership is enforced inside MessageService.send_message. Rate-limited
-    per user. The internal agent path calls this function directly (not via
-    HTTP) so it bypasses the DI-injected rate limit, which is intended.
+    Membership is enforced inside MessageService.send_message (which also
+    enforces per-room mute, so an owner can silence a misbehaving guest with
+    the moderation control that already exists). Rate-limited per participant.
+    The internal agent path calls this function directly (not via HTTP) so it
+    bypasses the DI-injected rate limit, which is intended.
+
+    GUEST-REACHABLE (opt-in). ``rate_limit_principal`` rather than
+    ``rate_limit`` because the latter hard-depends on ``get_current_user`` and
+    would 401 a guest at the limiter even though the route accepted them.
+
+    Two side effects are deliberately withheld from guests — see the
+    ``is_guest`` checks below.
     """
+    # Gate 1 (guests only): the credential must name THIS room. Gate 2 is the
+    # membership check inside MessageService.
+    ensure_guest_room_scope(user, room_id)
+    caller_is_guest = is_guest(user)
+
     svc = _build_message_service(db, livekit)
 
     # Send-ACK idempotency: a retried client_msg_id whose original send DID
@@ -303,15 +323,24 @@ async def send_message(
 
     # Mention emails — resolve recipients with the request's db, then dispatch
     # actual sends as fire-and-forget tasks so the response isn't blocked.
+    #
+    # NOT FOR GUESTS, on purpose. This path puts an outsider's chosen display
+    # name and message text into an HTML email sent FROM our domain (and the
+    # template interpolates both without escaping). Everything else a guest can
+    # do stays inside the room; letting them originate outbound branded email
+    # does not, and the blast radius is the org's mail reputation. Web push
+    # below is left ON — it is plain text, stays on members' own devices, and
+    # "someone posted in your room" is the room's normal function.
     try:
-        await _maybe_dispatch_mention_emails(
-            db=db,
-            content=body.content or "",
-            room_id=room_id,
-            sender_participant_id=user["participant_id"],
-            sender_name=user.get("display_name") or user.get("username") or "Someone",
-            sender_email=user.get("email"),
-        )
+        if not caller_is_guest:
+            await _maybe_dispatch_mention_emails(
+                db=db,
+                content=body.content or "",
+                room_id=room_id,
+                sender_participant_id=user["participant_id"],
+                sender_name=user.get("display_name") or user.get("username") or "Someone",
+                sender_email=user.get("email"),
+            )
     except Exception:
         logger.warning("mention_email_dispatch_error", exc_info=True)
 
@@ -352,12 +381,25 @@ async def send_message(
     # additionally retracts the marker for whichever agent it actually resolved
     # (see agent_chat_responder), which is the part room metadata cannot know
     # because _resolve_agent also routes by @-mention and by a legacy fallback.
+    #
+    # GUESTS NEVER TRIGGER THE ROOM'S AGENT. Aaron's list is explicit that a
+    # guest must not reach the agent roster, agent binding, or agent tools, and
+    # an auto-reply is all three by proxy: an outsider's text becomes the
+    # prompt for a room-bound agent holding that room's knowledge and tools,
+    # spending paid Brigade budget, with prompt injection as the obvious next
+    # move. A member in the room can always relay a guest's question
+    # deliberately. This is the conservative default, not a limitation of the
+    # plumbing — if it needs to change it should be a per-invite opt-in, not a
+    # silent behaviour.
     try:
         # request=None marks the internal voice-transcript path, which
         # deliberately does not trigger agent activity — honour that here too.
-        if request is not None and user.get("participant_type") != "agent" and not str(
-            user.get("sub") or ""
-        ).startswith("brigade:"):
+        if (
+            request is not None
+            and not caller_is_guest
+            and user.get("participant_type") != "agent"
+            and not str(user.get("sub") or "").startswith("brigade:")
+        ):
             from app.services.agent_status import mark_relay_pending_for_room
 
             await mark_relay_pending_for_room(db=db, room_id=room_id)
@@ -365,7 +407,7 @@ async def send_message(
         logger.warning("relay_pending_mark_failed", exc_info=True)
 
     try:
-        if request is not None:
+        if request is not None and not caller_is_guest:
             settings_now = get_settings()
             redis_now = getattr(request.app.state, "redis", None)
             if await _agent_chat_within_budget(
@@ -396,8 +438,14 @@ async def send_message(
         attachments = None
         if isinstance(body.metadata, dict):
             attachments = body.metadata.get("attachments")
+        # Not for guests: `attachments` is client-supplied metadata, and a
+        # guest cannot legitimately have any (uploads are member-only). Letting
+        # an outsider name arbitrary stored files here would hand them a
+        # GPU-backed extract/embed job over filenames they chose, which is both
+        # a scarce-resource lever and a file-read probe.
         if (
-            getattr(settings_for_rag, "rag_enabled", False)
+            not caller_is_guest
+            and getattr(settings_for_rag, "rag_enabled", False)
             and isinstance(attachments, list)
             and attachments
         ):
@@ -1304,7 +1352,7 @@ async def post_agent_typing(
 @router.get("/rooms/{room_id}/messages", response_model=MessageListResponse)
 async def get_messages(
     room_id: uuid.UUID,
-    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    user: Annotated[dict[str, Any], Depends(require_room_member_or_guest)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     cursor: str | None = Query(None),
@@ -1312,7 +1360,13 @@ async def get_messages(
 ) -> MessageListResponse:
     """Get cursor-paginated messages for a room (newest first).
 
-    Caller must be a member of the room.
+    Caller must be a member of the room, or a GUEST scoped to this room.
+
+    Note what a guest reading history means: they see everything ever posted in
+    the room they were invited to, back to its beginning. That is a property of
+    the invite, not of this route — invite an outsider into a room and they can
+    read that room. Owners minting guest links for an existing channel should
+    know it; the "Build In Public" show room is created for the show.
     """
     svc = _build_message_service(db, livekit)
     result = await svc.get_messages(

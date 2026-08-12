@@ -224,6 +224,24 @@ class Settings(BaseSettings):
     rate_limit_room_create_per_min: int = 20
     # Brigade agent invites (each spawns a GPU-backed worker + agent turns).
     rate_limit_agent_invite_per_min: int = 20
+    # Guest invite REDEMPTION. Keyed on client IP, not on the presented secret
+    # (keying on the secret would let an attacker rotate guesses for a fresh
+    # bucket every time). This is the one unauthenticated guest endpoint and
+    # therefore the brute-force target; see api/guests.py.
+    rate_limit_guest_redeem_per_min: int = 10
+
+    # -- Guest access (see app/auth/guest_auth.py + app/api/guests.py) --
+    # Master switch. False = owners cannot mint invites, redemption 404s, AND
+    # existing guest sessions stop authenticating on the very next request
+    # (HTTP and WebSocket alike). A real kill switch, not just a hide.
+    guest_access_enabled: bool = True
+    # Invite link lifetime. Short by default: a guest link is a credential that
+    # lets a stranger into a room with camera and microphone.
+    guest_invite_default_ttl_hours: int = 24
+    guest_invite_max_ttl_hours: int = 168  # 7 days
+    # A single guest's session never outlives this, even on a long-lived
+    # invite, so an abandoned browser tab cannot hold room access for a week.
+    guest_session_max_hours: int = 12
 
     # -- Per-user quota caps (hard ceilings, independent of the rate window) --
     # Total KB documents a single user may own across all their collections,
