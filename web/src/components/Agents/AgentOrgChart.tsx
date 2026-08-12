@@ -22,6 +22,7 @@ import {
   ChevronRight,
   Maximize2,
   Minimize2,
+  MessageSquare,
   ZoomIn,
   ZoomOut,
   Scan,
@@ -73,25 +74,50 @@ interface OrgNodeData {
   childCount: number;
   onToggle: (id: string) => void;
   onFocus: (id: string) => void;
+  onOpen: (agent: Agent) => void;
 }
 
 /**
  * One agent node — the same classification a card shows (affiliation left-border,
  * model-tier chip, paid-tool $ badge) compacted to node size, plus a drill-down
  * chevron on any agent that has reports and a magnifier that zooms the chart
- * onto this agent's subtree. Clicking the body opens the chat popup; the
- * magnifier and chevron stop the click so they never open a chat.
+ * onto this agent's subtree. Clicking the body opens the chat popup; the chat,
+ * magnifier and chevron buttons stop the click so they never double-fire or
+ * open the wrong thing.
+ *
+ * WHY THERE IS AN EXPLICIT CHAT BUTTON when the whole body is already
+ * clickable: the body click is `onNodeClick` on the ReactFlow pane, which is
+ * mouse-only and advertised by nothing but a native `title` — and a `title`
+ * never appears on a touch screen. So the chart's PRIMARY action was invisible
+ * next to two buttons that do secondary things (Aaron, 2026-08-12: "I'd like
+ * to be able to chat with the agents right there"), and it was unreachable by
+ * keyboard entirely, because the node is a div and `onNodeClick` does not fire
+ * on Enter. The List view has neither problem — every card there is a real
+ * `<button>`. This restores parity: one focusable control, visible on touch,
+ * opening the same modal.
  */
 function OrgGraphNode(props: NodeProps) {
-  const { agent, isRoot, hasChildren, isExpanded, childCount, onToggle, onFocus } =
-    props.data as unknown as OrgNodeData;
+  const {
+    agent,
+    isRoot,
+    hasChildren,
+    isExpanded,
+    childCount,
+    onToggle,
+    onFocus,
+    onOpen,
+  } = props.data as unknown as OrgNodeData;
   const affilMeta = AFFIL_META[affiliationOf(agent)];
   const tierMeta = TIER_META[tierOf(agent)];
   return (
     <div
       title={`${affilMeta.label} · ${tierMeta.label} model — click to chat`}
+      // Width comes from the layout constant, not a class: dagre positions the
+      // node using ORG_NODE_W, so a hardcoded `w-[212px]` was the same number
+      // written twice with nothing keeping them equal.
+      style={{ width: ORG_NODE_W }}
       className={clsx(
-        "group flex w-[212px] cursor-pointer items-center gap-2.5 rounded-xl border border-l-4 bg-surface-2/95 px-2.5 py-2 backdrop-blur-sm transition-colors hover:bg-surface-3",
+        "group flex cursor-pointer items-center gap-2.5 rounded-xl border border-l-4 bg-surface-2/95 px-2.5 py-2 backdrop-blur-sm transition-colors hover:bg-surface-3",
         isRoot
           ? "border-stable-purple/60 shadow-glow-iris"
           : "border-line-strong shadow-soft",
@@ -146,56 +172,80 @@ function OrgGraphNode(props: NodeProps) {
           <PaidToolsBadge agent={agent} size="xs" />
         </span>
       </span>
-      {/* Zoom-to affordance. Faded until hover on pointer devices, but never
-          hidden outright — touch has no hover, and an invisible control on
-          the platform that needs it most is no control at all. */}
-      <Tooltip
-        content={
-          hasChildren
-            ? `Zoom to ${label(agent)}'s team`
-            : `Zoom to ${label(agent)}`
-        }
-        placement="top"
-      >
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onFocus(agent.id);
-          }}
-          aria-label={`Zoom to ${label(agent)}`}
-          className="nodrag nopan focus-ring flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md text-slate-500 opacity-60 transition-all hover:bg-white/[0.08] hover:text-slate-100 focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          <ZoomIn className="h-3 w-3" />
-        </button>
-      </Tooltip>
-      {hasChildren && (
+      {/* Controls ride in their own tight cluster rather than as three more
+          children of the node row. The row's gap-2.5 is tuned for avatar/text
+          spacing; paying it twice more would have cost the truncating name
+          ~34px of the node's 212, which is the difference between a readable
+          label and an ellipsis. */}
+      <span className="flex shrink-0 items-center gap-0.5 self-stretch">
+        {/* Chat — the node's primary action, and the only one here that is a
+            real focusable control (see the component note above). Full opacity
+            always: unlike the zoom magnifier this is not a power-user
+            shortcut, it is the thing the chart is for. */}
+        <Tooltip content={`Chat with ${label(agent)}`} placement="top">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(agent);
+            }}
+            aria-label={`Chat with ${label(agent)}`}
+            className="nodrag nopan focus-ring flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md text-stable-purple-light transition-colors hover:bg-stable-purple/20 hover:text-white"
+          >
+            <MessageSquare className="h-3 w-3" />
+          </button>
+        </Tooltip>
+        {/* Zoom-to affordance. Faded until hover on pointer devices, but never
+            hidden outright — touch has no hover, and an invisible control on
+            the platform that needs it most is no control at all. */}
         <Tooltip
           content={
-            isExpanded
-              ? `Collapse ${childCount} report${childCount === 1 ? "" : "s"}`
-              : `Show ${childCount} report${childCount === 1 ? "" : "s"} under ${label(agent)}`
+            hasChildren
+              ? `Zoom to ${label(agent)}'s team`
+              : `Zoom to ${label(agent)}`
           }
-          placement="right"
+          placement="top"
         >
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onToggle(agent.id);
+              onFocus(agent.id);
             }}
-            aria-label={isExpanded ? "Collapse team" : "Expand team"}
-            className="nodrag nopan focus-ring flex shrink-0 items-center gap-0.5 self-stretch rounded-md bg-white/[0.04] px-1 text-[10px] font-semibold tabular-nums text-slate-400 transition-colors hover:bg-white/[0.08] hover:text-slate-100"
+            aria-label={`Zoom to ${label(agent)}`}
+            className="nodrag nopan focus-ring flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md text-slate-500 opacity-60 transition-all hover:bg-white/[0.08] hover:text-slate-100 focus-visible:opacity-100 group-hover:opacity-100"
           >
-            {isExpanded ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
-            {childCount}
+            <ZoomIn className="h-3 w-3" />
           </button>
         </Tooltip>
-      )}
+        {hasChildren && (
+          <Tooltip
+            content={
+              isExpanded
+                ? `Collapse ${childCount} report${childCount === 1 ? "" : "s"}`
+                : `Show ${childCount} report${childCount === 1 ? "" : "s"} under ${label(agent)}`
+            }
+            placement="right"
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggle(agent.id);
+              }}
+              aria-label={isExpanded ? "Collapse team" : "Expand team"}
+              className="nodrag nopan focus-ring flex shrink-0 items-center gap-0.5 self-stretch rounded-md bg-white/[0.04] px-1 text-[10px] font-semibold tabular-nums text-slate-400 transition-colors hover:bg-white/[0.08] hover:text-slate-100"
+            >
+              {isExpanded ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              {childCount}
+            </button>
+          </Tooltip>
+        )}
+      </span>
       <Handle
         type="source"
         position={Position.Bottom}
@@ -597,10 +647,11 @@ function OrgChartCanvas({
               childCount,
               onToggle: toggle,
               onFocus: focusAgent,
+              onOpen,
             },
           };
         }),
-    [orderedVisible, tree, expanded, toggle, focusAgent],
+    [orderedVisible, tree, expanded, toggle, focusAgent, onOpen],
   );
 
   const edges: Edge[] = useMemo(
