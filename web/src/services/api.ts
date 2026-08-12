@@ -99,8 +99,16 @@ export interface RoomMember {
   username: string;
   display_name: string;
   avatar_url?: string | null;
-  role: "owner" | "admin" | "member";
-  participant_type?: "human" | "agent";
+  role: "owner" | "admin" | "member" | "guest";
+  /**
+   * "guest" is a room GUEST — an outsider who redeemed an invite link and has
+   * no account at all (server/app/api/guests.py). It is a value no pre-existing
+   * comparison in this client matched, which is deliberate on the server side
+   * too: guests fall out of every `== HUMAN` branch rather than quietly joining
+   * one. Anything that renders a participant must badge it — see
+   * `components/ui/GuestBadge`.
+   */
+  participant_type?: "human" | "agent" | "guest";
   is_online?: boolean;
   /**
    * AGENTS ONLY (null for humans). "Can this agent be invoked right now" —
@@ -247,7 +255,8 @@ export interface Message {
   id: string;
   room_id: string;
   sender_id: string;
-  sender_type: "human" | "agent" | "system";
+  /** "guest" rides in from the sender's participant_type — see RoomMember. */
+  sender_type: "human" | "agent" | "system" | "guest";
   sender_name: string;
   sender_avatar: string | null;
   content: string;
