@@ -10,6 +10,25 @@ import { identityFor } from "@/lib/identity";
  * blinks, an ear flicks, and the mouth animates while the agent is speaking
  * or streaming a reply. The full 3D VRM pipeline replaces this component
  * without changing any call site: same props, richer renderer.
+ *
+ * ── Why it is drawn as a STICKER ───────────────────────────────────────────
+ * This is the guaranteed-renders rung: some agents will always land here, so
+ * it sits directly beside the real portraits in the roster and the org chart.
+ * The first version was a pastel lavender head with pink blush on a
+ * transparent ground, and next to the shipped art it read as a placeholder
+ * rather than as a resident — Aaron, 2026-08-12: "that basic unicorn that's
+ * not the same style as our brand".
+ *
+ * So it now draws the same costume the authored portraits wear: a flat dark
+ * navy disc (#131a28, sampled from the masters), a white sticker border, thick
+ * black outlines, a purple→cyan mane and a gold horn. What it deliberately
+ * does NOT do is imitate a specific character — no jacket, no prop, no
+ * insignia. It should read as "a resident of this Stable whose portrait has
+ * not been drawn yet", never as a particular agent.
+ *
+ * The identity hue survives all of that: it seeds the mane's midpoint, so the
+ * fallback is still deterministic per agent and two agents side by side stay
+ * distinguishable. That property is load-bearing — keep it.
  */
 export type UnicornAvatarState = "idle" | "talking" | "working" | "offline";
 
@@ -59,9 +78,14 @@ export function UnicornAvatar({
         )}
       >
         <defs>
+          {/* Brand purple → identity hue → brand cyan. The endpoints are the
+              Magic Unicorn gradient every authored portrait's mane uses; the
+              identity colour rides in the middle so the fallback still tells
+              two agents apart without leaving the palette. */}
           <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor={ident.color} />
-            <stop offset="100%" stopColor="#8b5cf6" />
+            <stop offset="0%" stopColor="#b66eff" />
+            <stop offset="50%" stopColor={ident.color} />
+            <stop offset="100%" stopColor="#00d4ff" />
           </linearGradient>
           <linearGradient id={`${gradientId}-horn`} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#fde68a" />
@@ -69,74 +93,101 @@ export function UnicornAvatar({
           </linearGradient>
         </defs>
 
-        {/* Mane sweep behind the head — the identity color carrier. */}
-        <path
-          d="M14 40 C10 22 22 8 38 10 C52 12 58 26 54 42 C50 54 40 58 32 57 C40 50 42 44 38 38 C30 44 20 48 14 40 Z"
-          fill={`url(#${gradientId})`}
-          opacity="0.9"
-        />
+        {/* Flat navy ground — the colour sampled from the portrait masters, so
+            a fallback tile and a real one sit on the same field. */}
+        <rect x="0" y="0" width="64" height="64" rx="14" fill="#131a28" />
 
-        {/* Ears — the right one flicks now and then. */}
-        <path d="M22 14 L27 24 L18 24 Z" fill="#ece9fe" />
-        <path
-          d="M40 12 L46 23 L35 22 Z"
-          fill="#ece9fe"
-          className="animate-unicorn-ear"
-          style={{ transformBox: "fill-box", transformOrigin: "50% 100%" }}
-        />
+        {/* The figure is scaled about its own centre to leave room for the
+            sticker border; at 64² the horn tip would otherwise clip the edge. */}
+        <g transform="translate(32 31) scale(0.86) translate(-34 -30)">
+          {/* STICKER BORDER. The silhouette drawn once as a fat white stroke,
+              underneath everything. The internal strokes are covered by the
+              fills that follow, so only the outer edge survives — the same
+              trick the authored art's die-cut border is drawn with. */}
+          <g
+            fill="#ffffff"
+            stroke="#ffffff"
+            strokeWidth="6"
+            strokeLinejoin="round"
+          >
+            <path d="M14 40 C10 22 22 8 38 10 C52 12 58 26 54 42 C50 54 40 58 32 57 C40 50 42 44 38 38 C30 44 20 48 14 40 Z" />
+            <path d="M22 14 L27 24 L18 24 Z" />
+            <path d="M40 12 L46 23 L35 22 Z" />
+            <path d="M31 2 L36.5 20 L26.5 20 Z" />
+            <ellipse cx="31" cy="37" rx="17.5" ry="16" />
+          </g>
 
-        {/* Horn. */}
-        <path
-          d="M31 2 L36.5 20 L26.5 20 Z"
-          fill={`url(#${gradientId}-horn)`}
-        />
+          {/* Ink line for every shape below — thick black outlines are the
+              single strongest style cue in the portrait set. */}
+          <g stroke="#0b0d16" strokeWidth="1.7" strokeLinejoin="round">
+            {/* Mane sweep behind the head — the identity colour carrier. */}
+            <path
+              d="M14 40 C10 22 22 8 38 10 C52 12 58 26 54 42 C50 54 40 58 32 57 C40 50 42 44 38 38 C30 44 20 48 14 40 Z"
+              fill={`url(#${gradientId})`}
+            />
 
-        {/* Head. */}
-        <ellipse cx="31" cy="37" rx="17.5" ry="16" fill="#ece9fe" />
-        {/* Muzzle. */}
-        <ellipse cx="35" cy="45" rx="10.5" ry="8" fill="#f8f7ff" />
-        <circle cx="39.5" cy="44.5" r="1.3" fill="#b9b3d8" />
+            {/* Ears — the right one flicks now and then. */}
+            <path d="M22 14 L27 24 L18 24 Z" fill="#f4f2ff" />
+            <path
+              d="M40 12 L46 23 L35 22 Z"
+              fill="#f4f2ff"
+              className="animate-unicorn-ear"
+              style={{ transformBox: "fill-box", transformOrigin: "50% 100%" }}
+            />
 
-        {/* Forelock strand in the identity color. */}
-        <path
-          d="M24 20 C30 16 38 17 42 22 C36 21 30 22 27 27 C26 24 25 22 24 20 Z"
-          fill={ident.color}
-          opacity="0.85"
-        />
+            {/* Horn. */}
+            <path d="M31 2 L36.5 20 L26.5 20 Z" fill={`url(#${gradientId}-horn)`} />
 
-        {/* Eye — blinks. */}
-        <ellipse
-          cx="25"
-          cy="36"
-          rx="2.6"
-          ry="3.6"
-          fill="#221d3d"
-          className={clsx(!offline && "animate-unicorn-blink")}
-          style={{ transformBox: "fill-box", transformOrigin: "center" }}
-        />
-        {/* Blush. */}
-        <circle cx="23" cy="43" r="2.6" fill="#f9a8d4" opacity="0.45" />
+            {/* Head and muzzle. The muzzle is CENTRED under the head rather
+                than offset: the authored portraits are all straight-on busts,
+                and a three-quarter turn here was the other half of why the
+                fallback read as a different character set. */}
+            <ellipse cx="31" cy="37" rx="17.5" ry="16" fill="#f4f2ff" />
+            <ellipse cx="31" cy="45.5" rx="11" ry="8" fill="#fbfaff" />
+          </g>
 
-        {/* Mouth — a resting line, or an animated open mouth while talking. */}
-        {talking ? (
-          <ellipse
-            cx="34.5"
-            cy="47.5"
-            rx="3"
-            ry="2.6"
-            fill="#5b5380"
-            className="animate-unicorn-talk"
-            style={{ transformBox: "fill-box", transformOrigin: "center" }}
-          />
-        ) : (
+          {/* Nostrils. */}
+          <circle cx="27.6" cy="44.6" r="1.15" fill="#0b0d16" opacity="0.55" />
+          <circle cx="34.4" cy="44.6" r="1.15" fill="#0b0d16" opacity="0.55" />
+
+          {/* Forelock strand, unstroked so it reads as hair over the brow. */}
           <path
-            d="M31.5 48.5 Q34.5 50.5 37.5 48.5"
-            stroke="#8d85b5"
-            strokeWidth="1.4"
-            strokeLinecap="round"
-            fill="none"
+            d="M24 20 C30 16 38 17 42 22 C36 21 30 22 27 27 C26 24 25 22 24 20 Z"
+            fill={ident.color}
           />
-        )}
+
+          {/* Eyes — solid black ink and a straight-on pair, matching the set.
+              Both blink together; one lid closing on its own reads as a wink. */}
+          <g
+            fill="#0b0d16"
+            className={clsx(!offline && "animate-unicorn-blink")}
+            style={{ transformBox: "fill-box", transformOrigin: "center" }}
+          >
+            <ellipse cx="24.6" cy="35.4" rx="2.7" ry="3.7" />
+            <ellipse cx="37.4" cy="35.4" rx="2.7" ry="3.7" />
+          </g>
+
+          {/* Mouth — a resting line, or an animated open mouth while talking. */}
+          {talking ? (
+            <ellipse
+              cx="31"
+              cy="48"
+              rx="3"
+              ry="2.6"
+              fill="#0b0d16"
+              className="animate-unicorn-talk"
+              style={{ transformBox: "fill-box", transformOrigin: "center" }}
+            />
+          ) : (
+            <path
+              d="M28 48.6 Q31 50.6 34 48.6"
+              stroke="#0b0d16"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              fill="none"
+            />
+          )}
+        </g>
       </svg>
     </span>
   );

@@ -2,7 +2,17 @@ import { useMemo } from "react";
 import dagre from "@dagrejs/dagre";
 import { Position, type Node, type Edge } from "@xyflow/react";
 
-export const ORG_NODE_W = 212;
+/**
+ * The node box, in px. Dagre lays out against these numbers and the node
+ * component sizes itself from them — read ORG_NODE_W rather than writing the
+ * width into a class, or the layout and the box drift apart silently (the
+ * chart would route edges to a rectangle that is not where the node is).
+ *
+ * Widened 212 → 240 on 2026-08-12 to fit the chat control without squeezing
+ * the name: the trailing controls cost ~81px, so at 212 the truncating label
+ * was down to ~51px, and at 240 it is back to the ~79px it had before.
+ */
+export const ORG_NODE_W = 240;
 export const ORG_NODE_H = 78;
 
 export interface OrgLayoutOpts {
