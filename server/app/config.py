@@ -242,6 +242,16 @@ class Settings(BaseSettings):
     # A single guest's session never outlives this, even on a long-lived
     # invite, so an abandoned browser tab cannot hold room access for a week.
     guest_session_max_hours: int = 12
+    # Expired-session reaper (app/services/guest_reaper.py). Expiry alone only
+    # stops a guest being AUTHORIZED; without this sweep an expired guest keeps
+    # publishing to LiveKit (the media session outlives its join token) and
+    # keeps their seat on the room roster. Off only for debugging — turning it
+    # off does not make guests live longer, it makes them linger louder.
+    guest_reaper_enabled: bool = True
+    guest_reaper_interval_seconds: int = 60
+    # Ceiling on rows swept per pass, so a large backlog is drained over
+    # several passes instead of in one long transaction.
+    guest_reaper_batch: int = 200
 
     # -- Per-user quota caps (hard ceilings, independent of the rate window) --
     # Total KB documents a single user may own across all their collections,

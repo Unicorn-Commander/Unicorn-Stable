@@ -74,6 +74,41 @@ class GuestInvite(Base, UUIDPrimaryKeyMixin):
         Boolean, nullable=False, server_default=text("true")
     )
 
+    # ------------------------------------------------------------------
+    # PER-INVITE OPT-INS. Both default OFF, in the database as well as in
+    # Python, so a row written by any path that has not heard of them is
+    # closed rather than open.
+    # ------------------------------------------------------------------
+    #
+    # May a guest redeemed from this invite cause the room's agent to answer?
+    # OFF by default because an auto-reply turns an outsider's text into the
+    # prompt for a room-bound agent holding that room's knowledge, that room's
+    # tools, and a real (paid) budget — prompt injection with a wallet attached.
+    # Enforced in api/messages.send_message, not just hidden in the UI.
+    allow_agent_trigger: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    # May a guest's message ORIGINATE a mention email? OFF by default because
+    # that path puts an attacker-chosen display name and message body into HTML
+    # sent FROM our domain, and the blast radius is the org's mail reputation,
+    # not this room. Enforced in api/messages.send_message.
+    allow_mention_email: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    # The oldest message a guest redeemed from this invite may READ. Default
+    # ``now()`` — i.e. nothing that was said before the link existed — because
+    # an invite to today's call must not silently hand over months of prior
+    # conversation. An owner may widen it at mint (``history_hours``) or ask
+    # for the whole back-history explicitly (``history_all``, which stores the
+    # epoch floor). NOT NULL with a restrictive server default on purpose: an
+    # INSERT that forgets this column gets the closed answer, never the open
+    # one. Enforced in the messages READ PATH (api/messages.get_messages ->
+    # MessageService.get_messages), not in the client.
+    history_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+
     # NULL = unlimited redemptions. Enforced by an atomic conditional UPDATE at
     # redemption (see api/guests.py), never by a read-then-write, so two guests
     # racing on the last seat cannot both win.

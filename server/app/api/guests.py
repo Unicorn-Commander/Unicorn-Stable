@@ -23,6 +23,20 @@ every Keycloak/suite/federation surface — is unreachable because those routes
 depend on ``deps.get_current_user``, which refuses a guest credential by name.
 Nothing was added to them. See the long comment in ``app/deps.py``.
 
+WHAT AN INVITE DECIDES, PER LINK
+--------------------------------
+Three widenings live on the invite row, and all three default to the closed
+answer, so the least-typing invite is the safest one:
+
+* ``allow_agent_trigger`` — may this guest's message make the room's agent
+  answer? Off: an auto-reply hands an outsider the prompt of an agent holding
+  the room's knowledge, tools, and budget.
+* ``allow_mention_email`` — may this guest's @mention send mail from our
+  domain? Off: that is the one guest action whose blast radius leaves the room.
+* ``history_from`` — how far back may they READ? Defaults to the moment the
+  link was minted, so an invite to today's call is not retroactive access to
+  the channel's whole past. Enforced in the messages read path.
+
 THE ORACLE RULES
 ----------------
 ``POST /guest/redeem`` is the only unauthenticated endpoint here, so it is the
@@ -90,6 +104,13 @@ router = APIRouter(tags=["Guests"])
 # link", "revoked", "expired", "full", and "wrong passphrase" are one answer.
 INVALID_LINK_DETAIL = "This guest link is not valid."
 
+# The floor stored when an owner explicitly asks for the room's WHOLE
+# back-history. A concrete timestamp rather than NULL on purpose: a nullable
+# "no limit" column fails OPEN for any row written by a path that forgets it,
+# whereas this column is NOT NULL with a restrictive server default and the
+# permissive value has to be written deliberately.
+_FULL_HISTORY_FLOOR = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -124,6 +145,41 @@ class MintInviteBody(BaseModel):
     )
     label: str | None = Field(None, max_length=255)
 
+    # -- Per-invite opt-ins. Both OFF unless the owner says otherwise. --
+    allow_agent_trigger: bool = Field(
+        False,
+        description=(
+            "Let a guest's message trigger the room's agent. OFF by default: "
+            "an auto-reply makes an outsider's text the prompt for an agent "
+            "holding this room's knowledge, tools, and paid budget."
+        ),
+    )
+    allow_mention_email: bool = Field(
+        False,
+        description=(
+            "Let a guest's @mention send mention emails. OFF by default: that "
+            "puts a guest-chosen name and body into HTML sent from our domain."
+        ),
+    )
+
+    # -- Readable history window. Restrictive unless widened. --
+    history_hours: int | None = Field(
+        None,
+        ge=0,
+        le=8760,
+        description=(
+            "How far back before this link was minted a guest may read. "
+            "Omitted/0 = nothing said before the invite existed."
+        ),
+    )
+    history_all: bool = Field(
+        False,
+        description=(
+            "Hand over the room's ENTIRE back-history. Must be asked for "
+            "explicitly; overrides history_hours."
+        ),
+    )
+
 
 class GuestInviteInfo(BaseModel):
     id: uuid.UUID
@@ -139,6 +195,12 @@ class GuestInviteInfo(BaseModel):
     revoked_at: datetime | None
     last_used_at: datetime | None
     active: bool
+    # What this link actually grants, echoed back so an owner reviewing a list
+    # of links can SEE which ones are wider than the default rather than having
+    # to remember what they ticked.
+    allow_agent_trigger: bool
+    allow_mention_email: bool
+    history_from: datetime
 
 
 class MintInviteResponse(GuestInviteInfo):
@@ -163,6 +225,13 @@ class RedeemResponse(BaseModel):
     room_display_name: str
     can_publish: bool
     expires_at: datetime
+    # ADDITIVE, and advisory only. The server enforces all three; these are
+    # here so the client can render honestly — stop paging at the boundary and
+    # show "history starts here" instead of an infinite spinner, and not offer
+    # an "ask the agent" affordance that the server will silently ignore.
+    history_from: datetime
+    allow_agent_trigger: bool
+    allow_mention_email: bool
 
 
 class GuestMe(BaseModel):
@@ -178,6 +247,12 @@ class GuestMe(BaseModel):
     room_display_name: str
     can_publish: bool
     expires_at: datetime
+    # Same additive advisory fields as RedeemResponse, so a client that
+    # reconnects (or reloads) re-learns its boundary without keeping the
+    # redeem response around.
+    history_from: datetime
+    allow_agent_trigger: bool
+    allow_mention_email: bool
 
 
 class GuestSessionInfo(BaseModel):
@@ -254,6 +329,9 @@ def _invite_info(row: GuestInvite) -> dict[str, Any]:
         "expires_at": row.expires_at,
         "revoked_at": row.revoked_at,
         "last_used_at": row.last_used_at,
+        "allow_agent_trigger": bool(getattr(row, "allow_agent_trigger", False)),
+        "allow_mention_email": bool(getattr(row, "allow_mention_email", False)),
+        "history_from": getattr(row, "history_from", None) or row.created_at,
         "active": row.revoked_at is None
         and expires is not None
         and expires > _now()
@@ -307,6 +385,16 @@ async def mint_guest_invite(
             ),
         )
 
+    # THE HISTORY FLOOR. Default: the moment the link is minted, so an invite
+    # to today's call carries today's call and not the eight months of channel
+    # history that happened to precede it. Widening is an explicit act by the
+    # owner, recorded on the row, and visible in the invite list afterwards.
+    minted_at = _now()
+    if body.history_all:
+        history_from = _FULL_HISTORY_FLOOR
+    else:
+        history_from = minted_at - timedelta(hours=int(body.history_hours or 0))
+
     raw = mint_invite_token()
     passphrase = (body.passphrase or "").strip() or None
     row = GuestInvite(
@@ -315,10 +403,13 @@ async def mint_guest_invite(
         room_id=room_id,
         passphrase_hash=hash_passphrase(passphrase) if passphrase else None,
         can_publish=bool(body.can_publish),
+        allow_agent_trigger=bool(body.allow_agent_trigger),
+        allow_mention_email=bool(body.allow_mention_email),
+        history_from=history_from,
         max_uses=body.max_uses,
         label=body.label,
         created_by=user["participant_id"],
-        expires_at=_now() + timedelta(hours=ttl_hours),
+        expires_at=minted_at + timedelta(hours=ttl_hours),
     )
     db.add(row)
     await db.commit()
@@ -332,6 +423,13 @@ async def mint_guest_invite(
         has_passphrase=passphrase is not None,
         can_publish=row.can_publish,
         max_uses=row.max_uses,
+        # Log the WIDENINGS explicitly. These are the three ways one invite is
+        # more permissive than another, and an operator reading the log after
+        # the fact should not have to go and read the row to find out.
+        allow_agent_trigger=bool(row.allow_agent_trigger),
+        allow_mention_email=bool(row.allow_mention_email),
+        history_all=bool(body.history_all),
+        history_hours=int(body.history_hours or 0),
     )
     info = _invite_info(row)
     info["token"] = raw
@@ -638,11 +736,19 @@ async def redeem_guest_invite(
     # fresh bucket every time). deps.rate_limit() is unusable here: it
     # hard-depends on get_current_user.
     #
-    # FAIL CLOSED. Redemption is a once-per-guest action at the start of a
-    # show, so a 503 during a Redis outage costs almost nothing — while
-    # silently lifting the only brute-force guard on the one unauthenticated
-    # endpoint in the feature costs a great deal. A loud refusal beats a quiet
-    # degradation.
+    # NEVER FAILS OPEN — but no longer fails all the way closed either.
+    #
+    # This was `fail_open=False` alone, i.e. a Redis blip returned 503 to every
+    # would-be guest. That is the wrong shape of failure for this endpoint: the
+    # people it locks out are the invited guests of a live show, and the thing
+    # it protects against (offline brute force of an invite token) is not made
+    # meaningfully likelier by a few minutes of a coarser limiter. So it now
+    # degrades to the in-process limiter in deps.py — still limited, just
+    # per-worker and fixed-window instead of shared and weighted — and only
+    # returns 503 if even that cannot account for the caller.
+    #
+    # `fail_open=False` stays exactly as it was: the fallback is an ADDITIONAL
+    # answer, not permission to skip the check.
     if redis is not None and settings.rate_limit_enabled:
         client_ip = (request.client.host if request.client else "unknown") or "unknown"
         await _rate_limit_hit(
@@ -652,6 +758,7 @@ async def redeem_guest_invite(
             limit=int(settings.rate_limit_guest_redeem_per_min or 10),
             window_seconds=60,
             fail_open=False,
+            local_fallback=True,
         )
 
     supplied_passphrase = body.passphrase or ""
@@ -814,6 +921,11 @@ async def redeem_guest_invite(
         "room_display_name": room.display_name or room.name,
         "can_publish": bool(invite.can_publish),
         "expires_at": session_expiry,
+        # Advisory echo of what this invite grants. Enforcement is server-side
+        # in api/messages.py; this only lets the client render the truth.
+        "history_from": getattr(invite, "history_from", None) or invite.created_at,
+        "allow_agent_trigger": bool(getattr(invite, "allow_agent_trigger", False)),
+        "allow_mention_email": bool(getattr(invite, "allow_mention_email", False)),
     }
 
 
@@ -846,6 +958,11 @@ async def get_guest_me(
         "room_display_name": room.display_name or room.name,
         "can_publish": bool(user.get("guest_can_publish")),
         "expires_at": user["guest_expires_at"],
+        # These come off the principal, which re-read the invite on THIS
+        # request — so a grant the owner just turned off is already gone here.
+        "history_from": user.get("guest_history_from") or _now(),
+        "allow_agent_trigger": bool(user.get("guest_allow_agent_trigger")),
+        "allow_mention_email": bool(user.get("guest_allow_mention_email")),
     }
 
 

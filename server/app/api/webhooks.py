@@ -218,14 +218,30 @@ async def _handle_participant_joined(
     # Extract participant ID from identity (format: username_uuid)
     participant_id = _extract_participant_id(identity)
     if participant_id:
-        await presence.set_online(participant_id, "online")
-        await presence.join_room_presence(participant_id, str(room.id))
-
-        # Update participant status in DB
+        # Resolve the participant BEFORE announcing presence, because the
+        # answer decides how widely it is announced.
         p_result = await db.execute(
             select(Participant).where(Participant.id == participant_id)
         )
         participant = p_result.scalar_one_or_none()
+
+        # GUEST PRESENCE IS ROOM-SCOPED. This is the SECOND door into the
+        # instance-wide presence channel — the websocket is the first — and it
+        # is the one a guest actually walks through, because a guest on camera
+        # triggers this webhook. Scoping the socket alone would have looked
+        # correct and leaked anyway the moment the guest turned their camera
+        # on. An unresolved participant keeps the pre-existing behaviour: not
+        # being able to find a row is not evidence of being a guest.
+        instance_wide = not (
+            participant is not None
+            and participant.participant_type == ParticipantType.GUEST
+        )
+        await presence.set_online(
+            participant_id, "online", instance_wide=instance_wide
+        )
+        await presence.join_room_presence(participant_id, str(room.id))
+
+        # Update participant status in DB
         if participant:
             participant.status = ParticipantStatus.ONLINE
             await db.commit()
@@ -286,7 +302,16 @@ async def _handle_participant_left(
             participant.status = ParticipantStatus.OFFLINE
             await db.commit()
 
-        await presence.set_offline(participant_id)
+        # Must mirror the join scope exactly — an instance-wide offline for a
+        # guest who was never announced online is a phantom event on every
+        # client on the deployment.
+        await presence.set_offline(
+            participant_id,
+            instance_wide=not (
+                participant is not None
+                and participant.participant_type == ParticipantType.GUEST
+            ),
+        )
 
     # Re-probed occupancy: the last leaver takes this to 0, which is the
     # room-scoped "the call ended" signal the clients key off.

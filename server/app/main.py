@@ -244,6 +244,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("transcript_outbox_worker_start_failed", exc_info=True)
     app.state.transcript_outbox_task = transcript_outbox_task
 
+    # Guest-session reaper. Expiry used to be enforced only when something
+    # asked — so an expired guest stopped being AUTHORIZED on time, but kept
+    # publishing to LiveKit (the media session outlives the token that opened
+    # it) and kept their seat on the room roster until they closed the tab.
+    # This is the thing that goes looking. Every worker may run it; the claim
+    # is exactly-once. See app/services/guest_reaper.py.
+    guest_reaper_task = None
+    try:
+        if settings.guest_reaper_enabled:
+            from app.services.guest_reaper import run_guest_reaper
+
+            guest_reaper_task = asyncio.create_task(
+                run_guest_reaper(session_factory, redis, lk_service, settings)
+            )
+            logger.info(
+                "guest_reaper_started",
+                interval_seconds=settings.guest_reaper_interval_seconds,
+            )
+    except Exception:
+        logger.warning("guest_reaper_start_failed", exc_info=True)
+    app.state.guest_reaper_task = guest_reaper_task
+
     logger.info("application_startup_complete", environment=settings.environment)
 
     yield
@@ -261,6 +283,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         transcript_outbox_task.cancel()
         try:
             await transcript_outbox_task
+        except asyncio.CancelledError:
+            pass
+
+    if guest_reaper_task and not guest_reaper_task.done():
+        guest_reaper_task.cancel()
+        try:
+            await guest_reaper_task
         except asyncio.CancelledError:
             pass
 

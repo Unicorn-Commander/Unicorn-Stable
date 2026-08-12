@@ -20,6 +20,7 @@ from app.auth.guest_auth import (
     guest_session_is_live,
     guest_user_dict,
     is_guest_credential,
+    touch_guest_session,
     verify_guest_session,
 )
 from app.auth.keycloak import extract_user_identity, validate_token
@@ -50,6 +51,12 @@ MARK_READ_FLOOR_S: float = 1.0
 # its auth frame. Generous enough for a slow mobile link to flush one frame,
 # tight enough that anonymous sockets cannot be parked as a resource drain.
 AUTH_FRAME_TIMEOUT_S: float = 6.0
+
+# How often a live guest socket stamps GuestSession.last_seen_at. The liveness
+# tick runs every 4s; writing on every one of them would turn a read into a
+# write 15x a minute per guest for a column nothing reads that often. Once a
+# minute is enough for an owner watching "who is on my link right now".
+GUEST_LAST_SEEN_EVERY_S: float = 60.0
 
 # ---------------------------------------------------------------------------
 # Server-initiated force-close
@@ -398,8 +405,24 @@ async def _subscribe_to_rooms(
     channels.append(f"user:{participant_id}")
     # Global (instance-scoped) presence — required even when the user has zero
     # rooms so the People directory still receives live online/offline deltas.
-    channels.append(INSTANCE_PRESENCE_CHANNEL)
+    #
+    # NOT FOR GUESTS. This channel carries an online/offline delta for every
+    # participant on the whole deployment, and a guest has no People directory,
+    # no room list, and no business knowing who else exists on this server. A
+    # guest subscribed here would be handed a live census of the instance —
+    # participant ids and presence — through the one socket they are allowed to
+    # open. ``guest_session_id`` is exactly "this socket authenticated as a
+    # guest" (the endpoint sets it from the session row and nothing else does),
+    # so it is the correct discriminator. The outbound half of the same leak is
+    # closed in the endpoint below by not PUBLISHING guest presence here.
+    is_guest_socket = guest_session_id is not None
+    if not is_guest_socket:
+        channels.append(INSTANCE_PRESENCE_CHANNEL)
     known_rooms: set[str] = set(room_ids)
+    # Throttle for the guest last_seen_at stamp below. 0.0 makes the first
+    # liveness tick stamp immediately, so an owner watching the session list
+    # sees a guest go "seen" within seconds of them connecting.
+    last_touch_at = 0.0
 
     await pubsub.subscribe(*channels)
     subscribed: set[str] = set(channels)
@@ -425,6 +448,14 @@ async def _subscribe_to_rooms(
                             _live = await guest_session_is_live(
                                 _db, guest_session_id
                             )
+                            if _live and (
+                                time.monotonic() - last_touch_at
+                                >= GUEST_LAST_SEEN_EVERY_S
+                            ):
+                                # Same session as the liveness read, so this
+                                # costs one statement, not a second connection.
+                                last_touch_at = time.monotonic()
+                                await touch_guest_session(_db, guest_session_id)
                         if not _live:
                             logger.info(
                                 "ws_guest_session_ended",
@@ -640,6 +671,7 @@ async def _handle_client_events(
     username: str = "",
     is_human: bool = True,
     typing_rooms: set[str] | None = None,
+    instance_presence: bool = True,
 ) -> None:
     """Handle incoming events from the WebSocket client.
 
@@ -808,7 +840,14 @@ async def _handle_client_events(
                 # Refresh presence TTL and answer so a quiet room never looks
                 # dead. (Previously "ping" fell through to the else and got an
                 # error back + never refreshed presence.)
-                await presence.heartbeat(participant_id)
+                #
+                # `instance_presence` is False for guests: heartbeat RE-PUBLISHES
+                # online when the key has lapsed, so leaving it True here would
+                # leak a guest onto the instance-wide channel ~2 minutes after a
+                # connect-time-only fix had "closed" it.
+                await presence.heartbeat(
+                    participant_id, instance_wide=instance_presence
+                )
                 await _safe_send(websocket, {"type": "pong"})
 
             else:
@@ -913,9 +952,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # while `guest_room_id` came off the row that authorized this connection.
     # Intersecting here (and passing the ceiling into the refresh loop below)
     # means a stray membership row can never widen a guest's stream.
+    #
+    # PRESENCE SCOPE rides along with it. A guest's online/offline belongs to
+    # the one room they were invited to, not to the instance-wide presence
+    # channel that every socket on this deployment subscribes to. See
+    # PresenceService.set_online and the INSTANCE_PRESENCE_CHANNEL comment in
+    # _subscribe_to_rooms — this flag closes the outbound half, that one closes
+    # the inbound half.
     allowed_room_ids: set[str] | None = None
     guest_session_id: str | None = None
-    if user.get("is_guest"):
+    is_guest_socket = bool(user.get("is_guest"))
+    if is_guest_socket:
         allowed_room_ids = {str(user.get("guest_room_id"))}
         guest_session_id = str(user.get("guest_session_id"))
         room_ids = [rid for rid in room_ids if rid in allowed_room_ids]
@@ -944,11 +991,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     # Connect and set presence
     await manager.connect(participant_id, websocket)
-    await presence.set_online(participant_id, "online")
+    await presence.set_online(
+        participant_id, "online", instance_wide=not is_guest_socket
+    )
     for rid in room_ids:
         await presence.join_room_presence(participant_id, rid)
 
-    # Broadcast presence change to all rooms
+    # Broadcast presence change to all rooms. THIS is where a guest's presence
+    # goes — `room_ids` is their single room — and it is why suppressing the
+    # instance-wide publish above costs the roster they are actually in nothing.
     for rid in room_ids:
         await redis.publish(
             f"room:{rid}",
@@ -977,6 +1028,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             username=username,
             is_human=is_human,
             typing_rooms=typing_rooms,
+            instance_presence=not is_guest_socket,
         ),
         name=f"ws-client-{participant_id}",
     )
@@ -1006,7 +1058,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             username=username,
             rooms=typing_rooms,
         )
-        await presence.set_offline(participant_id)
+        # Must mirror the connect-time scope: announcing an instance-wide
+        # offline for a guest who was never announced online would be a
+        # phantom event on every client on the server.
+        await presence.set_offline(participant_id, instance_wide=not is_guest_socket)
         for rid in room_ids:
             await presence.leave_room_presence(participant_id, rid)
             await redis.publish(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 import httpx
@@ -274,13 +274,31 @@ async def send_message(
     ``rate_limit`` because the latter hard-depends on ``get_current_user`` and
     would 401 a guest at the limiter even though the route accepted them.
 
-    Two side effects are deliberately withheld from guests — see the
-    ``is_guest`` checks below.
+    Two side effects are withheld from guests UNLESS THE INVITE OPTED IN — see
+    the ``guest_may_*`` flags below.
     """
     # Gate 1 (guests only): the credential must name THIS room. Gate 2 is the
     # membership check inside MessageService.
     ensure_guest_room_scope(user, room_id)
     caller_is_guest = is_guest(user)
+
+    # PER-INVITE OPT-INS (models/guest_access.py). Both were hard-off when
+    # guest access shipped; they are now decisions the room owner makes per
+    # link, and both still DEFAULT to off. The value is read off the invite on
+    # every credential check (auth/guest_auth.verify_guest_session), so an
+    # owner who unticks one has it off on the guest's very next message.
+    #
+    # Written as `not caller_is_guest or <grant>` so a MEMBER is unaffected in
+    # both cases — the flags exist to widen a guest, never to narrow anyone
+    # else. A member dict has no `guest_*` key at all, so even if that ordering
+    # were inverted the `.get()` would be falsey and the failure would be a
+    # withheld side effect, not a granted one.
+    guest_may_trigger_agent = not caller_is_guest or bool(
+        user.get("guest_allow_agent_trigger")
+    )
+    guest_may_send_mention_email = not caller_is_guest or bool(
+        user.get("guest_allow_mention_email")
+    )
 
     svc = _build_message_service(db, livekit)
 
@@ -324,15 +342,17 @@ async def send_message(
     # Mention emails — resolve recipients with the request's db, then dispatch
     # actual sends as fire-and-forget tasks so the response isn't blocked.
     #
-    # NOT FOR GUESTS, on purpose. This path puts an outsider's chosen display
-    # name and message text into an HTML email sent FROM our domain (and the
-    # template interpolates both without escaping). Everything else a guest can
-    # do stays inside the room; letting them originate outbound branded email
-    # does not, and the blast radius is the org's mail reputation. Web push
-    # below is left ON — it is plain text, stays on members' own devices, and
-    # "someone posted in your room" is the room's normal function.
+    # OFF FOR GUESTS unless the invite opted in. This path puts an outsider's
+    # chosen display name and message text into an HTML email sent FROM our
+    # domain (and the template interpolates both without escaping). Everything
+    # else a guest can do stays inside the room; letting them originate
+    # outbound branded email does not, and the blast radius is the org's mail
+    # reputation rather than this room's confidentiality — which is exactly why
+    # the default is off and the exception has to be granted per link. Web push
+    # is left ON regardless — it is plain text, stays on members' own devices,
+    # and "someone posted in your room" is the room's normal function.
     try:
-        if not caller_is_guest:
+        if guest_may_send_mention_email:
             await _maybe_dispatch_mention_emails(
                 db=db,
                 content=body.content or "",
@@ -382,21 +402,24 @@ async def send_message(
     # (see agent_chat_responder), which is the part room metadata cannot know
     # because _resolve_agent also routes by @-mention and by a legacy fallback.
     #
-    # GUESTS NEVER TRIGGER THE ROOM'S AGENT. Aaron's list is explicit that a
-    # guest must not reach the agent roster, agent binding, or agent tools, and
-    # an auto-reply is all three by proxy: an outsider's text becomes the
+    # A GUEST TRIGGERS THE ROOM'S AGENT ONLY IF THE INVITE SAID SO, and the
+    # invite says no unless an owner ticked the box. The brief is explicit that
+    # a guest must not reach the agent roster, agent binding, or agent tools,
+    # and an auto-reply is all three by proxy: an outsider's text becomes the
     # prompt for a room-bound agent holding that room's knowledge and tools,
     # spending paid Brigade budget, with prompt injection as the obvious next
     # move. A member in the room can always relay a guest's question
-    # deliberately. This is the conservative default, not a limitation of the
-    # plumbing — if it needs to change it should be a per-invite opt-in, not a
-    # silent behaviour.
+    # deliberately, so the closed default costs a show nothing.
+    #
+    # The opt-in exists for the case it was written for: a scheduled interview
+    # where the whole point is the guest talking to the agent, on a link the
+    # owner minted for that one purpose and can revoke.
     try:
         # request=None marks the internal voice-transcript path, which
         # deliberately does not trigger agent activity — honour that here too.
         if (
             request is not None
-            and not caller_is_guest
+            and guest_may_trigger_agent
             and user.get("participant_type") != "agent"
             and not str(user.get("sub") or "").startswith("brigade:")
         ):
@@ -407,7 +430,7 @@ async def send_message(
         logger.warning("relay_pending_mark_failed", exc_info=True)
 
     try:
-        if request is not None and not caller_is_guest:
+        if request is not None and guest_may_trigger_agent:
             settings_now = get_settings()
             redis_now = getattr(request.app.state, "redis", None)
             if await _agent_chat_within_budget(
@@ -1362,17 +1385,31 @@ async def get_messages(
 
     Caller must be a member of the room, or a GUEST scoped to this room.
 
-    Note what a guest reading history means: they see everything ever posted in
-    the room they were invited to, back to its beginning. That is a property of
-    the invite, not of this route — invite an outsider into a room and they can
-    read that room. Owners minting guest links for an existing channel should
-    know it; the "Build In Public" show room is created for the show.
+    A GUEST ALSO GETS A HISTORY FLOOR. Until this existed, inviting an outsider
+    to today's call handed them every message the room had ever held — an
+    invite to one meeting was retroactive access to the whole channel. The
+    boundary is per-invite (``guest_invites.history_from``) and defaults to the
+    moment the link was minted; an owner may widen it deliberately.
+
+    IT IS ENFORCED HERE, in the query, not in the client. A guest holds an API
+    credential and can call this route with any cursor they like, so a UI that
+    merely declines to render older messages would be no boundary at all.
+    Paging back past the floor returns an empty page, exactly as reaching the
+    true beginning of the room does.
     """
+    # Fail CLOSED. A guest principal that somehow carries no floor reads
+    # nothing older than right now, rather than the whole room. An empty room
+    # is a visible bug; silently handing over months of history is not.
+    not_before: datetime | None = None
+    if is_guest(user):
+        not_before = user.get("guest_history_from") or datetime.now(timezone.utc)
+
     svc = _build_message_service(db, livekit)
     result = await svc.get_messages(
         room_id=room_id,
         cursor=cursor,
         limit=limit,
+        not_before=not_before,
     )
     messages = [
         _msg_to_response(item["message"], item["reply_count"])

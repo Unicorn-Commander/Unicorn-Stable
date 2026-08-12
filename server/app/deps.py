@@ -374,6 +374,69 @@ async def require_room_member_or_guest(
 # distributed token bucket, which we don't need here.
 
 
+# ---------------------------------------------------------------------------
+# In-process fallback limiter (Redis-outage degradation)
+# ---------------------------------------------------------------------------
+#
+# Redis is the shared, correct limiter. This is the answer to "what happens
+# when it is gone" for the one route that can neither fail open (it is the only
+# unauthenticated endpoint in the guest feature, so it is THE brute-force
+# target) nor fail closed (failing closed means a Redis blip locks every guest
+# out of a live show).
+#
+# It is deliberately WORSE than Redis, in ways worth naming:
+#   * per PROCESS, so with N uvicorn workers the effective ceiling is N x limit;
+#   * a plain fixed window, so it permits the 2x burst across a window edge that
+#     the Redis path's weighted two-window read smooths out;
+#   * memory-bounded, so it cannot be turned into a memory-exhaustion lever by
+#     an attacker rotating source addresses.
+#
+# What it is NOT is unlimited. When the table is full of live entries it
+# refuses rather than admitting an untracked caller — running out of room to
+# count is a reason to say no, never a reason to stop counting.
+_LOCAL_WINDOWS: dict[tuple[str, str], list[int]] = {}
+# ~20k identifiers is a few MB at worst and far more than a real deployment
+# sees in one window; it exists so an attacker cannot grow this without bound.
+_LOCAL_WINDOWS_MAX = 20_000
+
+_LOCAL_ALLOW = "allow"
+_LOCAL_LIMITED = "limited"
+_LOCAL_UNAVAILABLE = "unavailable"
+
+
+def _prune_local_windows(current_window: int) -> None:
+    """Drop counters from windows that have already closed."""
+    stale = [k for k, v in _LOCAL_WINDOWS.items() if v[0] < current_window]
+    for key in stale:
+        _LOCAL_WINDOWS.pop(key, None)
+
+
+def _local_rate_limit_check(
+    bucket: str, identifier: str, limit: int, window_seconds: int
+) -> str:
+    """Count this call in the per-process window and say what to do with it.
+
+    Returns ``_LOCAL_ALLOW`` (within budget), ``_LOCAL_LIMITED`` (over budget →
+    429), or ``_LOCAL_UNAVAILABLE`` (no room left to track this caller → 503).
+    The last one is the fail-closed escape hatch: it never silently allows.
+    """
+    if limit <= 0:
+        return _LOCAL_LIMITED
+    window = int(time.time()) // window_seconds
+    key = (bucket, identifier)
+    entry = _LOCAL_WINDOWS.get(key)
+    if entry is not None and entry[0] == window:
+        entry[1] += 1
+        return _LOCAL_ALLOW if entry[1] <= limit else _LOCAL_LIMITED
+    # New window (or new caller). Make room before adding a key.
+    if entry is None and len(_LOCAL_WINDOWS) >= _LOCAL_WINDOWS_MAX:
+        _prune_local_windows(window)
+        if len(_LOCAL_WINDOWS) >= _LOCAL_WINDOWS_MAX:
+            return _LOCAL_UNAVAILABLE
+    _LOCAL_WINDOWS[key] = [window, 1]
+    return _LOCAL_ALLOW
+
+
 async def _rate_limit_hit(
     redis: Redis,
     *,
@@ -382,6 +445,7 @@ async def _rate_limit_hit(
     limit: int,
     window_seconds: int = 60,
     fail_open: bool = True,
+    local_fallback: bool = False,
 ) -> None:
     """Sliding-window counter; raise 429 when the weighted rate exceeds ``limit``.
 
@@ -395,6 +459,12 @@ async def _rate_limit_hit(
     routes (GPU embedding, disk writes, TTS) pass ``fail_open=False`` so a
     Redis outage can't be used to bypass the only backpressure on an expensive
     upstream — better a 503 than an unmetered GPU stampede.
+
+    ``local_fallback`` adds a THIRD answer for the routes where neither of
+    those is acceptable. With it, a Redis outage degrades to the in-process
+    limiter above — still limited, just less well — instead of refusing
+    everyone. It is opt-in per call site rather than global on purpose: for a
+    GPU bucket a 503 really is the right answer, so nothing changes for those.
     """
     if limit <= 0:
         return
@@ -415,10 +485,39 @@ async def _rate_limit_hit(
             "rate_limit_redis_error",
             bucket=bucket,
             fail_open=fail_open,
+            local_fallback=local_fallback,
             exc_info=True,
         )
         if fail_open:
             return
+        if local_fallback:
+            verdict = _local_rate_limit_check(
+                bucket, identifier, limit, window_seconds
+            )
+            if verdict == _LOCAL_ALLOW:
+                # Loud on purpose: the service is running on a degraded,
+                # per-worker limiter and an operator should know it, but the
+                # guest at the door still gets in.
+                logger.warning(
+                    "rate_limit_degraded_to_local", bucket=bucket, limit=limit
+                )
+                return
+            if verdict == _LOCAL_LIMITED:
+                logger.info(
+                    "rate_limited",
+                    bucket=bucket,
+                    identifier=identifier,
+                    source="local_fallback",
+                    limit=limit,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Rate limit exceeded. Slow down and try again shortly.",
+                    headers={"Retry-After": str(window_seconds)},
+                )
+            # _LOCAL_UNAVAILABLE — no room left to count this caller. Fall
+            # through to the 503: we would rather refuse than stop counting.
+            logger.warning("rate_limit_local_table_full", bucket=bucket)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiter unavailable; try again shortly.",

@@ -126,6 +126,23 @@ class GuestPrincipal:
     can_publish: bool
     expires_at: datetime
 
+    # Per-invite grants, read LIVE off the invite row on every credential
+    # check rather than copied onto the session at redemption. That is the
+    # difference that matters operationally: an owner who turns a grant off
+    # mid-show has it off on the guest's very next request, instead of only
+    # for guests who redeem afterwards. (``can_publish`` above is deliberately
+    # the other way round — it is denormalized onto the session so an in-flight
+    # A/V session keeps the grant it was issued under.)
+    #
+    # Both default False so any construction path that has not heard of them
+    # produces a CLOSED principal.
+    allow_agent_trigger: bool = False
+    allow_mention_email: bool = False
+    # Oldest message this guest may read. Never None for a principal built by
+    # ``verify_guest_session``; the enforcement point treats a missing value as
+    # "now" (i.e. nothing), so the failure direction is closed.
+    history_from: datetime | None = None
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -136,6 +153,23 @@ def _aware(value: datetime | None) -> datetime | None:
     if value is not None and value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+def _effective_history_from(invite: Any, session: Any) -> datetime:
+    """The oldest message this guest may read, resolved fail-CLOSED.
+
+    Normally just ``invite.history_from`` (NOT NULL since 015). The fallbacks
+    exist so that a row predating the column, or any future caller that hands
+    us a partial object, lands on a RESTRICTIVE answer rather than on "the
+    whole room": first the session's own creation time (a guest can always see
+    the conversation from the moment they joined), and only if even that is
+    missing, ``now()`` — which shows nothing at all.
+    """
+    floor = _aware(getattr(invite, "history_from", None))
+    if floor is not None:
+        return floor
+    redeemed = _aware(getattr(session, "created_at", None))
+    return redeemed if redeemed is not None else _now()
 
 
 def is_guest_credential(token: str | None) -> bool:
@@ -250,6 +284,13 @@ def guest_user_dict(principal: GuestPrincipal) -> dict[str, Any]:
         "guest_invite_id": principal.invite_id,
         "guest_can_publish": principal.can_publish,
         "guest_expires_at": principal.expires_at,
+        # Per-invite grants. Namespaced with the `guest_` prefix like every
+        # other guest-only key so a member dict can never accidentally satisfy
+        # a check written against one of them (a member's dict has no such key,
+        # so `.get()` is False/None — closed).
+        "guest_allow_agent_trigger": principal.allow_agent_trigger,
+        "guest_allow_mention_email": principal.allow_mention_email,
+        "guest_history_from": principal.history_from,
     }
 
 
@@ -333,6 +374,13 @@ async def verify_guest_session(raw_token: str, db: AsyncSession) -> GuestPrincip
         display_name=participant.display_name or row.display_name,
         can_publish=bool(row.can_publish),
         expires_at=session_expires,
+        # Read off the INVITE, which this function already had to load for the
+        # revocation cascade — so the live value costs nothing extra. getattr
+        # with a False default keeps the direction closed if the attribute is
+        # ever absent.
+        allow_agent_trigger=bool(getattr(invite, "allow_agent_trigger", False)),
+        allow_mention_email=bool(getattr(invite, "allow_mention_email", False)),
+        history_from=_effective_history_from(invite, row),
     )
 
 
@@ -368,6 +416,38 @@ async def guest_session_is_live(
     return row is not None
 
 
+async def touch_guest_session(db: AsyncSession, session_id: uuid.UUID | str) -> None:
+    """Stamp ``last_seen_at`` on a live guest session. Never raises.
+
+    ``GuestSession.last_seen_at`` is surfaced on the owner's "who is actually
+    on my link" view (``GET /rooms/{id}/guest-invites/{id}/sessions``) and, as
+    shipped, NOTHING ever wrote it — so that column read NULL forever and the
+    owner's live-session view was decorative. The websocket liveness tick is
+    the only periodic guest signal the server has, so it is what stamps this,
+    throttled to once a minute (see ws/handler.py).
+
+    The value therefore means exactly "the last time this guest's socket was
+    confirmed alive", not "the last time they did anything". Best-effort by
+    design: a failed stamp is an instrumentation loss, never an authorization
+    one, so it is swallowed rather than allowed to kill the socket.
+    """
+    from sqlalchemy import update  # local: keeps the module import list flat
+
+    try:
+        await db.execute(
+            update(GuestSession)
+            .where(GuestSession.id == session_id)
+            .values(last_seen_at=_now())
+        )
+        await db.commit()
+    except Exception:  # pragma: no cover - defensive
+        import structlog
+
+        structlog.get_logger(__name__).debug(
+            "guest_session_touch_failed", session_id=str(session_id), exc_info=True
+        )
+
+
 __all__ = [
     "GUEST_INVITE_PREFIX",
     "GUEST_SESSION_PREFIX",
@@ -386,6 +466,7 @@ __all__ = [
     "mint_invite_token",
     "mint_session_token",
     "new_guest_identity",
+    "touch_guest_session",
     "verify_guest_session",
     "verify_passphrase",
 ]

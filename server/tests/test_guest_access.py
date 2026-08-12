@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -522,6 +523,49 @@ class RoomScopeTests(IsolatedAsyncioTestCase):
         svc.send_message.assert_not_awaited()
 
 
+async def _send_message_as(user: dict, room_id: uuid.UUID):
+    """Drive ``send_message`` with every side effect patched, and hand back the
+    two that guest policy decides: the mention-email dispatcher and the agent
+    scheduler. Shared by the suppression tests and the opt-in tests so both
+    exercise the identical code path."""
+    from app.api import messages as messages_api
+    from app.schemas.message import MessageCreate
+
+    msg = SimpleNamespace(id=_uuid())
+    svc = MagicMock()
+    svc.send_message = AsyncMock(return_value=msg)
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(redis=None, db_session_factory=None))
+    )
+    with (
+        patch.object(messages_api, "_build_message_service", return_value=svc),
+        patch.object(messages_api, "_msg_to_response", MagicMock(
+            return_value=SimpleNamespace(model_dump=lambda **_: {})
+        )),
+        patch.object(messages_api, "_ws_broadcast_room", AsyncMock()),
+        patch.object(messages_api, "_maybe_dispatch_mention_emails", AsyncMock()) as mail,
+        patch.object(messages_api, "schedule_agent_chat_response", MagicMock()) as agent,
+        patch.object(
+            messages_api, "_agent_chat_within_budget", AsyncMock(return_value=True)
+        ),
+        patch.object(
+            messages_api, "_find_recent_send_by_client_msg_id",
+            AsyncMock(return_value=None),
+        ),
+        patch("app.services.agent_status.mark_relay_pending_for_room", AsyncMock()),
+        patch("app.services.push_service.dispatch_message_pushes", AsyncMock()),
+    ):
+        await messages_api.send_message(
+            room_id=room_id,
+            body=MessageCreate(content="hello @adam"),
+            user=user,
+            db=AsyncMock(),
+            livekit=AsyncMock(),
+            request=request,
+        )
+    return mail, agent
+
+
 class GuestSideEffectSuppressionTests(IsolatedAsyncioTestCase):
     """Posting as a guest must not reach the room's agent or send mail."""
 
@@ -594,6 +638,208 @@ class GuestSideEffectSuppressionTests(IsolatedAsyncioTestCase):
         agent.assert_called()
 
 
+class GuestPerInviteOptInTests(IsolatedAsyncioTestCase):
+    """The two side effects are now PER-INVITE, and still default OFF.
+
+    Both directions of both flags are asserted, because "the opt-in works" and
+    "the default is closed" are two different claims and only testing the first
+    is how a default quietly inverts.
+    """
+
+    async def _send_as(self, user: dict, room_id: uuid.UUID):
+        return await _send_message_as(user, room_id)
+
+    # -- agent trigger -----------------------------------------------------
+
+    async def test_default_guest_does_not_trigger_the_agent(self) -> None:
+        room = _uuid()
+        _mail, agent = await self._send_as(_guest_user(room_id=room), room)
+        agent.assert_not_called()
+
+    async def test_opted_in_guest_does_trigger_the_agent(self) -> None:
+        room = _uuid()
+        _mail, agent = await self._send_as(
+            _guest_user(room_id=room, guest_allow_agent_trigger=True), room
+        )
+        agent.assert_called()
+
+    # -- mention email -----------------------------------------------------
+
+    async def test_default_guest_sends_no_mention_email(self) -> None:
+        room = _uuid()
+        mail, _agent = await self._send_as(_guest_user(room_id=room), room)
+        mail.assert_not_awaited()
+
+    async def test_opted_in_guest_does_send_mention_email(self) -> None:
+        room = _uuid()
+        mail, _agent = await self._send_as(
+            _guest_user(room_id=room, guest_allow_mention_email=True), room
+        )
+        mail.assert_awaited()
+
+    # -- the flags are independent ----------------------------------------
+
+    async def test_the_two_flags_do_not_imply_each_other(self) -> None:
+        """Opting a guest into the agent must not also open the mail path —
+        they are different blast radii (this room vs the org's mail domain)."""
+        room = _uuid()
+        mail, agent = await self._send_as(
+            _guest_user(room_id=room, guest_allow_agent_trigger=True), room
+        )
+        agent.assert_called()
+        mail.assert_not_awaited()
+
+        mail2, agent2 = await self._send_as(
+            _guest_user(room_id=room, guest_allow_mention_email=True), room
+        )
+        mail2.assert_awaited()
+        agent2.assert_not_called()
+
+    # -- the closed default is structural, not just conventional -----------
+
+    def test_a_principal_built_with_no_flags_is_closed(self) -> None:
+        """Anything constructing a GuestPrincipal without naming the grants
+        gets the refused answer, so a future call site cannot open them by
+        forgetting them."""
+        from app.auth.guest_auth import GuestPrincipal, guest_user_dict
+
+        principal = GuestPrincipal(
+            session_id=_uuid(),
+            invite_id=_uuid(),
+            room_id=_uuid(),
+            participant_id=_uuid(),
+            keycloak_sub=f"guest:{_uuid()}",
+            username="guest-x",
+            display_name="X",
+            can_publish=True,
+            expires_at=_now() + timedelta(hours=1),
+        )
+        self.assertFalse(principal.allow_agent_trigger)
+        self.assertFalse(principal.allow_mention_email)
+        user = guest_user_dict(principal)
+        self.assertFalse(user["guest_allow_agent_trigger"])
+        self.assertFalse(user["guest_allow_mention_email"])
+
+    def test_the_columns_default_false_in_the_database_too(self) -> None:
+        """A row written by any path that has not heard of these columns must
+        be closed, not open — so the default lives in PG, not only in Python."""
+        from app.models.guest_access import GuestInvite
+
+        for name in ("allow_agent_trigger", "allow_mention_email"):
+            with self.subTest(column=name):
+                col = GuestInvite.__table__.columns[name]
+                self.assertFalse(col.nullable)
+                self.assertIn("false", str(col.server_default.arg).lower())
+
+    async def test_the_grants_are_read_live_off_the_invite(self) -> None:
+        """Not copied onto the session at redemption: an owner who unticks a
+        grant has it off on the guest's very next request, not only for guests
+        who redeem later."""
+        from app.auth.gateway_auth import hash_key
+        from app.auth.guest_auth import verify_guest_session
+
+        raw = "sgs-" + "b" * 43
+        session = SimpleNamespace(
+            id=_uuid(), token_hash=hash_key(raw), invite_id=_uuid(),
+            room_id=_uuid(), participant_id=_uuid(), display_name="T",
+            can_publish=True, created_at=_now(),
+            expires_at=_now() + timedelta(hours=1), revoked_at=None,
+        )
+        participant = SimpleNamespace(
+            id=session.participant_id, keycloak_sub=f"guest:{_uuid()}",
+            username="guest-x", display_name="T",
+        )
+        for opened in (True, False):
+            with self.subTest(allow_agent_trigger=opened):
+                db = AsyncMock()
+                db.execute = AsyncMock(
+                    side_effect=[
+                        _scalar_result(session),
+                        _scalar_result(_invite(allow_agent_trigger=opened)),
+                        _scalar_result(participant),
+                    ]
+                )
+                principal = await verify_guest_session(raw, db)
+                self.assertEqual(principal.allow_agent_trigger, opened)
+
+
+class GuestInviteMintSurfaceTests(IsolatedAsyncioTestCase):
+    """The owner surface must expose the widenings on create AND on list —
+    an invite whose extra powers are invisible afterwards cannot be audited."""
+
+    async def _mint(self, **body_over):
+        from app.api import guests as guests_api
+        from app.models.room import MemberRole
+
+        room_id = _uuid()
+        user = _member_user()
+        added: list = []
+        db = AsyncMock()
+        db.add = MagicMock(side_effect=added.append)
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(SimpleNamespace(id=room_id, display_name="R", name="r")),
+                _scalar_result(SimpleNamespace(id=_uuid(), role=MemberRole.OWNER)),
+            ]
+        )
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        body = guests_api.MintInviteBody(**body_over)
+        result = await guests_api.mint_guest_invite(
+            room_id=room_id, body=body, user=user, db=db, settings=_settings()
+        )
+        return result, added[0]
+
+    async def test_defaults_are_closed_and_history_starts_at_mint(self) -> None:
+        before = _now()
+        result, row = await self._mint()
+        self.assertFalse(row.allow_agent_trigger)
+        self.assertFalse(row.allow_mention_email)
+        # Nothing said before the link existed.
+        self.assertGreaterEqual(row.history_from, before - timedelta(seconds=5))
+        self.assertLessEqual(row.history_from, _now() + timedelta(seconds=5))
+        self.assertFalse(result["allow_agent_trigger"])
+        self.assertFalse(result["allow_mention_email"])
+        self.assertIn("history_from", result)
+
+    async def test_flags_round_trip_onto_the_row_and_the_response(self) -> None:
+        result, row = await self._mint(
+            allow_agent_trigger=True, allow_mention_email=True
+        )
+        self.assertTrue(row.allow_agent_trigger)
+        self.assertTrue(row.allow_mention_email)
+        self.assertTrue(result["allow_agent_trigger"])
+        self.assertTrue(result["allow_mention_email"])
+
+    async def test_history_hours_widens_the_window_backwards(self) -> None:
+        _result, row = await self._mint(history_hours=24)
+        delta = _now() - row.history_from
+        self.assertGreater(delta, timedelta(hours=23))
+        self.assertLess(delta, timedelta(hours=25))
+
+    async def test_history_all_is_the_only_way_to_the_whole_room(self) -> None:
+        """The pre-hardening behaviour still exists, but has to be asked for."""
+        _result, row = await self._mint(history_all=True)
+        self.assertLess(row.history_from, _now() - timedelta(days=365 * 20))
+
+    async def test_history_all_overrides_history_hours(self) -> None:
+        _result, row = await self._mint(history_all=True, history_hours=2)
+        self.assertLess(row.history_from, _now() - timedelta(days=365 * 20))
+
+    def test_list_response_carries_the_widenings(self) -> None:
+        from app.api.guests import GuestInviteInfo, _invite_info
+
+        info = _invite_info(
+            _invite(allow_agent_trigger=True, allow_mention_email=False)
+        )
+        for key in ("allow_agent_trigger", "allow_mention_email", "history_from"):
+            self.assertIn(key, info)
+        # The declared response model must actually carry them, or FastAPI
+        # filters them straight back out of the list endpoint.
+        for key in ("allow_agent_trigger", "allow_mention_email", "history_from"):
+            self.assertIn(key, GuestInviteInfo.model_fields)
+
+
 # ---------------------------------------------------------------------------
 # 3. REDEMPTION — no oracle, clean refusals
 # ---------------------------------------------------------------------------
@@ -614,6 +860,11 @@ def _invite(**over) -> SimpleNamespace:
         expires_at=_now() + timedelta(hours=6),
         revoked_at=None,
         last_used_at=None,
+        # The three per-invite widenings, at their DEFAULTS. Every fixture in
+        # this file starts closed; a test that wants one open says so.
+        allow_agent_trigger=False,
+        allow_mention_email=False,
+        history_from=_now(),
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -1967,6 +2218,870 @@ class KillSwitchTests(IsolatedAsyncioTestCase):
 
         user = _guest_user()
         self.assertIs(await require_guest(user), user)
+
+
+# ---------------------------------------------------------------------------
+# 10. HISTORY SCOPE — an invite to today's call is not access to last year's
+# ---------------------------------------------------------------------------
+
+
+class GuestHistoryScopeTests(IsolatedAsyncioTestCase):
+    """A guest reads from the invite's floor forward, and cannot page past it.
+
+    The load-bearing property is that the floor is applied in the QUERY. A
+    guest holds an API credential and chooses their own cursor, so a client
+    that merely declines to render older messages is not a boundary at all.
+    """
+
+    async def _get(self, user: dict, room_id: uuid.UUID, cursor=None):
+        from app.api import messages as messages_api
+
+        svc = MagicMock()
+        svc.get_messages = AsyncMock(
+            return_value={"messages": [], "cursor": None, "has_more": False}
+        )
+        with patch.object(messages_api, "_build_message_service", return_value=svc):
+            await messages_api.get_messages(
+                room_id=room_id,
+                user=user,
+                db=AsyncMock(),
+                livekit=AsyncMock(),
+                cursor=cursor,
+                limit=50,
+            )
+        return svc.get_messages.await_args.kwargs
+
+    async def test_a_guest_read_carries_the_invites_floor(self) -> None:
+        room = _uuid()
+        floor = _now() - timedelta(hours=2)
+        kwargs = await self._get(
+            _guest_user(room_id=room, guest_history_from=floor), room
+        )
+        self.assertEqual(kwargs["not_before"], floor)
+
+    async def test_a_member_read_is_unbounded(self) -> None:
+        """The floor is a guest control, not a new limit on everyone."""
+        kwargs = await self._get(_member_user(), _uuid())
+        self.assertIsNone(kwargs["not_before"])
+
+    async def test_an_old_cursor_cannot_reach_past_the_floor(self) -> None:
+        """Paging is the attack: the guest supplies the cursor, so the floor
+        must ride on every call regardless of what they ask for."""
+        room = _uuid()
+        floor = _now() - timedelta(minutes=30)
+        kwargs = await self._get(
+            _guest_user(room_id=room, guest_history_from=floor),
+            room,
+            cursor=str(_uuid()),
+        )
+        self.assertEqual(kwargs["not_before"], floor)
+
+    async def test_a_guest_with_no_floor_fails_closed(self) -> None:
+        """A principal that somehow carries no boundary reads NOTHING older
+        than now — an empty room is a visible bug, silently handing over
+        months of history is not."""
+        room = _uuid()
+        before = _now()
+        kwargs = await self._get(
+            _guest_user(room_id=room, guest_history_from=None), room
+        )
+        self.assertIsNotNone(kwargs["not_before"])
+        self.assertGreaterEqual(kwargs["not_before"], before - timedelta(seconds=5))
+
+    async def test_the_floor_becomes_a_where_clause_not_a_python_filter(
+        self,
+    ) -> None:
+        """Filtering after the fetch would still return a full page's worth of
+        older rows to the caller (and would make has_more lie)."""
+        from app.services.message_service import MessageService
+
+        db = AsyncMock()
+        captured: list = []
+
+        async def _execute(stmt, *a, **kw):
+            captured.append(stmt)
+            res = MagicMock()
+            res.scalars.return_value.all.return_value = []
+            res.scalar.return_value = 0
+            res.scalar_one_or_none.return_value = None
+            return res
+
+        db.execute = AsyncMock(side_effect=_execute)
+        svc = MessageService(db=db, livekit=AsyncMock())
+        floor = _now() - timedelta(hours=3)
+        await svc.get_messages(room_id=_uuid(), limit=10, not_before=floor)
+
+        compiled = str(
+            captured[0].compile(
+                dialect=__import__(
+                    "sqlalchemy.dialects.postgresql", fromlist=["dialect"]
+                ).dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("messages.created_at >=", compiled)
+
+    async def test_no_floor_leaves_the_member_query_untouched(self) -> None:
+        from app.services.message_service import MessageService
+
+        db = AsyncMock()
+        captured: list = []
+
+        async def _execute(stmt, *a, **kw):
+            captured.append(stmt)
+            res = MagicMock()
+            res.scalars.return_value.all.return_value = []
+            res.scalar.return_value = 0
+            res.scalar_one_or_none.return_value = None
+            return res
+
+        db.execute = AsyncMock(side_effect=_execute)
+        svc = MessageService(db=db, livekit=AsyncMock())
+        await svc.get_messages(room_id=_uuid(), limit=10)
+        compiled = str(
+            captured[0].compile(
+                dialect=__import__(
+                    "sqlalchemy.dialects.postgresql", fromlist=["dialect"]
+                ).dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertNotIn("created_at >=", compiled)
+
+    async def test_the_floor_comes_off_the_invite_at_credential_check(self) -> None:
+        from app.auth.gateway_auth import hash_key
+        from app.auth.guest_auth import verify_guest_session
+
+        raw = "sgs-" + "c" * 43
+        floor = _now() - timedelta(days=3)
+        session = SimpleNamespace(
+            id=_uuid(), token_hash=hash_key(raw), invite_id=_uuid(),
+            room_id=_uuid(), participant_id=_uuid(), display_name="T",
+            can_publish=True, created_at=_now(),
+            expires_at=_now() + timedelta(hours=1), revoked_at=None,
+        )
+        participant = SimpleNamespace(
+            id=session.participant_id, keycloak_sub=f"guest:{_uuid()}",
+            username="guest-x", display_name="T",
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(session),
+                _scalar_result(_invite(history_from=floor)),
+                _scalar_result(participant),
+            ]
+        )
+        principal = await verify_guest_session(raw, db)
+        self.assertEqual(principal.history_from, floor)
+
+    def test_an_invite_row_without_a_floor_falls_back_restrictively(self) -> None:
+        """Never to "the whole room": a row predating the column resolves to
+        when the SESSION was redeemed, which a guest can always see anyway."""
+        from app.auth.guest_auth import _effective_history_from
+
+        redeemed = _now() - timedelta(minutes=10)
+        session = SimpleNamespace(created_at=redeemed)
+        self.assertEqual(
+            _effective_history_from(SimpleNamespace(), session), redeemed
+        )
+        # And with nothing at all to go on, "now" — i.e. show nothing.
+        resolved = _effective_history_from(SimpleNamespace(), SimpleNamespace())
+        self.assertGreaterEqual(resolved, _now() - timedelta(seconds=5))
+
+    def test_the_column_is_not_nullable(self) -> None:
+        """A nullable "no limit" column fails OPEN for any writer that forgets
+        it. This one is NOT NULL with a restrictive server default."""
+        from app.models.guest_access import GuestInvite
+
+        col = GuestInvite.__table__.columns["history_from"]
+        self.assertFalse(col.nullable)
+        self.assertIn("now()", str(col.server_default.arg).lower())
+
+
+# ---------------------------------------------------------------------------
+# 11. THE REAPER — expiry must be something the server DOES, not just checks
+# ---------------------------------------------------------------------------
+
+
+def _dead_session(**over):
+    from app.models.guest_access import GuestSession
+
+    fields = dict(
+        id=_uuid(),
+        token_hash="h" * 64,
+        token_prefix="sgs-abc",
+        invite_id=_uuid(),
+        room_id=_uuid(),
+        participant_id=_uuid(),
+        display_name="Trudy",
+        can_publish=True,
+        expires_at=_now() - timedelta(minutes=5),
+    )
+    fields.update(over)
+    return GuestSession(**fields)
+
+
+class GuestSessionReaperTests(IsolatedAsyncioTestCase):
+    """Nothing used to go LOOKING for expired guests.
+
+    Expiry was enforced only when something asked, so an expired guest stopped
+    being authorized on time but kept publishing to LiveKit (the media session
+    outlives the join token that opened it) and kept their seat on the roster
+    until they closed the tab.
+    """
+
+    async def _sweep(self, session, *, room=None, claimed=True):
+        from app.services import guest_reaper
+
+        room = room or SimpleNamespace(
+            id=session.room_id, livekit_room_name="stable-bip", display_name="BIP"
+        )
+        participant = SimpleNamespace(
+            id=session.participant_id, username="guest-deadbeef"
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalars_result([session.id] if claimed else []),  # the claim
+                _scalars_result([session]),                        # sessions
+                _scalars_result([room]),                           # rooms
+                _scalars_result([]),                               # membership DELETE
+                _scalars_result([participant]),                    # participants
+            ]
+        )
+        redis = AsyncMock()
+        livekit = AsyncMock()
+        with patch("app.api.rooms._broadcast_members_changed", AsyncMock()):
+            count = await guest_reaper.sweep_expired_guest_sessions(
+                _FakeSessionFactory(db), redis, livekit, batch=10
+            )
+        return count, db, redis, livekit
+
+    async def test_an_expired_session_is_swept(self) -> None:
+        session = _dead_session()
+        count, _db, _redis, _lk = await self._sweep(session)
+        self.assertEqual(count, 1)
+        self.assertIsNotNone(session.revoked_at)
+
+    async def test_nothing_to_do_is_one_statement(self) -> None:
+        """The loop runs forever in every worker; the idle case must be cheap."""
+        session = _dead_session()
+        count, db, redis, livekit = await self._sweep(session, claimed=False)
+        self.assertEqual(count, 0)
+        self.assertEqual(db.execute.await_count, 1)
+        redis.publish.assert_not_awaited()
+        livekit.remove_participant.assert_not_awaited()
+
+    async def test_the_live_socket_is_actually_hung_up(self) -> None:
+        """The point of the whole exercise: not "marked dead in the DB" but
+        "the browser is disconnected". A FORCE_DISCONNECT must be published on
+        the swept guest's own channel."""
+        from app.ws.handler import FORCE_DISCONNECT_EVENT
+
+        session = _dead_session()
+        _count, _db, redis, _lk = await self._sweep(session)
+        published = [
+            json.loads(c.args[1])
+            for c in redis.publish.await_args_list
+            if c.args[0] == f"user:{session.participant_id}"
+        ]
+        kinds = {p.get("type") for p in published}
+        self.assertIn(FORCE_DISCONNECT_EVENT, kinds)
+        forced = [p for p in published if p["type"] == FORCE_DISCONNECT_EVENT][0]
+        self.assertEqual(forced["reason"], "guest_session_expired")
+
+    async def test_the_hangup_actually_closes_the_socket_end_to_end(self) -> None:
+        """Take the EXACT bytes the reaper published and feed them to the
+        socket's forward loop: it must send session_ended and RETURN, which is
+        what trips the endpoint's teardown and closes the connection. Asserting
+        only that a message was published would leave the two halves free to
+        stop agreeing."""
+        from app.ws import handler as H
+
+        session = _dead_session()
+        _count, _db, redis, _lk = await self._sweep(session)
+        payload = [
+            c.args[1]
+            for c in redis.publish.await_args_list
+            if c.args[0] == f"user:{session.participant_id}"
+            and json.loads(c.args[1]).get("type") == H.FORCE_DISCONNECT_EVENT
+        ][0]
+
+        frames = [{"type": "message", "data": payload}]
+
+        class FakePubSub:
+            def __init__(self):
+                self.unsubscribed = False
+
+            async def subscribe(self, *a):
+                return None
+
+            async def unsubscribe(self, *a):
+                self.unsubscribed = True
+
+            async def aclose(self):
+                return None
+
+            async def get_message(self, **kw):
+                return frames.pop(0) if frames else {"type": "none"}
+
+        pubsub = FakePubSub()
+        sub_redis = MagicMock()
+        sub_redis.pubsub = MagicMock(return_value=pubsub)
+        sent: list = []
+        ws = MagicMock()
+        ws.app.state.db_session_factory = _FakeSessionFactory()
+        ws.send_json = AsyncMock(side_effect=lambda d: sent.append(d))
+
+        await asyncio.wait_for(
+            H._subscribe_to_rooms(
+                sub_redis, [str(session.room_id)], ws, str(session.participant_id), None
+            ),
+            timeout=5,
+        )
+        self.assertEqual(
+            sent, [{"type": "session_ended", "reason": "guest_session_expired"}]
+        )
+        self.assertTrue(pubsub.unsubscribed)
+
+    async def test_the_guest_is_evicted_from_livekit(self) -> None:
+        """The reason this sweep exists at all: an established WebRTC session
+        outlives the token that authorized it, so an expired guest keeps
+        publishing camera and mic until something evicts them."""
+        session = _dead_session()
+        _count, _db, _redis, livekit = await self._sweep(session)
+        livekit.remove_participant.assert_awaited_once()
+        self.assertEqual(
+            livekit.remove_participant.await_args.kwargs["room_name"], "stable-bip"
+        )
+
+    async def test_the_roster_seat_is_removed(self) -> None:
+        session = _dead_session()
+        _count, db, _redis, _lk = await self._sweep(session)
+        statements = [str(c.args[0]) for c in db.execute.await_args_list]
+        self.assertTrue(any("DELETE FROM room_members" in s for s in statements))
+
+    async def test_a_deleted_room_still_counts_as_swept(self) -> None:
+        """The revocation is already committed by the claim; there is just no
+        socket scope or LiveKit room left to tear down."""
+        from app.services import guest_reaper
+
+        session = _dead_session()
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalars_result([session.id]),
+                _scalars_result([session]),
+                _scalars_result([]),  # room is gone
+            ]
+        )
+        count = await guest_reaper.sweep_expired_guest_sessions(
+            _FakeSessionFactory(db), AsyncMock(), AsyncMock(), batch=10
+        )
+        self.assertEqual(count, 1)
+
+    async def test_a_teardown_failure_does_not_abandon_the_batch(self) -> None:
+        from app.services import guest_reaper
+
+        session = _dead_session()
+        room = SimpleNamespace(
+            id=session.room_id, livekit_room_name="r", display_name="R"
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalars_result([session.id]),
+                _scalars_result([session]),
+                _scalars_result([room]),
+            ]
+        )
+        with patch(
+            "app.api.guests._terminate_sessions",
+            AsyncMock(side_effect=RuntimeError("redis is gone")),
+        ):
+            count = await guest_reaper.sweep_expired_guest_sessions(
+                _FakeSessionFactory(db), AsyncMock(), AsyncMock(), batch=10
+            )
+        # Nothing was torn down, but the sweep returned instead of exploding —
+        # and the rows are already marked revoked by the claim.
+        self.assertEqual(count, 0)
+
+    def test_the_claim_catches_all_three_ways_of_being_dead(self) -> None:
+        """A session outlives its usefulness three ways, and a sweep that only
+        knew about its own expiry would leave the invite-cascade cases live."""
+        from app.services.guest_reaper import _CLAIM_SQL
+
+        sql = str(_CLAIM_SQL)
+        self.assertIn("gs.expires_at <= now()", sql)
+        self.assertIn("gi.expires_at <= now()", sql)
+        self.assertIn("gi.revoked_at IS NOT NULL", sql)
+
+    def test_the_claim_is_exactly_once_across_workers(self) -> None:
+        """Every uvicorn worker runs this loop. The UPDATE re-checks
+        revoked_at and RETURNs only rows it actually changed, so two workers
+        cannot both tear down the same guest."""
+        from app.services.guest_reaper import _CLAIM_SQL
+
+        sql = str(_CLAIM_SQL)
+        self.assertIn("s.revoked_at IS NULL", sql)
+        self.assertIn("RETURNING", sql)
+        self.assertIn("LIMIT :batch", sql)
+
+    async def test_the_loop_survives_a_failed_pass(self) -> None:
+        """A reaper that quietly died looks exactly like one with nothing to
+        do — which is the failure mode this whole file exists to prevent."""
+        from app.services import guest_reaper
+
+        calls = {"n": 0}
+
+        async def _boom(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                raise asyncio.CancelledError()
+            raise RuntimeError("db blip")
+
+        # Replace the module's `asyncio` REFERENCE, never asyncio.sleep itself —
+        # patching that globally wedges the event loop the test runs on.
+        fake_asyncio = SimpleNamespace(
+            sleep=AsyncMock(), CancelledError=asyncio.CancelledError
+        )
+        with (
+            patch.object(
+                guest_reaper, "sweep_expired_guest_sessions", AsyncMock(side_effect=_boom)
+            ),
+            patch.object(guest_reaper, "asyncio", fake_asyncio),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await guest_reaper.run_guest_reaper(
+                    _FakeSessionFactory(), AsyncMock(), AsyncMock(),
+                    _settings(guest_reaper_interval_seconds=1, guest_reaper_batch=10),
+                )
+        self.assertEqual(calls["n"], 3)
+
+
+# ---------------------------------------------------------------------------
+# 12. PRESENCE SCOPE — a guest is present in ONE room, not on the instance
+# ---------------------------------------------------------------------------
+
+
+class GuestPresenceScopeTests(IsolatedAsyncioTestCase):
+    """``presence:instance`` is subscribed by EVERY socket on the deployment.
+
+    A guest announced there is announced to people who share no room with them,
+    and a guest SUBSCRIBED there receives a live census of everyone on the
+    server — which is the People directory the design says they may not have,
+    arriving by another door.
+    """
+
+    async def test_guest_presence_is_not_published_instance_wide(self) -> None:
+        from app.services.presence_service import PresenceService
+
+        redis = AsyncMock()
+        svc = PresenceService(redis)
+        await svc.set_online("p-guest", "online", instance_wide=False)
+        redis.publish.assert_not_awaited()
+        # …but the presence KEY is still written, so the room roster's online
+        # dot for this guest still resolves.
+        redis.set.assert_awaited()
+
+    async def test_member_presence_is_still_published_instance_wide(self) -> None:
+        from app.services.presence_service import (
+            INSTANCE_PRESENCE_CHANNEL,
+            PresenceService,
+        )
+
+        redis = AsyncMock()
+        await PresenceService(redis).set_online("p-member")
+        redis.publish.assert_awaited_once()
+        self.assertEqual(
+            redis.publish.await_args.args[0], INSTANCE_PRESENCE_CHANNEL
+        )
+
+    async def test_offline_matches_online_so_there_is_no_phantom_event(
+        self,
+    ) -> None:
+        """An instance-wide offline for someone never announced online is a
+        phantom row appearing and vanishing in every client's directory."""
+        from app.services.presence_service import PresenceService
+
+        redis = AsyncMock()
+        await PresenceService(redis).set_offline("p-guest", instance_wide=False)
+        redis.publish.assert_not_awaited()
+        redis.delete.assert_awaited()
+
+    async def test_heartbeat_cannot_reopen_the_leak_later(self) -> None:
+        """heartbeat RE-PUBLISHES online when the key has lapsed, so a fix
+        applied only at connect time would leak the guest ~2 minutes in."""
+        from app.services.presence_service import PresenceService
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)  # TTL lapsed
+        await PresenceService(redis).heartbeat("p-guest", instance_wide=False)
+        redis.publish.assert_not_awaited()
+
+        redis2 = AsyncMock()
+        redis2.get = AsyncMock(return_value=None)
+        await PresenceService(redis2).heartbeat("p-member")
+        redis2.publish.assert_awaited_once()
+
+    async def test_a_guest_socket_does_not_subscribe_to_the_instance_channel(
+        self,
+    ) -> None:
+        from app.services.presence_service import INSTANCE_PRESENCE_CHANNEL
+
+        subscribed = await self._channels(guest_session_id="session-1")
+        self.assertNotIn(INSTANCE_PRESENCE_CHANNEL, subscribed)
+
+    async def test_a_member_socket_still_subscribes_to_it(self) -> None:
+        from app.services.presence_service import INSTANCE_PRESENCE_CHANNEL
+
+        subscribed = await self._channels(guest_session_id=None)
+        self.assertIn(INSTANCE_PRESENCE_CHANNEL, subscribed)
+
+    async def _channels(self, *, guest_session_id):
+        from app.ws import handler as H
+
+        subscribed: list = []
+
+        class FakePubSub:
+            async def subscribe(self, *a):
+                subscribed.extend(a)
+
+            async def unsubscribe(self, *a):
+                return None
+
+            async def aclose(self):
+                return None
+
+            async def get_message(self, **kw):
+                raise asyncio.CancelledError()
+
+        redis = MagicMock()
+        redis.pubsub = MagicMock(return_value=FakePubSub())
+        ws = MagicMock()
+        ws.app.state.db_session_factory = _FakeSessionFactory()
+        room = str(_uuid())
+        with (
+            patch.object(H, "_get_user_room_ids", AsyncMock(return_value=[room])),
+            patch.object(H, "guest_session_is_live", AsyncMock(return_value=True)),
+            patch.object(H, "touch_guest_session", AsyncMock()),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await H._subscribe_to_rooms(
+                    redis, [room], ws, "p1", {room} if guest_session_id else None,
+                    guest_session_id,
+                )
+        return subscribed
+
+    async def _webhook_join(self, participant_type):
+        """Drive the LiveKit participant-joined webhook for one participant."""
+        from app.api import webhooks as W
+        from app.api.tokens import livekit_identity
+
+        pid = _uuid()
+        participant = SimpleNamespace(id=pid, participant_type=participant_type)
+        room = SimpleNamespace(id=_uuid(), livekit_room_name="stable-bip")
+        event = SimpleNamespace(
+            participant=SimpleNamespace(identity=livekit_identity("guest-abc", pid)),
+            room=SimpleNamespace(name="stable-bip"),
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalar_result(room), _scalar_result(participant)]
+        )
+        presence = AsyncMock()
+        with patch.object(W, "_broadcast_call_occupancy", AsyncMock()):
+            await W._handle_participant_joined(
+                event, db, presence, AsyncMock(), AsyncMock()
+            )
+        return presence
+
+    async def test_a_guest_on_camera_is_not_announced_instance_wide(self) -> None:
+        """The SECOND door into the instance channel, and the one a guest
+        actually walks through: going on camera fires this webhook. Scoping
+        only the websocket would have looked correct and leaked anyway."""
+        from app.models.participant import ParticipantType
+
+        presence = await self._webhook_join(ParticipantType.GUEST)
+        self.assertFalse(presence.set_online.await_args.kwargs["instance_wide"])
+
+    async def test_a_member_on_camera_still_is(self) -> None:
+        from app.models.participant import ParticipantType
+
+        presence = await self._webhook_join(ParticipantType.HUMAN)
+        self.assertTrue(presence.set_online.await_args.kwargs["instance_wide"])
+
+    def test_the_webhook_leave_path_mirrors_the_join_path(self) -> None:
+        import inspect
+
+        from app.api import webhooks as W
+
+        for fn in (W._handle_participant_joined, W._handle_participant_left):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn(
+                    "ParticipantType.GUEST", inspect.getsource(fn),
+                    "presence scope must be decided on both edges, or an "
+                    "offline is announced that no online preceded",
+                )
+
+    def test_the_endpoint_scopes_presence_by_the_same_flag(self) -> None:
+        import inspect
+
+        from app.ws import handler as H
+
+        source = inspect.getsource(H.websocket_endpoint)
+        self.assertIn("instance_wide=not is_guest_socket", source)
+        # Both directions, or an offline is announced that no online preceded.
+        self.assertEqual(source.count("instance_wide=not is_guest_socket"), 2)
+
+
+class GuestLastSeenTests(IsolatedAsyncioTestCase):
+    """``GuestSession.last_seen_at`` is on the owner's live-session view and
+    NOTHING wrote it, so that column read NULL forever and the view was
+    decorative. The socket liveness tick is the only periodic guest signal the
+    server has, so it is what stamps it."""
+
+    async def test_touch_writes_last_seen_at(self) -> None:
+        from app.auth.guest_auth import touch_guest_session
+
+        db = AsyncMock()
+        await touch_guest_session(db, _uuid())
+        db.execute.assert_awaited_once()
+        self.assertIn("UPDATE guest_sessions", str(db.execute.await_args.args[0]))
+        db.commit.assert_awaited()
+
+    async def test_touch_never_raises(self) -> None:
+        """Instrumentation must never be able to kill a live socket."""
+        from app.auth.guest_auth import touch_guest_session
+
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=RuntimeError("db gone"))
+        await touch_guest_session(db, _uuid())
+
+    async def test_a_live_guest_socket_stamps_it(self) -> None:
+        from app.ws import handler as H
+
+        class FakePubSub:
+            async def subscribe(self, *a):
+                return None
+
+            async def unsubscribe(self, *a):
+                return None
+
+            async def aclose(self):
+                return None
+
+            async def get_message(self, **kw):
+                raise asyncio.CancelledError()
+
+        redis = MagicMock()
+        redis.pubsub = MagicMock(return_value=FakePubSub())
+        ws = MagicMock()
+        ws.app.state.db_session_factory = _FakeSessionFactory()
+        room = str(_uuid())
+        with (
+            patch.object(H, "_get_user_room_ids", AsyncMock(return_value=[room])),
+            patch.object(H, "guest_session_is_live", AsyncMock(return_value=True)),
+            patch.object(H, "touch_guest_session", AsyncMock()) as touch,
+            patch.object(H, "time", SimpleNamespace(monotonic=_stub_clock())),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await H._subscribe_to_rooms(
+                    redis, [room], ws, "p1", {room}, "session-1"
+                )
+        touch.assert_awaited_once()
+
+    async def test_a_member_socket_never_stamps_it(self) -> None:
+        from app.ws import handler as H
+
+        class FakePubSub:
+            async def subscribe(self, *a):
+                return None
+
+            async def unsubscribe(self, *a):
+                return None
+
+            async def aclose(self):
+                return None
+
+            async def get_message(self, **kw):
+                raise asyncio.CancelledError()
+
+        redis = MagicMock()
+        redis.pubsub = MagicMock(return_value=FakePubSub())
+        ws = MagicMock()
+        ws.app.state.db_session_factory = _FakeSessionFactory()
+        room = str(_uuid())
+        with (
+            patch.object(H, "_get_user_room_ids", AsyncMock(return_value=[room])),
+            patch.object(H, "touch_guest_session", AsyncMock()) as touch,
+            patch.object(H, "time", SimpleNamespace(monotonic=_stub_clock())),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await H._subscribe_to_rooms(redis, [room], ws, "p1", None, None)
+        touch.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 13. REDIS OUTAGE — the door must get harder to open, not impossible
+# ---------------------------------------------------------------------------
+
+
+class RedeemRateLimitFallbackTests(IsolatedAsyncioTestCase):
+    """A Redis blip used to 503 every would-be guest.
+
+    Wrong shape of failure for this endpoint: the people it locks out are the
+    invited guests of a live show, and the thing it protects against is not
+    made meaningfully likelier by a few minutes of a coarser limiter. It now
+    degrades to a per-process limiter — and NEVER to no limiter.
+    """
+
+    def setUp(self) -> None:
+        from app import deps
+
+        deps._LOCAL_WINDOWS.clear()
+
+    def tearDown(self) -> None:
+        from app import deps
+
+        deps._LOCAL_WINDOWS.clear()
+
+    def _broken_redis(self):
+        redis = AsyncMock()
+        redis.incr = AsyncMock(side_effect=RuntimeError("redis is gone"))
+        return redis
+
+    async def _hit(self, *, limit=3, ident="1.2.3.4", **over):
+        from app.deps import _rate_limit_hit
+
+        kwargs = dict(
+            bucket="guest_redeem",
+            identifier=ident,
+            limit=limit,
+            window_seconds=60,
+            fail_open=False,
+            local_fallback=True,
+        )
+        kwargs.update(over)
+        await _rate_limit_hit(self._broken_redis(), **kwargs)
+
+    async def test_the_first_calls_get_through_during_an_outage(self) -> None:
+        for _ in range(3):
+            await self._hit(limit=3)
+
+    async def test_it_still_runs_out(self) -> None:
+        """The whole point: degraded is not unlimited."""
+        for _ in range(3):
+            await self._hit(limit=3)
+        with self.assertRaises(HTTPException) as ctx:
+            await self._hit(limit=3)
+        self.assertEqual(ctx.exception.status_code, 429)
+
+    async def test_the_fallback_is_per_identifier(self) -> None:
+        """One IP burning its budget must not lock out the next guest."""
+        for _ in range(3):
+            await self._hit(limit=3, ident="1.1.1.1")
+        await self._hit(limit=3, ident="2.2.2.2")
+
+    async def test_without_the_opt_in_it_still_fails_closed(self) -> None:
+        """GPU/disk buckets keep the old behaviour — for those a 503 really is
+        the right answer, so this change must not silently widen them."""
+        with self.assertRaises(HTTPException) as ctx:
+            await self._hit(local_fallback=False)
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    async def test_fail_open_buckets_are_untouched(self) -> None:
+        await self._hit(fail_open=True, local_fallback=False, limit=1)
+        await self._hit(fail_open=True, local_fallback=False, limit=1)
+
+    async def test_a_full_local_table_refuses_rather_than_admits(self) -> None:
+        """Running out of room to COUNT is a reason to say no. If this ever
+        returned "allow" instead, an attacker could disable the limiter by
+        filling it from rotated addresses — the exact thing it exists for."""
+        from app import deps
+
+        window = int(time.time()) // 60
+        for i in range(deps._LOCAL_WINDOWS_MAX):
+            deps._LOCAL_WINDOWS[("guest_redeem", f"ip-{i}")] = [window, 1]
+        with self.assertRaises(HTTPException) as ctx:
+            await self._hit(ident="brand-new-ip")
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_closed_windows_are_pruned_so_it_cannot_grow_forever(self) -> None:
+        from app import deps
+
+        window = int(time.time()) // 60
+        deps._LOCAL_WINDOWS[("b", "old")] = [window - 5, 9]
+        deps._LOCAL_WINDOWS[("b", "current")] = [window, 1]
+        deps._prune_local_windows(window)
+        self.assertNotIn(("b", "old"), deps._LOCAL_WINDOWS)
+        self.assertIn(("b", "current"), deps._LOCAL_WINDOWS)
+
+    def test_a_zero_limit_is_a_refusal_not_a_bypass(self) -> None:
+        from app import deps
+
+        self.assertEqual(
+            deps._local_rate_limit_check("b", "ip", 0, 60), deps._LOCAL_LIMITED
+        )
+
+    async def test_redeem_opts_into_the_fallback_and_stays_fail_closed(
+        self,
+    ) -> None:
+        """Both, not either: the fallback is an ADDITIONAL answer, never
+        permission to skip the check."""
+        from app.api import guests as guests_api
+
+        seen: dict = {}
+
+        async def _fake_hit(redis, **kw):
+            seen.update(kw)
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(None))
+        body = guests_api.RedeemBody(token="sgi-" + "a" * 40)
+        with patch.object(
+            guests_api, "_rate_limit_hit", AsyncMock(side_effect=_fake_hit)
+        ):
+            with self.assertRaises(HTTPException):
+                await guests_api.redeem_guest_invite(
+                    body=body,
+                    request=_request(client_host="9.9.9.9"),
+                    db=db,
+                    settings=_settings(rate_limit_enabled=True),
+                    redis=AsyncMock(),
+                )
+        self.assertFalse(seen["fail_open"])
+        self.assertTrue(seen["local_fallback"])
+        self.assertEqual(seen["identifier"], "9.9.9.9")
+
+
+class GuestHardeningMigrationTests(unittest.TestCase):
+    def test_015_is_stamped_correctly_and_fits_the_version_column(self) -> None:
+        import importlib.util
+        import pathlib
+
+        path = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "alembic"
+            / "versions"
+            / "015_guest_hardening.py"
+        )
+        source = path.read_text()
+        spec = importlib.util.spec_from_file_location("m015", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.down_revision, "014_guest_access")
+        # alembic_version.version_num is varchar(32); a 33-char id once rolled
+        # back an entire migration at the version stamp.
+        self.assertLessEqual(len(module.revision), 32)
+        # The two flags must land CLOSED on every existing row…
+        self.assertEqual(source.count('server_default=sa.text("false")'), 2)
+        # …and existing invites keep the boundary they would have been given,
+        # rather than having the call they were minted for retroactively hidden.
+        self.assertIn(
+            "UPDATE guest_invites SET history_from = created_at", source
+        )
 
 
 if __name__ == "__main__":
