@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, Link2, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
@@ -25,6 +25,7 @@ import { ParticipantStrip } from "./ParticipantStrip";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
+import { GuestAccessModal } from "./GuestAccessModal";
 import { StartGroupModal } from "./StartGroupModal";
 import type { StartGroupPick } from "./startGroupModel";
 import { ThreadPanel } from "./ThreadPanel";
@@ -97,6 +98,10 @@ export function RoomView({ roomId }: RoomViewProps) {
   const setParticipants = useAppStore((s) => s.setParticipants);
   const removeRoom = useAppStore((s) => s.removeRoom);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // Guest access — the OTHER kind of invite: a no-account outsider on a link.
+  // Owner-only (see `isRoomOwner` below), because minting one puts a stranger
+  // in the room with camera, mic and read access.
+  const [guestAccessOpen, setGuestAccessOpen] = useState(false);
   // "Start a group with <peer>…" — the EXPLICIT DM→group conversion. 1:1 DMs
   // deliberately have no Invite (inviting silently converted the private
   // room); this replacement creates a NEW group room instead. `startGroupSeed`
@@ -328,6 +333,12 @@ export function RoomView({ roomId }: RoomViewProps) {
     : undefined;
   const dmAgentName =
     dmAgent?.display_name || dmAgent?.name || dmAgentId || "";
+  // Minting a guest link is OWNER-only on the server (membership is
+  // deliberately not enough). Read the caller's own membership row — server-set
+  // `is_self` is the only reliable "this is me" marker, since the Keycloak id
+  // never equals the participant UUID — so a member never sees a control that
+  // could only 403. Mirrors VoiceVideoBar's broadcast-mint gate.
+  const isRoomOwner = members?.find((m) => m.is_self)?.role === "owner";
   // The person on the other side of a human 1:1 — members arrive from the
   // room-members query above (is_self is server-set, the only reliable marker).
   const dmPeer = members?.find(
@@ -859,6 +870,25 @@ export function RoomView({ roomId }: RoomViewProps) {
                   Rename channel
                 </button>
                 )}
+                {/* Guest access. In this menu on EVERY viewport (not md:hidden)
+                    and labeled rather than an icon: it is the room's other
+                    front door, and a host looking for "how do I get someone
+                    without an account into this call" looks here and in the
+                    Invite modal — which links across to it. Owner-only, because
+                    the server is: a member who saw this could only ever 403. */}
+                {!isDm && isRoomOwner && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setGuestAccessOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+                >
+                  <Link2 className="h-4 w-4" />
+                  Guest access…
+                </button>
+                )}
                 {/* 1:1 DMs: the explicit group conversion. EVERY viewport —
                     DM headers have no Invite button (removed on purpose:
                     inviting silently converted the private DM), so this
@@ -920,7 +950,29 @@ export function RoomView({ roomId }: RoomViewProps) {
           <InviteMembersModal
             roomId={roomId}
             roomName={displayName}
+            // The second front door, reachable from the first: "invite someone"
+            // and "let in someone with no account" are the same intent until
+            // the moment they aren't, and a host should not have to know which
+            // menu the second one lives in.
+            onOpenGuestAccess={
+              isRoomOwner
+                ? () => {
+                    setInviteOpen(false);
+                    setGuestAccessOpen(true);
+                  }
+                : undefined
+            }
             onClose={() => setInviteOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {guestAccessOpen && (
+          <GuestAccessModal
+            roomId={roomId}
+            roomName={displayName}
+            onClose={() => setGuestAccessOpen(false)}
           />
         )}
       </AnimatePresence>

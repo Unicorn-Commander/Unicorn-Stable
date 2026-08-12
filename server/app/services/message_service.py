@@ -286,8 +286,22 @@ class MessageService:
         room_id: uuid.UUID,
         cursor: str | None = None,
         limit: int = 50,
+        not_before: datetime | None = None,
     ) -> dict[str, Any]:
-        """Get cursor-paginated messages for a room, newest first."""
+        """Get cursor-paginated messages for a room, newest first.
+
+        ``not_before`` is a hard floor on how far back this CALLER may read,
+        independent of the cursor they present. It exists for room guests,
+        whose invite carries a ``history_from`` boundary (see
+        api/messages.get_messages and models/guest_access.py): an outsider
+        invited to today's call must not be able to page back into months of
+        prior conversation just by asking for an older cursor.
+
+        It is applied to the query, so it also bounds ``has_more`` and the next
+        cursor — paging back past the floor ends the list the same way reaching
+        the true start of the room does. ``None`` (every member) is the
+        unchanged, unbounded behaviour.
+        """
         query = (
             select(Message)
             .where(
@@ -297,6 +311,9 @@ class MessageService:
             )
             .order_by(desc(Message.created_at))
         )
+
+        if not_before is not None:
+            query = query.where(Message.created_at >= not_before)
 
         if cursor:
             try:

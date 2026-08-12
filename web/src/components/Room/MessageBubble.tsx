@@ -35,6 +35,8 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { Avatar } from "@/components/Avatar";
 import { identityFor } from "@/lib/identity";
+import { isGuestSender } from "@/lib/guest";
+import { GuestBadge } from "@/components/ui/GuestBadge";
 import { isRoomApprover } from "@/lib/approvals";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
@@ -1702,6 +1704,7 @@ export function MessageBubble({
   }
 
   const isAgent = message.sender_type === "agent";
+  const isGuest = isGuestSender(message.sender_type);
   // Identity hue for this resident — drives the sender name, AI chip, and the
   // tinted agent-reply card.
   const ident = identityFor(message.sender_id, message.sender_name);
@@ -2273,6 +2276,12 @@ export function MessageBubble({
             >
               {message.sender_name}
             </span>
+            {/* `sender_type` is serialized straight from the sender's
+                participant_type, so a guest's message arrives as "guest". Badge
+                it beside the name for the same reason the roster does: a reply
+                from an outsider should never look like a reply from a
+                colleague. */}
+            {isGuest && <GuestBadge />}
             {isAgent && (
               <span
                 className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"

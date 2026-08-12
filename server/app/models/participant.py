@@ -23,6 +23,23 @@ AVATAR_EMOJI_KEY = "avatar_emoji"
 class ParticipantType(str, enum.Enum):
     HUMAN = "human"
     AGENT = "agent"
+    # An outsider who redeemed a room invite link. A THIRD kind, not a flavour
+    # of HUMAN, and that distinction is load bearing rather than cosmetic:
+    # ``people_directory`` (api/users.py) filters on ``== HUMAN`` and is
+    # INSTANCE-WIDE, not room-scoped — typing guests as HUMAN would put every
+    # stranger who ever joined one call into every user's People directory,
+    # permanently. The same ``== HUMAN`` filter appears at ~10 other sites
+    # (user search, favourites validation, mention emails, push targeting, DM
+    # and group-creation targets, approver resolution, email-identity linking),
+    # and a guest is correctly excluded from every one of them. Adding the
+    # member here fixes all of them at once, by construction, instead of
+    # bolting a "and not a guest" clause onto each and hoping the next one
+    # remembers. Mirrors how ``MemberRole.GUEST`` was pre-carved in
+    # models/room.py.
+    #
+    # Requires the value to exist in the PG type too — see
+    # alembic/versions/014_guest_access.py.
+    GUEST = "guest"
 
 
 class ParticipantStatus(str, enum.Enum):

@@ -31,6 +31,7 @@ from app.api.messages import router as messages_router
 from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gateway
 from app.api.broadcast import router as broadcast_router
 from app.api.calls import router as calls_router
+from app.api.guests import router as guests_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
 from app.api.tts import router as tts_router
@@ -243,6 +244,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("transcript_outbox_worker_start_failed", exc_info=True)
     app.state.transcript_outbox_task = transcript_outbox_task
 
+    # Guest-session reaper. Expiry used to be enforced only when something
+    # asked — so an expired guest stopped being AUTHORIZED on time, but kept
+    # publishing to LiveKit (the media session outlives the token that opened
+    # it) and kept their seat on the room roster until they closed the tab.
+    # This is the thing that goes looking. Every worker may run it; the claim
+    # is exactly-once. See app/services/guest_reaper.py.
+    guest_reaper_task = None
+    try:
+        if settings.guest_reaper_enabled:
+            from app.services.guest_reaper import run_guest_reaper
+
+            guest_reaper_task = asyncio.create_task(
+                run_guest_reaper(session_factory, redis, lk_service, settings)
+            )
+            logger.info(
+                "guest_reaper_started",
+                interval_seconds=settings.guest_reaper_interval_seconds,
+            )
+    except Exception:
+        logger.warning("guest_reaper_start_failed", exc_info=True)
+    app.state.guest_reaper_task = guest_reaper_task
+
     logger.info("application_startup_complete", environment=settings.environment)
 
     yield
@@ -260,6 +283,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         transcript_outbox_task.cancel()
         try:
             await transcript_outbox_task
+        except asyncio.CancelledError:
+            pass
+
+    if guest_reaper_task and not guest_reaper_task.done():
+        guest_reaper_task.cancel()
+        try:
+            await guest_reaper_task
         except asyncio.CancelledError:
             pass
 
@@ -346,6 +376,14 @@ def create_app() -> FastAPI:
     # /broadcast/join that is deliberately the ONLY route accepting a
     # broadcast token (see api/broadcast.py for the threat model).
     app.include_router(broadcast_router, prefix="/api/v1", tags=["Broadcast"])
+    # Guest access: OWNER-authenticated invite mint/list/revoke, an
+    # unauthenticated /guest/redeem that is the ONLY route accepting an invite
+    # token, and a two-endpoint guest self-service surface. Guest SESSIONS are
+    # accepted by a handful of opted-in routes elsewhere (messages, members,
+    # LiveKit token, /ws) and refused everywhere else by deps.get_current_user.
+    # Read app/api/guests.py + the guest section of app/deps.py before adding
+    # anything a guest can reach.
+    app.include_router(guests_router, prefix="/api/v1", tags=["Guests"])
     app.include_router(calls_router, prefix="/api/v1", tags=["Calls"])
     app.include_router(tts_router, prefix="/api/v1", tags=["TTS"])
     app.include_router(transcripts_router, prefix="/api/v1", tags=["Transcripts"])

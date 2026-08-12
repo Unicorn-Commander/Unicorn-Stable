@@ -15,6 +15,14 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.guest_auth import (
+    GuestAuthError,
+    guest_session_is_live,
+    guest_user_dict,
+    is_guest_credential,
+    touch_guest_session,
+    verify_guest_session,
+)
 from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import get_settings
 from app.models.participant import Participant, ParticipantType
@@ -43,6 +51,62 @@ MARK_READ_FLOOR_S: float = 1.0
 # its auth frame. Generous enough for a slow mobile link to flush one frame,
 # tight enough that anonymous sockets cannot be parked as a resource drain.
 AUTH_FRAME_TIMEOUT_S: float = 6.0
+
+# How often a live guest socket stamps GuestSession.last_seen_at. The liveness
+# tick runs every 4s; writing on every one of them would turn a read into a
+# write 15x a minute per guest for a column nothing reads that often. Once a
+# minute is enough for an owner watching "who is on my link right now".
+GUEST_LAST_SEEN_EVERY_S: float = 60.0
+
+# ---------------------------------------------------------------------------
+# Server-initiated force-close
+# ---------------------------------------------------------------------------
+#
+# Until this existed there was NO way for the server to hang up on a live
+# socket. The nearest thing — the `room_revoked` pubsub message consumed below
+# — only unsubscribes a room channel and mutates the authorizing `room_ids`
+# list in place; `ConnectionManager.disconnect` only pops a dict entry, and the
+# real `websocket.close()` lives in the endpoint's `finally`. So a kicked user
+# kept a socket that simply had nothing left to deliver.
+#
+# That is not good enough for "revoke the guest link → the guest is gone now":
+# the guest's browser would sit on a live, silent connection looking connected.
+#
+# FORCE_DISCONNECT is the missing primitive. It is published on the
+# per-participant `user:{participant_id}` channel; the forward loop below sends
+# a final `session_ended` frame (so the client knows this was deliberate and
+# must not auto-reconnect) and then BREAKS, which completes the pubsub task,
+# trips the endpoint's `asyncio.wait(FIRST_COMPLETED)`, and runs the existing
+# teardown — presence cleanup, typing retraction, and the real socket close.
+# No new teardown path; it just reaches the one that already exists.
+#
+# Deliberately generic, not guest-specific: any code that needs to evict a live
+# socket should publish this rather than inventing a second mechanism.
+FORCE_DISCONNECT_EVENT = "force_disconnect"
+
+
+async def publish_force_disconnect(
+    redis: Redis, participant_id: str, *, reason: str
+) -> None:
+    """Ask every live socket for ``participant_id`` to hang up now.
+
+    Best-effort by nature (it is a pubsub message to whichever worker holds the
+    socket), so callers must treat the authoritative credential check as the
+    real boundary and this as the fast path. Never raises.
+    """
+    try:
+        await redis.publish(
+            f"user:{participant_id}",
+            json.dumps(
+                {"type": FORCE_DISCONNECT_EVENT, "reason": str(reason or "")[:120]}
+            ),
+        )
+    except Exception:
+        logger.warning(
+            "force_disconnect_publish_failed",
+            participant_id=str(participant_id),
+            exc_info=True,
+        )
 
 
 def _jwt_failure_reason(exc: JWTError) -> str:
@@ -247,11 +311,41 @@ def _event_body(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+async def _authenticate_guest_ws(
+    websocket: WebSocket,
+    token: str,
+) -> dict[str, Any] | None:
+    """Authenticate a room GUEST's socket against its Stable session row.
+
+    Guests hold no Keycloak token — by design; see auth/guest_auth.py for why
+    routing them through OIDC would auto-create real realm accounts. The
+    returned dict carries ``sub = "guest:<uuid>"``, which is exactly what the
+    endpoint's ``Participant.keycloak_sub == user["sub"]`` lookup needs, so the
+    rest of the socket lifecycle is unchanged.
+    """
+    settings = get_settings()
+    if not settings.guest_access_enabled:
+        logger.info("ws_guest_auth_refused", reason="feature_disabled")
+        return None
+    session_factory = websocket.app.state.db_session_factory
+    try:
+        async with session_factory() as db:
+            principal = await verify_guest_session(token, db)
+    except GuestAuthError:
+        # Uniform: expired, revoked, unknown, or invite-cascade-revoked all
+        # look the same here, exactly as they do over HTTP.
+        logger.info("ws_guest_auth_failed", transport="websocket")
+        return None
+    return guest_user_dict(principal)
+
+
 async def _authenticate_ws(
     websocket: WebSocket,
     token: str,
 ) -> dict[str, Any] | None:
-    """Authenticate a WebSocket connection using a JWT token."""
+    """Authenticate a WebSocket connection using a JWT token, or a guest session."""
+    if is_guest_credential(token):
+        return await _authenticate_guest_ws(websocket, token)
     settings = get_settings()
     try:
         claims = await validate_token(
@@ -288,6 +382,8 @@ async def _subscribe_to_rooms(
     room_ids: list[str],
     websocket: WebSocket,
     participant_id: str,
+    allowed_room_ids: set[str] | None = None,
+    guest_session_id: str | None = None,
 ) -> None:
     """Subscribe to Redis pub/sub channels for the user's rooms and forward events.
 
@@ -295,14 +391,38 @@ async def _subscribe_to_rooms(
     drawer UIs receive online/offline for everyone on THIS server, not only
     peers in a shared room. That channel is Redis-local to this deployment —
     it is never bridged to federated Stable instances.
+
+    ``allowed_room_ids`` is a HARD CEILING on what this socket may ever
+    subscribe to, applied to the periodic membership re-derivation below.
+    Guests pass their one room here: without it, the refresh loop would happily
+    subscribe a guest to any room a membership row later appeared for, which
+    would quietly undo the credential's room scope four seconds after it was
+    enforced. ``None`` (members) keeps the original grow-with-membership
+    behaviour.
     """
     pubsub = redis.pubsub()
     channels = [f"room:{rid}" for rid in room_ids]
     channels.append(f"user:{participant_id}")
     # Global (instance-scoped) presence — required even when the user has zero
     # rooms so the People directory still receives live online/offline deltas.
-    channels.append(INSTANCE_PRESENCE_CHANNEL)
+    #
+    # NOT FOR GUESTS. This channel carries an online/offline delta for every
+    # participant on the whole deployment, and a guest has no People directory,
+    # no room list, and no business knowing who else exists on this server. A
+    # guest subscribed here would be handed a live census of the instance —
+    # participant ids and presence — through the one socket they are allowed to
+    # open. ``guest_session_id`` is exactly "this socket authenticated as a
+    # guest" (the endpoint sets it from the session row and nothing else does),
+    # so it is the correct discriminator. The outbound half of the same leak is
+    # closed in the endpoint below by not PUBLISHING guest presence here.
+    is_guest_socket = guest_session_id is not None
+    if not is_guest_socket:
+        channels.append(INSTANCE_PRESENCE_CHANNEL)
     known_rooms: set[str] = set(room_ids)
+    # Throttle for the guest last_seen_at stamp below. 0.0 makes the first
+    # liveness tick stamp immediately, so an owner watching the session list
+    # sees a guest go "seen" within seconds of them connecting.
+    last_touch_at = 0.0
 
     await pubsub.subscribe(*channels)
     subscribed: set[str] = set(channels)
@@ -323,6 +443,42 @@ async def _subscribe_to_rooms(
                 try:
                     async with session_factory() as _db:
                         _rids = await _get_user_room_ids(_db, participant_id)
+                    if guest_session_id is not None:
+                        async with session_factory() as _db:
+                            _live = await guest_session_is_live(
+                                _db, guest_session_id
+                            )
+                            if _live and (
+                                time.monotonic() - last_touch_at
+                                >= GUEST_LAST_SEEN_EVERY_S
+                            ):
+                                # Same session as the liveness read, so this
+                                # costs one statement, not a second connection.
+                                last_touch_at = time.monotonic()
+                                await touch_guest_session(_db, guest_session_id)
+                        if not _live:
+                            logger.info(
+                                "ws_guest_session_ended",
+                                participant_id=participant_id,
+                                session_id=guest_session_id,
+                            )
+                            try:
+                                await _safe_send(
+                                    websocket,
+                                    {
+                                        "type": "session_ended",
+                                        "reason": "guest_session_ended",
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            break
+                    if allowed_room_ids is not None:
+                        # Guest ceiling — see the docstring. Applied BEFORE the
+                        # subscribe and before the revocation diff, so an
+                        # out-of-scope room is treated as "not a room of yours"
+                        # in both directions.
+                        _rids = [rid for rid in _rids if rid in allowed_room_ids]
                     _fresh = [
                         f"room:{rid}" for rid in _rids
                         if f"room:{rid}" not in subscribed
@@ -387,6 +543,27 @@ async def _subscribe_to_rooms(
                 if isinstance(data_raw, bytes):
                     data_raw = data_raw.decode("utf-8")
                 data = json.loads(data_raw)
+                if data.get("type") == FORCE_DISCONNECT_EVENT:
+                    # Server-initiated hang-up (see FORCE_DISCONNECT_EVENT at
+                    # the top of this module). Tell the client this was
+                    # deliberate so it stops reconnecting, then break: that
+                    # completes this task, trips the endpoint's
+                    # asyncio.wait(FIRST_COMPLETED), and runs the existing
+                    # teardown — which is what actually closes the socket.
+                    reason = str(data.get("reason") or "session_ended")[:120]
+                    logger.info(
+                        "ws_force_disconnect",
+                        participant_id=participant_id,
+                        reason=reason,
+                    )
+                    try:
+                        await _safe_send(
+                            websocket, {"type": "session_ended", "reason": reason}
+                        )
+                    except Exception:
+                        # Already gone; the teardown below is the point anyway.
+                        pass
+                    break
                 if data.get("type") == "room_revoked":
                     revoked = str(data.get("room_id") or "")
                     channel = f"room:{revoked}"
@@ -494,6 +671,7 @@ async def _handle_client_events(
     username: str = "",
     is_human: bool = True,
     typing_rooms: set[str] | None = None,
+    instance_presence: bool = True,
 ) -> None:
     """Handle incoming events from the WebSocket client.
 
@@ -662,7 +840,14 @@ async def _handle_client_events(
                 # Refresh presence TTL and answer so a quiet room never looks
                 # dead. (Previously "ping" fell through to the else and got an
                 # error back + never refreshed presence.)
-                await presence.heartbeat(participant_id)
+                #
+                # `instance_presence` is False for guests: heartbeat RE-PUBLISHES
+                # online when the key has lapsed, so leaving it True here would
+                # leak a guest onto the instance-wide channel ~2 minutes after a
+                # connect-time-only fix had "closed" it.
+                await presence.heartbeat(
+                    participant_id, instance_wide=instance_presence
+                )
                 await _safe_send(websocket, {"type": "pong"})
 
             else:
@@ -761,6 +946,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         username = participant.display_name or user.get("preferred_username") or "Someone"
         room_ids = await _get_user_room_ids(db, participant_id)
 
+    # GUEST SCOPE. A guest session names exactly ONE room, and that name — not
+    # the membership table — is the ceiling on this socket. Membership already
+    # confines them today, but membership is data another code path can write,
+    # while `guest_room_id` came off the row that authorized this connection.
+    # Intersecting here (and passing the ceiling into the refresh loop below)
+    # means a stray membership row can never widen a guest's stream.
+    #
+    # PRESENCE SCOPE rides along with it. A guest's online/offline belongs to
+    # the one room they were invited to, not to the instance-wide presence
+    # channel that every socket on this deployment subscribes to. See
+    # PresenceService.set_online and the INSTANCE_PRESENCE_CHANNEL comment in
+    # _subscribe_to_rooms — this flag closes the outbound half, that one closes
+    # the inbound half.
+    allowed_room_ids: set[str] | None = None
+    guest_session_id: str | None = None
+    is_guest_socket = bool(user.get("is_guest"))
+    if is_guest_socket:
+        allowed_room_ids = {str(user.get("guest_room_id"))}
+        guest_session_id = str(user.get("guest_session_id"))
+        room_ids = [rid for rid in room_ids if rid in allowed_room_ids]
+        if not room_ids:
+            # The guest's membership was removed (revoked/kicked) between
+            # credential check and here. Nothing to subscribe to; refuse rather
+            # than hold an inert socket open.
+            await websocket.close(code=4004, reason="Guest room membership not found")
+            return
+
     # Rooms this connection is currently ASSERTING typing in. Owned by the
     # endpoint (not the event task) so the teardown below can retract them even
     # when that task is the one that died.
@@ -779,11 +991,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     # Connect and set presence
     await manager.connect(participant_id, websocket)
-    await presence.set_online(participant_id, "online")
+    await presence.set_online(
+        participant_id, "online", instance_wide=not is_guest_socket
+    )
     for rid in room_ids:
         await presence.join_room_presence(participant_id, rid)
 
-    # Broadcast presence change to all rooms
+    # Broadcast presence change to all rooms. THIS is where a guest's presence
+    # goes — `room_ids` is their single room — and it is why suppressing the
+    # instance-wide publish above costs the roster they are actually in nothing.
     for rid in room_ids:
         await redis.publish(
             f"room:{rid}",
@@ -792,7 +1008,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     # Run pub/sub listener and client event handler concurrently
     pubsub_task = asyncio.create_task(
-        _subscribe_to_rooms(redis, room_ids, websocket, participant_id),
+        _subscribe_to_rooms(
+            redis,
+            room_ids,
+            websocket,
+            participant_id,
+            allowed_room_ids,
+            guest_session_id,
+        ),
         name=f"ws-pubsub-{participant_id}",
     )
     client_task = asyncio.create_task(
@@ -805,6 +1028,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             username=username,
             is_human=is_human,
             typing_rooms=typing_rooms,
+            instance_presence=not is_guest_socket,
         ),
         name=f"ws-client-{participant_id}",
     )
@@ -834,7 +1058,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             username=username,
             rooms=typing_rooms,
         )
-        await presence.set_offline(participant_id)
+        # Must mirror the connect-time scope: announcing an instance-wide
+        # offline for a guest who was never announced online would be a
+        # phantom event on every client on the server.
+        await presence.set_offline(participant_id, instance_wide=not is_guest_socket)
         for rid in room_ids:
             await presence.leave_room_presence(participant_id, rid)
             await redis.publish(

@@ -59,19 +59,44 @@ class PresenceService:
             channel=INSTANCE_PRESENCE_CHANNEL,
         )
 
-    async def set_online(self, participant_id: str, status: str = "online") -> None:
-        """Mark a participant as online with a TTL and fan out instance-wide."""
+    async def set_online(
+        self,
+        participant_id: str,
+        status: str = "online",
+        *,
+        instance_wide: bool = True,
+    ) -> None:
+        """Mark a participant as online with a TTL and fan out instance-wide.
+
+        ``instance_wide=False`` keeps the Redis presence KEY (the room roster
+        resolves its online dots from that) but suppresses the INSTANCE-WIDE
+        publish. Room GUESTS pass False: their presence belongs to the one room
+        they were invited to, and the instance channel is subscribed by every
+        socket on the server, so publishing there would announce an outsider —
+        and their participant id — to people who share no room with them. The
+        room-scoped presence event the websocket endpoint publishes separately
+        is unaffected, so the roster the guest IS in still updates.
+        """
         key = f"presence:{participant_id}"
         await self._redis.set(key, status, ex=PRESENCE_TTL)
         logger.debug("presence_set_online", participant_id=participant_id, status=status)
-        await self.publish_instance_presence(participant_id, online=True)
+        if instance_wide:
+            await self.publish_instance_presence(participant_id, online=True)
 
-    async def set_offline(self, participant_id: str) -> None:
-        """Mark a participant as offline and fan out instance-wide."""
+    async def set_offline(
+        self, participant_id: str, *, instance_wide: bool = True
+    ) -> None:
+        """Mark a participant as offline and fan out instance-wide.
+
+        ``instance_wide=False`` for guests — see ``set_online``. It must match
+        whatever was used on the way in: announcing an offline for someone who
+        was never announced online is a phantom event on every client.
+        """
         key = f"presence:{participant_id}"
         await self._redis.delete(key)
         logger.debug("presence_set_offline", participant_id=participant_id)
-        await self.publish_instance_presence(participant_id, online=False)
+        if instance_wide:
+            await self.publish_instance_presence(participant_id, online=False)
 
     async def get_status(self, participant_id: str) -> str:
         """Get the current status of a participant."""
@@ -191,18 +216,25 @@ class PresenceService:
                 await self._redis.srem(set_key, pid)
         return result
 
-    async def heartbeat(self, participant_id: str) -> None:
+    async def heartbeat(
+        self, participant_id: str, *, instance_wide: bool = True
+    ) -> None:
         """Refresh the presence TTL for a participant.
 
         If the key already expired (TTL lapsed without a disconnect path),
         recreate it and re-publish online so directory UIs recover without
-        waiting for the next snapshot poll.
+        waiting for the next snapshot poll. ``instance_wide=False`` (guests)
+        suppresses that recovery publish for the same reason ``set_online``
+        does — otherwise a guest whose key lapsed would leak onto the
+        instance-wide channel on their next ping, which is precisely the path
+        that would survive a fix applied only at connect time.
         """
         key = f"presence:{participant_id}"
         current = await self._redis.get(key)
         if current is None:
             await self._redis.set(key, "online", ex=PRESENCE_TTL)
-            await self.publish_instance_presence(participant_id, online=True)
+            if instance_wide:
+                await self.publish_instance_presence(participant_id, online=True)
         else:
             await self._redis.expire(key, PRESENCE_TTL)
         logger.debug("presence_heartbeat", participant_id=participant_id)
