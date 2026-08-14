@@ -29,6 +29,12 @@ class Message(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "messages"
     __table_args__ = (
         Index("ix_messages_room_id_created_at", "room_id", "created_at", postgresql_using="btree"),
+        # "What did this participant say?" had no index at all. The guest
+        # participant reaper asks it as a NOT EXISTS before it is allowed to
+        # delete a retired guest (services/guest_reaper.py), and without this
+        # that check is a sequential scan of the whole table per candidate row.
+        # Added in alembic/versions/016_guest_participant_gc.py.
+        Index("ix_messages_sender_id", "sender_id"),
     )
 
     room_id: Mapped[str] = mapped_column(
@@ -37,6 +43,11 @@ class Message(Base, UUIDPrimaryKeyMixin):
         nullable=False,
         index=True,
     )
+    # NULLABLE + ``ON DELETE SET NULL``, which is exactly why a guest's
+    # Participant row is TOMBSTONED rather than deleted when their session
+    # dies: deleting it would not delete this message, it would silently strip
+    # the sender off it and leave an unattributed hole in the room's history.
+    # See services/guest_reaper.py.
     sender_id: Mapped[str] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("participants.id", ondelete="SET NULL"),

@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, String, Text, func
+from sqlalchemy import DateTime, Enum, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -85,6 +85,17 @@ class Participant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "participants"
+    __table_args__ = (
+        # "The oldest N participants of this kind." Roughly ten sites filter
+        # this table by kind (people directory, user search, agent roster,
+        # push targeting, home counts) and the guest reaper walks it that way
+        # on every pass in every worker. Deliberately NOT a partial index on
+        # `participant_type = 'guest'`: 014 adds that enum label, and Postgres
+        # refuses to USE a new label in the transaction that added it, so a
+        # partial index would fail on every FRESH database while working fine
+        # on every already-migrated one. See 016_guest_participant_gc.py.
+        Index("ix_participants_type_created", "participant_type", "created_at"),
+    )
 
     keycloak_sub: Mapped[str] = mapped_column(
         String(255), unique=True, index=True, nullable=False

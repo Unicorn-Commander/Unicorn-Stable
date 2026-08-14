@@ -229,6 +229,24 @@ class Settings(BaseSettings):
     # bucket every time). This is the one unauthenticated guest endpoint and
     # therefore the brute-force target; see api/guests.py.
     rate_limit_guest_redeem_per_min: int = 10
+    # Guest message send, aggregated PER INVITE rather than per guest.
+    #
+    # The per-participant limit above is the right key for one person's hand
+    # speed, but it is the wrong unit of trust for a guest: every redemption
+    # mints a FRESH Participant, so an invite with unlimited `max_uses` bought
+    # `rate_limit_message_send_per_min` of send rate per redemption — N guests,
+    # N x the rate, from what the owner minted as ONE link. (The IP-keyed
+    # redeem limiter bounds how fast identities can be minted, not how many.)
+    # This is the link's own aggregate budget, charged on top of the
+    # per-participant one; see deps.rate_limit_principal for the layering.
+    #
+    # 5x the single-guest limit rather than 1x on purpose: an invite is often
+    # legitimately shared (a webinar link with max_uses=50), and keying the
+    # limit on the invite ALONE would let one chatty guest starve the other
+    # forty-nine. 5x leaves a genuinely busy room room to breathe while still
+    # bounding the blast radius of a link that leaked, no matter how many
+    # identities are minted behind it.
+    rate_limit_guest_invite_send_per_min: int = 300
 
     # -- Guest access (see app/auth/guest_auth.py + app/api/guests.py) --
     # Master switch. False = owners cannot mint invites, redemption 404s, AND
@@ -252,6 +270,22 @@ class Settings(BaseSettings):
     # Ceiling on rows swept per pass, so a large backlog is drained over
     # several passes instead of in one long transaction.
     guest_reaper_batch: int = 200
+    # Guest PARTICIPANT lifecycle, run by the same loop. A redemption mints an
+    # ephemeral Participant row and nothing ever closed it — it sat at
+    # `status = 'online'` forever, indistinguishable from a guest who is on a
+    # call right now. See app/services/guest_reaper.py for why these are
+    # TOMBSTONED rather than deleted (messages.sender_id is SET NULL and
+    # guest_sessions.participant_id is CASCADE, so a delete would silently
+    # un-attribute room history and destroy the audit trail).
+    #
+    # How long after a guest's LAST session died before the row is retired.
+    # An hour, not zero: it is bookkeeping, and the grace keeps this pass from
+    # racing the teardown fan-out in guests._terminate_sessions.
+    guest_participant_retire_after_minutes: int = 60
+    # How long a RETIRED guest is kept before the row is hard-deleted — and
+    # only ever when they sent no messages at all, so there is provably nothing
+    # to orphan. 0 disables the delete stage entirely: tombstones, kept forever.
+    guest_participant_purge_after_days: int = 30
 
     # -- Per-user quota caps (hard ceilings, independent of the rate window) --
     # Total KB documents a single user may own across all their collections,

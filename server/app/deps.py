@@ -603,6 +603,7 @@ def rate_limit_principal(
     *,
     window_seconds: int = 60,
     fail_open: bool | None = None,
+    invite_limit_attr: str | None = None,
 ) -> Callable[..., Any]:
     """``rate_limit`` for routes that also admit guests.
 
@@ -618,8 +619,35 @@ def rate_limit_principal(
     closed-over ``principal_dep`` name would not resolve and the route would
     fail to register. The dependency callable has to be named literally.
 
-    Still keyed on ``participant_id``, which every guest has (a real, ephemeral
-    Participant row) — never on the presented secret.
+    TWO KEYS FOR A GUEST, AND THE SECOND ONE IS THE POINT
+    -----------------------------------------------------
+    ``participant_id`` alone is the WRONG unit of trust for a guest. Every
+    redemption mints a fresh Participant row, so a per-participant limit is a
+    per-REDEMPTION limit: an invite with unlimited ``max_uses`` bought the full
+    send rate N times over for N redemptions, all from what the room owner
+    minted and reasons about as ONE link. The IP-keyed redeem limiter
+    (``rate_limit_guest_redeem_per_min``) bounds how FAST identities can be
+    minted, not how many exist, so it is a speed bump and not a bound.
+
+    So when ``invite_limit_attr`` is given, a guest is charged TWICE:
+
+    1. ``bucket`` keyed on ``participant_id`` — one person's hand speed,
+       unchanged, and the only thing a member is ever charged.
+    2. ``bucket:invite`` keyed on ``guest_invite_id`` — the LINK's aggregate
+       budget, which no number of redemptions can multiply.
+
+    Both, rather than replacing (1) with (2), because an invite is often
+    legitimately shared: collapsing to the invite key alone would let one
+    chatty guest on a fifty-seat webinar link starve the other forty-nine.
+    Keeping the per-participant limit is what keeps a single guest from doing
+    that; adding the per-invite limit is what stops the link as a whole from
+    being a rate-limit bypass. The invite bucket inherits this bucket's
+    ``fail_open`` rather than re-deriving it from the suffixed name, which
+    would silently look up ``"msg_send:invite"`` in ``_FAIL_CLOSED_BUCKETS``
+    and miss.
+
+    Both keys are DERIVED server-side from the session row — never the
+    presented secret, which would hand an attacker a fresh bucket per guess.
     """
     effective_fail_open = (
         (bucket not in _FAIL_CLOSED_BUCKETS) if fail_open is None else fail_open
@@ -638,6 +666,22 @@ def rate_limit_principal(
             bucket=bucket,
             identifier=str(user["participant_id"]),
             limit=limit,
+            window_seconds=window_seconds,
+            fail_open=effective_fail_open,
+        )
+        if invite_limit_attr is None:
+            return
+        # A member's dict has no `guest_invite_id` key at all, so this is a
+        # no-op for them by construction rather than by an `is_guest` branch
+        # that a refactor could invert.
+        invite_id = user.get("guest_invite_id")
+        if not invite_id:
+            return
+        await _rate_limit_hit(
+            redis,
+            bucket=f"{bucket}:invite",
+            identifier=str(invite_id),
+            limit=int(getattr(settings, invite_limit_attr, 0) or 0),
             window_seconds=window_seconds,
             fail_open=effective_fail_open,
         )
