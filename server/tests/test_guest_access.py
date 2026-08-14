@@ -3005,6 +3005,321 @@ class GuestParticipantLifecycleTests(IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
+# 11b. ROW RETENTION — the two guest tables themselves
+# ---------------------------------------------------------------------------
+
+
+class GuestRowRetentionTests(IsolatedAsyncioTestCase):
+    """``guest_invites`` and ``guest_sessions`` were never reaped AT ALL.
+
+    Revocation and expiry are stamps (``revoked_at``); no code path anywhere
+    issues a DELETE against either table. So every link an owner ever minted,
+    and every redemption of it, was kept forever — the participant lifecycle in
+    section 11 bounded the identity rows and left the credential rows growing.
+
+    The delete here is allowed to be a delete for one reason and one reason
+    only, and the tests below are mostly assertions ABOUT that reason: an
+    invite with no sessions and a session with no children reference nothing
+    and nothing references them. The moment that stops being true —
+    ``guest_sessions.invite_id`` is ON DELETE CASCADE — the delete becomes an
+    audit-trail shredder, so the guard is checked twice in SQL and pinned here.
+    """
+
+    def _sql(self, name: str) -> str:
+        from app.services import guest_reaper
+
+        return str(getattr(guest_reaper, name))
+
+    async def _sweep(self, *, sessions=(), invites=(), **kw):
+        from app.services import guest_reaper
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalars_result(list(sessions)),
+                _scalars_result(list(invites)),
+            ]
+        )
+        counts = await guest_reaper.sweep_guest_rows(_FakeSessionFactory(db), **kw)
+        return counts, db
+
+    # -- the guard that makes the invite delete legal -----------------------
+
+    def test_an_invite_with_sessions_is_never_deleted(self) -> None:
+        """THE test. ``guest_sessions.invite_id`` is ON DELETE CASCADE, so
+        deleting an invite that still has sessions would take every session it
+        minted with it — the record of who was let into the room, destroyed by
+        the garbage collector. Checked in the CTE and AGAIN inside the DELETE,
+        for the same reason the participant purge re-checks its message guard.
+        """
+        sql = self._sql("_PURGE_INVITES_SQL")
+        self.assertEqual(
+            sql.count("SELECT 1 FROM guest_sessions gs WHERE gs.invite_id"), 2
+        )
+        self.assertEqual(sql.count("NOT EXISTS"), 2)
+        self.assertIn("DELETE FROM guest_invites", sql)
+
+    def test_the_cascade_that_forces_the_guard_is_still_what_we_think(self) -> None:
+        """If this FK ever became SET NULL the guard would be unnecessary; if
+        it stayed CASCADE and the guard were dropped, deleting an invite would
+        silently shred sessions. Pin the fact the design rests on."""
+        from app.models.guest_access import GuestSession
+
+        fk = list(GuestSession.__table__.c.invite_id.foreign_keys)[0]
+        self.assertEqual(fk.ondelete, "CASCADE")
+
+    def test_the_invite_claim_locks_before_it_deletes(self) -> None:
+        """The double NOT EXISTS cannot see an UNCOMMITTED redemption. FOR
+        UPDATE is the one row lock that conflicts with the FOR KEY SHARE
+        PostgreSQL takes on the parent for a child INSERT's FK check, so the
+        two serialize; MATERIALIZED is what guarantees the lock is taken
+        before the DELETE is planned rather than inlined away."""
+        sql = self._sql("_PURGE_INVITES_SQL")
+        self.assertIn("AS MATERIALIZED", sql)
+        self.assertIn("FOR UPDATE SKIP LOCKED", sql)
+
+    # -- what a session delete may and may not touch ------------------------
+
+    def test_the_session_purge_cannot_reach_messages_or_participants(self) -> None:
+        """NEGATIVE CONTROL, in SQL. A session row is a leaf; deleting one must
+        not be able to touch the identity a message is attributed to. If either
+        table's name ever appears in this statement, someone has widened it."""
+        sql = self._sql("_PURGE_SESSIONS_SQL")
+        self.assertIn("DELETE FROM guest_sessions", sql)
+        self.assertNotIn("messages", sql)
+        self.assertNotIn("participants", sql)
+
+    def test_no_retention_statement_deletes_a_message(self) -> None:
+        """The whole point, asserted across every statement in the module: the
+        reaper may delete guest credential rows and trace-free guest identity
+        rows, and NOTHING else. ``messages`` appears in exactly one place — the
+        NOT EXISTS that REFUSES to purge a participant who wrote one."""
+        from app.services import guest_reaper
+
+        deleting = [
+            n
+            for n in dir(guest_reaper)
+            if n.endswith("_SQL") and "DELETE FROM" in str(getattr(guest_reaper, n))
+        ]
+        self.assertEqual(
+            sorted(deleting),
+            ["_PURGE_INVITES_SQL", "_PURGE_SESSIONS_SQL", "_PURGE_SQL"],
+        )
+        for name in deleting:
+            with self.subTest(statement=name):
+                sql = str(getattr(guest_reaper, name))
+                target = sql.split("DELETE FROM", 1)[1].split()[0]
+                self.assertIn(
+                    target, {"guest_sessions", "guest_invites", "participants"}
+                )
+                self.assertNotIn("DELETE FROM messages", sql)
+
+    # -- the retention clock ------------------------------------------------
+
+    def test_both_stages_wait_out_a_retention_window(self) -> None:
+        self.assertIn(
+            "make_interval(days => :purge_after_days)",
+            self._sql("_PURGE_SESSIONS_SQL"),
+        )
+        self.assertIn(
+            "make_interval(days => :purge_after_days)",
+            self._sql("_PURGE_INVITES_SQL"),
+        )
+
+    def test_the_clock_is_expiry_not_revocation(self) -> None:
+        """``revoked_at`` moves both ways relative to expiry — earlier when an
+        owner revokes, LATER when this reaper stamps a session it swept — so
+        keying retention to it would sometimes shorten the window. expires_at
+        is the conservative choice and the indexed one."""
+        for name in ("_PURGE_SESSIONS_SQL", "_PURGE_INVITES_SQL"):
+            with self.subTest(statement=name):
+                sql = self._sql(name)
+                self.assertIn("expires_at <= now() - make_interval", sql)
+                self.assertNotIn("revoked_at <= now() - make_interval", sql)
+
+    def test_both_stages_require_the_row_to_be_dead(self) -> None:
+        for name in ("_PURGE_SESSIONS_SQL", "_PURGE_INVITES_SQL"):
+            with self.subTest(statement=name):
+                self.assertIn(
+                    "revoked_at IS NOT NULL OR", self._sql(name)
+                )
+
+    def test_both_claims_are_bounded_and_re_check_inside_the_delete(self) -> None:
+        for name in ("_PURGE_SESSIONS_SQL", "_PURGE_INVITES_SQL"):
+            with self.subTest(statement=name):
+                sql = self._sql(name)
+                self.assertIn("LIMIT :batch", sql)
+                self.assertIn("RETURNING", sql)
+                # once to choose candidates, once inside the DELETE
+                self.assertEqual(sql.count("make_interval(days => :purge_after_days)"), 2)
+
+    # -- the off switches ---------------------------------------------------
+
+    async def test_zero_days_disables_a_stage_without_running_it(self) -> None:
+        """"Off" must not be a value passed to a DELETE that happens to match
+        nothing — it must be a statement that never executes."""
+        counts, db = await self._sweep(
+            session_purge_after_days=0, invite_purge_after_days=0
+        )
+        self.assertEqual(counts, (0, 0))
+        self.assertEqual(db.execute.await_count, 0)
+
+    async def test_each_stage_can_be_disabled_independently(self) -> None:
+        _counts, db = await self._sweep(
+            sessions=[_uuid()], session_purge_after_days=365, invite_purge_after_days=0
+        )
+        self.assertEqual(db.execute.await_count, 1)
+        self.assertIn("guest_sessions", str(db.execute.await_args_list[0].args[0]))
+
+    async def test_purged_rows_are_counted(self) -> None:
+        counts, _db = await self._sweep(
+            sessions=[_uuid(), _uuid()], invites=[_uuid()]
+        )
+        self.assertEqual(counts, (2, 1))
+
+    # -- ordering and wiring ------------------------------------------------
+
+    async def test_sessions_are_purged_before_invites(self) -> None:
+        """An invite is only deletable while NOT EXISTS a session pointing at
+        it, so the leaf has to go first or the invite stage is permanently one
+        window behind."""
+        _counts, db = await self._sweep(sessions=[_uuid()], invites=[_uuid()])
+        statements = [str(c.args[0]) for c in db.execute.await_args_list]
+        self.assertIn("DELETE FROM guest_sessions", statements[0])
+        self.assertIn("DELETE FROM guest_invites", statements[1])
+
+    async def test_the_loop_actually_calls_it(self) -> None:
+        """A reaper that exists but is never invoked is worse than none,
+        because it looks done. Walk the real loop body."""
+        from app.services import guest_reaper
+
+        order: list[str] = []
+
+        async def _sessions(*_a, **_kw):
+            order.append("sessions")
+            return 0
+
+        async def _participants(*_a, **_kw):
+            order.append("participants")
+            return (0, 0)
+
+        async def _rows(*_a, **kw):
+            order.append("rows")
+            order.append(f"session_days={kw['session_purge_after_days']}")
+            order.append(f"invite_days={kw['invite_purge_after_days']}")
+            raise asyncio.CancelledError()
+
+        fake_asyncio = SimpleNamespace(
+            sleep=AsyncMock(), CancelledError=asyncio.CancelledError
+        )
+        with (
+            patch.object(
+                guest_reaper,
+                "sweep_expired_guest_sessions",
+                AsyncMock(side_effect=_sessions),
+            ),
+            patch.object(
+                guest_reaper,
+                "sweep_guest_participants",
+                AsyncMock(side_effect=_participants),
+            ),
+            patch.object(
+                guest_reaper, "sweep_guest_rows", AsyncMock(side_effect=_rows)
+            ),
+            patch.object(guest_reaper, "asyncio", fake_asyncio),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await guest_reaper.run_guest_reaper(
+                    _FakeSessionFactory(),
+                    AsyncMock(),
+                    AsyncMock(),
+                    _settings(
+                        guest_reaper_interval_seconds=1,
+                        guest_reaper_batch=10,
+                        guest_participant_retire_after_minutes=60,
+                        guest_participant_purge_after_days=30,
+                        guest_session_purge_after_days=365,
+                        guest_invite_purge_after_days=90,
+                    ),
+                )
+        self.assertEqual(
+            order,
+            [
+                "sessions",
+                "participants",
+                "rows",
+                "session_days=365",
+                "invite_days=90",
+            ],
+        )
+
+    def test_the_lifespan_starts_the_loop_that_contains_it(self) -> None:
+        """The retention sweep has no scheduler of its own — it rides the guest
+        reaper task started in main.lifespan. If that call ever goes away,
+        every stage in this file silently stops running."""
+        import inspect
+
+        from app import main
+
+        src = inspect.getsource(main.lifespan)
+        self.assertIn("run_guest_reaper", src)
+        self.assertIn("asyncio.create_task", src)
+        self.assertIn("settings.guest_reaper_enabled", src)
+
+    # -- settings and indexes -----------------------------------------------
+
+    def test_the_settings_exist_with_conservative_defaults(self) -> None:
+        """A session is the record of a PERSON who was in a room, so it gets a
+        year. An invite that minted nobody records no person at all."""
+        from app.config import Settings
+
+        fields = Settings.model_fields
+        self.assertEqual(fields["guest_session_purge_after_days"].default, 365)
+        self.assertEqual(fields["guest_invite_purge_after_days"].default, 90)
+        self.assertGreater(
+            fields["guest_session_purge_after_days"].default,
+            fields["guest_participant_purge_after_days"].default,
+        )
+
+    def test_the_indexes_both_scans_need_exist(self) -> None:
+        """Both stages walk oldest-expiry-first and stop at the window. Without
+        the index that is a full sort per pass, per worker, forever — the
+        failure mode that gets a GC turned off."""
+        from app.models.guest_access import GuestInvite, GuestSession
+
+        self.assertIn(
+            "ix_guest_sessions_expires_at",
+            {ix.name for ix in GuestSession.__table__.indexes},
+        )
+        self.assertIn(
+            "ix_guest_invites_expires_at",
+            {ix.name for ix in GuestInvite.__table__.indexes},
+        )
+
+    def test_the_invite_guard_index_from_014_is_still_there(self) -> None:
+        """The NOT EXISTS is per candidate row; unindexed it is a scan of every
+        session ever created, per invite considered."""
+        from app.models.guest_access import GuestSession
+
+        self.assertTrue(GuestSession.__table__.c.invite_id.index)
+
+    def test_the_revision_id_fits_the_version_column(self) -> None:
+        """``alembic_version.version_num`` is varchar(32). A 33-char id once
+        rolled back an entire migration at the version stamp."""
+        import pathlib
+
+        versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
+        for path in sorted(versions.glob("*.py")):
+            for line in path.read_text().splitlines():
+                stripped = line.strip()
+                if stripped.startswith("revision") and "=" in stripped:
+                    value = stripped.split("=", 1)[1].strip().strip("\"'")
+                    with self.subTest(migration=path.name):
+                        self.assertLessEqual(len(value), 32)
+                    break
+
+
+# ---------------------------------------------------------------------------
 # 12. PRESENCE SCOPE — a guest is present in ONE room, not on the instance
 # ---------------------------------------------------------------------------
 

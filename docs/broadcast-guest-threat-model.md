@@ -98,11 +98,45 @@ Denied — and asserted by negative tests, not by inspection:
 | Labeling | "Guest" badge in participant list and member list |
 | Revocation | instant, reusing the existing WS force-revoke machinery; kills socket + LiveKit |
 
+### 3.1 Row lifecycle and retention
+
+Revocation and expiry are **stamps**, not deletes — nothing in the request path
+ever removes a row — so every table the feature touches needed an explicit
+retention answer. The reaper (`server/app/services/guest_reaper.py`) runs from
+the app lifespan every 60s in every worker and applies exactly this table. The
+FKs are what force each decision, so they are named:
+
+| Row | Fate | Default | Why |
+|---|---|---|---|
+| `messages` | **never touched** | forever | Not policy — construction. The only statement that names the table is a `NOT EXISTS` that *refuses* a delete. |
+| Guest `participants` **that sent a message** | **tombstoned, never deleted** (`metadata->>'guest_retired_at'`, status offline) | forever | `messages.sender_id` is `ON DELETE SET NULL` and nullable. Deleting would not delete the message — it would strip the sender off it and render the transcript as anonymous holes. |
+| Guest `participants` that sent **nothing** | hard delete | 30d after retirement | Re-checked inside the DELETE: `NOT EXISTS` any message. Nothing to orphan. |
+| `guest_sessions`, dead | hard delete | 365d after `expires_at` | A leaf — nothing in the schema references it, so no cascade and no message loses its sender. What it costs is the record of one person's visit, hence a year rather than 30 days. |
+| `guest_sessions`, live | kept | — | It is a credential. |
+| `guest_invites` with **any** session row | **kept** | forever, until the sessions go | `guest_sessions.invite_id` is `ON DELETE CASCADE`. Deleting a used invite would take every session it minted with it — the GC destroying the audit trail of who was let in. Guarded twice in SQL plus `FOR UPDATE`. |
+| `guest_invites` with **no** session row, dead | hard delete | 90d after `expires_at` | A link nobody walked through (or whose guests are already fully reaped). It records no person and nothing points at it. |
+
+Retention is keyed to `expires_at`, never `revoked_at`: revocation moves in
+both directions relative to expiry, so expiry is the strictly more conservative
+clock (and the indexed one — see migration `017_guest_row_retention`).
+
+Order is `participants -> guest_sessions -> guest_invites`, leaf to root,
+because the CASCADE leaves no other safe order. Each window is independently
+settable to `0`, which disables that stage by **not running the statement**
+rather than by passing it a value that happens to match nothing:
+`GUEST_PARTICIPANT_PURGE_AFTER_DAYS`, `GUEST_SESSION_PURGE_AFTER_DAYS`,
+`GUEST_INVITE_PURGE_AFTER_DAYS`.
+
 **Residual risks (accepted, stated):**
 - A guest posts content into a room that federates onward (Meeting-Ops
   transcripts, Knowledge-Ops). Guests are labeled and rooms are host-created, so
   this is a moderation question, not an isolation break — but it is real, and
   hosts should know guest messages persist like any other.
+- Retention is **not** a right-to-erasure mechanism. A guest who spoke keeps a
+  tombstoned identity row, carrying the display name they chose, for as long as
+  their messages exist — because that is what makes the room's own history
+  readable. Deleting a specific person's content is a separate, deliberate
+  operator action, not something a GC should do on a timer.
 - Link sharing is uncontrolled by nature. `max_uses` + short TTL + instant
   revoke are the controls; the link is a bearer credential.
 - Guest display names are attacker-chosen. Render them as untrusted text

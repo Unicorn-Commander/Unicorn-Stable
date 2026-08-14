@@ -75,9 +75,40 @@ DELETE itself so it cannot race a straggler. Every objection above is about
 losing something; this stage only fires where there is demonstrably nothing to
 lose. Set ``guest_participant_purge_after_days = 0`` to keep every row forever.
 
+...AND THE TWO CREDENTIAL TABLES THEMSELVES
+-------------------------------------------
+Everything above is about the ``participants`` row a redemption mints. The two
+tables the feature actually ADDED — ``guest_invites`` and ``guest_sessions`` —
+were never reaped at all. Revocation and expiry are STAMPS on those rows
+(``revoked_at``), never deletes; no code path anywhere issues a DELETE against
+either table. So every link an owner ever minted, and every redemption of it,
+was kept forever. ``sweep_guest_rows`` is the bound, and it unwinds the chain
+leaf-first because the foreign keys leave no other safe order:
+
+* ``guest_sessions`` has NO children — nothing in the schema references it — so
+  a dead one can be deleted without orphaning anything. What it costs is the
+  record of a PERSON who was in a room (which link they walked through, the
+  name they typed, when they were last seen), so it gets a full year by
+  default: far beyond any plausible incident-response window.
+* ``guest_invites`` is deleted ONLY when ``NOT EXISTS`` a session referencing
+  it. That is not a nicety — ``guest_sessions.invite_id`` is ``ON DELETE
+  CASCADE``, so deleting a used invite would take every session it minted with
+  it and silently destroy exactly the audit trail the paragraph above is
+  protecting. An invite with no sessions is a link NOBODY EVER WALKED THROUGH
+  (or one whose guests are already fully reaped): it records nothing about any
+  person, and nothing in the schema points at it, so 90 days is enough.
+
+Ordering therefore matters and is deliberate: participants purge (cascading
+their sessions) -> sessions purge -> invites purge. Each stage can only widen
+what the next one is allowed to touch, never narrow it.
+
+Neither stage can reach ``messages``. Not by policy — by construction: no
+statement in this module names that table except the ``NOT EXISTS`` guard that
+REFUSES to delete a participant who wrote one.
+
 CONCURRENCY
 -----------
-Every uvicorn worker may run this loop. Each of the three claims is a single
+Every uvicorn worker may run this loop. Each of the claims is a single
 statement that re-checks the state it is transitioning FROM and RETURNs only
 the rows it actually changed, so two workers sweeping simultaneously cannot
 both claim the same row: the second blocks on the row lock, re-evaluates
@@ -238,6 +269,95 @@ _PURGE_SQL = text(
 )
 
 
+# STAGE THREE — delete a long-dead guest SESSION row.
+#
+# Nothing in the schema references guest_sessions (verified against the live
+# information_schema: it is a leaf), so this delete cannot orphan anything and
+# cannot un-attribute a single message — messages point at the PARTICIPANT, and
+# that row is tombstoned and kept. What it does cost is the audit record of one
+# person's visit, so the default window is a year rather than the thirty days
+# the trace-free participant purge uses. 0 keeps them forever.
+#
+# THE CLOCK IS ``expires_at``, NOT ``revoked_at``, on purpose. revoked_at moves
+# in both directions relative to expiry: an owner revoking early makes it
+# EARLIER, and this reaper stamping a session it swept makes it LATER. Keying
+# retention to expires_at is the strictly more conservative of the two (a
+# session revoked on day 1 of a 12-hour link is still kept a full year from its
+# scheduled expiry, not from the revoke), and it makes the whole predicate a
+# plain range on an indexed column, so an idle pass is one index probe instead
+# of a sort of the table. Migration 017 adds that index.
+#
+# ``expires_at <= now() - <days>`` with days >= 1 already implies "expired";
+# the explicit death clause is kept anyway so the invariant is readable at the
+# site that depends on it rather than inferred from arithmetic.
+_PURGE_SESSIONS_SQL = text(
+    """
+    WITH purgeable AS (
+        SELECT gs.id
+          FROM guest_sessions gs
+         WHERE gs.expires_at <= now() - make_interval(days => :purge_after_days)
+           AND (gs.revoked_at IS NOT NULL OR gs.expires_at <= now())
+         ORDER BY gs.expires_at
+         LIMIT :batch
+    )
+    DELETE FROM guest_sessions AS t
+     USING purgeable
+     WHERE t.id = purgeable.id
+       AND t.expires_at <= now() - make_interval(days => :purge_after_days)
+       AND (t.revoked_at IS NOT NULL OR t.expires_at <= now())
+    RETURNING t.id
+    """
+)
+
+# STAGE FOUR — delete a long-dead guest INVITE that minted nobody.
+#
+# ``NOT EXISTS (SELECT 1 FROM guest_sessions ...)`` is the entire safety
+# argument and it is not optional: guest_sessions.invite_id is ON DELETE
+# CASCADE, so deleting an invite that still has sessions would take them with
+# it — a garbage collector destroying the record of who was let into a room.
+# It is evaluated twice, once to choose candidates and again INSIDE the DELETE,
+# for the same reason the participant purge re-checks its message guard.
+#
+# ``FOR UPDATE`` (and ``MATERIALIZED``, so the lock is actually taken before
+# the DELETE plans) closes the one window the double NOT EXISTS cannot: a
+# redemption whose session INSERT has not committed yet is invisible to both
+# checks. PostgreSQL's FK enforcement takes FOR KEY SHARE on the parent invite
+# row for that INSERT, and FOR UPDATE is the one row lock that conflicts with
+# it, so the two serialize instead of racing. In practice a redemption cannot
+# reach a 90-day-dead invite at all (api/guests.py claims the seat with a
+# conditional UPDATE that re-checks expiry and revocation), which makes this
+# belt on top of braces — appropriate for the only statement here whose
+# mistake would be silent and unrecoverable.
+#
+# SKIP LOCKED so a second uvicorn worker sweeps different rows rather than
+# queueing behind the first.
+_PURGE_INVITES_SQL = text(
+    """
+    WITH purgeable AS MATERIALIZED (
+        SELECT gi.id
+          FROM guest_invites gi
+         WHERE gi.expires_at <= now() - make_interval(days => :purge_after_days)
+           AND (gi.revoked_at IS NOT NULL OR gi.expires_at <= now())
+           AND NOT EXISTS (
+                 SELECT 1 FROM guest_sessions gs WHERE gs.invite_id = gi.id
+               )
+         ORDER BY gi.expires_at
+         LIMIT :batch
+           FOR UPDATE SKIP LOCKED
+    )
+    DELETE FROM guest_invites AS t
+     USING purgeable
+     WHERE t.id = purgeable.id
+       AND t.expires_at <= now() - make_interval(days => :purge_after_days)
+       AND (t.revoked_at IS NOT NULL OR t.expires_at <= now())
+       AND NOT EXISTS (
+             SELECT 1 FROM guest_sessions gs WHERE gs.invite_id = t.id
+           )
+    RETURNING t.id
+    """
+)
+
+
 async def _claim_expired(db: AsyncSession, batch: int) -> list[uuid.UUID]:
     """Atomically mark a batch of dead sessions revoked and return their ids."""
     rows = (await db.execute(_CLAIM_SQL, {"batch": int(batch)})).scalars().all()
@@ -388,6 +508,72 @@ async def sweep_guest_participants(
     return len(retired), len(purged)
 
 
+async def sweep_guest_rows(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    batch: int = 200,
+    session_purge_after_days: int = 365,
+    invite_purge_after_days: int = 90,
+) -> tuple[int, int]:
+    """Delete long-dead ``guest_sessions``, then the invites that minted nobody.
+
+    Returns ``(sessions_purged, invites_purged)``. Either window at 0 disables
+    that stage — and disables it by not RUNNING the statement at all, not by
+    passing it a value that happens to match nothing, so "off" is not one typo
+    away from a delete.
+
+    THE ORDER IS THE DESIGN. Sessions first: an invite is only deletable while
+    ``NOT EXISTS`` a session pointing at it, so purging sessions is what makes
+    the invite behind them eligible on this pass instead of the next one. Run
+    the other way round and the invite stage would be permanently one window
+    behind for no reason.
+
+    Both stages are safe to call concurrently (each re-checks its guard inside
+    the DELETE) and cheap when there is nothing to do: with the migration-017
+    indexes each is an index probe against the oldest expiry, not a sort.
+    """
+    sessions_purged: list[uuid.UUID] = []
+    invites_purged: list[uuid.UUID] = []
+    async with session_factory() as db:
+        if int(session_purge_after_days) > 0:
+            sessions_purged = list(
+                (
+                    await db.execute(
+                        _PURGE_SESSIONS_SQL,
+                        {
+                            "batch": int(batch),
+                            "purge_after_days": int(session_purge_after_days),
+                        },
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await db.commit()
+
+        if int(invite_purge_after_days) > 0:
+            invites_purged = list(
+                (
+                    await db.execute(
+                        _PURGE_INVITES_SQL,
+                        {
+                            "batch": int(batch),
+                            "purge_after_days": int(invite_purge_after_days),
+                        },
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await db.commit()
+
+    if sessions_purged:
+        logger.info("guest_sessions_purged", count=len(sessions_purged))
+    if invites_purged:
+        logger.info("guest_invites_purged", count=len(invites_purged))
+    return len(sessions_purged), len(invites_purged)
+
+
 async def run_guest_reaper(
     session_factory: async_sessionmaker[AsyncSession],
     redis: Redis,
@@ -401,11 +587,18 @@ async def run_guest_reaper(
     exactly who most needs evicting at that moment. The kill switch for this
     loop is its own setting.
 
-    ONE loop, two sweeps, in this order. The session sweep is what makes an
+    ONE loop, three sweeps, in this order. The session sweep is what makes an
     expired stranger stop publishing; the participant sweep is bookkeeping that
-    can wait. Running the second one after the first — and letting its failure
-    be caught by the same handler — means a broken tombstone pass can never
-    stop the sweep that hangs up on people.
+    can wait; the row sweep is retention, which can wait longer still. Running
+    them after the first — and letting their failure be caught by the same
+    handler — means a broken tombstone or retention pass can never stop the
+    sweep that hangs up on people.
+
+    The order is also the FK unwind order. The participant purge cascades a
+    trace-free guest's session away; the session purge then removes what is
+    left; only then can an invite pass its ``NOT EXISTS`` guard. Leaf first,
+    root last, because ``guest_sessions.invite_id`` is ON DELETE CASCADE and
+    any other order would mean deleting a parent that still had children.
     """
     interval = max(5.0, float(getattr(settings, "guest_reaper_interval_seconds", 60)))
     batch = int(getattr(settings, "guest_reaper_batch", 200) or 200)
@@ -413,12 +606,20 @@ async def run_guest_reaper(
         getattr(settings, "guest_participant_retire_after_minutes", 60) or 0
     )
     purge_after = int(getattr(settings, "guest_participant_purge_after_days", 30) or 0)
+    session_purge_after = int(
+        getattr(settings, "guest_session_purge_after_days", 365) or 0
+    )
+    invite_purge_after = int(
+        getattr(settings, "guest_invite_purge_after_days", 90) or 0
+    )
     logger.info(
         "guest_reaper_loop_started",
         interval_seconds=interval,
         batch=batch,
         retire_after_minutes=retire_after,
         purge_after_days=purge_after,
+        session_purge_after_days=session_purge_after,
+        invite_purge_after_days=invite_purge_after,
     )
     while True:
         try:
@@ -430,6 +631,12 @@ async def run_guest_reaper(
                 batch=batch,
                 retire_after_minutes=retire_after,
                 purge_after_days=purge_after,
+            )
+            await sweep_guest_rows(
+                session_factory,
+                batch=batch,
+                session_purge_after_days=session_purge_after,
+                invite_purge_after_days=invite_purge_after,
             )
         except asyncio.CancelledError:
             raise
@@ -448,4 +655,5 @@ __all__ = [
     "run_guest_reaper",
     "sweep_expired_guest_sessions",
     "sweep_guest_participants",
+    "sweep_guest_rows",
 ]

@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +48,12 @@ class GuestInvite(Base, UUIDPrimaryKeyMixin):
     """A room owner's shareable, expiring, revocable invitation to ONE room."""
 
     __tablename__ = "guest_invites"
+
+    # The retention sweep (services/guest_reaper.sweep_guest_rows) walks this
+    # table oldest-expiry-first and stops at the first row inside the window.
+    # Without the index that is a full sort of every invite ever minted, every
+    # reaper pass, in every worker — see migration 017.
+    __table_args__ = (Index("ix_guest_invites_expires_at", "expires_at"),)
 
     token_hash: Mapped[str] = mapped_column(
         String(64), unique=True, index=True, nullable=False
@@ -147,6 +153,12 @@ class GuestSession(Base, UUIDPrimaryKeyMixin):
     """
 
     __tablename__ = "guest_sessions"
+
+    # Serves BOTH reaper scans that order by expiry: the expired-session claim
+    # that has run since 014 (which until migration 017 sorted the whole table
+    # every 60 seconds in every worker, unindexed) and the retention purge
+    # added with it.
+    __table_args__ = (Index("ix_guest_sessions_expires_at", "expires_at"),)
 
     token_hash: Mapped[str] = mapped_column(
         String(64), unique=True, index=True, nullable=False
