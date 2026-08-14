@@ -260,14 +260,26 @@ async def send_message(
     request: Request = None,  # type: ignore[assignment]
     _rl: Annotated[
         None,
-        Depends(rate_limit_principal("msg_send", "rate_limit_message_send_per_min")),
+        Depends(
+            rate_limit_principal(
+                "msg_send",
+                "rate_limit_message_send_per_min",
+                # ...AND, for a guest, the INVITE's own aggregate budget. Without
+                # it the per-participant limit is a per-REDEMPTION limit, and an
+                # invite with unlimited `max_uses` buys the full send rate again
+                # for every guest minted behind it. See deps.rate_limit_principal.
+                invite_limit_attr="rate_limit_guest_invite_send_per_min",
+            )
+        ),
     ] = None,
 ) -> MessageResponse:
     """Send a message to a room.
 
     Membership is enforced inside MessageService.send_message (which also
     enforces per-room mute, so an owner can silence a misbehaving guest with
-    the moderation control that already exists). Rate-limited per participant.
+    the moderation control that already exists). Rate-limited per participant,
+    and — for a guest — per INVITE as well, so a shareable link cannot buy N
+    times the send rate by being redeemed N times.
     The internal agent path calls this function directly (not via HTTP) so it
     bypasses the DI-injected rate limit, which is intended.
 

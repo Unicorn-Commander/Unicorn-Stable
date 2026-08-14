@@ -85,6 +85,15 @@ const BridgePage = lazy(() =>
   })),
 );
 
+/** The width the room-list sidebar was designed around, in px.
+ *
+ * Desktop makes it the resizable default; phones keep it fixed, because there
+ * the sidebar is an off-canvas overlay drawer with no handle and no stored
+ * width. Named because three places have to agree on it — the resize hook's
+ * default, the animated container, and the fixed-width content inside it.
+ */
+const SIDEBAR_DRAWER_WIDTH = 280;
+
 function SurfaceLoading() {
   return (
     <div
@@ -161,11 +170,16 @@ export function AppShell() {
   // an off-canvas overlay drawer at a fixed 280px — no handle, no stored width.
   const isDesktop = useIsDesktop();
   const sidebarResize = usePanelResize("sidebar", {
-    defaultWidth: 280,
+    defaultWidth: SIDEBAR_DRAWER_WIDTH,
     min: 220,
     max: 480,
     edge: "right",
   });
+  // THE sidebar width — one value, read by the animated container AND by the
+  // fixed-width content wrapper inside it. They must be the same number or the
+  // content reflows during the open/close animation; see the note on the
+  // wrapper below for what that looked like.
+  const sidebarWidth = isDesktop ? sidebarResize.width : SIDEBAR_DRAWER_WIDTH;
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
   const { roomId: routeRoomId } = useParams<{ roomId: string }>();
@@ -564,9 +578,7 @@ export function AppShell() {
           <motion.aside
             key="sidebar"
             initial={{ width: 0, opacity: 0 }}
-            // Desktop width is user-resizable (persisted); the phone drawer
-            // stays at the fixed 280 the overlay was designed around.
-            animate={{ width: isDesktop ? sidebarResize.width : 280, opacity: 1 }}
+            animate={{ width: sidebarWidth, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             // While the handle is being dragged the width must track the
             // pointer 1:1 — a tween here would rubber-band behind the cursor.
@@ -581,114 +593,144 @@ export function AppShell() {
             className="section-nav absolute inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-line-strong bg-surface-0/85 backdrop-blur-xl md:relative md:z-auto"
             aria-label="Room list sidebar"
           >
-            {/* Mobile server switcher — horizontal strip atop the drawer. */}
-            <ServerRail mobile />
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
-              <h1 className="flex min-w-0 items-center">
+            {/* THE CONTENT HAS ITS OWN, FIXED WIDTH — and that is the fix.
+             *
+             * The aside's width is ANIMATED (0 <-> open) and its children used
+             * to size themselves against it, so every frame of a 200ms open or
+             * close relaid out the entire sidebar at a width no layout was ever
+             * designed for. Measured mid-close at 14px: the "Pick a destination
+             * above…" paragraph reflowed to a 4px column 371px tall (one
+             * character per line), the ViewSwitcher pills kept their natural
+             * widths and were pushed to NEGATIVE x where they overlapped each
+             * other, and the wordmark simply overhung the box. `overflow-hidden`
+             * on the aside was already there and was never the problem: it
+             * clipped the overflow but could not stop the reflow that produced
+             * it.
+             *
+             * Pinning the content to the OPEN width makes the animation a clean
+             * wipe — the layout is computed once, at the width it was designed
+             * for, and the container reveals or covers it. Same variable feeds
+             * `animate` above, so the two can never drift apart; a drag on the
+             * handle still resizes both together, which is what resizing means.
+             *
+             * Nothing needs hiding when collapsed: AnimatePresence UNMOUNTS the
+             * whole aside once the exit finishes, so the collapsed steady state
+             * renders no sidebar content at all. The defect was only ever the
+             * transition. */}
+            <div className="flex min-h-0 flex-1 flex-col" style={{ width: sidebarWidth }}>
+              {/* Mobile server switcher — horizontal strip atop the drawer. */}
+              <ServerRail mobile />
+              <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
+                <h1 className="flex min-w-0 items-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isNavV1Enabled()) {
+                        useNavStore.getState().setActiveView("home");
+                      }
+                      navigate("/");
+                    }}
+                    className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
+                    title="Home — Unicorn Stable"
+                    aria-label="Go to Home"
+                  >
+                    <StableMark className="h-7 w-7 shrink-0" />
+                    <span className="gradient-text font-display text-lg font-bold tracking-tight">
+                      Stable
+                    </span>
+                  </button>
+                </h1>
+                {/* The hamburger is hidden behind the open drawer on phones, so
+                    give the drawer its own close affordance. Desktop closes via
+                    the header toggle. */}
                 <button
-                  type="button"
-                  onClick={() => {
-                    if (isNavV1Enabled()) {
-                      useNavStore.getState().setActiveView("home");
-                    }
-                    navigate("/");
-                  }}
-                  className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
-                  title="Home — Unicorn Stable"
-                  aria-label="Go to Home"
+                  onClick={toggleSidebar}
+                  className="focus-ring -mr-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:hidden"
+                  aria-label="Close sidebar"
                 >
-                  <StableMark className="h-7 w-7 shrink-0" />
-                  <span className="gradient-text font-display text-lg font-bold tracking-tight">
-                    Stable
-                  </span>
+                  <X className="h-5 w-5" />
                 </button>
-              </h1>
-              {/* The hamburger is hidden behind the open drawer on phones, so
-                  give the drawer its own close affordance. Desktop closes via
-                  the header toggle. */}
-              <button
-                onClick={toggleSidebar}
-                className="focus-ring -mr-1 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:hidden"
-                aria-label="Close sidebar"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <RoomList />
-            {/* Mobile-only account footer. On phones the top Header (with the
-                avatar menu) is hidden while a room is open, so account actions
-                live at the foot of the drawer. Desktop keeps the Header menu. */}
-            <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:hidden">
-              <div className="mb-1 flex items-center gap-2.5 px-2.5 py-2">
-                <span
-                  className="inline-flex shrink-0 rounded-full"
-                  style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
-                >
-                  <Avatar
-                    name={currentUser?.displayName ?? "U"}
-                    src={currentUser?.avatarUrl}
-                    size="sm"
-                  />
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-100">
-                    {currentUser?.displayName}
-                  </p>
-                  <p className="truncate text-xs text-slate-400">
-                    {currentUser?.email}
-                  </p>
-                </div>
               </div>
-              <button
-                onClick={() => {
-                  setPeopleDrawerOpen(true);
-                  toggleSidebar();
-                }}
-                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
-              >
-                <UserRound className="h-4 w-4 text-slate-400" />
-                People
-              </button>
-              <button
-                onClick={() => {
-                  setActivityOpen(true);
-                  toggleSidebar();
-                }}
-                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
-              >
-                <Activity className="h-4 w-4 text-slate-400" />
-                Activity Center
-              </button>
-              <button
-                onClick={() => {
-                  setSavedOpen(true);
-                  toggleSidebar();
-                }}
-                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
-              >
-                <Bookmark className="h-4 w-4 text-slate-400" />
-                Saved messages
-              </button>
-              <button
-                onClick={() => {
-                  toggleSettings();
-                  toggleSidebar();
-                }}
-                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
-              >
-                <Settings className="h-4 w-4 text-slate-400" />
-                Settings
-              </button>
-              <button
-                onClick={() => logout()}
-                className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </button>
+              <RoomList />
+              {/* Mobile-only account footer. On phones the top Header (with the
+                  avatar menu) is hidden while a room is open, so account actions
+                  live at the foot of the drawer. Desktop keeps the Header menu. */}
+              <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:hidden">
+                <div className="mb-1 flex items-center gap-2.5 px-2.5 py-2">
+                  <span
+                    className="inline-flex shrink-0 rounded-full"
+                    style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
+                  >
+                    <Avatar
+                      name={currentUser?.displayName ?? "U"}
+                      src={currentUser?.avatarUrl}
+                      size="sm"
+                    />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-100">
+                      {currentUser?.displayName}
+                    </p>
+                    <p className="truncate text-xs text-slate-400">
+                      {currentUser?.email}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setPeopleDrawerOpen(true);
+                    toggleSidebar();
+                  }}
+                  className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                >
+                  <UserRound className="h-4 w-4 text-slate-400" />
+                  People
+                </button>
+                <button
+                  onClick={() => {
+                    setActivityOpen(true);
+                    toggleSidebar();
+                  }}
+                  className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                >
+                  <Activity className="h-4 w-4 text-slate-400" />
+                  Activity Center
+                </button>
+                <button
+                  onClick={() => {
+                    setSavedOpen(true);
+                    toggleSidebar();
+                  }}
+                  className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                >
+                  <Bookmark className="h-4 w-4 text-slate-400" />
+                  Saved messages
+                </button>
+                <button
+                  onClick={() => {
+                    toggleSettings();
+                    toggleSidebar();
+                  }}
+                  className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                >
+                  <Settings className="h-4 w-4 text-slate-400" />
+                  Settings
+                </button>
+                <button
+                  onClick={() => logout()}
+                  className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign out
+                </button>
+              </div>
             </div>
             {/* Desktop-only drag handle (double-click resets, arrows nudge).
-                The phone drawer keeps its fixed width. */}
+                The phone drawer keeps its fixed width. Stays OUTSIDE the
+                fixed-width content wrapper: it is absolutely positioned against
+                the aside's animating edge, which is where a resize grip belongs
+                — inside the wrapper it would sit at the content's static right
+                edge and drift out of the panel during an open or close. */}
             <div
               {...sidebarResize.dragHandleProps}
               aria-label="Resize sidebar"

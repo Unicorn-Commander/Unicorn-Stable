@@ -420,14 +420,125 @@ class RateLimitDependencyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertNotIn("get_current_user", names)
 
-    def test_rate_limit_principal_keys_on_participant_not_secret(self) -> None:
+    def test_rate_limit_principal_keys_on_derived_ids_not_the_secret(self) -> None:
         import inspect
 
         from app.deps import rate_limit_principal
 
         source = inspect.getsource(rate_limit_principal)
+        # Both keys are read off the principal the session row produced.
         self.assertIn('identifier=str(user["participant_id"])', source)
+        self.assertIn("identifier=str(invite_id)", source)
+        # Never the presented credential: keying on the secret would hand an
+        # attacker a fresh bucket for every guess.
         self.assertNotIn("token", source.split('"""')[-1])
+
+
+class GuestInviteRateLimitTests(IsolatedAsyncioTestCase):
+    """The per-participant limit is a per-REDEMPTION limit for a guest.
+
+    Every redemption mints a fresh Participant, so an invite with unlimited
+    ``max_uses`` bought the whole send rate again for each guest behind it —
+    N redemptions, N x the rate, out of one link. The invite is the thing the
+    owner minted, reasons about, and can revoke, so it is the thing that has to
+    carry an aggregate budget.
+    """
+
+    @staticmethod
+    async def _charge(user: dict, *, invite_attr: str | None):
+        """Run the dependency and return the (bucket, identifier) pairs charged."""
+        from app.deps import rate_limit_principal
+
+        dep = rate_limit_principal(
+            "msg_send", "rate_limit_message_send_per_min",
+            invite_limit_attr=invite_attr,
+        )
+        charged: list[tuple[str, str, int]] = []
+
+        async def _fake_hit(_redis, *, bucket, identifier, limit, **_kw):
+            charged.append((bucket, identifier, limit))
+
+        settings = _settings(
+            rate_limit_enabled=True,
+            rate_limit_message_send_per_min=60,
+            rate_limit_guest_invite_send_per_min=300,
+        )
+        with patch("app.deps._rate_limit_hit", AsyncMock(side_effect=_fake_hit)):
+            await dep(user, AsyncMock(), settings)
+        return charged
+
+    async def test_a_guest_is_charged_to_the_invite_as_well(self) -> None:
+        user = _guest_user()
+        charged = await self._charge(
+            user, invite_attr="rate_limit_guest_invite_send_per_min"
+        )
+        self.assertEqual(
+            charged,
+            [
+                ("msg_send", str(user["participant_id"]), 60),
+                ("msg_send:invite", str(user["guest_invite_id"]), 300),
+            ],
+        )
+
+    async def test_two_redemptions_of_one_invite_share_the_invite_budget(self) -> None:
+        """THE BUG, stated as a test: two guests, two participants, ONE link."""
+        invite = _uuid()
+        first = _guest_user(invite_id=invite)
+        second = _guest_user(invite_id=invite)
+        self.assertNotEqual(first["participant_id"], second["participant_id"])
+
+        a = await self._charge(first, invite_attr="rate_limit_guest_invite_send_per_min")
+        b = await self._charge(second, invite_attr="rate_limit_guest_invite_send_per_min")
+        # Different per-participant buckets (they are different people)...
+        self.assertNotEqual(a[0][1], b[0][1])
+        # ...but the SAME invite bucket, which is what bounds the link.
+        self.assertEqual(a[1][1], b[1][1])
+        self.assertEqual(a[1][1], str(invite))
+
+    async def test_the_per_participant_limit_is_kept_not_replaced(self) -> None:
+        """Collapsing to the invite key alone would let one chatty guest on a
+        shared link starve everyone else redeemed from it."""
+        charged = await self._charge(
+            _guest_user(), invite_attr="rate_limit_guest_invite_send_per_min"
+        )
+        self.assertEqual(charged[0][0], "msg_send")
+        self.assertEqual(len(charged), 2)
+
+    async def test_a_member_is_never_charged_to_an_invite(self) -> None:
+        """A member's dict carries no `guest_invite_id` at all, so the second
+        charge is a no-op for them by construction."""
+        charged = await self._charge(
+            _member_user(), invite_attr="rate_limit_guest_invite_send_per_min"
+        )
+        self.assertEqual(len(charged), 1)
+        self.assertEqual(charged[0][0], "msg_send")
+
+    async def test_routes_that_do_not_opt_in_are_unchanged(self) -> None:
+        charged = await self._charge(_guest_user(), invite_attr=None)
+        self.assertEqual(len(charged), 1)
+
+    def test_the_send_route_actually_opts_in(self) -> None:
+        """The layering is worth nothing if the one guest-reachable write route
+        does not ask for it."""
+        import inspect
+
+        from app.api import messages
+
+        source = inspect.getsource(messages.send_message)
+        self.assertIn(
+            'invite_limit_attr="rate_limit_guest_invite_send_per_min"', source
+        )
+
+    def test_the_invite_bucket_inherits_fail_open_rather_than_re_deriving(self) -> None:
+        """``msg_send:invite`` is not a member of ``_FAIL_CLOSED_BUCKETS`` and
+        never will be — re-deriving from the suffixed name would silently give
+        the invite bucket a different outage posture from the base bucket."""
+        import inspect
+
+        from app.deps import rate_limit_principal
+
+        source = inspect.getsource(rate_limit_principal)
+        self.assertEqual(source.count("fail_open=effective_fail_open"), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -2658,6 +2769,239 @@ class GuestSessionReaperTests(IsolatedAsyncioTestCase):
                     _settings(guest_reaper_interval_seconds=1, guest_reaper_batch=10),
                 )
         self.assertEqual(calls["n"], 3)
+
+
+# ---------------------------------------------------------------------------
+# 11b. THE PARTICIPANT ROW — a guest identity has to END, not just stop working
+# ---------------------------------------------------------------------------
+
+
+class GuestParticipantLifecycleTests(IsolatedAsyncioTestCase):
+    """One Participant row per redemption, and nothing ever closed it.
+
+    The session died, the membership row went, the credential stopped working —
+    and the identity stayed at ``status = 'online'`` forever, indistinguishable
+    in the table from a guest who is on a call right now. Not a security hole
+    (``== HUMAN`` keeps guests out of every directory) but a lifecycle nobody
+    owned.
+    """
+
+    async def _sweep(self, *, retired=(), purged=(), **kw):
+        from app.services import guest_reaper
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalars_result(list(retired)), _scalars_result(list(purged))]
+        )
+        counts = await guest_reaper.sweep_guest_participants(
+            _FakeSessionFactory(db), **kw
+        )
+        return counts, db
+
+    def _sql(self, name: str) -> str:
+        from app.services import guest_reaper
+
+        return str(getattr(guest_reaper, name))
+
+    # -- the decision itself -------------------------------------------------
+
+    def test_the_row_is_tombstoned_not_deleted(self) -> None:
+        """``messages.sender_id`` is ON DELETE SET NULL and NULLABLE, so a
+        delete would not remove the message — it would silently strip the
+        sender off everything the guest said and leave the room's history
+        showing anonymous holes. Stage one is an UPDATE, and it stamps a
+        tombstone rather than removing anything."""
+        sql = self._sql("_RETIRE_SQL")
+        self.assertIn("UPDATE participants", sql)
+        self.assertNotIn("DELETE", sql)
+        self.assertIn("guest_retired_at", sql)
+        self.assertIn("status = 'offline'", sql)
+
+    def test_the_display_name_is_not_redacted(self) -> None:
+        """It is what makes the room's own history readable, the guest chose it
+        and typed it into a room, and guest_sessions keeps its own copy."""
+        self.assertNotIn("display_name", self._sql("_RETIRE_SQL"))
+
+    def test_the_fks_that_forced_the_decision_are_still_what_we_think(self) -> None:
+        """If any of these ever became a plain CASCADE-and-forget, deleting a
+        guest would start destroying things silently and this whole design
+        would need revisiting. Pin them."""
+        from app.models.guest_access import GuestSession
+        from app.models.message import Message
+
+        def _ondelete(col) -> str:
+            return list(col.foreign_keys)[0].ondelete
+
+        self.assertEqual(_ondelete(Message.__table__.c.sender_id), "SET NULL")
+        self.assertTrue(Message.__table__.c.sender_id.nullable)
+        self.assertEqual(
+            _ondelete(GuestSession.__table__.c.participant_id), "CASCADE"
+        )
+
+    def test_the_message_index_the_purge_check_needs_exists(self) -> None:
+        """Without it the NOT EXISTS is a sequential scan of the whole message
+        table per candidate row — a GC that gets slower the more history you
+        have is one an operator turns off."""
+        from app.models.message import Message
+
+        names = {ix.name for ix in Message.__table__.indexes}
+        self.assertIn("ix_messages_sender_id", names)
+
+    def test_the_participant_scan_index_exists(self) -> None:
+        from app.models.participant import Participant
+
+        names = {ix.name for ix in Participant.__table__.indexes}
+        self.assertIn("ix_participants_type_created", names)
+
+    def test_no_migration_casts_the_guest_label_into_ddl(self) -> None:
+        """014 does ``ALTER TYPE participant_type_enum ADD VALUE 'guest'``, and
+        PostgreSQL refuses to USE a new enum label in the transaction that
+        added it. A later migration that names it — a partial index predicate
+        is the tempting one — therefore fails on every FRESH database (which
+        runs 014 and it in a single alembic run) while passing on every
+        already-migrated one. That is the worst shape a migration bug comes in,
+        so pin it here rather than discovering it on a new install."""
+        import pathlib
+
+        versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
+        for path in sorted(versions.glob("*.py")):
+            with self.subTest(migration=path.name):
+                self.assertNotIn(
+                    "'guest'::participant_type_enum", path.read_text()
+                )
+
+    # -- stage one: retire ---------------------------------------------------
+
+    def test_retiring_needs_every_session_dead_not_just_one(self) -> None:
+        """A guest may hold several sessions (two tabs, or two redemptions).
+        Retiring on the first dead one closes an identity that is still live
+        in another tab."""
+        sql = self._sql("_RETIRE_SQL")
+        self.assertIn("NOT EXISTS", sql)
+        self.assertIn("gs.revoked_at IS NULL", sql)
+
+    def test_retiring_refuses_a_guest_row_with_no_session_at_all(self) -> None:
+        """A positive EXISTS as well as the negative one: without it a vacuous
+        NOT EXISTS would tombstone any guest-typed row that never had a
+        session, including one mid-creation."""
+        sql = self._sql("_RETIRE_SQL")
+        self.assertEqual(sql.count("FROM guest_sessions gs"), 2)
+        self.assertEqual(sql.count("NOT EXISTS"), 1)
+
+    def test_retiring_waits_out_a_grace_window(self) -> None:
+        """``_terminate_sessions`` commits the revocation FIRST and then closes
+        sockets and evicts from LiveKit; this pass must not race that."""
+        self.assertIn("make_interval(mins => :grace_minutes)", self._sql("_RETIRE_SQL"))
+
+    def test_the_retire_claim_is_exactly_once_across_workers(self) -> None:
+        sql = self._sql("_RETIRE_SQL")
+        self.assertIn("(t.metadata ->> 'guest_retired_at') IS NULL", sql)
+        self.assertIn("RETURNING", sql)
+        self.assertIn("LIMIT :batch", sql)
+
+    async def test_a_retired_guest_is_counted(self) -> None:
+        counts, _db = await self._sweep(retired=[_uuid(), _uuid()], purged=[])
+        self.assertEqual(counts, (2, 0))
+
+    # -- stage two: the bounded delete --------------------------------------
+
+    def test_the_purge_can_only_touch_a_guest_that_sent_nothing(self) -> None:
+        """The whole safety argument, and it is re-checked INSIDE the DELETE so
+        it cannot race a straggler."""
+        sql = self._sql("_PURGE_SQL")
+        self.assertEqual(sql.count("SELECT 1 FROM messages m WHERE m.sender_id"), 2)
+        self.assertIn("DELETE FROM participants", sql)
+
+    def test_the_purge_only_touches_guests_and_only_retired_ones(self) -> None:
+        sql = self._sql("_PURGE_SQL")
+        self.assertIn("t.participant_type = 'guest'", sql)
+        self.assertIn("(t.metadata ->> 'guest_retired_at') IS NOT NULL", sql)
+
+    def test_the_purge_waits_out_a_retention_window(self) -> None:
+        self.assertIn(
+            "make_interval(days => :purge_after_days)", self._sql("_PURGE_SQL")
+        )
+
+    async def test_purge_after_zero_days_disables_the_delete_entirely(self) -> None:
+        """The escape hatch for a deployment that wants tombstones forever —
+        and it must not even RUN the statement, or "disabled" would still be a
+        write path one typo away from firing."""
+        from app.services import guest_reaper
+
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=[_scalars_result([])])
+        counts = await guest_reaper.sweep_guest_participants(
+            _FakeSessionFactory(db), purge_after_days=0
+        )
+        self.assertEqual(counts, (0, 0))
+        self.assertEqual(db.execute.await_count, 1)
+
+    async def test_a_purged_guest_is_counted(self) -> None:
+        counts, _db = await self._sweep(retired=[], purged=[_uuid()])
+        self.assertEqual(counts, (0, 1))
+
+    # -- the loop ------------------------------------------------------------
+
+    def test_the_tombstone_key_the_sql_writes_is_the_one_it_reads(self) -> None:
+        from app.services.guest_reaper import RETIRED_AT_KEY
+
+        self.assertIn(RETIRED_AT_KEY, self._sql("_RETIRE_SQL"))
+        self.assertIn(RETIRED_AT_KEY, self._sql("_PURGE_SQL"))
+
+    async def test_the_session_sweep_runs_first_and_both_run_each_pass(self) -> None:
+        """Hanging up on an expired stranger is the urgent half; bookkeeping is
+        not. Order matters, and a broken tombstone pass must not be able to
+        stop the sweep that evicts people."""
+        from app.services import guest_reaper
+
+        order: list[str] = []
+
+        async def _sessions(*_a, **_kw):
+            order.append("sessions")
+            return 0
+
+        async def _participants(*_a, **_kw):
+            order.append("participants")
+            raise asyncio.CancelledError()
+
+        fake_asyncio = SimpleNamespace(
+            sleep=AsyncMock(), CancelledError=asyncio.CancelledError
+        )
+        with (
+            patch.object(
+                guest_reaper,
+                "sweep_expired_guest_sessions",
+                AsyncMock(side_effect=_sessions),
+            ),
+            patch.object(
+                guest_reaper,
+                "sweep_guest_participants",
+                AsyncMock(side_effect=_participants),
+            ),
+            patch.object(guest_reaper, "asyncio", fake_asyncio),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await guest_reaper.run_guest_reaper(
+                    _FakeSessionFactory(),
+                    AsyncMock(),
+                    AsyncMock(),
+                    _settings(
+                        guest_reaper_interval_seconds=1,
+                        guest_reaper_batch=10,
+                        guest_participant_retire_after_minutes=60,
+                        guest_participant_purge_after_days=30,
+                    ),
+                )
+        self.assertEqual(order, ["sessions", "participants"])
+
+    def test_the_settings_exist_with_conservative_defaults(self) -> None:
+        from app.config import Settings
+
+        fields = Settings.model_fields
+        self.assertEqual(
+            fields["guest_participant_retire_after_minutes"].default, 60
+        )
+        self.assertEqual(fields["guest_participant_purge_after_days"].default, 30)
 
 
 # ---------------------------------------------------------------------------
