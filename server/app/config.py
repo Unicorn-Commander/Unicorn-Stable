@@ -286,6 +286,26 @@ class Settings(BaseSettings):
     # only ever when they sent no messages at all, so there is provably nothing
     # to orphan. 0 disables the delete stage entirely: tombstones, kept forever.
     guest_participant_purge_after_days: int = 30
+    # Retention for the two guest CREDENTIAL tables themselves. Revocation and
+    # expiry are stamps on these rows, never deletes — no code path anywhere
+    # issues a DELETE against either — so without these every link an owner
+    # ever minted, and every redemption of it, was kept forever.
+    #
+    # A SESSION is the record of a person who was in a room: which link they
+    # walked through, the name they typed, when they were last seen. Nothing in
+    # the schema references it (it is a leaf), so deleting one orphans nothing
+    # and un-attributes no message — messages point at the PARTICIPANT, which
+    # is tombstoned and kept. A year is far beyond any plausible
+    # incident-response window; 0 keeps them forever.
+    guest_session_purge_after_days: int = 365
+    # An INVITE is only ever deleted while NOT EXISTS a session referencing it,
+    # because guest_sessions.invite_id is ON DELETE CASCADE and deleting a used
+    # invite would take the audit trail above with it. What is left after that
+    # guard is a link NOBODY WALKED THROUGH — it records nothing about any
+    # person and nothing in the schema points at it — so a shorter window is
+    # safe. Shorter than the session window ON PURPOSE: the guard, not the
+    # clock, is what makes this delete safe. 0 keeps them forever.
+    guest_invite_purge_after_days: int = 90
 
     # -- Per-user quota caps (hard ceilings, independent of the rate window) --
     # Total KB documents a single user may own across all their collections,
