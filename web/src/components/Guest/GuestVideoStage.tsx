@@ -31,9 +31,10 @@ import {
   Track,
   type RemoteAudioTrack,
 } from "livekit-client";
-import { Mic, MicOff, Video, VideoOff } from "lucide-react";
+import { Maximize, Mic, MicOff, Minimize, Video, VideoOff } from "lucide-react";
 import clsx from "clsx";
 import { VideoGrid, type VideoTileItem } from "@/components/Room/VideoGrid";
+import { useTileFullscreen } from "@/hooks/useTileFullscreen";
 import { guestReconnectDelayMs, isGuestCallIdentity, type GuestSession } from "@/lib/guest";
 import {
   GuestSessionEnded,
@@ -68,17 +69,28 @@ function TileView({
   tile: Tile;
   members: GuestRoomMember[];
 }) {
+  // Per-tile browser fullscreen — the same affordance the member call UI has.
+  // A guest is ON the show; being able to feature any feed full-screen is not
+  // a member-only nicety. The hook's iPhone rung needs the <video>, so the
+  // attach ref below registers it. Destructured because the STABLE function
+  // is the dependency — depending on the `fs` object (fresh each render)
+  // would rebuild the ref every render and detach/reattach the track.
+  const fs = useTileFullscreen();
+  const { videoRef: fsVideoRef } = fs;
+
   const attach = useCallback(
     (el: HTMLVideoElement | null) => {
+      fsVideoRef(el);
       const track = tile.video;
       if (el && track) {
         track.attach(el);
         return () => {
           track.detach(el);
+          fsVideoRef(null);
         };
       }
     },
-    [tile.video],
+    [tile.video, fsVideoRef],
   );
   const attachAudio = useCallback(
     (el: HTMLAudioElement | null) => {
@@ -100,8 +112,9 @@ function TileView({
 
   return (
     <div
+      ref={fs.ref}
       className={clsx(
-        "relative h-full w-full overflow-hidden rounded-xl bg-slate-950 ring-1",
+        "group relative h-full w-full overflow-hidden rounded-xl bg-slate-950 ring-1",
         tile.speaking ? "ring-stable-mint" : "ring-white/[0.06]",
       )}
     >
@@ -112,7 +125,11 @@ function TileView({
           playsInline
           // The local preview must be muted or the guest hears themselves.
           muted={tile.isLocal}
-          className="h-full w-full object-cover"
+          className={clsx(
+            "h-full w-full",
+            // Cropping is fine in a grid cell; fullscreen must letterbox.
+            fs.isFullscreen ? "object-contain" : "object-cover",
+          )}
         />
       ) : (
         <div className="grid h-full w-full place-items-center">
@@ -120,6 +137,26 @@ function TileView({
         </div>
       )}
       {!tile.isLocal && tile.audio && <audio ref={attachAudio} autoPlay />}
+      {/* Full screen — hover-revealed on desktop, always visible with a ≥44px
+          target on touch layouts (mobile tap-adjustment has a history of
+          missing tiny controls). Hidden entirely when no pipeline exists,
+          e.g. an avatar-only tile on iPhone. Esc / the same button exits. */}
+      {fs.supported && (
+        <button
+          type="button"
+          onClick={fs.toggle}
+          aria-label={fs.isFullscreen ? "Exit full screen" : "Full screen"}
+          aria-pressed={fs.isFullscreen}
+          title={fs.isFullscreen ? "Exit full screen" : "Full screen"}
+          className="glass focus-ring absolute right-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-md text-slate-200 transition-[opacity,color] hover:text-white focus-visible:opacity-100 md:h-6 md:w-6 md:opacity-0 md:group-hover:opacity-100"
+        >
+          {fs.isFullscreen ? (
+            <Minimize className="h-3.5 w-3.5 md:h-3 md:w-3" />
+          ) : (
+            <Maximize className="h-3.5 w-3.5 md:h-3 md:w-3" />
+          )}
+        </button>
+      )}
       <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-white">
           {tile.name}
@@ -225,7 +262,15 @@ export function GuestVideoStage({
       }
       if (disposed || gen !== generation) return;
 
-      const next = new Room({ adaptiveStream: true, dynacast: true });
+      // `pauseVideoInBackground: false` — same guard VoiceProvider and
+      // BroadcastPage carry: adaptive stream must not pause remote video when
+      // the page reports hidden, which iPhone can do while the NATIVE
+      // fullscreen player (the guest tile's fullscreen rung) is presenting
+      // the very video being watched.
+      const next = new Room({
+        adaptiveStream: { pauseVideoInBackground: false },
+        dynacast: true,
+      });
       const sync = () => collect(next, gen);
       next
         .on(RoomEvent.ParticipantConnected, sync)
