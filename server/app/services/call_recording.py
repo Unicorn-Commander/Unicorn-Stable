@@ -44,9 +44,15 @@ logger = structlog.get_logger(__name__)
 # are recorders, not callers, and must never count as call occupancy.
 EGRESS_IDENTITY_PREFIX = "EG_"
 
-# How far outside the recording window a transcript export may sit and still
-# be treated as "the same call" (client clocks + hang-up ordering slack).
-_SESSION_MATCH_SLACK = timedelta(minutes=30)
+# Transcript exports are created at (or during) THEIR call: manual sends land
+# mid-call, automatic ones at each browser's hang-up. An export created before
+# this recording began therefore belongs to an EARLIER call in the same room —
+# the pre-window slack covers only clock skew, or back-to-back calls collapse
+# onto the previous call's session (observed live: call 2's audio attached to
+# call 1's session under a symmetric ±30min window). The post-window slack is
+# generous because the last browser's export can trail the egress stop.
+_SESSION_MATCH_PRE_SLACK = timedelta(minutes=2)
+_SESSION_MATCH_POST_SLACK = timedelta(minutes=30)
 
 # A row stuck in `starting` longer than this had its StartEgress interrupted
 # (process death between lease INSERT and egress start); release the lease.
@@ -408,8 +414,8 @@ async def _find_meeting_ops_session(
     """
     if row.room_id is None:
         return None
-    window_start = (row.started_at or row.created_at) - _SESSION_MATCH_SLACK
-    window_end = (row.ended_at or _now()) + _SESSION_MATCH_SLACK
+    window_start = (row.started_at or row.created_at) - _SESSION_MATCH_PRE_SLACK
+    window_end = (row.ended_at or _now()) + _SESSION_MATCH_POST_SLACK
     export = (
         await db.execute(
             select(TranscriptExport)
