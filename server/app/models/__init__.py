@@ -9,6 +9,7 @@ from app.models.artifact import (
     ArtifactVersion,
 )
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.models.call_egress import CallEgress
 from app.models.knowledge import (
     KnowledgeCollection,
     KnowledgeDocument,
@@ -31,6 +32,7 @@ __all__ = [
     "RoomType",
     "MemberRole",
     "TranscriptExport",
+    "CallEgress",
     "PushSubscription",
     "Message",
     "ContentType",

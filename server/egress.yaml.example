@@ -1,0 +1,21 @@
+# =============================================================================
+# LiveKit Egress Configuration — Stable (template)
+# =============================================================================
+# Copy to server/egress.yaml (gitignored, holds secrets) and fill in.
+#
+# * api_key / api_secret MUST match an entry in server/livekit.yaml `keys:`.
+# * redis MUST be the exact redis the SFU itself uses — that redis is the
+#   egress dispatch bus; pointing at a different one means StartEgress calls
+#   sit in the SFU forever with no worker ever picking them up.
+# * The backend requests file outputs under /egress-out (the shared
+#   stable-egress-out volume, mounted at the same path in the backend).
+
+api_key: your-livekit-api-key
+api_secret: your-livekit-api-secret
+ws_url: ws://stable-livekit:7880
+
+redis:
+  address: stable-redis:6379
+  password: your-redis-password
+
+log_level: info

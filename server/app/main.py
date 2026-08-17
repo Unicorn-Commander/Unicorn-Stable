@@ -244,6 +244,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("transcript_outbox_worker_start_failed", exc_info=True)
     app.state.transcript_outbox_task = transcript_outbox_task
 
+    # Durable call-audio hand-off. Same claim discipline as the transcript
+    # outbox: FOR UPDATE SKIP LOCKED rows, so all four uvicorn workers may run
+    # the loop without double-delivering one recording. Recording itself is
+    # feature-flagged; when disabled this worker idles over an empty table.
+    call_recording_task = None
+    try:
+        from app.services.call_recording import (
+            handoff_config_error,
+            run_call_recording_handoff,
+        )
+
+        call_recording_task = asyncio.create_task(
+            run_call_recording_handoff(session_factory, settings)
+        )
+        logger.info(
+            "call_recording_handoff_worker_started",
+            recording_enabled=settings.call_recording_enabled,
+            handoff_config_error=handoff_config_error(settings),
+        )
+    except Exception:
+        logger.warning("call_recording_handoff_worker_start_failed", exc_info=True)
+    app.state.call_recording_task = call_recording_task
+
     # Guest-session reaper. Expiry used to be enforced only when something
     # asked — so an expired guest stopped being AUTHORIZED on time, but kept
     # publishing to LiveKit (the media session outlives the token that opened
@@ -283,6 +306,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         transcript_outbox_task.cancel()
         try:
             await transcript_outbox_task
+        except asyncio.CancelledError:
+            pass
+
+    if call_recording_task and not call_recording_task.done():
+        call_recording_task.cancel()
+        try:
+            await call_recording_task
         except asyncio.CancelledError:
             pass
 

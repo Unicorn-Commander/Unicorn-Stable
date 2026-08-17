@@ -57,6 +57,7 @@ coverage/
 *.bak
 *.bak-*
 server/livekit.yaml
+server/egress.yaml
 
 # Per-org instance artifacts contain generated secrets — never commit.
 deploy/per-org/instances/
