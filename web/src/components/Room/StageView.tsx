@@ -1,10 +1,11 @@
 import { useCallback, useMemo } from "react";
-import { Minimize2, Maximize2, Bot, X } from "lucide-react";
+import { Minimize2, Maximize2, Maximize, Minimize, Bot, X } from "lucide-react";
 import { useState } from "react";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
+import { useTileFullscreen } from "@/hooks/useTileFullscreen";
 import { useAppStore } from "@/stores/appStore";
 import { api } from "@/services/api";
 import { Avatar } from "@/components/ui/Avatar";
@@ -78,16 +79,27 @@ export function StageView({ agentId, roomId }: StageViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentParticipant, version]);
 
+  // Browser fullscreen for the stage tile — the same per-tile affordance the
+  // call tiles carry. Registers the <video> so iPhone (no element fullscreen)
+  // can present the native player instead of hiding the button. Destructured
+  // because the STABLE function is the dependency — depending on the `fs`
+  // object (fresh each render) would rebuild attachRef every render and
+  // detach/reattach the LiveKit track (flicker + black frame).
+  const fs = useTileFullscreen();
+  const { videoRef: fsVideoRef } = fs;
+
   const attachRef = useCallback(
     (el: HTMLVideoElement | null) => {
+      fsVideoRef(el);
       if (el && videoTrack) {
         videoTrack.attach(el);
         return () => {
           videoTrack.detach(el);
+          fsVideoRef(null);
         };
       }
     },
-    [videoTrack],
+    [videoTrack, fsVideoRef],
   );
 
   function handleClose() {
@@ -96,6 +108,7 @@ export function StageView({ agentId, roomId }: StageViewProps) {
 
   return (
     <div
+      ref={fs.ref}
       className={clsx(
         "relative flex h-full w-full items-center justify-center bg-slate-950",
         maximized && "fixed inset-0 z-40",
@@ -145,10 +158,37 @@ export function StageView({ agentId, roomId }: StageViewProps) {
       )}
 
       <div className="glass absolute right-3 top-3 flex items-center gap-1 rounded-xl p-1">
+        {/* Browser fullscreen — distinct from "Maximize stage", which only
+            expands the stage over the app. p-3.5 keeps a ≥44px touch target
+            on mobile, compacting beside its siblings on md+. */}
+        {fs.supported && (
+          <button
+            onClick={fs.toggle}
+            className="focus-ring rounded-lg p-3.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
+            aria-label={fs.isFullscreen ? "Exit full screen" : "Full screen"}
+            aria-pressed={fs.isFullscreen}
+            title={
+              fs.isFullscreen
+                ? "Exit full screen"
+                : "Full screen — fills the whole screen (Esc exits); “Maximize stage” only expands it over the app"
+            }
+          >
+            {fs.isFullscreen ? (
+              <Minimize className="h-4 w-4" />
+            ) : (
+              <Maximize className="h-4 w-4" />
+            )}
+          </button>
+        )}
         <button
           onClick={() => setMaximized(!maximized)}
-          className="focus-ring rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
+          className="focus-ring rounded-lg p-3.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
           aria-label={maximized ? "Minimize stage" : "Maximize stage"}
+          title={
+            maximized
+              ? "Minimize stage"
+              : "Maximize stage — expand over the app (use “Full screen” for the whole screen)"
+          }
         >
           {maximized ? (
             <Minimize2 className="h-4 w-4" />
@@ -158,7 +198,7 @@ export function StageView({ agentId, roomId }: StageViewProps) {
         </button>
         <button
           onClick={handleClose}
-          className="focus-ring rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
+          className="focus-ring rounded-lg p-3.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1.5"
           aria-label="Close stage"
         >
           <X className="h-4 w-4" />

@@ -117,6 +117,7 @@ import {
   useFeedPopouts,
   isPopoutSupported,
 } from "@/components/Room/popout";
+import { useTileFullscreen } from "@/hooks/useTileFullscreen";
 
 /* ------------------------------------------------------------------ *
  * Feed keys — the identity of ONE poppable video feed.
@@ -232,92 +233,14 @@ function useAttachTrack(): (track: LocalTrack | RemoteTrack | null) => AttachRef
 }
 
 /* ------------------------------------------------------------------ *
- * Fullscreen — per-tile, cross-vendor (standard + webkit for Safari).
+ * Fullscreen — per-tile, cross-vendor. The document-aware hook that used to
+ * live here is now hooks/useTileFullscreen.ts over the tested engine in
+ * lib/tileFullscreen.ts, because EVERY call surface needs it (this file,
+ * StageView, the guest stage) and the iPhone video-tag rung
+ * (`video.webkitEnterFullscreen()`) made it real logic: tiles register their
+ * <video> via `fs.videoRef` so iPhone — which has no element fullscreen —
+ * can present the native player instead of hiding the button.
  * ------------------------------------------------------------------ */
-
-type FullscreenDoc = Document & {
-  webkitFullscreenEnabled?: boolean;
-  webkitFullscreenElement?: Element | null;
-  webkitExitFullscreen?: () => Promise<void> | void;
-};
-type FullscreenEl = HTMLElement & {
-  webkitRequestFullscreen?: () => Promise<void> | void;
-};
-
-interface FullscreenController {
-  ref: (el: HTMLDivElement | null) => void;
-  isFullscreen: boolean;
-  supported: boolean;
-  toggle: () => void;
-}
-
-/**
- * Per-tile fullscreen.
- *
- * DOCUMENT-AWARE (multi-window): a tile that has been popped out lives in the
- * CHILD window's document, so `document.fullscreenElement` and
- * `document.exitFullscreen()` on the global (opener) document address the wrong
- * window entirely — the button would report the wrong state and could never
- * exit. Everything here resolves the document from the NODE (`el.ownerDocument`)
- * and re-binds its listeners when the node moves between documents. This is the
- * same wrong-document bug class that makes SplitPane unsafe to portal.
- */
-function useFullscreen(): FullscreenController {
-  const elRef = useRef<HTMLDivElement | null>(null);
-  // The document our node currently lives in; flips when the tile is portalled
-  // into (or back out of) a pop-out window, which re-runs the listener effect.
-  const [ownerDoc, setOwnerDoc] = useState<Document | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const supported =
-    typeof document !== "undefined" &&
-    (document.fullscreenEnabled ||
-      !!(document as FullscreenDoc).webkitFullscreenEnabled);
-
-  useEffect(() => {
-    const doc = ownerDoc ?? (typeof document !== "undefined" ? document : null);
-    if (!doc) return;
-    const onChange = () => {
-      const d = doc as FullscreenDoc;
-      const fsEl = doc.fullscreenElement ?? d.webkitFullscreenElement ?? null;
-      setIsFullscreen(!!elRef.current && fsEl === elRef.current);
-    };
-    // Reconcile immediately: moving documents can only ever drop fullscreen, and
-    // a stale `true` would leave the tile stuck rendering its exit affordance.
-    onChange();
-    doc.addEventListener("fullscreenchange", onChange);
-    doc.addEventListener("webkitfullscreenchange", onChange as EventListener);
-    return () => {
-      doc.removeEventListener("fullscreenchange", onChange);
-      doc.removeEventListener("webkitfullscreenchange", onChange as EventListener);
-    };
-  }, [ownerDoc]);
-
-  const toggle = useCallback(() => {
-    const el = elRef.current as FullscreenEl | null;
-    if (!el) return;
-    // Resolve from the node, NOT the global — this is the whole point.
-    const doc = (el.ownerDocument ?? document) as FullscreenDoc;
-    const fsEl = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
-    void (async () => {
-      try {
-        if (fsEl === el) {
-          await (doc.exitFullscreen?.() ?? doc.webkitExitFullscreen?.());
-        } else {
-          await (el.requestFullscreen?.() ?? el.webkitRequestFullscreen?.());
-        }
-      } catch (e) {
-        console.error("fullscreen toggle failed", e);
-      }
-    })();
-  }, []);
-
-  const ref = useCallback((el: HTMLDivElement | null) => {
-    elRef.current = el;
-    setOwnerDoc(el?.ownerDocument ?? null);
-  }, []);
-
-  return { ref, isFullscreen, supported, toggle };
-}
 
 /* ------------------------------------------------------------------ *
  * Tile hover-control button (pin / fullscreen / PiP / hide / mute).
@@ -351,11 +274,16 @@ function TileControlButton({
       aria-pressed={active}
       title={title ?? label}
       className={clsx(
-        "glass focus-ring flex h-6 w-6 items-center justify-center rounded-md text-slate-200 transition-colors hover:text-white",
+        // Same responsive touch-target treatment as FaceStyleTileButton below:
+        // a full 44px button on touch layouts — where the cluster is always
+        // visible, fingers are blunt, and mobile Chrome's touch-adjustment has
+        // a history of snapping taps onto the wrong tiny handle — compacting
+        // to the cluster's 24px beside its siblings on md+.
+        "glass focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-200 transition-colors hover:text-white md:h-6 md:w-6",
         active && "text-stable-purple-light ring-1 ring-stable-purple/60",
       )}
     >
-      <Icon className="h-3 w-3" />
+      <Icon className="h-3.5 w-3.5 md:h-3 md:w-3" />
     </button>
   );
 }
@@ -484,7 +412,7 @@ function ParticipantTile({
   isBroadcasting,
 }: ParticipantTileProps) {
   const pip = usePipTile();
-  const fs = useFullscreen();
+  const fs = useTileFullscreen();
   const showVideoEl = !!videoRef && !hidden;
   const ident = identityFor(p.id.replace(/^agent-/, ""), p.name);
   /* WHICH SIDE OF THE FLAG THINGS LIVE ON.
@@ -586,6 +514,9 @@ function ParticipantTile({
     videoRef,
     pip.videoRef,
     captureVideoEl,
+    // Registers the <video> for the iPhone fullscreen rung; stable identity,
+    // so the memoization above still holds.
+    fs.videoRef,
   );
 
   /* A PUBLISHED-BUT-EMPTY AGENT VIDEO TRACK. NOT FLAG-GATED — this is a bug fix.
@@ -1010,8 +941,9 @@ function ScreenShareTile({
   inPopout,
 }: ScreenShareTileProps) {
   const pip = usePipTile();
-  const fs = useFullscreen();
-  const composedVideoRef = useMergedVideoRef(videoRef, pip.videoRef);
+  const fs = useTileFullscreen();
+  // fs.videoRef registers the <video> for the iPhone fullscreen rung.
+  const composedVideoRef = useMergedVideoRef(videoRef, pip.videoRef, fs.videoRef);
 
   return (
     <div
