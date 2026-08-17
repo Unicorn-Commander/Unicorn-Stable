@@ -446,9 +446,11 @@ async def upload_audio_to_meeting_ops(
     try:
         total_size = file_path.stat().st_size
     except OSError as exc:
+        # Mount/permission trouble is operational and worth retrying (the
+        # caller's max-attempts cap keeps it bounded).
         return {
             "ok": False,
-            "retryable": False,
+            "retryable": True,
             "detail": f"audio file unreadable: {exc}",
         }
     if total_size <= 0:
@@ -653,7 +655,18 @@ async def _deliver_claimed_handoff(
             await db.commit()
             return
 
-        if file_path is None or not file_path.exists():
+        # exists() can RAISE (not return False) when the volume mount or its
+        # permissions are broken — that is an ops problem, not a lost file,
+        # so it retries with backoff instead of terminalizing the row.
+        file_unreadable: str | None = None
+        file_missing = file_path is None
+        if file_path is not None:
+            try:
+                file_missing = not file_path.exists()
+            except OSError as exc:
+                file_unreadable = f"{type(exc).__name__}: {exc}"
+
+        if file_missing:
             row.handoff_status = "failed"
             row.handoff_error = f"audio file missing: {row.file_path}"
             await db.commit()
@@ -661,6 +674,24 @@ async def _deliver_claimed_handoff(
                 "call_recording_handoff_file_missing",
                 egress_id=row.egress_id,
                 file_path=row.file_path,
+            )
+            return
+
+        if file_unreadable is not None:
+            exhausted = attempts >= settings.call_recording_handoff_max_attempts
+            row.handoff_status = "failed" if exhausted else "pending"
+            row.handoff_error = f"audio file unreadable: {file_unreadable}"
+            if not exhausted:
+                row.handoff_next_attempt_at = _now() + timedelta(
+                    seconds=_backoff_seconds(settings, attempts)
+                )
+            await db.commit()
+            logger.error(
+                "call_recording_handoff_file_unreadable",
+                egress_id=row.egress_id,
+                file_path=row.file_path,
+                attempts=attempts,
+                detail=file_unreadable,
             )
             return
 

@@ -231,7 +231,9 @@ def test_upload_refuses_missing_or_empty_files(tmp_path: Path):
         )
     )
     assert missing["ok"] is False
-    assert missing["retryable"] is False
+    # An unreadable path at THIS stage is mount/permission trouble (the outbox
+    # already proved existence) — operational, so retryable.
+    assert missing["retryable"] is True
 
     empty_file = tmp_path / "empty.ogg"
     empty_file.write_bytes(b"")
