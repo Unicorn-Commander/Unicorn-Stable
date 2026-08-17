@@ -43,6 +43,40 @@ services:
       retries: 5
 
   # ==========================================================================
+  # LiveKit Egress — records call audio (room-composite, audio-only OGG).
+  # Registers against the SAME redis as the SFU (that redis IS the egress
+  # dispatch bus); writes finished files onto the shared egress_out volume,
+  # which the backend mounts read-only at the SAME path so no translation is
+  # needed. The backend starts/stops egresses via the LiveKit server API and
+  # treats this whole service as optional — if it's down, calls still work
+  # and the backend logs call_recording_start_failed loudly.
+  # ==========================================================================
+  egress:
+    image: livekit/egress:v1.14.1
+    container_name: stable-egress
+    restart: unless-stopped
+    environment:
+      - EGRESS_CONFIG_FILE=/etc/egress.yaml
+    volumes:
+      # Real config is host-local (secrets), like server/livekit.yaml.
+      # Template: server/egress.yaml.example.
+      - ./server/egress.yaml:/etc/egress.yaml:ro
+      - egress_out:/egress-out
+    # Chromium inside the egress image needs a real /dev/shm even when a
+    # request ends up on the chromeless audio-only pipeline.
+    shm_size: "1gb"
+    cpus: 2.0
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    # stable-net ONLY — dials stable-redis/stable-livekit by container name;
+    # nothing routes TO it.
+    networks:
+      - stable-net
+
+  # ==========================================================================
   # PostgreSQL 16 — persistent storage for rooms, messages, agents, audit
   # ==========================================================================
   postgres:
@@ -131,6 +165,10 @@ services:
     volumes:
       - ./server:/app
       - backend_uploads:/home/stable/server/uploads
+      # Finished call-audio recordings, written by the egress service. Read-
+      # only here: the backend only picks files up for the Meeting-Ops
+      # hand-off; it never writes or deletes them.
+      - egress_out:/egress-out:ro
     environment:
       # production => SQLAlchemy echo OFF (dev leaked every SQL statement +
       # message body to stdout) and JSON structured logs.
@@ -190,6 +228,17 @@ services:
       - MEETING_OPS_ENABLED=${MEETING_OPS_ENABLED:-false}
       - MEETING_OPS_OUTBOX_PAYLOAD_RETENTION_HOURS=${MEETING_OPS_OUTBOX_PAYLOAD_RETENTION_HOURS:-168}
       - MEETING_OPS_OUTBOX_LEGAL_HOLD=${MEETING_OPS_OUTBOX_LEGAL_HOLD:-false}
+      # Automatic call-audio recording (LiveKit egress) → Meeting-Ops attach.
+      # Code default is OFF; this dogfood stack turns it ON. Fail-open: a
+      # broken/absent egress service never breaks the call itself.
+      - CALL_RECORDING_ENABLED=${CALL_RECORDING_ENABLED:-true}
+      - CALL_RECORDING_OUTPUT_DIR=/egress-out
+      # Direct container URL for the audio attach lane (big uploads must not
+      # transit the CDN edge). Falls back to MEETING_OPS_URL when empty.
+      - MEETING_OPS_UPLOAD_URL=${MEETING_OPS_UPLOAD_URL:-}
+      # USER-scoped MO PAT (the transcript-ingest PAT is scope-locked and
+      # cannot drive MO's uploads API).
+      - MEETING_OPS_UPLOAD_PAT=${MEETING_OPS_UPLOAD_PAT:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}
@@ -412,3 +461,5 @@ volumes:
     name: stable-redis-data
   backend_uploads:
     name: stable-backend-uploads
+  egress_out:
+    name: stable-egress-out

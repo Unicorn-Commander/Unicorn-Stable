@@ -350,6 +350,35 @@ class Settings(BaseSettings):
     meeting_ops_outbox_payload_retention_hours: int = 168
     meeting_ops_outbox_legal_hold: bool = False
 
+    # -- Automatic call-audio recording (LiveKit egress) --
+    # Master switch for recording call audio via the stack's LiveKit egress
+    # service and attaching it to the call's Meeting-Ops session. Default OFF
+    # so instances without an egress container (e.g. per-org deployments that
+    # haven't opted in) are unaffected; dogfood turns it on in compose.
+    # Recording is strictly fail-open: an absent/broken egress service must
+    # never break the call itself.
+    call_recording_enabled: bool = False
+    # Egress writes finished files here; the volume is mounted at the SAME
+    # path in the egress container and this backend, so no path translation.
+    call_recording_output_dir: str = "/egress-out"
+    call_recording_handoff_poll_seconds: float = 5.0
+    call_recording_handoff_max_attempts: int = 10
+    call_recording_handoff_retry_base_seconds: int = 15
+    call_recording_handoff_retry_max_seconds: int = 900
+    # How long the hand-off keeps waiting for the call's transcript export to
+    # create the Meeting-Ops session before recording `no_session`.
+    call_recording_session_wait_seconds: int = 1800
+    # Meeting-Ops base URL for the audio attach lane. Empty = meeting_ops_url.
+    # On bigboy dogfood this is the direct container URL
+    # (http://meet-backend:9050) so multi-hundred-MB call audio never transits
+    # the CDN edge (Cloudflare caps request bodies well below a long call).
+    meeting_ops_upload_url: str = ""
+    # A USER-scoped Meeting-Ops PAT (mops_pat_…). The transcript lane's
+    # stable.transcript.ingest PAT is scope-locked to /sessions/ingest and is
+    # deliberately rejected by MO's generic API auth, so the audio lane needs
+    # its own credential.
+    meeting_ops_upload_pat: str = ""
+
     # -- STT proxy (app/api/stt.py) --
     # OpenAI-compatible transcription base (must include the /v1 suffix).
     # Deployed default = Parakeet OpenAI shim on midboy1 (was Amanuensis on

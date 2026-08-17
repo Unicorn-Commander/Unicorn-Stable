@@ -75,6 +75,42 @@ class LiveKitService:
             "participants": list(participants_response.participants),
         }
 
+    async def start_room_audio_egress(self, room_name: str, filepath: str) -> Any:
+        """Start an audio-only room-composite egress writing an OGG file.
+
+        Requires the stack's `egress` service (livekit/egress) to be running
+        and registered against the same Redis as the SFU; callers treat any
+        failure here as "recording unavailable" and stay fail-open.
+        """
+        from livekit.protocol import egress as proto_egress
+
+        request = proto_egress.RoomCompositeEgressRequest(
+            room_name=room_name,
+            audio_only=True,
+            file_outputs=[
+                proto_egress.EncodedFileOutput(
+                    file_type=proto_egress.EncodedFileType.OGG,
+                    filepath=filepath,
+                )
+            ],
+        )
+        info = await self._api.egress.start_room_composite_egress(request)
+        logger.info(
+            "livekit_egress_started",
+            room_name=room_name,
+            egress_id=getattr(info, "egress_id", None),
+        )
+        return info
+
+    async def stop_egress(self, egress_id: str) -> Any:
+        """Stop a running egress. LiveKit errors if it already ended."""
+        from livekit.protocol import egress as proto_egress
+
+        request = proto_egress.StopEgressRequest(egress_id=egress_id)
+        info = await self._api.egress.stop_egress(request)
+        logger.info("livekit_egress_stop_requested", egress_id=egress_id)
+        return info
+
     def generate_token(
         self,
         room_name: str,

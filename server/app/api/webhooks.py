@@ -23,6 +23,7 @@ from app.deps import (
 )
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember
+from app.services import call_recording
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 from app.services.presence_service import PresenceService
@@ -82,15 +83,17 @@ async def livekit_webhook(
     )
 
     if event_type == "participant_joined":
-        await _handle_participant_joined(event, db, presence, redis, livekit)
+        await _handle_participant_joined(event, db, presence, redis, livekit, settings)
     elif event_type == "participant_left":
-        await _handle_participant_left(event, db, presence, redis, livekit)
+        await _handle_participant_left(event, db, presence, redis, livekit, settings)
     elif event_type == "room_started":
         await _handle_room_started(event, db)
     elif event_type == "room_finished":
-        await _handle_room_finished(event, db, redis)
+        await _handle_room_finished(event, db, redis, livekit, settings)
     elif event_type == "track_published":
         await _handle_track_published(event)
+    elif event_type in ("egress_started", "egress_updated", "egress_ended"):
+        await _handle_egress_event(event, db, settings, event_type)
     else:
         logger.debug("webhook_event_unhandled", event_type=event_type)
 
@@ -134,7 +137,15 @@ async def _broadcast_call_occupancy(
             if livekit is None:
                 return
             info = await livekit.get_room(room.livekit_room_name)
-            participants = info.get("participants", [])
+            # Service participants (broadcast viewers, the egress recorder)
+            # observe the call; they are not IN it.
+            participants = [
+                p
+                for p in info.get("participants", [])
+                if not call_recording.is_service_identity(
+                    getattr(p, "identity", "")
+                )
+            ]
             count = len(participants)
             has_agent = any(
                 str(getattr(p, "identity", "")).startswith("agent-")
@@ -189,14 +200,16 @@ async def _handle_participant_joined(
     presence: PresenceService,
     redis: Redis,
     livekit: LiveKitService,
+    settings: Settings,
 ) -> None:
     """Handle a participant joining a LiveKit room."""
     if not event.participant or not event.room:
         return
 
     identity = event.participant.identity
-    if _is_broadcast_identity(identity):
-        # Subscribe-only OBS viewer: no presence, no occupancy fan-out.
+    if call_recording.is_service_identity(identity):
+        # Subscribe-only OBS viewer or the egress recorder: no presence, no
+        # occupancy fan-out, and never a reason to start a recording.
         return
     room_name = event.room.name
 
@@ -253,6 +266,19 @@ async def _handle_participant_joined(
         redis, livekit, room, by=_joined_by(event, participant_id)
     )
 
+    # Automatic call-audio recording: any real join means a call is live in
+    # this room; the DB lease inside makes "start once" true across all four
+    # uvicorn workers. Fail-open BY CONTRACT — a broken/absent egress service
+    # must never break the call, presence, or this webhook's 200.
+    try:
+        await call_recording.ensure_room_recording(db, settings, livekit, room)
+    except Exception:
+        logger.error(
+            "call_recording_ensure_failed",
+            room_id=str(room.id),
+            exc_info=True,
+        )
+
 
 async def _handle_participant_left(
     event: Any,
@@ -260,14 +286,16 @@ async def _handle_participant_left(
     presence: PresenceService,
     redis: Redis,
     livekit: LiveKitService,
+    settings: Settings,
 ) -> None:
     """Handle a participant leaving a LiveKit room."""
     if not event.participant or not event.room:
         return
 
     identity = event.participant.identity
-    if _is_broadcast_identity(identity):
-        # Subscribe-only OBS viewer: no presence, no occupancy fan-out.
+    if call_recording.is_service_identity(identity):
+        # Subscribe-only OBS viewer or the egress recorder: no presence, no
+        # occupancy fan-out.
         return
     room_name = event.room.name
 
@@ -317,6 +345,18 @@ async def _handle_participant_left(
     # room-scoped "the call ended" signal the clients key off.
     await _broadcast_call_occupancy(redis, livekit, room)
 
+    # If that was the last real participant, stop this call's recording now
+    # instead of waiting out LiveKit's empty_timeout (which would append
+    # minutes of silence). Fail-open: recording must never break the webhook.
+    try:
+        await call_recording.stop_room_recording_if_idle(db, settings, livekit, room)
+    except Exception:
+        logger.error(
+            "call_recording_idle_stop_failed",
+            room_id=str(room.id),
+            exc_info=True,
+        )
+
 
 async def _handle_room_started(
     event: Any,
@@ -345,6 +385,8 @@ async def _handle_room_finished(
     event: Any,
     db: AsyncSession,
     redis: Redis,
+    livekit: LiveKitService,
+    settings: Settings,
 ) -> None:
     """Handle a LiveKit room being destroyed."""
     if not event.room:
@@ -364,6 +406,44 @@ async def _handle_room_finished(
         # probe. Backstop for a lost/ignored final participant_left, so no
         # client is left believing a call is live in a destroyed room.
         await _broadcast_call_occupancy(redis, None, room, count_override=0)
+
+        # Backstop for the recording too: if the idle-stop never fired (lost
+        # webhook), stop the egress when the room dies. Fail-open.
+        try:
+            await call_recording.stop_room_recording(
+                db, settings, livekit, room, reason="room_finished"
+            )
+        except Exception:
+            logger.error(
+                "call_recording_finish_stop_failed",
+                room_id=str(room.id),
+                exc_info=True,
+            )
+
+
+async def _handle_egress_event(
+    event: Any,
+    db: AsyncSession,
+    settings: Settings,
+    event_type: str,
+) -> None:
+    """Fold LiveKit egress lifecycle webhooks into recording bookkeeping.
+
+    ``egress_ended`` is the single authority that a recording finished (or
+    died) and is what queues the Meeting-Ops audio hand-off. Fail-open: an
+    exception here must not turn the webhook into a non-200 (LiveKit would
+    retry forever against a persistent bug).
+    """
+    try:
+        await call_recording.handle_egress_event(
+            db, settings, event_type, getattr(event, "egress_info", None)
+        )
+    except Exception:
+        logger.error(
+            "call_recording_egress_event_failed",
+            event_type=event_type,
+            exc_info=True,
+        )
 
 
 async def _handle_track_published(event: Any) -> None:

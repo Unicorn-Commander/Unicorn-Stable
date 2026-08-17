@@ -3450,9 +3450,12 @@ class GuestPresenceScopeTests(IsolatedAsyncioTestCase):
             side_effect=[_scalar_result(room), _scalar_result(participant)]
         )
         presence = AsyncMock()
+        from app.config import Settings
+
         with patch.object(W, "_broadcast_call_occupancy", AsyncMock()):
             await W._handle_participant_joined(
-                event, db, presence, AsyncMock(), AsyncMock()
+                event, db, presence, AsyncMock(), AsyncMock(),
+                Settings(call_recording_enabled=False),
             )
         return presence
 
