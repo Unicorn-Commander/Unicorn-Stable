@@ -86,16 +86,14 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
               aria-expanded={false}
               className="focus-ring relative flex h-11 w-full min-w-[44px] items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
             >
-            <PanelLeftOpen className="h-4 w-4" />
-            {hiddenUnread > 0 && (
-              <span
-                className="absolute right-0.5 top-1.5 h-2 w-2 rounded-full bg-rose-500"
-                aria-hidden="true"
-              />
-            )}
+              <PanelLeftOpen className="h-4 w-4" />
+              {hiddenUnread > 0 && (
+                <span
+                  className="absolute right-0.5 top-1.5 h-2 w-2 rounded-full bg-rose-500"
+                  aria-hidden="true"
+                />
+              )}
             </button>
-          </Tooltip>
-          </Tooltip>
           </Tooltip>
           {mobile && (
             <span className="text-xs text-slate-500">
@@ -179,8 +177,9 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
             onClick={() => setSwitcherOpen(true)}
             className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-line text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
           >
-          <Search className="h-4 w-4" />
-        </button>
+            <Search className="h-4 w-4" />
+          </button>
+        </Tooltip>
 
         <Tooltip content="Add a server">
           <button
@@ -189,8 +188,9 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
             onClick={() => setAddServerOpen(true)}
             className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-dashed border-slate-600 text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
           >
-          <Plus className="h-5 w-5" />
-        </button>
+            <Plus className="h-5 w-5" />
+          </button>
+        </Tooltip>
 
         {switching && <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-slate-400" />}
 
@@ -205,9 +205,9 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
               !mobile && "mt-auto",
             )}
           >
-          <PanelLeftClose className="h-4 w-4" />
-        </button>
-      </Tooltip>
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+        </Tooltip>
       </div>
 
       {overlays}
