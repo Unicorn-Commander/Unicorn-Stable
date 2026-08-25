@@ -53,7 +53,7 @@ import { PeopleDrawer } from "./PeopleDrawer";
 import { ActivityCenter, type ActivityTab } from "./ActivityCenter";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
-import { ServerRail } from "./ServerRail";
+import { ServerRail } from "@/components/ServerRail";
 import { AddServerModal } from "./AddServerModal";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";

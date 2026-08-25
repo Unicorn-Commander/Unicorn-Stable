@@ -5,6 +5,7 @@ import { displayName, instanceHost } from "@/lib/instances";
 import { ServerLogo } from "./ServerLogo";
 import { ServerSwitcher } from "./ServerSwitcher";
 import { ServerIdentityModal } from "./ServerIdentityModal";
+import { Tooltip } from "@/components/ui/Tooltip";
 
 /**
  * The server rail: which Stables you can reach, which one you're in, and what
@@ -77,22 +78,23 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
           )}
           aria-label="Stable servers (hidden)"
         >
-          <button
-            type="button"
-            onClick={() => setRailHidden(false)}
-            title="Show servers"
-            aria-label={`Show servers${hiddenUnread > 0 ? ` — ${hiddenUnread} unread elsewhere` : ""}`}
-            aria-expanded={false}
-            className="focus-ring relative flex h-11 w-full min-w-[44px] items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
-          >
-            <PanelLeftOpen className="h-4 w-4" />
-            {hiddenUnread > 0 && (
-              <span
-                className="absolute right-0.5 top-1.5 h-2 w-2 rounded-full bg-rose-500"
-                aria-hidden="true"
-              />
-            )}
-          </button>
+          <Tooltip content="Show servers">
+            <button
+              type="button"
+              onClick={() => setRailHidden(false)}
+              aria-label={`Show servers${hiddenUnread > 0 ? ` — ${hiddenUnread} unread elsewhere` : ""}`}
+              aria-expanded={false}
+              className="focus-ring relative flex h-11 w-full min-w-[44px] items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+              {hiddenUnread > 0 && (
+                <span
+                  className="absolute right-0.5 top-1.5 h-2 w-2 rounded-full bg-rose-500"
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+          </Tooltip>
           {mobile && (
             <span className="text-xs text-slate-500">
               {displayName(
@@ -168,41 +170,44 @@ export function ServerRail({ mobile = false }: { mobile?: boolean }) {
           );
         })}
 
-        <button
-          type="button"
-          title="Search servers"
-          aria-label="Search servers"
-          onClick={() => setSwitcherOpen(true)}
-          className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-line text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
-        >
-          <Search className="h-4 w-4" />
-        </button>
+        <Tooltip content="Search servers">
+          <button
+            type="button"
+            aria-label="Search servers"
+            onClick={() => setSwitcherOpen(true)}
+            className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-line text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+        </Tooltip>
 
-        <button
-          type="button"
-          title="Add a server"
-          aria-label="Add a server"
-          onClick={() => setAddServerOpen(true)}
-          className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-dashed border-slate-600 text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
-        >
-          <Plus className="h-5 w-5" />
-        </button>
+        <Tooltip content="Add a server">
+          <button
+            type="button"
+            aria-label="Add a server"
+            onClick={() => setAddServerOpen(true)}
+            className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-dashed border-slate-600 text-slate-400 transition-colors hover:rounded-xl hover:border-stable-purple hover:text-white"
+          >
+            <Plus className="h-5 w-5" />
+          </button>
+        </Tooltip>
 
         {switching && <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-slate-400" />}
 
-        <button
-          type="button"
-          onClick={() => setRailHidden(true)}
-          title="Hide the server rail"
-          aria-label="Hide the server rail"
-          aria-expanded
-          className={clsx(
-            "focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200",
-            !mobile && "mt-auto",
-          )}
-        >
-          <PanelLeftClose className="h-4 w-4" />
-        </button>
+        <Tooltip content="Hide the server rail">
+          <button
+            type="button"
+            onClick={() => setRailHidden(true)}
+            aria-label="Hide the server rail"
+            aria-expanded
+            className={clsx(
+              "focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200",
+              !mobile && "mt-auto",
+            )}
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+        </Tooltip>
       </div>
 
       {overlays}
