@@ -34,10 +34,7 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
-          if (
-            id.includes("/livekit-client/") ||
-            id.includes("/@livekit/components-react/")
-          ) {
+          if (id.includes("/livekit-client/")) {
             return "vendor-livekit";
           }
           if (

@@ -35,6 +35,13 @@ import { handleArtifactEvent } from "@/stores/canvasStore";
 import { playCue } from "@/lib/sounds";
 import { HumanTranscriptSession } from "@/lib/humanTranscript";
 import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
+import { DeviceCheckDialog } from "@/components/Call/DeviceCheckDialog";
+import {
+  readDevicePreferences,
+  saveDevicePreference,
+  setElementSink,
+  type StableDeviceKind,
+} from "@/lib/mediaDevices";
 
 /**
  * THE single LiveKit Room for the whole app.
@@ -95,6 +102,11 @@ interface VoiceContextValue {
    */
   claimScreenAudio: (track: RemoteAudioTrack) => void;
   releaseScreenAudio: (track: RemoteAudioTrack) => void;
+  devices: Record<StableDeviceKind, MediaDeviceInfo[]>;
+  selectedDevices: Record<StableDeviceKind, string>;
+  refreshDevices: () => Promise<void>;
+  switchDevice: (kind: StableDeviceKind, deviceId: string) => Promise<void>;
+  deviceSignal: { audioinput: boolean; videoinput: boolean };
 }
 
 const VoiceContext = createContext<VoiceContextValue | null>(null);
@@ -190,6 +202,17 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
+  const [showDeviceCheck, setShowDeviceCheck] = useState(false);
+  const [devices, setDevices] = useState<
+    Record<StableDeviceKind, MediaDeviceInfo[]>
+  >({ audioinput: [], videoinput: [], audiooutput: [] });
+  const [selectedDevices, setSelectedDevices] = useState<
+    Record<StableDeviceKind, string>
+  >({ audioinput: "", videoinput: "", audiooutput: "" });
+  const [deviceSignal, setDeviceSignal] = useState({
+    audioinput: true,
+    videoinput: true,
+  });
   // Bumped on every sync() so consumers can detect track/participant changes
   // even though LiveKit hands back the same participant object each time.
   const [version, setVersion] = useState(0);
@@ -215,6 +238,102 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const claimedScreenAudio = useRef(new Set<string>());
   const pendingScreenReattach = useRef(new Set<string>());
 
+  const refreshDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const next = {
+      audioinput: all.filter((d) => d.kind === "audioinput"),
+      videoinput: all.filter((d) => d.kind === "videoinput"),
+      audiooutput: all.filter((d) => d.kind === "audiooutput"),
+    };
+    setDevices(next);
+    const saved = readDevicePreferences(useAppStore.getState().currentUser?.id);
+    setSelectedDevices((current) => ({
+      audioinput: next.audioinput.some((d) => d.deviceId === current.audioinput)
+        ? current.audioinput
+        : next.audioinput.find((d) => d.deviceId === saved.audioinput)
+            ?.deviceId ||
+          next.audioinput[0]?.deviceId ||
+          "",
+      videoinput: next.videoinput.some((d) => d.deviceId === current.videoinput)
+        ? current.videoinput
+        : next.videoinput.find((d) => d.deviceId === saved.videoinput)
+            ?.deviceId ||
+          next.videoinput[0]?.deviceId ||
+          "",
+      audiooutput: next.audiooutput.some(
+        (d) => d.deviceId === current.audiooutput,
+      )
+        ? current.audiooutput
+        : next.audiooutput.find((d) => d.deviceId === saved.audiooutput)
+            ?.deviceId ||
+          next.audiooutput[0]?.deviceId ||
+          "",
+    }));
+  }, []);
+
+  const switchDevice = useCallback(
+    async (kind: StableDeviceKind, deviceId: string) => {
+      const previous = selectedDevices[kind];
+      setSelectedDevices((current) => ({ ...current, [kind]: deviceId }));
+      try {
+        const activeRoom = roomRef.current;
+        if (activeRoom?.state === ConnectionState.Connected)
+          await activeRoom.switchActiveDevice(kind, deviceId, true);
+        if (kind === "audiooutput") {
+          await Promise.all(
+            Array.from(
+              document.querySelectorAll<HTMLMediaElement>(
+                "audio,video[data-lk-audio-sink]",
+              ),
+            ).map((el) => setElementSink(el, deviceId)),
+          );
+        }
+        saveDevicePreference(
+          useAppStore.getState().currentUser?.id,
+          kind,
+          deviceId,
+        );
+      } catch (error) {
+        setSelectedDevices((current) => ({ ...current, [kind]: previous }));
+        throw error;
+      }
+    },
+    [selectedDevices],
+  );
+
+  useEffect(() => {
+    void refreshDevices();
+    const onChange = () =>
+      void navigator.mediaDevices.enumerateDevices().then(async (all) => {
+        await refreshDevices();
+        if (roomRef.current?.state !== ConnectionState.Connected) return;
+        for (const kind of [
+          "audioinput",
+          "videoinput",
+          "audiooutput",
+        ] as StableDeviceKind[]) {
+          if (
+            !selectedDevices[kind] ||
+            all.some(
+              (d) => d.kind === kind && d.deviceId === selectedDevices[kind],
+            )
+          )
+            continue;
+          const fallback = all.find((d) => d.kind === kind);
+          if (!fallback) continue;
+          await switchDevice(kind, fallback.deviceId);
+          useAppStore.getState().pushToast({
+            title: `${kind === "videoinput" ? "Camera" : kind === "audioinput" ? "Microphone" : "Speaker"} disconnected`,
+            body: `Switched to ${fallback.label || "the next available device"}.`,
+          });
+        }
+      });
+    navigator.mediaDevices?.addEventListener("devicechange", onChange);
+    return () =>
+      navigator.mediaDevices?.removeEventListener("devicechange", onChange);
+  }, [refreshDevices, selectedDevices, switchDevice]);
+
   const sync = useCallback((r: Room) => {
     setLocalParticipant(r.localParticipant);
     setRemoteParticipants(Array.from(r.remoteParticipants.values()));
@@ -227,17 +346,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Attach a remote screen-share audio track to the hidden global sink so it is
   // audible in EVERY view mode (incl. compact/audio-only, which render no tile).
   // No-op if a tile has claimed it or it's already sinked.
-  const attachScreenAudioToSink = useCallback((track: RemoteTrack) => {
-    const sid = track.sid;
-    if (!sid) return;
-    if (claimedScreenAudio.current.has(sid)) return; // a tile owns it
-    if (screenSinkEls.current.has(sid)) return; // already sinked
-    const el = track.attach();
-    el.setAttribute("data-lk-audio-sink", "screen");
-    el.style.display = "none";
-    document.body.appendChild(el);
-    screenSinkEls.current.set(sid, el);
-  }, []);
+  const attachScreenAudioToSink = useCallback(
+    (track: RemoteTrack) => {
+      const sid = track.sid;
+      if (!sid) return;
+      if (claimedScreenAudio.current.has(sid)) return; // a tile owns it
+      if (screenSinkEls.current.has(sid)) return; // already sinked
+      const el = track.attach();
+      el.setAttribute("data-lk-audio-sink", "screen");
+      el.style.display = "none";
+      document.body.appendChild(el);
+      void setElementSink(el, selectedDevices.audiooutput).catch(console.error);
+      screenSinkEls.current.set(sid, el);
+    },
+    [selectedDevices.audiooutput],
+  );
 
   // Remove the global-sink element for a screen-share audio track (on claim, or
   // when the track goes away). Detaches the specific element so the LiveKit
@@ -342,8 +465,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             segment_id: l.id,
             source: l.source || "unknown",
           })),
-          room_name:
-            roomMeta?.display_name || roomMeta?.name || null,
+          room_name: roomMeta?.display_name || roomMeta?.name || null,
           call_started_at: ui.callStartedAt
             ? new Date(ui.callStartedAt).toISOString()
             : null,
@@ -403,7 +525,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setAudioBlocked(!r.canPlaybackAudio);
   }, []);
 
-  const connect = useCallback(async () => {
+  const join = useCallback(async () => {
     const roomId = useAppStore.getState().activeRoomId;
     if (!roomId || connectingRef.current) return;
     const leftover = roomRef.current;
@@ -444,9 +566,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         adaptiveStream: { pauseVideoInBackground: false },
         dynacast: true,
         audioCaptureDefaults: {
+          deviceId: selectedDevices.audioinput || undefined,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+        },
+        videoCaptureDefaults: {
+          deviceId: selectedDevices.videoinput || undefined,
         },
       });
       roomRef.current = r;
@@ -530,7 +656,32 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         )
         .on(
           RoomEvent.LocalTrackPublished,
-          own(() => sync(r)),
+          own((publication) => {
+            const mediaTrack = publication.track?.mediaStreamTrack;
+            if (mediaTrack) {
+              const label =
+                publication.kind === Track.Kind.Video ? "Camera" : "Microphone";
+              const kind =
+                publication.kind === Track.Kind.Video
+                  ? "videoinput"
+                  : "audioinput";
+              const dead = () => {
+                setDeviceSignal((current) => ({ ...current, [kind]: false }));
+                useAppStore
+                  .getState()
+                  .pushToast({
+                    title: `${label} has no signal`,
+                    body: "Stable is trying to reacquire an available device.",
+                  });
+              };
+              mediaTrack.addEventListener("mute", dead);
+              mediaTrack.addEventListener("ended", dead);
+              mediaTrack.addEventListener("unmute", () =>
+                setDeviceSignal((current) => ({ ...current, [kind]: true })),
+              );
+            }
+            sync(r);
+          }),
         )
         .on(
           RoomEvent.LocalTrackUnpublished,
@@ -547,39 +698,48 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         // The core SDK does NOT auto-play remote audio — attach it ourselves so
         // the agent/peers are audible. Video is attached by the tiles in
         // VoiceVideoBar. Screen-share audio is a special case (see below).
-        .on(RoomEvent.TrackSubscribed, own((track: RemoteTrack) => {
-          if (track.kind === Track.Kind.Audio) {
-            if (track.source === Track.Source.ScreenShareAudio) {
-              // Route through the claim-aware sink: audible in every view mode
-              // now, but a visible ScreenShareTile can take ownership later
-              // (claimScreenAudio) without doubling the audio.
-              attachScreenAudioToSink(track);
-            } else {
-              // Mic (and any other) remote audio → hidden global sink, always.
-              const el = track.attach();
-              el.setAttribute("data-lk-audio-sink", "1");
-              el.style.display = "none";
-              document.body.appendChild(el);
+        .on(
+          RoomEvent.TrackSubscribed,
+          own((track: RemoteTrack) => {
+            if (track.kind === Track.Kind.Audio) {
+              if (track.source === Track.Source.ScreenShareAudio) {
+                // Route through the claim-aware sink: audible in every view mode
+                // now, but a visible ScreenShareTile can take ownership later
+                // (claimScreenAudio) without doubling the audio.
+                attachScreenAudioToSink(track);
+              } else {
+                // Mic (and any other) remote audio → hidden global sink, always.
+                const el = track.attach();
+                el.setAttribute("data-lk-audio-sink", "1");
+                el.style.display = "none";
+                document.body.appendChild(el);
+                void setElementSink(el, selectedDevices.audiooutput).catch(
+                  console.error,
+                );
+              }
             }
-          }
-          sync(r);
-        }))
-        .on(RoomEvent.TrackUnsubscribed, own((track: RemoteTrack) => {
-          if (track.kind === Track.Kind.Audio) {
-            if (track.source === Track.Source.ScreenShareAudio) {
-              // Clear any claim, pending re-attach, + our global-sink element for
-              // this track. The owning tile (if any) is unmounting alongside the
-              // vanished share and tears down its own <audio> via its attach-ref
-              // cleanup.
-              claimedScreenAudio.current.delete(track.sid ?? "");
-              pendingScreenReattach.current.delete(track.sid ?? "");
-              detachScreenAudioFromSink(track);
-            } else {
-              track.detach().forEach((el) => el.remove());
+            sync(r);
+          }),
+        )
+        .on(
+          RoomEvent.TrackUnsubscribed,
+          own((track: RemoteTrack) => {
+            if (track.kind === Track.Kind.Audio) {
+              if (track.source === Track.Source.ScreenShareAudio) {
+                // Clear any claim, pending re-attach, + our global-sink element for
+                // this track. The owning tile (if any) is unmounting alongside the
+                // vanished share and tears down its own <audio> via its attach-ref
+                // cleanup.
+                claimedScreenAudio.current.delete(track.sid ?? "");
+                pendingScreenReattach.current.delete(track.sid ?? "");
+                detachScreenAudioFromSink(track);
+              } else {
+                track.detach().forEach((el) => el.remove());
+              }
             }
-          }
-          sync(r);
-        }))
+            sync(r);
+          }),
+        )
         .on(
           RoomEvent.AudioPlaybackStatusChanged,
           own(() => {
@@ -638,12 +798,27 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       }
       const humanSession = new HumanTranscriptSession(r);
       humanTranscriptRef.current = humanSession;
-      humanSession.start();
-      r.on(RoomEvent.ParticipantConnected, own(() => humanSession.reevaluate()));
-      r.on(
-        RoomEvent.ParticipantDisconnected,
-        own(() => humanSession.reevaluate()),
-      );
+      // Web Speech opens a second, browser-owned microphone and exposes no
+      // deviceId constraint. Do not secretly capture the OS default when the
+      // caller deliberately selected another input; agent STT remains active.
+      const browserSttCanFollowInput =
+        !selectedDevices.audioinput || selectedDevices.audioinput === "default";
+      if (browserSttCanFollowInput) {
+        humanSession.start();
+        r.on(
+          RoomEvent.ParticipantConnected,
+          own(() => humanSession.reevaluate()),
+        );
+        r.on(
+          RoomEvent.ParticipantDisconnected,
+          own(() => humanSession.reevaluate()),
+        );
+      } else {
+        useAppStore.getState().pushToast({
+          title: "Browser captions paused",
+          body: "Web Speech cannot follow a selected microphone. Call audio still uses your chosen input.",
+        });
+      }
       // Pause local Web Speech when a remote human is the active speaker so
       // their audio through speakers is not captioned as the local user.
       r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
@@ -651,13 +826,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           const localId = r.localParticipant?.identity;
           const localSpeaking = speakers.some((s) => s.identity === localId);
           const remoteHumanSpeaking = speakers.some(
-            (s) =>
-              s.identity !== localId &&
-              !isAgentParticipant(s),
+            (s) => s.identity !== localId && !isAgentParticipant(s),
           );
-          humanSession.setRemoteDominant(
-            remoteHumanSpeaking && !localSpeaking,
-          );
+          humanSession.setRemoteDominant(remoteHumanSpeaking && !localSpeaking);
         } catch {
           /* ignore */
         }
@@ -766,7 +937,23 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     disconnect,
     attachScreenAudioToSink,
     detachScreenAudioFromSink,
+    selectedDevices.audioinput,
+    selectedDevices.videoinput,
+    selectedDevices.audiooutput,
   ]);
+
+  const connect = useCallback(async () => {
+    const active = roomRef.current;
+    if (
+      active &&
+      active.state !== ConnectionState.Disconnected &&
+      useCallUiStore.getState().activeCallRoomId ===
+        useAppStore.getState().activeRoomId
+    )
+      return;
+    await refreshDevices();
+    setShowDeviceCheck(true);
+  }, [refreshDevices]);
 
   // NOTE: the call intentionally PERSISTS across navigation now. We used to
   // disconnect whenever `activeRoomId` changed (leaving/switching rooms ended
@@ -801,9 +988,27 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         startAudio,
         claimScreenAudio,
         releaseScreenAudio,
+        devices,
+        selectedDevices,
+        refreshDevices,
+        switchDevice,
+        deviceSignal,
       }}
     >
       {children}
+      {showDeviceCheck && (
+        <DeviceCheckDialog
+          devices={devices}
+          selected={selectedDevices}
+          onSelect={switchDevice}
+          onRefresh={refreshDevices}
+          onCancel={() => setShowDeviceCheck(false)}
+          onJoin={() => {
+            setShowDeviceCheck(false);
+            void join();
+          }}
+        />
+      )}
     </VoiceContext.Provider>
   );
 }
