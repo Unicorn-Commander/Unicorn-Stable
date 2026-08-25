@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -18,6 +19,24 @@ from agent_runtime.tools import ToolRegistry
 
 logger = structlog.get_logger(__name__)
 
+
+
+def _participant_uuid_of(identity: str) -> str:
+    """Bare participant uuid from a LiveKit identity (``{username}_{uuid}``).
+
+    The backend mints human identities as ``{username}_{participant_uuid}``
+    (the uuid suffix became load-bearing with device handoff). Brigade memory
+    groups by the BARE participant uuid — the same id the text responder
+    forwards — so voice and text conversations share ONE namespace per human.
+    Falls back to the identity unchanged when no uuid suffix is present, so an
+    unexpected shape degrades to the old scoping instead of losing memory.
+    """
+    tail = identity[-36:]
+    try:
+        uuid.UUID(tail)
+        return tail
+    except (ValueError, AttributeError, TypeError):
+        return identity
 
 class _RateLimiter:
     """Simple token-bucket rate limiter."""
@@ -114,14 +133,18 @@ class StableAgent:
         await self._acquire_identity()
 
         # 1b. Capture the human user_id from the room so Brigade memory is
-        #     scoped to the real human, not the agent. Humans' participant
-        #     identity is their Keycloak `sub` (per the backend's LiveKit
-        #     token minting). Agents' identities start with "agent-".
+        #     scoped to the real human, not the agent. Human identities are
+        #     minted as ``{username}_{participant_uuid}`` (NOT a bare Keycloak
+        #     sub — that comment predated device handoff); we key memory by the
+        #     BARE participant uuid so voice and text chats share one memory
+        #     namespace per human. Agents start with "agent-"; hidden
+        #     broadcast viewers start with "broadcast-" and are nobody's
+        #     memory.
         try:
             for p in ctx.room.remote_participants.values():
                 pid = getattr(p, "identity", "") or ""
-                if pid and not pid.startswith("agent-"):
-                    self._human_user_id = pid
+                if pid and not pid.startswith(("agent-", "broadcast-")):
+                    self._human_user_id = _participant_uuid_of(pid)
                     break
         except Exception:
             logger.debug("human_user_id_capture_failed", exc_info=True)
