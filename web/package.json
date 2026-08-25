@@ -30,7 +30,6 @@
     "@dagrejs/dagre": "^1.1.4",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
-    "@livekit/components-react": "^2.9.20",
     "@pixiv/three-vrm": "^3.5.5",
     "@sentry/react": "^8.0.0",
     "@tanstack/react-query": "^5.62.0",

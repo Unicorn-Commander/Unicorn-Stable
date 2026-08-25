@@ -213,7 +213,9 @@ const NOOP_REF: AttachRef = () => undefined;
  * pop-out window (audit §4a: exactly-one-place-at-a-time keeps attach/detach
  * balanced).
  */
-function useAttachTrack(): (track: LocalTrack | RemoteTrack | null) => AttachRef {
+function useAttachTrack(): (
+  track: LocalTrack | RemoteTrack | null,
+) => AttachRef {
   const cache = useRef(new Map<LocalTrack | RemoteTrack, AttachRef>());
   return useCallback((track) => {
     if (!track) return NOOP_REF;
@@ -648,8 +650,7 @@ function ParticipantTile({
             "h-full w-full",
             fs.isFullscreen ? "object-contain" : "object-cover",
             // Mounted but parked while it has no frames — see videoIsBlank.
-            videoIsBlank &&
-              "pointer-events-none absolute h-px w-px opacity-0",
+            videoIsBlank && "pointer-events-none absolute h-px w-px opacity-0",
           )}
         />
       )}
@@ -688,9 +689,7 @@ function ParticipantTile({
           name={p.name}
           size={size === "large" ? 96 : 64}
           ring={speaking}
-          className={clsx(
-            speaking && !p.isMuted && "animate-pulse-soft",
-          )}
+          className={clsx(speaking && !p.isMuted && "animate-pulse-soft")}
           alt=""
         />
       )}
@@ -789,7 +788,9 @@ function ParticipantTile({
         {onTogglePin && (
           <TileControlButton
             icon={isPinned ? PinOff : Pin}
-            label={isPinned ? `Unpin ${p.name}` : `Pin ${p.name} to the big tile`}
+            label={
+              isPinned ? `Unpin ${p.name}` : `Pin ${p.name} to the big tile`
+            }
             active={isPinned}
             onClick={(e) => {
               e.stopPropagation();
@@ -887,19 +888,31 @@ function ScreenAudioSink({
   audioTrack: RemoteAudioTrack;
   muted: boolean;
 }) {
-  const { claimScreenAudio, releaseScreenAudio } = useStableRoom();
+  const { claimScreenAudio, releaseScreenAudio, selectedDevices } =
+    useStableRoom();
   const audioElRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const el = audioElRef.current;
     if (!el) return;
     audioTrack.attach(el);
+    const sinkable = el as HTMLAudioElement & {
+      setSinkId?: (id: string) => Promise<void>;
+    };
+    if (selectedDevices.audiooutput && sinkable.setSinkId) {
+      void sinkable.setSinkId(selectedDevices.audiooutput);
+    }
     claimScreenAudio(audioTrack);
     return () => {
       audioTrack.detach(el);
       releaseScreenAudio(audioTrack);
     };
-  }, [audioTrack, claimScreenAudio, releaseScreenAudio]);
+  }, [
+    audioTrack,
+    claimScreenAudio,
+    releaseScreenAudio,
+    selectedDevices.audiooutput,
+  ]);
 
   // Per-share mute is a media-element property — never gate the attach on it.
   useEffect(() => {
@@ -943,7 +956,11 @@ function ScreenShareTile({
   const pip = usePipTile();
   const fs = useTileFullscreen();
   // fs.videoRef registers the <video> for the iPhone fullscreen rung.
-  const composedVideoRef = useMergedVideoRef(videoRef, pip.videoRef, fs.videoRef);
+  const composedVideoRef = useMergedVideoRef(
+    videoRef,
+    pip.videoRef,
+    fs.videoRef,
+  );
 
   return (
     <div
@@ -1049,7 +1066,14 @@ interface AudioChipProps {
   isMuted: boolean;
 }
 
-function AudioChip({ id, name, roomId, isAgent, isSpeaking, isMuted }: AudioChipProps) {
+function AudioChip({
+  id,
+  name,
+  roomId,
+  isAgent,
+  isSpeaking,
+  isMuted,
+}: AudioChipProps) {
   const ident = identityFor(id.replace(/^agent-/, ""), name);
   // Same persona resolution as the stage tile: the worker's type-shaped
   // LiveKit identity ("stable-brigade") names no character, so the chip in
@@ -1097,7 +1121,9 @@ function AudioChip({ id, name, roomId, isAgent, isSpeaking, isMuted }: AudioChip
         !isSpeaking && "border-transparent bg-surface-2/70",
       )}
       style={
-        isSpeaking ? { background: ident.faint, borderColor: ident.ring } : undefined
+        isSpeaking
+          ? { background: ident.faint, borderColor: ident.ring }
+          : undefined
       }
     >
       <Avatar
@@ -1270,8 +1296,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Keycloak id never equals the participant UUID) so a member never sees a
   // control that can only 403.
   const roomMembers = useAppStore((s) => s.participants[roomId]);
-  const isRoomOwner =
-    roomMembers?.find((m) => m.is_self)?.role === "owner";
+  const isRoomOwner = roomMembers?.find((m) => m.is_self)?.role === "owner";
 
   const [mintingFor, setMintingFor] = useState<string | null>(null);
 
@@ -1388,7 +1413,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localParticipant, remoteParticipants, version, matchAgent, getCameraTrack]);
+  }, [
+    localParticipant,
+    remoteParticipants,
+    version,
+    matchAgent,
+    getCameraTrack,
+  ]);
 
   // Event-driven active-speaker signal. LiveKit's `isSpeaking` flips WITHOUT a
   // `version` bump (VoiceProvider doesn't sync on speaking), so subscribe to the
@@ -1400,7 +1431,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       return;
     }
     const onSpeakers = (speakers: Participant[]) => {
-      setActiveSpeakerIds(speakers.map((s) => (s.isLocal ? "local" : s.identity)));
+      setActiveSpeakerIds(
+        speakers.map((s) => (s.isLocal ? "local" : s.identity)),
+      );
     };
     onSpeakers(room.activeSpeakers ?? []);
     room.on(RoomEvent.ActiveSpeakersChanged, onSpeakers);
@@ -1828,7 +1861,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           body: monitorShareHint(),
         });
       }
-      if (viewMode !== "screen" && viewMode !== "grid" && viewMode !== "spotlight") {
+      if (
+        viewMode !== "screen" &&
+        viewMode !== "grid" &&
+        viewMode !== "spotlight"
+      ) {
         setViewMode(roomId, "screen");
       }
     }
@@ -1874,7 +1911,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     participants[0];
 
   const stageScreen =
-    screenShares.find((s) => s.sid === stageScreenSid) ?? screenShares[0] ?? null;
+    screenShares.find((s) => s.sid === stageScreenSid) ??
+    screenShares[0] ??
+    null;
 
   // ---- Tile builders --------------------------------------------------------
 
@@ -1913,7 +1952,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     const lkIdentity = p.isLocal ? (localParticipant?.identity ?? null) : p.id;
     // "You" is likewise a UI label; the token's participant_label is what the
     // owner reads back in the token list, so it has to name a person.
-    const lkLabel = p.isLocal ? (localParticipant?.name || p.name) : p.name;
+    const lkLabel = p.isLocal ? localParticipant?.name || p.name : p.name;
     return (
       <ParticipantTile
         key={p.id}
@@ -1959,7 +1998,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   /** Main-stage camera tile: the real tile, or a placeholder when detached. */
   function renderTile(
     p: CallParticipant,
-    opts?: { size?: "normal" | "large"; onClick?: () => void; grip?: boolean; fill?: boolean },
+    opts?: {
+      size?: "normal" | "large";
+      onClick?: () => void;
+      grip?: boolean;
+      fill?: boolean;
+    },
   ) {
     const feedKey = camFeedKey(p.id);
     if (isFeedPoppedOut(feedKey)) {
@@ -2000,7 +2044,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         hasAudio={!!s.audioTrack}
         muted={mutedScreens.has(s.sid)}
         inPopout={inPopout}
-        onToggleMuted={s.audioTrack ? () => toggleScreenMuted(s.sid) : undefined}
+        onToggleMuted={
+          s.audioTrack ? () => toggleScreenMuted(s.sid) : undefined
+        }
         onPopOut={
           feedPopoutSupported && !inPopout
             ? () =>
@@ -2019,7 +2065,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   }
 
   /** Main-stage screen tile: the real tile, or a placeholder when detached. */
-  function renderScreen(s: ScreenShareVM, opts?: { fill?: boolean; onClick?: () => void }) {
+  function renderScreen(
+    s: ScreenShareVM,
+    opts?: { fill?: boolean; onClick?: () => void },
+  ) {
     const feedKey = screenFeedKey(s.feedId);
     if (isFeedPoppedOut(feedKey)) {
       return (
@@ -2044,7 +2093,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     if (feedKey.startsWith("cam:")) {
       const id = feedKey.slice("cam:".length);
       const p = participants.find((x) => x.id === id);
-      return p ? buildTile(p, { fill: true, inPopout: true, size: "large" }) : null;
+      return p
+        ? buildTile(p, { fill: true, inPopout: true, size: "large" })
+        : null;
     }
     if (feedKey.startsWith("screen:")) {
       const fid = feedKey.slice("screen:".length);
@@ -2131,7 +2182,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       // Presentation: a screen share fills the stage + a people filmstrip.
       stageSurface = stageScreen ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
-          <div className="min-h-0 flex-1">{renderScreen(stageScreen, { fill: true })}</div>
+          <div className="min-h-0 flex-1">
+            {renderScreen(stageScreen, { fill: true })}
+          </div>
           <div className="flex shrink-0 gap-2 overflow-x-auto pb-1">
             {screenShares
               .filter((s) => s.sid !== stageScreen.sid)
@@ -2155,7 +2208,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             No one is sharing a screen yet — start one from the controls.
           </div>
           <VideoGrid
-            items={orderedParticipants.map((p) => ({ key: p.id, node: renderTile(p) }))}
+            items={orderedParticipants.map((p) => ({
+              key: p.id,
+              node: renderTile(p),
+            }))}
           />
         </div>
       );
@@ -2213,7 +2269,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         )}
         aria-label={isCamOn ? "Turn off camera" : "Turn on camera"}
       >
-        {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+        {isCamOn ? (
+          <Video className="h-5 w-5" />
+        ) : (
+          <VideoOff className="h-5 w-5" />
+        )}
       </button>
       <button
         onClick={disconnect}
@@ -2240,7 +2300,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             )}
             aria-label={isMicOn ? "Mute" : "Unmute"}
           >
-            {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+            {isMicOn ? (
+              <Mic className="h-5 w-5" />
+            ) : (
+              <MicOff className="h-5 w-5" />
+            )}
           </button>
           <button
             onClick={toggleCam}
@@ -2252,7 +2316,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             )}
             aria-label={isCamOn ? "Turn off camera" : "Turn on camera"}
           >
-            {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+            {isCamOn ? (
+              <Video className="h-5 w-5" />
+            ) : (
+              <VideoOff className="h-5 w-5" />
+            )}
           </button>
         </>
       )}
@@ -2276,9 +2344,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               ? "border-stable-cyan/40 bg-stable-cyan/15 text-stable-cyan hover:bg-stable-cyan/25"
               : "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100",
           )}
-          aria-label={
-            isScreenSharing ? "Screen share options" : "Share screen"
-          }
+          aria-label={isScreenSharing ? "Screen share options" : "Share screen"}
           aria-pressed={isScreenSharing}
           aria-haspopup={isScreenSharing ? "menu" : undefined}
           aria-expanded={isScreenSharing ? shareMenuOpen : undefined}
@@ -2366,7 +2432,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             : "Hide the video — audio only, chat fills the screen"
         }
       >
-        {videoHidden ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+        {videoHidden ? (
+          <EyeOff className="h-5 w-5" />
+        ) : (
+          <Eye className="h-5 w-5" />
+        )}
       </button>
 
       {/* Hide / show the CHAT section. Hidden ⇒ the video fills the screen. Only
@@ -2450,7 +2520,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       )}
 
       {/* Leave is duplicated into safeControls for mobile Video chrome-fade. */}
-      {!(mobileVideoChrome) && (
+      {!mobileVideoChrome && (
         <button
           onClick={disconnect}
           className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"

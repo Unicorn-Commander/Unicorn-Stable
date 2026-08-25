@@ -7,6 +7,7 @@ import {
   BookOpen,
   Bot,
   Captions,
+  Video,
   Check,
   LogOut,
   Mail,
@@ -27,6 +28,7 @@ import { ensurePushSubscription } from "@/lib/webpush";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { Tooltip } from "@/components/ui";
 import { AppearanceSection } from "@/components/Settings/AppearanceSection";
+import { AudioVideoSection } from "@/components/Settings/AudioVideoSection";
 import { HelpCenter } from "@/components/Help";
 import {
   loadMeetingOpsPrefs,
@@ -74,7 +76,10 @@ export function loadPrefs(): NotificationPrefs {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return DEFAULT_PREFS;
-    return { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<NotificationPrefs>) };
+    return {
+      ...DEFAULT_PREFS,
+      ...(JSON.parse(raw) as Partial<NotificationPrefs>),
+    };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -92,6 +97,7 @@ const ACCOUNT_URL = `${KEYCLOAK_BASE.replace(/\/+$/, "")}/realms/${KEYCLOAK_REAL
 export type PaneId =
   | "account"
   | "appearance"
+  | "devices"
   | "notifications"
   | "agents"
   | "instance"
@@ -99,14 +105,34 @@ export type PaneId =
 
 const PANES: { id: PaneId; label: string; icon: React.ReactNode }[] = [
   { id: "account", label: "Account", icon: <UserCircle className="h-4 w-4" /> },
-  { id: "appearance", label: "Appearance", icon: <Palette className="h-4 w-4" /> },
-  { id: "notifications", label: "Notifications", icon: <Bell className="h-4 w-4" /> },
+  {
+    id: "appearance",
+    label: "Appearance",
+    icon: <Palette className="h-4 w-4" />,
+  },
+  {
+    id: "devices",
+    label: "Audio & Video",
+    icon: <Video className="h-4 w-4" />,
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    icon: <Bell className="h-4 w-4" />,
+  },
   { id: "agents", label: "Agents", icon: <Bot className="h-4 w-4" /> },
-  { id: "instance", label: "Instance", icon: <ServerCog className="h-4 w-4" /> },
+  {
+    id: "instance",
+    label: "Instance",
+    icon: <ServerCog className="h-4 w-4" />,
+  },
   { id: "help", label: "Help", icon: <BookOpen className="h-4 w-4" /> },
 ];
 
-export function SettingsModal({ onClose, initialPane = "account" }: SettingsModalProps) {
+export function SettingsModal({
+  onClose,
+  initialPane = "account",
+}: SettingsModalProps) {
   const [pane, setPane] = useState<PaneId>(initialPane);
   const panelRef = useModalA11y(true, onClose);
 
@@ -183,6 +209,7 @@ export function SettingsModal({ onClose, initialPane = "account" }: SettingsModa
                 <AppearanceSection />
               </div>
             )}
+            {pane === "devices" && <AudioVideoSection />}
             {pane === "notifications" && <NotificationsPane />}
             {pane === "agents" && <AgentsPane />}
             {pane === "instance" && <InstancePane />}
@@ -338,7 +365,9 @@ function AgentsPane() {
                     />
                   ) : (
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
-                      {agent.emoji || <Bot className="h-4 w-4 text-slate-400" />}
+                      {agent.emoji || (
+                        <Bot className="h-4 w-4 text-slate-400" />
+                      )}
                     </span>
                   );
                 })()}
@@ -570,7 +599,9 @@ function AccountPane({
             <p className="truncate text-sm font-semibold text-slate-100">
               {currentUser.displayName}
             </p>
-            <p className="truncate text-xs text-slate-400">{currentUser.email}</p>
+            <p className="truncate text-xs text-slate-400">
+              {currentUser.email}
+            </p>
             {/* This used to say the photo "comes from your account, not from
                 Stable", full stop — which is contradicted one tab over, where
                 Appearance → Your picture uploads a Stable-only override. A
@@ -628,7 +659,10 @@ function NotificationsPane() {
     };
   }, []);
 
-  function set<K extends keyof NotificationPrefs>(key: K, value: NotificationPrefs[K]) {
+  function set<K extends keyof NotificationPrefs>(
+    key: K,
+    value: NotificationPrefs[K],
+  ) {
     const next = { ...prefs, [key]: value };
     setPrefs(next);
     savePrefs(next);
@@ -703,9 +737,8 @@ function NotificationsPane() {
  * on the live transcript panel; this is only the always-by-default seed.
  */
 function MeetingOpsTranscriptSection() {
-  const [moPrefs, setMoPrefs] = useState<MeetingOpsTranscriptPrefs>(
-    loadMeetingOpsPrefs,
-  );
+  const [moPrefs, setMoPrefs] =
+    useState<MeetingOpsTranscriptPrefs>(loadMeetingOpsPrefs);
   const [moConfigured, setMoConfigured] = useState<boolean | null>(null);
   const [showSaved, setShowSaved] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -907,7 +940,9 @@ function BrowserNotificationsSection() {
       <div className="flex items-center gap-3 rounded-xl border border-line bg-surface-1/60 px-3.5 py-3">
         <p className="min-w-0 flex-1 text-xs leading-5 text-slate-400">
           {current.text}
-          {error && <span className="mt-1 block text-amber-400/90">{error}</span>}
+          {error && (
+            <span className="mt-1 block text-amber-400/90">{error}</span>
+          )}
         </p>
         {current.action}
       </div>
@@ -924,7 +959,14 @@ interface ToggleProps {
   disabled?: boolean;
 }
 
-function Toggle({ label, hint, checked, onChange, icon, disabled }: ToggleProps) {
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+  icon,
+  disabled,
+}: ToggleProps) {
   return (
     <label
       className={clsx(

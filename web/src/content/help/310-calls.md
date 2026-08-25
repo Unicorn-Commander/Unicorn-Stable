@@ -4,7 +4,7 @@ title: Voice and video calls
 section: Calls
 order: 310
 summary: Start a call, choose a layout, pop the video out, and keep working while it runs.
-keywords: call, voice, video, livekit, mute, camera, screen share, pip, picture in picture, stage, layout, transcript
+keywords: call, voice, video, livekit, mute, camera, microphone, speaker, output, device selection, screen share, pip, picture in picture, stage, layout, transcript
 ---
 
 Any room can become a call. The call control is in the room's call bar.
@@ -13,6 +13,21 @@ Any room can become a call. The call control is in the room's call bar.
 
 Starting or joining puts you in the room's call; **End call** leaves it. Others
 in the room see an incoming-call banner they can answer or dismiss.
+
+Before Stable joins, **Check your devices** shows a live camera preview and
+microphone meter. Pick the camera, microphone, and call-audio output there. The
+choices are saved for your account and restored on the next call.
+
+During a call, open **Settings → Audio & Video** to change any device without
+leaving the room. Camera and microphone changes replace the live track, so an
+active recording keeps running. Sending call audio to headphones or a virtual
+output instead of room speakers prevents the room microphone from capturing the
+call again. If a selected device is unplugged, Stable switches to another
+available device and tells you.
+
+Browser-provided captions cannot be bound to a chosen non-default microphone.
+Stable pauses that second browser capture in this case; the call continues on
+the selected microphone and configured agent transcription remains available.
 
 ## Layouts
 
