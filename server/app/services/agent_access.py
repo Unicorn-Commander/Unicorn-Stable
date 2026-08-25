@@ -69,6 +69,12 @@ def agent_id_for_participant(keycloak_sub: str | None) -> str:
     return sub
 
 
+# Per-participant wildcard grant row: matches any agent id without an exact
+# row. Exact rows always win, so the "guest posture" is one ``deny *`` row
+# plus per-agent ``allow`` rows to selectively re-open agents later.
+WILDCARD_AGENT_ID = "*"
+
+
 def _default_is_open() -> bool:
     return get_settings().agent_access_default != "closed"
 
@@ -81,9 +87,10 @@ async def resolve_agent_access(
 ) -> tuple[bool, str]:
     """Return ``(allowed, reason)`` for one (participant, agent) pair.
 
-    ``reason`` ∈ {"grant_allow", "grant_deny", "default_open",
-    "default_closed"} — carried into the audit log so a denial names the rule
-    that produced it.
+    ``reason`` ∈ {"grant_allow", "grant_deny", "wildcard_allow",
+    "wildcard_deny", "default_open", "default_closed"} — carried into the
+    audit log so a denial names the rule that produced it. An exact
+    (participant, agent) row always beats the participant's ``*`` row.
     """
     grant = (
         await db.execute(
@@ -97,6 +104,22 @@ async def resolve_agent_access(
         if grant.effect == AgentAccessEffect.ALLOW:
             return True, "grant_allow"
         return False, "grant_deny"
+    # No exact row → an explicit per-participant wildcard decides before the
+    # instance default (the guest posture: one ``deny *`` row keeps every
+    # FUTURE agent closed for that participant too, which enumerated exact
+    # rows cannot).
+    wildcard = (
+        await db.execute(
+            select(AgentAccessGrant).where(
+                AgentAccessGrant.participant_id == participant_id,
+                AgentAccessGrant.agent_id == WILDCARD_AGENT_ID,
+            )
+        )
+    ).scalar_one_or_none()
+    if wildcard is not None:
+        if wildcard.effect == AgentAccessEffect.ALLOW:
+            return True, "wildcard_allow"
+        return False, "wildcard_deny"
     if _default_is_open():
         return True, "default_open"
     return False, "default_closed"
@@ -160,7 +183,7 @@ async def entitled_agent_ids(
             await db.execute(
                 select(AgentAccessGrant).where(
                     AgentAccessGrant.participant_id == participant_id,
-                    AgentAccessGrant.agent_id.in_(ids),
+                    AgentAccessGrant.agent_id.in_([*ids, WILDCARD_AGENT_ID]),
                 )
             )
         )
@@ -168,10 +191,13 @@ async def entitled_agent_ids(
         .all()
     )
     by_agent = {g.agent_id: g.effect for g in grants}
+    wildcard_effect = by_agent.pop(WILDCARD_AGENT_ID, None)
     open_default = _default_is_open()
     entitled: set[str] = set()
     for aid in ids:
         effect = by_agent.get(aid)
+        if effect is None:
+            effect = wildcard_effect
         if effect is None:
             if open_default:
                 entitled.add(aid)

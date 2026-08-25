@@ -732,3 +732,72 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
+
+class WildcardGrantResolutionTests(IsolatedAsyncioTestCase):
+    """The ``*`` row: participant-wide posture, exact rows still win."""
+
+    async def _resolve_seq(self, *, mode: str, results: list) -> tuple:
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=[_scalar_result(r) for r in results])
+        with patch.object(svc, "get_settings", return_value=_settings(mode)):
+            return await svc.resolve_agent_access(
+                db, participant_id=_uuid(), agent_id="the-colonel"
+            )
+
+    async def test_wildcard_deny_blocks_unlisted_agent_in_open_mode(self) -> None:
+        allowed, reason = await self._resolve_seq(
+            mode="open",
+            results=[None, _grant(svc.WILDCARD_AGENT_ID, AgentAccessEffect.DENY)],
+        )
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "wildcard_deny")
+
+    async def test_exact_allow_overrides_wildcard_deny(self) -> None:
+        # Exact row hits first; the wildcard query must not even run.
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(_grant("the-colonel", AgentAccessEffect.ALLOW))
+            ]
+        )
+        with patch.object(svc, "get_settings", return_value=_settings("open")):
+            allowed, reason = await svc.resolve_agent_access(
+                db, participant_id=_uuid(), agent_id="the-colonel"
+            )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "grant_allow")
+        self.assertEqual(db.execute.await_count, 1)
+
+    async def test_wildcard_allow_grants_in_closed_mode(self) -> None:
+        allowed, reason = await self._resolve_seq(
+            mode="closed",
+            results=[None, _grant(svc.WILDCARD_AGENT_ID, AgentAccessEffect.ALLOW)],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "wildcard_allow")
+
+    async def test_no_wildcard_falls_back_to_default(self) -> None:
+        allowed, reason = await self._resolve_seq(mode="open", results=[None, None])
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "default_open")
+
+
+class WildcardEntitledAgentIdsTests(IsolatedAsyncioTestCase):
+    async def test_wildcard_deny_is_the_default_but_exact_allow_survives(self) -> None:
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=_scalars_result(
+                [
+                    _grant(svc.WILDCARD_AGENT_ID, AgentAccessEffect.DENY),
+                    _grant("majik", AgentAccessEffect.ALLOW),
+                ]
+            )
+        )
+        with patch.object(svc, "get_settings", return_value=_settings("open")):
+            entitled = await svc.entitled_agent_ids(
+                db,
+                participant_id=_uuid(),
+                agent_ids=["majik", "the-colonel", "gunny"],
+            )
+        self.assertEqual(entitled, {"majik"})

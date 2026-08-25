@@ -32,6 +32,7 @@ from app.models.participant import (
 )
 from app.models.room import MemberRole, Room, RoomMember
 from app.services import agent_status
+from app.services.agent_access import resolve_agent_access
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 
@@ -631,6 +632,25 @@ async def _respond(
             # fall through and answer. is_bridge_agent already swallows its own
             # errors and returns False; this is belt-and-braces.
             logger.warning("bridge_agent_check_failed", exc_info=True)
+
+        # Per-user agent entitlements gate the reply TRIGGER too, not only the
+        # invite funnel: an agent already resident in a shared room would
+        # otherwise answer ANY member's @-mention, so a denied member could
+        # drive it just by joining a room it already sits in. Agent-typed
+        # senders returned above; a None sender (system) is nobody to gate.
+        if sender_id is not None:
+            allowed, access_reason = await resolve_agent_access(
+                db, participant_id=sender_id, agent_id=brigade_agent_id
+            )
+            if not allowed:
+                logger.warning(
+                    "agent_access_denied",
+                    participant_id=str(sender_id),
+                    agent_id=brigade_agent_id,
+                    surface="mention_trigger",
+                    reason=access_reason,
+                )
+                return
 
         oai_history = await _build_history(
             db=db,
@@ -1391,7 +1411,12 @@ async def _call_brigade(
     payload: dict[str, Any] = {
         "message": last_user_msg,
         "history": _history,
-        "user": user_id,
+        # Brigade's NATIVE ChatRequest field is ``user_id`` (only its
+        # OpenAI-compat shim accepts ``user``). Sending ``user`` here was
+        # silently dropped, so every Stable sender ran as the service
+        # identity: shared "anonymous" agent memory and service-level tool
+        # privileges regardless of who typed.
+        "user_id": user_id,
         # Room context for server-side tools (e.g. canvas) — additive; Brigade
         # ignores these if it doesn't use them.
         "room_id": str(room.id),
