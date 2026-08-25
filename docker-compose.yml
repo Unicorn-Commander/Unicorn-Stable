@@ -127,7 +127,7 @@ services:
     # dangerous admin verbs are also renamed away.
     command: >
       redis-server
-      --appendonly yes
+      --appendonly no
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
