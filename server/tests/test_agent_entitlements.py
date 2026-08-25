@@ -254,15 +254,17 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
         db = AsyncMock()
         # Execute order inside the route for a DENIED caller:
         #   1. room resolve, 2. caller membership, 3. the human-DM guard's
-        #   member count (bare dm → 1 human → passes), 4. the grant lookup.
-        db.execute = AsyncMock(
-            side_effect=[
-                _scalar_result(room),
-                _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
-                _count_result(1),  # human-DM guard count
-                _scalar_result(grant),
-            ]
-        )
+        #   member count (bare dm → 1 human → passes), 4. the exact grant
+        #   lookup (and 5. the wildcard ``*`` lookup, only on an exact miss).
+        results = [
+            _scalar_result(room),
+            _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
+            _count_result(1),  # human-DM guard count
+            _scalar_result(grant),
+        ]
+        if grant is None:
+            results.append(_scalar_result(None))  # wildcard lookup miss
+        db.execute = AsyncMock(side_effect=results)
         livekit = AsyncMock()
         body = brigade_api.InviteAgentRequest(
             brigade_agent_id="the-colonel", dispatch=dispatch
@@ -351,7 +353,8 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
                 _scalar_result(room),  # room resolve
                 _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
                 _count_result(1),  # human-DM guard count (bare dm passes)
-                _scalar_result(None),  # grant lookup (none)
+                _scalar_result(None),  # exact grant lookup (none)
+                _scalar_result(None),  # wildcard (*) lookup (none)
                 _scalar_result(room),  # metadata persist re-lookup
             ]
         )
