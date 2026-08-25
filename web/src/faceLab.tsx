@@ -160,6 +160,11 @@ const voiceValue: VoiceContextValue = {
   startAudio: async () => {},
   claimScreenAudio: () => {},
   releaseScreenAudio: () => {},
+  devices: { audioinput: [], videoinput: [], audiooutput: [] },
+  selectedDevices: { audioinput: "", videoinput: "", audiooutput: "" },
+  refreshDevices: async () => {},
+  switchDevice: async () => {},
+  deviceSignal: { audioinput: true, videoinput: true },
 };
 
 const note = startSyntheticVoice();
