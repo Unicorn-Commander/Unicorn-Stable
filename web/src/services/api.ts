@@ -89,6 +89,14 @@ export interface Room {
    */
   brigade_agent_id?: string | null;
   /**
+   * EVERY Brigade agent resident in this room, in invite order — the SET form
+   * of `brigade_agent_id`, written by the server alongside the scalar
+   * (server/app/services/resident_agents.py). A call dispatches all of them.
+   * Absent/empty on a room written before multi-agent; read it through
+   * `residentAgentIds()`, never directly, so the scalar fallback applies.
+   */
+  brigade_agent_ids?: string[] | null;
+  /**
    * Standing conference / always-on call room (metadata.conference). Used by
    * the Meetings nav view; plain channels leave this false/undefined.
    */
@@ -539,6 +547,45 @@ export interface RawRoomListItem {
 }
 
 /**
+ * Read the room's resident-agent SET out of raw server metadata.
+ *
+ * Mirrors server/app/services/resident_agents.py::resident_agent_ids exactly:
+ * the list form wins, the scalar is the one-element fallback, and a scalar the
+ * list somehow missed is appended rather than dropped. Backward compatible in
+ * both directions — a room whose metadata only ever had the scalar (every room
+ * before this change, and any row edited by hand in SQL) still resolves to a
+ * one-agent room, which is why nothing else had to change.
+ */
+export function residentAgentIdsFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): string[] {
+  const ids: string[] = [];
+  const raw = metadata?.brigade_agent_ids;
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === "string" && item.trim() && !ids.includes(item.trim()))
+        ids.push(item.trim());
+    }
+  }
+  const scalar = metadata?.brigade_agent_id;
+  if (typeof scalar === "string" && scalar.trim() && !ids.includes(scalar.trim()))
+    ids.push(scalar.trim());
+  return ids;
+}
+
+/** The resident agents of a mapped Room, scalar fallback included. */
+export function residentAgentIds(
+  room: Pick<Room, "brigade_agent_id" | "brigade_agent_ids"> | null | undefined,
+): string[] {
+  const ids = (room?.brigade_agent_ids ?? []).filter(
+    (id): id is string => typeof id === "string" && !!id,
+  );
+  const scalar = room?.brigade_agent_id;
+  if (scalar && !ids.includes(scalar)) ids.push(scalar);
+  return ids;
+}
+
+/**
  * Canonical RoomResponse → Room mapping for list endpoints. One mapper for
  * the live sidebar AND the Archived section so the two can never drift —
  * the previous archived mapper stamped `is_archived: true` onto whatever the
@@ -563,6 +610,7 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
       typeof r.metadata_?.brigade_agent_id === "string"
         ? (r.metadata_.brigade_agent_id as string)
         : null,
+    brigade_agent_ids: residentAgentIdsFromMetadata(r.metadata_),
     is_conference: r.metadata_?.conference === true,
     is_archived: r.is_archived ?? false,
     // Carried so guards that read persisted room facts (e.g. the auto-title
@@ -1233,7 +1281,11 @@ class StableApiClient {
       members: [],
       agents: [],
       brigade_agent_id: brigadeAgentId,
+      brigade_agent_ids: residentAgentIdsFromMetadata(r.metadata_),
       is_conference: r.metadata_?.conference === true,
+      // Carried so callers that need a server-owned room fact (the resident
+      // set included) don't have to re-fetch. The list mapper already does it.
+      metadata_: r.metadata_ ?? null,
     };
   }
 
@@ -1350,9 +1402,9 @@ class StableApiClient {
     if (model) body.model = model;
     // dispatch: false binds the agent to the room (text responder + member
     // strip) WITHOUT spawning a LiveKit voice worker. Text contexts must use
-    // it — a worker dispatched with no call to join collides with the real
-    // call-time dispatch (both share the "agent-brigade" identity) and the
-    // room ends up agentless.
+    // it — a worker dispatched with no call to join sits in an empty LiveKit
+    // room burning a job slot, and the server's per-agent presence check then
+    // skips the real call-time dispatch because that zombie is "already here".
     if (opts?.dispatch === false) body.dispatch = false;
     return this.request<InviteBrigadeAgentResponse>(
       "POST",

@@ -1,4 +1,16 @@
-"""AgentRegistry — manages agent class registration, spawning, and lifecycle."""
+"""AgentRegistry — manages agent class registration, spawning, and lifecycle.
+
+**Participant identity is PER AGENT, not per agent TYPE.** Every Brigade agent
+used to join LiveKit as the single identity ``agent-brigade`` (identity is
+derived from ``agent_type``, and ``agent_type`` is ``"brigade"`` for all ~56
+Brigade personas). LiveKit treats identity as unique within a room, so a second
+dispatch EVICTED the first and the room ended up agentless. Workers now accept
+as ``agent-<brigade_agent_id>`` — ``agent-majik``, ``agent-the-general`` — so
+several agents can hold one room at once, each with its own tile, name and
+voice. The type-shaped form is still the fallback for a job that names no
+Brigade persona (the ``triage`` agent), so nothing that never had a
+``brigade_agent_id`` changes shape.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +25,39 @@ from agent_runtime.base import StableAgent
 from agent_runtime.config import AgentSettings, api_path, get_agent_settings
 
 logger = structlog.get_logger(__name__)
+
+
+def agent_participant_identity(
+    agent_type: str, brigade_agent_id: str | None
+) -> str:
+    """The LiveKit identity a worker joins under.
+
+    Persona-shaped when the dispatch names a Brigade agent, so two agents in
+    one room are two participants instead of one eviction. Falls back to the
+    historical type-shaped form for agents that have no Brigade persona.
+
+    Matches the aliases the backend already resolves
+    (server/app/services/transcript_identity.py) and the eviction patterns
+    ``remove_brigade_agent`` tries, so a persona identity was already
+    understood everywhere it needed to be.
+    """
+    if brigade_agent_id:
+        return f"agent-{brigade_agent_id}"
+    return f"agent-{agent_type}"
+
+
+def agent_participant_name(agent_type: str, brigade_agent_id: str | None) -> str:
+    """The LiveKit display name — what the call tile's name plate shows.
+
+    Mirrors the server's canonical derivation
+    (``brigade_agent_id.replace("-", " ").title()``, used by
+    agent_chat_responder and transcript_publisher._agent_display_name) so a
+    tile, a caption line and a chat message all label the same agent the same
+    way. Previously every agent was named ``stable-brigade`` in the call.
+    """
+    if brigade_agent_id:
+        return brigade_agent_id.replace("-", " ").title()
+    return f"stable-{agent_type}"
 
 
 class _RunningAgent:
@@ -121,15 +166,19 @@ class AgentRegistry:
             await req.reject()
             return
 
+        brigade_agent_id = self._resolve_brigade_agent_id(req)
+        identity = agent_participant_identity(agent_type, brigade_agent_id)
+        display_name = agent_participant_name(agent_type, brigade_agent_id)
+
         logger.info(
             "registry_accepting_job",
             agent_type=agent_type,
+            brigade_agent_id=brigade_agent_id,
+            identity=identity,
+            display_name=display_name,
             room=room_name,
         )
-        await req.accept(
-            name=f"stable-{agent_type}",
-            identity=f"agent-{agent_type}",
-        )
+        await req.accept(name=display_name, identity=identity)
 
     async def on_job_dispatched(self, ctx: JobContext) -> None:
         """Called after a job is accepted. Spawns the agent into the room."""
@@ -142,13 +191,18 @@ class AgentRegistry:
             return
 
         agent = agent_cls(settings=self._settings)
-        run_key = f"{agent_type}:{room_name}"
+        # Keyed by PERSONA, not just type: `brigade:<room>` would have made
+        # Majik and The General the same running agent and dropped the second
+        # job on the floor in any worker process that handled both.
+        brigade_agent_id = self._resolve_brigade_agent_id_from_ctx(ctx)
+        run_key = f"{agent_type}:{brigade_agent_id or '-'}:{room_name}"
 
-        # If there is already an agent of this type in this room, skip
+        # If this same agent is already running in this room, skip
         if run_key in self._running:
             logger.warning(
                 "registry_agent_already_running",
                 agent_type=agent_type,
+                brigade_agent_id=brigade_agent_id,
                 room=room_name,
             )
             return
@@ -163,6 +217,10 @@ class AgentRegistry:
         logger.info(
             "registry_agent_spawned",
             agent_type=agent_type,
+            brigade_agent_id=brigade_agent_id,
+            identity=agent_participant_identity(
+                agent_type or "triage", brigade_agent_id
+            ),
             room=room_name,
             running_count=len(self._running),
         )
@@ -203,6 +261,53 @@ class AgentRegistry:
                 run_key=run_key,
                 running_count=len(self._running),
             )
+
+    @staticmethod
+    def _string_from_metadata(meta_str: str, key: str) -> str | None:
+        """Parse a JSON metadata string and return a non-empty string ``key``.
+
+        Defensive in exactly the way ``_agent_type_from_metadata`` is:
+        empty/missing/malformed metadata, or a non-dict, or a non-string value,
+        all return ``None`` rather than raising into the job-accept path.
+        """
+        if not meta_str:
+            return None
+        try:
+            import json
+
+            metadata = json.loads(meta_str)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        value = metadata.get(key)
+        return value if isinstance(value, str) and value else None
+
+    def _resolve_brigade_agent_id(self, req: JobRequest) -> str | None:
+        """Which Brigade PERSONA this dispatch is for, or None.
+
+        Job metadata first for the same reason ``_resolve_agent_type`` reads it
+        first: it is the source of truth for THIS dispatch, while room metadata
+        is shared mutable state that the next dispatch overwrites. In a
+        multi-agent room the room copy names whoever was invited most recently,
+        so trusting it would give two workers the same identity again — the
+        exact bug this change exists to fix.
+        """
+        job_meta_str: str = getattr(getattr(req, "job", None), "metadata", "") or ""
+        room_meta_str: str = (
+            getattr(req.room, "metadata", "") or "" if req.room else ""
+        )
+        return self._string_from_metadata(
+            job_meta_str, "brigade_agent_id"
+        ) or self._string_from_metadata(room_meta_str, "brigade_agent_id")
+
+    def _resolve_brigade_agent_id_from_ctx(self, ctx: JobContext) -> str | None:
+        """``_resolve_brigade_agent_id`` for the post-accept JobContext."""
+        job_meta_str: str = getattr(getattr(ctx, "job", None), "metadata", "") or ""
+        room_meta_str: str = getattr(ctx.room, "metadata", "") or ""
+        return self._string_from_metadata(
+            job_meta_str, "brigade_agent_id"
+        ) or self._string_from_metadata(room_meta_str, "brigade_agent_id")
 
     @staticmethod
     def _agent_type_from_metadata(meta_str: str) -> str | None:

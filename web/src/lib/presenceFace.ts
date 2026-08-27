@@ -84,6 +84,25 @@ export interface RoomAgentMember {
   name?: string | null;
 }
 
+/**
+ * Agent TYPE-shaped identity slugs — the ones that name no character.
+ *
+ * `agent-brigade` / `stable-brigade` (the historical worker identity, one
+ * string for all ~56 Brigade personas) and `agent-brigade-<hex>` (the runtime's
+ * internal audit identity). Workers now join as `agent-<brigade_agent_id>`, but
+ * a room can still hold a participant that joined under the old form, so this
+ * stays the test for "this identity does not name a persona, use the room's".
+ */
+const AGENT_TYPE_SLUGS = ["brigade", "triage"] as const;
+
+export function isTypeShapedAgentSlug(slug: string | null | undefined): boolean {
+  const s = (slug ?? "").trim().toLowerCase();
+  if (!s) return true;
+  return AGENT_TYPE_SLUGS.some(
+    (t) => s === t || s === `stable-${t}` || s.startsWith(`${t}-`),
+  );
+}
+
 /** "corporal-qwen" → "Corporal Qwen" — mirrors the server's display derivation
  *  (agent_chat_responder: id.replace("-", " ").title()). */
 function displayNameForBrigadeId(id: string): string {
@@ -106,8 +125,13 @@ function displayNameForBrigadeId(id: string): string {
  * puppet sat unused in `/agent-puppets/majik.webp`.
  *
  * Order:
+ *   0. The tile's own identity, when it NAMES A KNOWN AGENT MEMBER of the room.
+ *      Workers now join as `agent-<brigade_agent_id>` (agent_runtime/registry),
+ *      so this is the ordinary case — and it is the rule that makes a
+ *      MULTI-agent call attributable, because each tile resolves to its own
+ *      persona instead of every tile resolving to the room's one resident.
  *   1. The tile's own identity/name, when it actually resolves art — a
- *      persona-shaped identity ("agent-majik") keeps working, and a future
+ *      persona-shaped identity ("agent-majik") keeps working, and a
  *      multi-agent call where each worker has its own persona identity is
  *      attributed correctly.
  *   2. The ROOM's resident `brigade_agent_id` (server room metadata, already
@@ -135,16 +159,38 @@ export function resolveCallTilePersona(
 ): CallTilePersona {
   const ownSlug = agentSlugFromIdentity(identity);
   const ownName = displayName || ownSlug;
+  const members = roomAgentMembers ?? [];
+  // 0. The identity NAMES a known agent member of this room. Since the worker
+  //    joins as `agent-<brigade_agent_id>`, this is the normal case, and it is
+  //    what makes a MULTI-agent call attributable: with `agent-majik` and
+  //    `agent-the-general` both in the room, each tile is its own character
+  //    whether or not we have drawn art for it. It has to rank above the art
+  //    check so the tile takes the roster's display name.
+  const ownMember = ownSlug
+    ? members.find((m) => m.slug === ownSlug)
+    : undefined;
+  if (ownMember) {
+    return {
+      slug: ownSlug,
+      name: ownMember.name || displayName || displayNameForBrigadeId(ownSlug),
+    };
+  }
   if (brandAvatarFor(ownSlug) || brandAvatarFor(displayName ?? null)) {
     return { slug: ownSlug, name: ownName };
   }
-  if (roomBrigadeAgentId && brandAvatarFor(roomBrigadeAgentId)) {
+  // The ROOM-level fallbacks below name ONE persona, so they are only safe for
+  // a tile whose own identity names none. A persona-shaped identity in a room
+  // with several agents must never borrow the room's single resident id —
+  // that is how the second agent would wear the first one's face.
+  const roomFallbackAllowed =
+    isTypeShapedAgentSlug(ownSlug) || members.length <= 1;
+  if (roomFallbackAllowed && roomBrigadeAgentId && brandAvatarFor(roomBrigadeAgentId)) {
     return {
       slug: roomBrigadeAgentId,
       name: displayNameForBrigadeId(roomBrigadeAgentId),
     };
   }
-  const artful = (roomAgentMembers ?? []).filter(
+  const artful = (roomFallbackAllowed ? members : []).filter(
     (m) => m.slug && (brandAvatarFor(m.slug) || brandAvatarFor(m.name ?? null)),
   );
   if (artful.length === 1) {

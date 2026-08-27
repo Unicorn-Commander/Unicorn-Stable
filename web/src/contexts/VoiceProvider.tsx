@@ -19,7 +19,7 @@ import {
   isMovedToAnotherDevice,
   MOVED_TO_ANOTHER_DEVICE_TOAST,
 } from "@/lib/callHandoff";
-import { api } from "@/services/api";
+import { api, residentAgentIds } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
   decodeRoomData,
@@ -847,23 +847,43 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // blocks it (mobile), audioBlocked drives the tap-to-hear prompt.
       void startAudio();
 
-      // Dispatch the room's resident Brigade agent (e.g. Majik) into the call.
+      // Dispatch EVERY Brigade agent resident in the room into the call, not
+      // just the canonical one. Workers join under per-agent LiveKit
+      // identities now (`agent-majik`, `agent-the-general`), so several can
+      // hold one room instead of the second evicting the first; a room with a
+      // single resident dispatches exactly one agent, exactly as before.
       // A failed dispatch must never break the human's call.
-      const inviteAgent = async () => {
+      const inviteAgents = async (): Promise<number> => {
         const detail = await api.getRoom(roomId);
-        const agentId = detail?.brigade_agent_id;
-        if (!agentId) return false;
+        const agentIds = residentAgentIds(detail);
+        if (!agentIds.length) return 0;
         // Honor the per-room model override (mid-conversation switcher) for
-        // the voice agent too, so the spoken agent uses the same chosen LLM.
+        // the voice agents too, so they use the same chosen LLM.
         const model = useAppStore.getState().modelOverrides[roomId];
-        await api.inviteBrigadeAgent(roomId, agentId, model);
-        return true;
+        let joined = 0;
+        let lastError: unknown = null;
+        for (const agentId of agentIds) {
+          try {
+            await api.inviteBrigadeAgent(roomId, agentId, model);
+            joined += 1;
+          } catch (e) {
+            lastError = e;
+            console.error("agent dispatch failed", agentId, e);
+          }
+        }
+        // Only a TOTAL failure is the call's failure. One agent the caller
+        // isn't entitled to must not silence the ones they are, nor stop the
+        // self-heal poll below.
+        if (joined === 0 && lastError !== null) throw lastError;
+        return agentIds.length;
       };
       // Optimistic default: if the invite itself failed we still want the
       // self-heal loop below (it no-ops for rooms without a resident agent).
       let roomHasAgent = true;
+      let expectedAgents = 1;
       try {
-        roomHasAgent = await inviteAgent();
+        expectedAgents = await inviteAgents();
+        roomHasAgent = expectedAgents > 0;
       } catch (e) {
         console.error("failed to dispatch agent into voice call", e);
         if (isEntitlementDenial(e)) {
@@ -889,15 +909,20 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           window.setTimeout(async () => {
             const cur = roomRef.current;
             if (!cur || cur.state !== ConnectionState.Connected) return;
-            const agentPresent = Array.from(
+            // Count, don't just test for one: in a multi-agent room the first
+            // agent being present says nothing about the second, and "some
+            // agent is here" would have declared the call healed with three of
+            // four missing. The server's per-agent presence check makes the
+            // re-invite a no-op for the ones that DID make it.
+            const agentCount = Array.from(
               cur.remoteParticipants.values(),
-            ).some((p) => isAgentParticipant(p));
-            if (agentPresent) return;
+            ).filter((p) => isAgentParticipant(p)).length;
+            if (agentCount >= expectedAgents) return;
             console.warn(
-              `voice call has no agent after ${attempt * 4}s — re-inviting`,
+              `voice call has ${agentCount}/${expectedAgents} agents after ${attempt * 4}s — re-inviting`,
             );
             try {
-              await inviteAgent();
+              await inviteAgents();
             } catch (e) {
               console.error("agent re-invite failed", e);
             }

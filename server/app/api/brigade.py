@@ -20,6 +20,10 @@ from app.deps import get_current_user, get_db, get_livekit, get_redis, rate_limi
 from app.services.agent_access import ensure_agent_access, entitled_agent_ids
 from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
+from app.services.resident_agents import (
+    add_resident_agent,
+    remove_resident_agent,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -844,16 +848,32 @@ async def invite_brigade_agent(
     if not body.dispatch:
         skip_reason = "dispatch_not_requested"
     else:
-        # Idempotency guard: all brigade workers join LiveKit as identity
-        # "agent-brigade", and LiveKit's duplicate-identity handling makes two
-        # live jobs in one room kill each other -- the room ends up agentless
-        # while the human sits in the call. If a worker is already in the
-        # room, keep it rather than dispatching a second one.
+        # Idempotency guard, per AGENT (not per room).
+        #
+        # This used to skip the dispatch when ANY `agent-` participant was in
+        # the room, because every brigade worker joined under the one identity
+        # "agent-brigade" and LiveKit's duplicate-identity handling made two
+        # live jobs kill each other -- the room ended up agentless while the
+        # human sat in the call. Workers now join as `agent-<brigade_agent_id>`
+        # (agent_runtime/registry.py), so a DIFFERENT agent is no longer a
+        # collision and must be allowed in. Only a second copy of THIS agent
+        # is refused.
+        wanted = {
+            f"agent-{body.brigade_agent_id}",
+            f"agent-brigade-{body.brigade_agent_id}",
+        }
+        # A worker from before per-agent identities is in the room as the bare
+        # type-shaped "agent-brigade"/"agent-triage". Count that as "this
+        # agent" only when this agent is the room's canonical resident --
+        # otherwise one stale generic worker would block every other agent in
+        # the roster from ever joining.
+        if _meta_guard.get("brigade_agent_id") == body.brigade_agent_id:
+            wanted |= {"agent-brigade", "agent-triage"}
         try:
             lk_state = await livekit.get_room(lk_name)
             for p in lk_state["participants"]:
                 identity = getattr(p, "identity", "") or ""
-                if identity.startswith("agent-"):
+                if identity in wanted:
                     skip_reason = f"agent_already_in_room:{identity}"
                     break
         except Exception:
@@ -889,41 +909,36 @@ async def invite_brigade_agent(
     except Exception:
         logger.warning("agent_member_create_failed", exc_info=True)
 
-    # Persist brigade_agent_id on the Stable Room so the text-only reply path
-    # (services/agent_chat_responder.py) can find it without joining members.
-    # Single-agent assumption per room (DM/agent or channel + one resident agent);
-    # multi-agent rooms keep the most-recently-invited as the canonical responder.
+    # Persist the room's resident agent(s) so the text-only reply path
+    # (services/agent_chat_responder.py) and the call UI can find them without
+    # joining members. `brigade_agent_ids` is the SET (invite order);
+    # `brigade_agent_id` stays written as the most-recently-invited canonical
+    # responder, which is what every single-agent consumer already reads.
     try:
-        from sqlalchemy import select as _select_meta
-        from app.models.room import Room as _Room_meta
-        room_row = (
-            await db.execute(
-                _select_meta(_Room_meta).where(
-                    _Room_meta.livekit_room_name == room_name
-                )
-            )
-        ).scalar_one_or_none()
-        if room_row is None:
-            try:
-                import uuid as _uuid_meta
-                room_row = (
-                    await db.execute(
-                        _select_meta(_Room_meta).where(
-                            _Room_meta.id == _uuid_meta.UUID(room_name)
-                        )
-                    )
-                ).scalar_one_or_none()
-            except ValueError:
-                room_row = None
+        # Use the room ALREADY resolved above (id | slug | LiveKit name), not a
+        # second lookup on the raw path param. The old re-resolution matched
+        # only `livekit_room_name == room_name` or a UUID, so an invite
+        # addressed by SLUG — which the room-resolution block at the top of
+        # this route accepts, and which the agents worker's summon_agent tool
+        # and every curl/script caller use — found no row and the residency was
+        # NEVER persisted. It failed silently: the dispatch succeeded, the
+        # endpoint returned 200, and the room was left with no resident agent,
+        # so the next call summoned nobody.
+        room_row = _resolved_room
         if room_row is not None:
-            meta = dict(room_row.metadata_ or {})
-            meta["brigade_agent_id"] = body.brigade_agent_id
+            meta = add_resident_agent(room_row.metadata_, body.brigade_agent_id)
             if body.model:
                 meta["model_override"] = body.model
             else:
                 meta.pop("model_override", None)
             room_row.metadata_ = meta
             await db.commit()
+            logger.info(
+                "room_resident_agents_persisted",
+                room=lk_name,
+                brigade_agent_ids=meta.get("brigade_agent_ids"),
+                canonical=meta.get("brigade_agent_id"),
+            )
     except Exception:
         logger.warning("room_metadata_brigade_id_set_failed", exc_info=True)
 
@@ -1006,10 +1021,11 @@ async def remove_brigade_agent(
         # A kick must also revoke the RESPONDER binding: the text responder
         # answers as metadata.brigade_agent_id, so leaving it pointing at the
         # evicted agent means the "kicked" agent keeps replying in the room.
-        meta = dict(room.metadata_ or {})
-        if meta.get("brigade_agent_id") == brigade_agent_id:
-            meta.pop("brigade_agent_id", None)
-            room.metadata_ = meta  # reassign, not mutate — JSONB change detection
+        # Drops the agent from the SET and re-points the canonical scalar at
+        # whoever is left, so a kick in a multi-agent room revokes exactly one
+        # residency instead of all of them (and never leaves the responder
+        # answering as the agent that was just evicted).
+        room.metadata_ = remove_resident_agent(room.metadata_, brigade_agent_id)
         await db.commit()
 
     # Best-effort eviction from LiveKit. Identity is whatever the worker

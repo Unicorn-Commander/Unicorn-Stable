@@ -8,6 +8,7 @@ import {
   mapAgentState,
   puppetAvailableFor,
   resolveCallTilePersona,
+  isTypeShapedAgentSlug,
   selectFallbackRung,
   selectPresenceRung,
   unicornStateFor,
@@ -465,6 +466,63 @@ describe("resolveCallTilePersona", () => {
     ).toEqual({ slug: "brigade", name: "stable-brigade" });
   });
 
+  it("gives EACH agent in a multi-agent call its own character", () => {
+    // THE multi-agent bug this exists for: workers used to share one
+    // type-shaped identity, so the second agent could only ever wear the
+    // room's single resident face. They now join as `agent-<persona>` and the
+    // membership roster names both, so each tile resolves to itself.
+    const members = [
+      { slug: "majik", name: "Majik" },
+      { slug: "the-general", name: "The General" },
+    ];
+    expect(
+      resolveCallTilePersona("agent-majik", "Majik", "the-general", members),
+    ).toEqual({ slug: "majik", name: "Majik" });
+    expect(
+      resolveCallTilePersona(
+        "agent-the-general",
+        "The General",
+        "the-general",
+        members,
+      ),
+    ).toEqual({ slug: "the-general", name: "The General" });
+  });
+
+  it("keeps an ARTLESS agent as itself instead of borrowing the resident's face", () => {
+    // A member with no drawn art used to fall through to the room's
+    // `brigade_agent_id` — in a multi-agent room that is somebody else's
+    // character. The roster naming the tile is enough; the 2D ladder below
+    // handles "we have not drawn this one yet".
+    expect(
+      resolveCallTilePersona("agent-sgt-nowhere", "Sgt Nowhere", "majik", [
+        { slug: "majik", name: "Majik" },
+        { slug: "sgt-nowhere", name: "Sgt Nowhere" },
+      ]),
+    ).toEqual({ slug: "sgt-nowhere", name: "Sgt Nowhere" });
+  });
+
+  it("derives a name for a roster row that has none", () => {
+    expect(
+      resolveCallTilePersona("agent-corporal-qwen", null, null, [
+        { slug: "corporal-qwen" },
+        { slug: "majik", name: "Majik" },
+      ]).name,
+    ).toBe("Corporal Qwen");
+  });
+
+  it("still uses the room resident for a TYPE-shaped tile in a multi-agent room", () => {
+    // A worker from before per-agent identities. Its identity names nobody, so
+    // the room-level fallback is still the best information available — but
+    // rule 3 already refuses to pick between two artful members, so this lands
+    // on the room scalar and not on a coin flip.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", "gunny", [
+        { slug: "majik", name: "Majik" },
+        { slug: "gunny", name: "Gunny" },
+      ]).slug,
+    ).toBe("gunny");
+  });
+
   it("ignores agent members whose art does not resolve", () => {
     // An artless bot member must not block the one drawn character…
     expect(
@@ -479,6 +537,25 @@ describe("resolveCallTilePersona", () => {
         { slug: "webhook-notifier-x9" },
       ]),
     ).toEqual({ slug: "brigade", name: "stable-brigade" });
+  });
+});
+
+describe("isTypeShapedAgentSlug", () => {
+  it("recognises every identity shape that names no character", () => {
+    // The historical worker identity, its `stable-` display form, and the
+    // runtime's internal audit identity.
+    expect(isTypeShapedAgentSlug("brigade")).toBe(true);
+    expect(isTypeShapedAgentSlug("stable-brigade")).toBe(true);
+    expect(isTypeShapedAgentSlug("brigade-33b0")).toBe(true);
+    expect(isTypeShapedAgentSlug("triage")).toBe(true);
+    expect(isTypeShapedAgentSlug("")).toBe(true);
+    expect(isTypeShapedAgentSlug(null)).toBe(true);
+  });
+
+  it("does not swallow real personas", () => {
+    expect(isTypeShapedAgentSlug("majik")).toBe(false);
+    expect(isTypeShapedAgentSlug("the-general")).toBe(false);
+    expect(isTypeShapedAgentSlug("corporal-qwen")).toBe(false);
   });
 });
 
