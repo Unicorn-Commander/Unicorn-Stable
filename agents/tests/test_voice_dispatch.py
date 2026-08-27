@@ -255,35 +255,39 @@ class EdgeTests(TestCase):
         self.assertEqual(follow.rule, "sticky_other_agent")
 
 
-class AliasCoverageTests(TestCase):
-    """A KNOWN LIMITATION, pinned so it cannot rot into a surprise.
+class AddressPositionTests(TestCase):
+    """A name must be USED to address someone, not merely occur in a sentence.
 
-    Spoken names are the agent id and its de-hyphenated form, nothing more. So
-    `the-general` answers to "the general" but NOT to bare "General", and a
-    person who says "General, thoughts?" gets silence.
-
-    This is deliberate for v1. The cheap fix — also accept the id with a
-    leading article stripped — would make the needle the bare word "general",
-    and "that's the general idea" would then dispatch an agent into a
-    conversation it was not invited to. Undermining the nobody class to save
-    one word is a bad trade; richer aliases belong with the classifier tier,
-    which can weigh context instead of matching a substring.
+    The case that forced this: the agent id `the-general` occurs verbatim
+    inside "that is the general idea", so matching on presence alone would
+    dispatch an agent into a sentence that was not about it — the nobody class
+    failing in the most ordinary English imaginable.
     """
 
-    def test_bare_word_without_the_article_does_not_address(self) -> None:
-        self.assertFalse(spoken_name_match("General, thoughts?", GENERAL))
-        self.assertTrue(spoken_name_match("the General, thoughts?", GENERAL))
-
-    def test_the_common_word_false_positive_this_protects_against(self) -> None:
-        """Why the article is not stripped: the bare word is ordinary English.
-
-        With "general" as a needle this ordinary sentence addresses an agent.
-        The real roster is checked against the same sentence to show it does
-        not — that pair is the argument for keeping the strict form.
-        """
-        self.assertTrue(
-            spoken_name_match("that is the general idea, roughly", {"general"})
-        )
+    def test_a_name_merely_mentioned_does_not_address(self) -> None:
         self.assertFalse(
             spoken_name_match("that is the general idea, roughly", GENERAL)
         )
+        self.assertFalse(spoken_name_match("we should ask majik about it", MAJIK))
+
+    def test_the_real_address_forms_all_match(self) -> None:
+        for phrase in (
+            "Majik, what's the status?",
+            "hey majik can you pause it",
+            "okay majik, go",
+            "what do you think, majik?",
+            "so majik — the deploy",
+        ):
+            self.assertTrue(spoken_name_match(phrase, MAJIK), phrase)
+        for phrase in ("the General, thoughts?", "THE GENERAL should know"):
+            self.assertTrue(spoken_name_match(phrase, GENERAL), phrase)
+
+    def test_bare_word_without_the_article_still_does_not_address(self) -> None:
+        """KNOWN LIMITATION, pinned: `the-general` does not answer to "General".
+
+        Stripping the article would make the needle the bare word "general".
+        Position-awareness would still let "General, thoughts?" through — but
+        so would "general, that was rough", and the classifier tier is the
+        right place to weigh that, not a substring rule.
+        """
+        self.assertFalse(spoken_name_match("General, thoughts?", GENERAL))

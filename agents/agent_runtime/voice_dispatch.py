@@ -111,24 +111,60 @@ class Decision:
     addressed: str | None = None
 
 
-def _needle_pattern(name: str) -> str:
-    return rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])"
+#: Words that introduce an address ("hey Majik", "ok Majik", "so Majik").
+_ADDRESS_CUES = frozenset(
+    {
+        "hey", "hi", "hello", "ok", "okay", "so", "and", "but", "alright",
+        "right", "yo", "um", "uh", "well", "now", "please", "thanks",
+    }
+)
+
+
+def _addresses(text_lc: str, name: str) -> bool:
+    """Is ``name`` used to ADDRESS someone in ``text_lc``, not merely present?
+
+    Presence alone is not address, and the difference is not academic: the
+    agent id ``the-general`` occurs verbatim inside "that is the general
+    idea", so a presence test dispatches an agent into a sentence about
+    something else. That is precisely the nobody class failing, and on a
+    recorded show it is an agent talking over the host.
+
+    A name counts as an address when it sits where a name sits when you are
+    talking TO someone:
+      * at the start of the utterance — "Majik, status?";
+      * right after an address cue or any punctuation — "hey Majik", "ok, Majik";
+      * immediately before punctuation — "what do you think, Majik?".
+    Everything else is the name being MENTIONED, which dispatches nobody.
+    """
+    for match in re.finditer(
+        rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", text_lc
+    ):
+        start, end = match.start(), match.end()
+        before = text_lc[:start].strip()
+        after = text_lc[end:].lstrip()
+        if not before:
+            return True  # utterance opens with the name
+        if before[-1] in ",.!?:;":
+            return True  # "...done, Majik do the next one"
+        if before.split()[-1] in _ADDRESS_CUES:
+            return True  # "hey Majik", "so Majik"
+        if after[:1] in (",", "?", "!", ".", ":", ";"):
+            return True  # "what do you think, Majik?"
+    return False
 
 
 def spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool:
-    """Whether ``text`` addresses one of ``names`` by bare spoken name.
+    """Whether ``text`` ADDRESSES one of ``names`` by spoken name.
 
-    Word-boundary, case-insensitive. Speech has no ``@``, so the bare name is
-    the address form (mirrors voice_transcripts.spoken_mention, kept separate
-    so the dispatcher owns its own matching and can be tested alone).
+    Case-insensitive, word-boundary, and position-aware (see ``_addresses``).
+    Speech has no ``@``, so the bare name in an address position is the only
+    address form available.
     """
     lc = (text or "").lower()
     if not lc:
         return False
     return any(
-        re.search(_needle_pattern(n.strip().lower()), lc)
-        for n in names
-        if n and n.strip()
+        _addresses(lc, n.strip().lower()) for n in names if n and n.strip()
     )
 
 
