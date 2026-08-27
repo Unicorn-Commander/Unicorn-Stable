@@ -604,6 +604,12 @@ interface ParticipantTileProps {
    * indication anywhere. The feed stays invisible; the FACT of it does not.
    */
   isBroadcasting?: boolean;
+  /**
+   * Run a moderation action on THIS participant's live-call connection.
+   * Supplied only to a room owner/admin, and never for your own tile; the
+   * server's 403 and its role ladder are the backstop, not the rule.
+   */
+  onModerate?: (action: CallModerationAction) => void;
 }
 
 function ParticipantTile({
@@ -624,6 +630,7 @@ function ParticipantTile({
   inPopout,
   onCopyBroadcastUrl,
   isBroadcasting,
+  onModerate,
 }: ParticipantTileProps) {
   const pip = usePipTile();
   const fs = useTileFullscreen();
@@ -982,6 +989,13 @@ function ParticipantTile({
             preference). First in the cluster — it's about the face the tile
             shows, so it reads before the layout controls. */}
         {isAgentTile && <FaceStyleTileButton onCycled={flashFaceStyle} />}
+        {/* Owner/admin only: mute, silence, deafen, or remove this
+            participant from the live call. Not rendered inside a pop-out —
+            the menu portals to the main document, so it would be dropped
+            into a window that cannot show it. */}
+        {onModerate && !inPopout && (
+          <CallModerationMenu targetName={p.name} onAction={onModerate} />
+        )}
         {/* Owner-only: mint a URL an OBS browser source can point at. Solves
             the window-id orphaning that made pop-out capture unusable on a
             live show — see components/Broadcast/BroadcastPage.tsx. */}
@@ -1509,6 +1523,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // control that can only 403.
   const roomMembers = useAppStore((s) => s.participants[roomId]);
   const isRoomOwner = roomMembers?.find((m) => m.is_self)?.role === "owner";
+  // Moderation is the owner/admin tier — the same ladder the server enforces.
+  const isRoomModerator = ["owner", "admin"].includes(
+    roomMembers?.find((m) => m.is_self)?.role ?? "",
+  );
 
   const [mintingFor, setMintingFor] = useState<string | null>(null);
 
@@ -1520,6 +1538,58 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
    * returned exactly once (the server stores only its SHA-256), so there is no
    * "show me the link again" — copying is minting.
    */
+  /**
+   * Run one moderation action against a live-call participant.
+   *
+   * Reports the OUTCOME, not the request: a mute that touched no audio track
+   * (their mic was never on) says so rather than claiming success, because a
+   * moderator who believes someone is muted when they are not is exactly the
+   * failure this control exists to prevent.
+   */
+  const moderateParticipant = useCallback(
+    async (identity: string, label: string, action: CallModerationAction) => {
+      const verb: Record<CallModerationAction, string> = {
+        mute_mic: "Muted",
+        silence: "Silenced",
+        unsilence: "Unsilenced",
+        deafen: "Deafened",
+        undeafen: "Undeafened",
+        remove_from_call: "Removed",
+      };
+      try {
+        const result = await api.moderateCallParticipant(
+          roomId,
+          identity,
+          action,
+        );
+        const noAudio =
+          (action === "mute_mic" || action === "silence") &&
+          result.muted_track_sids.length === 0;
+        useAppStore.getState().pushToast({
+          title: `${verb[action]} ${label}`,
+          body:
+            action === "unsilence"
+              ? "They can publish again. Their mic stays off until they turn it back on."
+              : noAudio
+                ? action === "silence"
+                  ? "They had no mic open; publishing is now revoked, so they cannot open one."
+                  : "They had no mic open — nothing to mute."
+                : undefined,
+          kind: "success",
+        });
+      } catch (err) {
+        useAppStore.getState().pushToast({
+          title: `Could not ${action.replace(/_/g, " ")} ${label}`,
+          body:
+            (err as { message?: string })?.message ||
+            "The server refused the action.",
+          kind: "error",
+        });
+      }
+    },
+    [roomId],
+  );
+
   const copyBroadcastUrl = useCallback(
     async (identity: string, label: string) => {
       if (mintingFor) return;
@@ -2174,6 +2244,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         onCopyBroadcastUrl={
           isRoomOwner && lkIdentity
             ? () => void copyBroadcastUrl(lkIdentity, lkLabel)
+            : undefined
+        }
+        onModerate={
+          // Never your own tile: the server refuses self-moderation, and
+          // offering a control that always errors is worse than no control.
+          isRoomModerator && lkIdentity && !p.isLocal
+            ? (action) => void moderateParticipant(lkIdentity, lkLabel, action)
             : undefined
         }
         agentFaceBudgetOk={agentFaceBudgetOk}
