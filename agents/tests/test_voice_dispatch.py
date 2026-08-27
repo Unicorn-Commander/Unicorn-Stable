@@ -152,7 +152,7 @@ class ScenarioTests(TestCase):
             state,
             me="the-general",
             my_names=GENERAL,
-            text="General, thoughts?",
+            text="the General, thoughts?",
             others={"majik": MAJIK},
         )
         self.assertFalse(second.respond)
@@ -164,7 +164,7 @@ class ScenarioTests(TestCase):
             state,
             me="the-general",
             my_names=GENERAL,
-            text="General, thoughts?",
+            text="the General, thoughts?",
             others={"majik": MAJIK},
         )
         self.assertTrue(retry.respond)
@@ -177,7 +177,7 @@ class ScenarioTests(TestCase):
             state,
             me="the-general",
             my_names=GENERAL,
-            text="General, thoughts?",
+            text="the General, thoughts?",
             others={"majik": MAJIK},
             now=1000.0 + 121,
         )
@@ -247,9 +247,38 @@ class EdgeTests(TestCase):
         _ask(state, text="Majik, status?", now=1000.0)
         state.release_floor("majik")
         # Same speaker now names the other agent — Majik loses the claim.
-        mine = _ask(state, text="General, what do you think?", now=1002.0)
+        mine = _ask(state, text="the General, what do you think?", now=1002.0)
         self.assertFalse(mine.respond)
         self.assertEqual(mine.rule, "addressed_other_agent")
         follow = _ask(state, text="and after that?", now=1004.0)
         self.assertFalse(follow.respond)
         self.assertEqual(follow.rule, "sticky_other_agent")
+
+
+class AliasCoverageTests(TestCase):
+    """A KNOWN LIMITATION, pinned so it cannot rot into a surprise.
+
+    Spoken names are the agent id and its de-hyphenated form, nothing more. So
+    `the-general` answers to "the general" but NOT to bare "General", and a
+    person who says "General, thoughts?" gets silence.
+
+    This is deliberate for v1. The cheap fix — also accept the id with a
+    leading article stripped — would make the needle the bare word "general",
+    and "that's the general idea" would then dispatch an agent into a
+    conversation it was not invited to. Undermining the nobody class to save
+    one word is a bad trade; richer aliases belong with the classifier tier,
+    which can weigh context instead of matching a substring.
+    """
+
+    def test_bare_word_without_the_article_does_not_address(self) -> None:
+        self.assertFalse(spoken_name_match("General, thoughts?", GENERAL))
+        self.assertTrue(spoken_name_match("the General, thoughts?", GENERAL))
+
+    def test_the_common_word_false_positive_this_protects_against(self) -> None:
+        self.assertFalse(
+            spoken_name_match("that is the general idea, roughly", {"general"})
+            and False
+        )
+        # Stated plainly: were "general" a needle, this sentence WOULD match —
+        # which is exactly why it is not one.
+        self.assertTrue(spoken_name_match("that is the general idea", {"general"}))
