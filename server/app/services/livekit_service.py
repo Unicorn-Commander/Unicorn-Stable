@@ -184,6 +184,15 @@ class LiveKitService:
         Returns the sids that were muted/unmuted (empty when the participant
         has no audio published — e.g. mic never enabled — which is a no-op,
         not an error).
+
+        ``muted=False`` IS REFUSED BY THIS DEPLOYMENT. Live-fire against our
+        SFU: ``failed_precondition / 412 "remote unmute not enabled"`` — the
+        server-side unmute is off by default in LiveKit (enabling it lets an
+        operator silently re-open someone's microphone). Nothing in Stable
+        calls it: moderation mutes, and "unsilence" restores publish rights so
+        the person turns their own mic back on. Do not add an unmute caller
+        without turning that server flag on deliberately, and think hard about
+        why you would.
         """
         info = await self.get_participant(room_name, identity)
         audio_sids = [
