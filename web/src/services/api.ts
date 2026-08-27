@@ -573,15 +573,24 @@ export function residentAgentIdsFromMetadata(
   return ids;
 }
 
-/** The resident agents of a mapped Room, scalar fallback included. */
+/**
+ * The resident agents of a mapped Room, in DISPATCH order.
+ *
+ * The canonical responder (`brigade_agent_id`) is deliberately ordered LAST.
+ * Each invite re-points the scalar at the agent it invited ("last-invited
+ * wins", which the server text responder reads), so dispatching a multi-agent
+ * room in list order would hand the room's text conversation to whichever
+ * agent happened to be last in the list — joining a CALL would silently change
+ * who answers CHAT. Ending on the canonical agent makes the round trip a no-op.
+ */
 export function residentAgentIds(
   room: Pick<Room, "brigade_agent_id" | "brigade_agent_ids"> | null | undefined,
 ): string[] {
+  const scalar = room?.brigade_agent_id || null;
   const ids = (room?.brigade_agent_ids ?? []).filter(
-    (id): id is string => typeof id === "string" && !!id,
+    (id): id is string => typeof id === "string" && !!id && id !== scalar,
   );
-  const scalar = room?.brigade_agent_id;
-  if (scalar && !ids.includes(scalar)) ids.push(scalar);
+  if (scalar) ids.push(scalar);
   return ids;
 }
 
