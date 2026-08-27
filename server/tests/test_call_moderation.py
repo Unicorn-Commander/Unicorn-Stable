@@ -322,6 +322,43 @@ class ModerationEndpointTests(IsolatedAsyncioTestCase):
             )
         self.assertEqual(ctx.exception.status_code, 404)
 
+    async def test_real_livekit_server_error_maps_to_404(self) -> None:
+        """The REAL error class, not a stand-in Exception.
+
+        The hand-rolled Exception above only exercises the text fallback; this
+        one carries the twirp ``code``/``status`` the SFU actually raises, so
+        the production path is proven rather than assumed.
+        """
+        from livekit.api.twirp_client import TwirpError
+
+        lk = AsyncMock(spec=LiveKitService)
+        lk.mute_participant.side_effect = TwirpError(
+            "not_found", "participant does not exist", status=404
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await self._call(
+                actor_role=MemberRole.OWNER,
+                target="agent-majik",
+                livekit=lk,
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_real_livekit_server_error_other_code_maps_to_502(self) -> None:
+        """A genuine LiveKit fault must NOT be dressed up as a missing target."""
+        from livekit.api.twirp_client import TwirpError
+
+        lk = AsyncMock(spec=LiveKitService)
+        lk.mute_participant.side_effect = TwirpError(
+            "internal", "sfu exploded", status=500
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await self._call(
+                actor_role=MemberRole.OWNER,
+                target="agent-majik",
+                livekit=lk,
+            )
+        self.assertEqual(ctx.exception.status_code, 502)
+
     async def test_livekit_other_error_maps_to_502(self) -> None:
         lk = AsyncMock(spec=LiveKitService)
         lk.mute_participant.side_effect = Exception("connection refused")

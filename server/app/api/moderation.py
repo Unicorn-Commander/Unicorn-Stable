@@ -198,11 +198,19 @@ async def _resolve_target(
 
 
 def _is_participant_missing(exc: Exception) -> bool:
-    """True when LiveKit's error means 'no such participant in this room'."""
-    code = str(getattr(exc, "code", "") or "").lower()
-    if code == "not_found":
+    """True when LiveKit's error means 'no such participant in this room'.
+
+    livekit.api raises ``ServerError`` carrying the twirp ``code`` ("not_found")
+    and the HTTP ``status`` (404); either is authoritative. The text fallback
+    normalises separators because the wire code is ``not_found`` while prose
+    says "not found" — matching only one form silently mislabels a missing
+    participant as a 502 LiveKit outage.
+    """
+    if str(getattr(exc, "code", "") or "").lower() == "not_found":
         return True
-    return "not found" in str(exc).lower()
+    if getattr(exc, "status", None) == 404:
+        return True
+    return "not found" in str(exc).lower().replace("_", " ")
 
 
 @router.post(
