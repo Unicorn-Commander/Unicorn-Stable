@@ -659,30 +659,36 @@ class RoomService:
             return None
         return room
 
-    async def _reclaim_canonical_dm(
+    async def _verify_or_reclaim_canonical_dm(
         self,
         room: Room,
         caller_id: uuid.UUID,
         target_id: uuid.UUID,
     ) -> Room | None:
-        """Repair-in-place a room that holds this pair's canonical DM key.
+        """Verify — and when needed repair in place — a room that holds this
+        pair's canonical DM key.
 
         A room found by the pair stamp or the deterministic slug IS this
         pair's DM by construction — but writers that bypass the API (the ops
         bridge's add-member script writes RoomMember rows straight into the
-        DB) can leave an agent member or agent metadata on it, and archiving
-        strands the key. Rejecting such a room used to wedge ensure
+        DB) can leave an agent member row or agent metadata on it, and
+        archiving strands the key. Rejecting such a room used to wedge ensure
         permanently: _find refused to return it while its unique name / pair
         stamp blocked creating a replacement, so every click was a 409
         (the 2026-08-27 Aaron↔Shafen incident — an agent was added to their
-        1:1 DM mid-show and "DM" errored from then on).
+        1:1 DM mid-show and "Message" errored from then on).
 
-        Reclaim rules, deliberately narrow:
-          * the room must still be a DM (a promoted group_dm is NOT reclaimed);
+        Membership is checked HERE, not in SQL exclusions, because a
+        member-only taint (agent row, clean metadata) must be healed too —
+        filtering the room out of the query would just re-create the wedge.
+
+        Rules, deliberately narrow:
+          * the room must still be a DM (a promoted group_dm is NOT touched);
           * its HUMAN members must be exactly {caller, target} — never touch a
             room we are not certain belongs to this pair;
-          * then: delete agent member rows, strip agent residency metadata
-            (brigade_agent_id / agent_id / brigade_agent_ids), un-archive.
+          * heal = delete agent member rows, strip agent residency metadata
+            (brigade_agent_id / agent_id / brigade_agent_ids), un-archive;
+          * an already-clean room returns as-is with no writes.
         """
         if room.room_type != RoomType.DM:
             return None
@@ -710,9 +716,8 @@ class RoomService:
         ]
         was_archived = bool(room.is_archived)
         if not agent_rows and not stripped_meta and not was_archived:
-            # Nothing this helper knows how to heal — the acceptance gate
-            # rejected for some other reason; leave the room alone.
-            return None
+            # Already a pure, live human DM — the common fast path.
+            return room
 
         for member, _p in agent_rows:
             await self._db.delete(member)
@@ -782,13 +787,12 @@ class RoomService:
                 )
             )
         ).scalar_one_or_none()
-        accepted = self._accept_human_dm_candidate(by_pair)
-        if accepted is not None:
-            return accepted
         if by_pair is not None:
-            reclaimed = await self._reclaim_canonical_dm(by_pair, caller_id, target_id)
-            if reclaimed is not None:
-                return reclaimed
+            healed = await self._verify_or_reclaim_canonical_dm(
+                by_pair, caller_id, target_id
+            )
+            if healed is not None:
+                return healed
             # Pair key sits on a room this pair cannot use — free the key so a
             # clean ensure can create (or find) a pure human DM.
             await self._clear_stale_dm_pair(by_pair, pair_key)
@@ -799,13 +803,12 @@ class RoomService:
                 select(Room).where(Room.name == slug)
             )
         ).scalar_one_or_none()
-        accepted = self._accept_human_dm_candidate(by_name)
-        if accepted is not None:
-            return accepted
         if by_name is not None:
-            reclaimed = await self._reclaim_canonical_dm(by_name, caller_id, target_id)
-            if reclaimed is not None:
-                return reclaimed
+            healed = await self._verify_or_reclaim_canonical_dm(
+                by_name, caller_id, target_id
+            )
+            if healed is not None:
+                return healed
             # The canonical name is held by a room this pair cannot reclaim
             # (e.g. a dm silently promoted to group_dm). Creation below will
             # conflict on rooms.name — log the blocker so the resulting 409

@@ -138,9 +138,15 @@ class EnsureHumanDmServiceTests(IsolatedAsyncioTestCase):
         lock_row = MagicMock()
         find_row = MagicMock()
         find_row.scalar_one_or_none.return_value = existing
+        members_row = MagicMock()
+        members_row.all.return_value = [
+            (SimpleNamespace(participant_id=caller), SimpleNamespace(id=caller, participant_type=ParticipantType.HUMAN, username="me")),
+            (SimpleNamespace(participant_id=target), SimpleNamespace(id=target, participant_type=ParticipantType.HUMAN, username="bob")),
+        ]
 
-        # execute order: target select, advisory lock, _find (by_pair hit)
-        db.execute = AsyncMock(side_effect=[target_row, lock_row, find_row])
+        # execute order: target select, advisory lock, _find (by_pair hit),
+        # canonical membership verification
+        db.execute = AsyncMock(side_effect=[target_row, lock_row, find_row, members_row])
         # backfill short-circuits when pair already set
         db.commit = AsyncMock()
 
@@ -226,8 +232,13 @@ class EnsureHumanDmServiceTests(IsolatedAsyncioTestCase):
 
         # Call 1 executes: target, lock, 3× find miss, then create path
         # Call 2 executes: target, lock, find hit
+        members_row = MagicMock()
+        members_row.all.return_value = [
+            (SimpleNamespace(participant_id=caller), SimpleNamespace(id=caller, participant_type=ParticipantType.HUMAN, username="me")),
+            (SimpleNamespace(participant_id=target), SimpleNamespace(id=target, participant_type=ParticipantType.HUMAN, username="bob")),
+        ]
         call1 = [target_row, lock_row, miss, miss, miss]
-        call2 = [target_row, lock_row, hit]
+        call2 = [target_row, lock_row, hit, members_row]
         db.execute = AsyncMock(side_effect=call1 + call2)
         db.flush = AsyncMock()
         db.commit = AsyncMock()
@@ -328,6 +339,53 @@ class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
         self.assertEqual(room.metadata_.get("dm_pair"), pair)
         self.assertFalse(room.is_archived)
 
+    async def test_ensure_strips_member_only_taint(self) -> None:
+        """The live-fire gap: agent member row, CLEAN metadata. The metadata
+        gate alone accepted such a room and left the agent inside — membership
+        must be verified (and healed) on every canonical hit."""
+        svc, db = self._service()
+        caller, target = _uuid(), _uuid()
+        pair = dm_pair_key(caller, target)
+        room = SimpleNamespace(
+            id=_uuid(),
+            name=dm_room_slug(pair),
+            room_type=RoomType.DM,
+            is_archived=False,
+            metadata_={"dm_pair": pair},
+        )
+        target_row = MagicMock()
+        target_row.scalar_one_or_none.return_value = SimpleNamespace(
+            id=target,
+            participant_type=ParticipantType.HUMAN,
+            display_name="Bob",
+            username="bob",
+        )
+        lock_row = MagicMock()
+        by_pair_hit = MagicMock()
+        by_pair_hit.scalar_one_or_none.return_value = room
+        agent_member, agent_p = self._member_row(
+            _uuid(), ParticipantType.AGENT, "agent-claude-code"
+        )
+        members_res = MagicMock()
+        members_res.all.return_value = [
+            self._member_row(caller, ParticipantType.HUMAN, "aaron"),
+            self._member_row(target, ParticipantType.HUMAN, "bob"),
+            (agent_member, agent_p),
+        ]
+        db.execute = AsyncMock(
+            side_effect=[target_row, lock_row, by_pair_hit, members_res]
+        )
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        db.delete = AsyncMock()
+
+        got, created = await svc.ensure_human_dm(caller_id=caller, target_id=target)
+
+        self.assertFalse(created)
+        self.assertIs(got, room)
+        db.delete.assert_awaited_once_with(agent_member)
+        db.commit.assert_awaited()
+
     async def test_reclaim_unarchives_clean_archived_dm(self) -> None:
         """Opening a DM with someone reopens the archived room, not a 409."""
         svc, db = self._service()
@@ -350,7 +408,7 @@ class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
         db.refresh = AsyncMock()
         db.delete = AsyncMock()
 
-        got = await svc._reclaim_canonical_dm(room, caller, target)
+        got = await svc._verify_or_reclaim_canonical_dm(room, caller, target)
 
         self.assertIs(got, room)
         self.assertFalse(room.is_archived)
@@ -366,7 +424,7 @@ class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
             metadata_={},
         )
         db.execute = AsyncMock()
-        got = await svc._reclaim_canonical_dm(room, _uuid(), _uuid())
+        got = await svc._verify_or_reclaim_canonical_dm(room, _uuid(), _uuid())
         self.assertIsNone(got)
         db.execute.assert_not_awaited()
 
@@ -389,7 +447,7 @@ class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
         db.delete = AsyncMock()
         db.commit = AsyncMock()
 
-        got = await svc._reclaim_canonical_dm(room, caller, target)
+        got = await svc._verify_or_reclaim_canonical_dm(room, caller, target)
 
         self.assertIsNone(got)
         db.delete.assert_not_awaited()
