@@ -8,7 +8,9 @@ import structlog
 from livekit.api import AccessToken, LiveKitAPI, VideoGrants
 from livekit.api.room_service import CreateRoomRequest, DeleteRoomRequest, ListRoomsRequest
 from livekit.api.room_service import MuteRoomTrackRequest, RoomParticipantIdentity
-from livekit.api.room_service import SendDataRequest, UpdateRoomMetadataRequest
+from livekit.api.room_service import SendDataRequest, UpdateParticipantRequest
+from livekit.api.room_service import UpdateRoomMetadataRequest
+from livekit.protocol.models import ParticipantInfo, ParticipantPermission, TrackType
 from livekit.protocol.models import Room as LKRoom
 
 try:
@@ -156,22 +158,105 @@ class LiveKitService:
             identity=identity,
         )
 
+    async def get_participant(
+        self, room_name: str, identity: str
+    ) -> ParticipantInfo:
+        """Fetch one participant's live info (tracks, permission, state).
+
+        Raises LiveKit's TwirpError when the participant is not in the room —
+        callers decide whether that is a 404 or a no-op.
+        """
+        request = RoomParticipantIdentity(room=room_name, identity=identity)
+        return await self._api.room.get_participant(request)
+
     async def mute_participant(
         self, room_name: str, identity: str, muted: bool
-    ) -> None:
-        """Mute or unmute a participant in a LiveKit room."""
-        request = MuteRoomTrackRequest(
-            room=room_name,
-            identity=identity,
-            muted=muted,
-        )
-        await self._api.room.mute_published_track(request)
+    ) -> list[str]:
+        """Server-mute (or unmute) every AUDIO track a participant publishes.
+
+        HISTORY: this used to send MuteRoomTrackRequest(room, identity, muted)
+        with no ``track_sid``. LiveKit's MuteRoomTrack API mutes ONE TRACK —
+        ``track_sid`` is required — so that request could never have worked
+        (the server answers "track not found"). It had zero callers, so the
+        bug sat unproven. The real shape, verified against the live SFU: read
+        the participant, then mute each published audio track by its sid.
+
+        Returns the sids that were muted/unmuted (empty when the participant
+        has no audio published — e.g. mic never enabled — which is a no-op,
+        not an error).
+
+        ``muted=False`` IS REFUSED BY THIS DEPLOYMENT. Live-fire against our
+        SFU: ``failed_precondition / 412 "remote unmute not enabled"`` — the
+        server-side unmute is off by default in LiveKit (enabling it lets an
+        operator silently re-open someone's microphone). Nothing in Stable
+        calls it: moderation mutes, and "unsilence" restores publish rights so
+        the person turns their own mic back on. Do not add an unmute caller
+        without turning that server flag on deliberately, and think hard about
+        why you would.
+        """
+        info = await self.get_participant(room_name, identity)
+        audio_sids = [
+            track.sid
+            for track in info.tracks
+            if track.type == TrackType.AUDIO
+        ]
+        for sid in audio_sids:
+            request = MuteRoomTrackRequest(
+                room=room_name,
+                identity=identity,
+                track_sid=sid,
+                muted=muted,
+            )
+            await self._api.room.mute_published_track(request)
         logger.info(
             "livekit_participant_mute_changed",
             room=room_name,
             identity=identity,
             muted=muted,
+            track_sids=audio_sids,
         )
+        return audio_sids
+
+    async def update_participant_permissions(
+        self,
+        room_name: str,
+        identity: str,
+        *,
+        can_publish: bool | None = None,
+        can_subscribe: bool | None = None,
+    ) -> ParticipantInfo:
+        """Update a participant's permission grants via LiveKit UpdateParticipant.
+
+        UpdateParticipant REPLACES the whole permission message when one is
+        supplied, so the current permission is read first and copied — fields
+        this call does not name (can_publish_data, can_publish_sources,
+        can_update_metadata, hidden, ...) keep their live values instead of
+        resetting to proto defaults.
+
+        NOTE: this state lives on the CONNECTION. A participant who leaves and
+        rejoins gets whatever their next access token grants.
+        """
+        info = await self.get_participant(room_name, identity)
+        permission = ParticipantPermission()
+        permission.CopyFrom(info.permission)
+        if can_publish is not None:
+            permission.can_publish = can_publish
+        if can_subscribe is not None:
+            permission.can_subscribe = can_subscribe
+        request = UpdateParticipantRequest(
+            room=room_name,
+            identity=identity,
+            permission=permission,
+        )
+        updated = await self._api.room.update_participant(request)
+        logger.info(
+            "livekit_participant_permissions_updated",
+            room=room_name,
+            identity=identity,
+            can_publish=can_publish,
+            can_subscribe=can_subscribe,
+        )
+        return updated
 
     async def update_room_metadata(self, room_name: str, metadata: str) -> None:
         """Update a LiveKit room's metadata JSON string in-place.

@@ -145,6 +145,25 @@ export interface RoomMember {
   status?: string;
 }
 
+/** Verbs of POST /rooms/{id}/moderation — live-call moderation (owner/admin). */
+export type CallModerationAction =
+  | "mute_mic"
+  | "silence"
+  | "unsilence"
+  | "deafen"
+  | "undeafen"
+  | "remove_from_call";
+
+export interface CallModerationResult {
+  status: string;
+  action: CallModerationAction;
+  room_id: string;
+  /** The LiveKit identity the action was applied to. */
+  target_identity: string;
+  /** Audio track sids muted (mute_mic/silence; empty = no audio published). */
+  muted_track_sids: string[];
+}
+
 /** Per-callee reachability, as the server determined it at ring time. */
 export interface RingTarget {
   id: string;
@@ -1191,6 +1210,26 @@ class StableApiClient {
       "PATCH",
       `/api/v1/rooms/${roomId}/members/${participantId}/mute`,
       { is_muted: isMuted },
+    );
+  }
+
+  /**
+   * CALL moderation (owner/admin): act on a participant of the room's LIVE
+   * call. `participantId` is a participant UUID or a raw LiveKit identity —
+   * the tile menu sends the identity, which is what makes agent workers
+   * (`agent-majik`, `stable-brigade`) targetable even though no UUID exists
+   * for their call leg. Server-side state is connection-scoped: a silenced
+   * user who rejoins regains publish (documented on the endpoint).
+   */
+  async moderateCallParticipant(
+    roomId: string,
+    participantId: string,
+    action: CallModerationAction,
+  ): Promise<CallModerationResult> {
+    return this.request<CallModerationResult>(
+      "POST",
+      `/api/v1/rooms/${roomId}/moderation`,
+      { participant_id: participantId, action },
     );
   }
 
