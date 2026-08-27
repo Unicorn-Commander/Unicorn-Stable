@@ -252,6 +252,151 @@ class EnsureHumanDmServiceTests(IsolatedAsyncioTestCase):
         self.assertEqual(livekit.create_room.await_count, 1)
 
 
+class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
+    """The 2026-08-27 wedge: a room holding the canonical pair key/slug was
+    agent-tainted (bridge wrote the membership straight into the DB), _find
+    refused to return it, creation conflicted on the unique name, and every
+    "Message" click 409'd. Reclaim repairs the room in place instead."""
+
+    def _service(self) -> tuple[RoomService, AsyncMock]:
+        db = AsyncMock()
+        svc = RoomService(db=db, livekit=AsyncMock(), presence=AsyncMock())
+        return svc, db
+
+    @staticmethod
+    def _member_row(pid: uuid.UUID, ptype: ParticipantType, name: str):
+        member = SimpleNamespace(participant_id=pid, room_id=None)
+        participant = SimpleNamespace(
+            id=pid, participant_type=ptype, username=name
+        )
+        return member, participant
+
+    def _tainted_room(
+        self, pair: str, slug: str, *, archived: bool = False
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=_uuid(),
+            name=slug,
+            room_type=RoomType.DM,
+            is_archived=archived,
+            metadata_={"dm_pair": pair, "brigade_agent_id": "claude-code"},
+        )
+
+    async def test_ensure_returns_reclaimed_tainted_room(self) -> None:
+        """Agent member + agent bind on the canonical DM → healed, returned."""
+        svc, db = self._service()
+        caller, target = _uuid(), _uuid()
+        pair = dm_pair_key(caller, target)
+        slug = dm_room_slug(pair)
+        room = self._tainted_room(pair, slug)
+
+        target_row = MagicMock()
+        target_row.scalar_one_or_none.return_value = SimpleNamespace(
+            id=target,
+            participant_type=ParticipantType.HUMAN,
+            display_name="Bob",
+            username="bob",
+        )
+        lock_row = MagicMock()
+        by_pair_hit = MagicMock()
+        by_pair_hit.scalar_one_or_none.return_value = room
+
+        agent_member, agent_p = self._member_row(
+            _uuid(), ParticipantType.AGENT, "agent-claude-code"
+        )
+        members_res = MagicMock()
+        members_res.all.return_value = [
+            self._member_row(caller, ParticipantType.HUMAN, "aaron"),
+            self._member_row(target, ParticipantType.HUMAN, "bob"),
+            (agent_member, agent_p),
+        ]
+
+        # target select, advisory lock, by_pair, reclaim member rows
+        db.execute = AsyncMock(
+            side_effect=[target_row, lock_row, by_pair_hit, members_res]
+        )
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        db.delete = AsyncMock()
+
+        got, created = await svc.ensure_human_dm(caller_id=caller, target_id=target)
+
+        self.assertFalse(created)
+        self.assertIs(got, room)
+        db.delete.assert_awaited_once_with(agent_member)
+        self.assertNotIn("brigade_agent_id", room.metadata_)
+        self.assertEqual(room.metadata_.get("dm_pair"), pair)
+        self.assertFalse(room.is_archived)
+
+    async def test_reclaim_unarchives_clean_archived_dm(self) -> None:
+        """Opening a DM with someone reopens the archived room, not a 409."""
+        svc, db = self._service()
+        caller, target = _uuid(), _uuid()
+        pair = dm_pair_key(caller, target)
+        room = SimpleNamespace(
+            id=_uuid(),
+            name=dm_room_slug(pair),
+            room_type=RoomType.DM,
+            is_archived=True,
+            metadata_={"dm_pair": pair},
+        )
+        members_res = MagicMock()
+        members_res.all.return_value = [
+            self._member_row(caller, ParticipantType.HUMAN, "aaron"),
+            self._member_row(target, ParticipantType.HUMAN, "bob"),
+        ]
+        db.execute = AsyncMock(return_value=members_res)
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        db.delete = AsyncMock()
+
+        got = await svc._reclaim_canonical_dm(room, caller, target)
+
+        self.assertIs(got, room)
+        self.assertFalse(room.is_archived)
+        db.delete.assert_not_awaited()
+
+    async def test_reclaim_refuses_promoted_group(self) -> None:
+        """A dm promoted to group_dm is not this pair's DM — never touched."""
+        svc, db = self._service()
+        room = SimpleNamespace(
+            id=_uuid(),
+            room_type=RoomType.GROUP_DM,
+            is_archived=False,
+            metadata_={},
+        )
+        db.execute = AsyncMock()
+        got = await svc._reclaim_canonical_dm(room, _uuid(), _uuid())
+        self.assertIsNone(got)
+        db.execute.assert_not_awaited()
+
+    async def test_reclaim_refuses_mismatched_humans(self) -> None:
+        """Humans other than the pair in the slug room → hands off entirely."""
+        svc, db = self._service()
+        caller, target = _uuid(), _uuid()
+        room = SimpleNamespace(
+            id=_uuid(),
+            room_type=RoomType.DM,
+            is_archived=False,
+            metadata_={"brigade_agent_id": "perry"},
+        )
+        members_res = MagicMock()
+        members_res.all.return_value = [
+            self._member_row(caller, ParticipantType.HUMAN, "aaron"),
+            self._member_row(_uuid(), ParticipantType.HUMAN, "someone-else"),
+        ]
+        db.execute = AsyncMock(return_value=members_res)
+        db.delete = AsyncMock()
+        db.commit = AsyncMock()
+
+        got = await svc._reclaim_canonical_dm(room, caller, target)
+
+        self.assertIsNone(got)
+        db.delete.assert_not_awaited()
+        db.commit.assert_not_awaited()
+        self.assertEqual(room.metadata_.get("brigade_agent_id"), "perry")
+
+
 class EnsureHumanDmSchemaTests(IsolatedAsyncioTestCase):
     def test_ensure_body_requires_participant_id(self) -> None:
         from app.schemas.room import EnsureHumanDmBody
@@ -290,6 +435,14 @@ class PureHumanDmRoomTests(IsolatedAsyncioTestCase):
             room_type=RoomType.DM,
             is_archived=False,
             metadata_={"brigade_agent_id": "perry", "dm_pair": "a:b"},
+        )
+        self.assertFalse(RoomService._is_pure_human_dm_room(room))  # type: ignore[arg-type]
+
+    def test_rejects_multi_agent_residency_list(self) -> None:
+        room = SimpleNamespace(
+            room_type=RoomType.DM,
+            is_archived=False,
+            metadata_={"brigade_agent_ids": ["perry", "majik"], "dm_pair": "a:b"},
         )
         self.assertFalse(RoomService._is_pure_human_dm_room(room))  # type: ignore[arg-type]
 

@@ -643,15 +643,11 @@ class RoomService:
             return False
         if meta.get("agent_id"):
             return False
+        # The multi-agent SET form (resident_agents.py) marks residency the
+        # same way the scalar does — a dm carrying it is an agent thread.
+        if meta.get("brigade_agent_ids"):
+            return False
         return True
-
-    def _agent_member_room_ids(self):
-        """Subquery of room ids that currently have any agent member."""
-        return (
-            select(RoomMember.room_id)
-            .join(Participant, Participant.id == RoomMember.participant_id)
-            .where(Participant.participant_type == ParticipantType.AGENT)
-        )
 
     def _accept_human_dm_candidate(self, room: Room | None) -> Room | None:
         """Metadata + type gate (no extra round-trip). Agent members filtered in SQL."""
@@ -661,6 +657,85 @@ class RoomService:
             return None
         if not self._is_pure_human_dm_room(room):
             return None
+        return room
+
+    async def _reclaim_canonical_dm(
+        self,
+        room: Room,
+        caller_id: uuid.UUID,
+        target_id: uuid.UUID,
+    ) -> Room | None:
+        """Repair-in-place a room that holds this pair's canonical DM key.
+
+        A room found by the pair stamp or the deterministic slug IS this
+        pair's DM by construction — but writers that bypass the API (the ops
+        bridge's add-member script writes RoomMember rows straight into the
+        DB) can leave an agent member or agent metadata on it, and archiving
+        strands the key. Rejecting such a room used to wedge ensure
+        permanently: _find refused to return it while its unique name / pair
+        stamp blocked creating a replacement, so every click was a 409
+        (the 2026-08-27 Aaron↔Shafen incident — an agent was added to their
+        1:1 DM mid-show and "DM" errored from then on).
+
+        Reclaim rules, deliberately narrow:
+          * the room must still be a DM (a promoted group_dm is NOT reclaimed);
+          * its HUMAN members must be exactly {caller, target} — never touch a
+            room we are not certain belongs to this pair;
+          * then: delete agent member rows, strip agent residency metadata
+            (brigade_agent_id / agent_id / brigade_agent_ids), un-archive.
+        """
+        if room.room_type != RoomType.DM:
+            return None
+        rows = (
+            await self._db.execute(
+                select(RoomMember, Participant)
+                .join(Participant, Participant.id == RoomMember.participant_id)
+                .where(RoomMember.room_id == room.id)
+            )
+        ).all()
+        humans = {
+            p.id for _m, p in rows if p.participant_type == ParticipantType.HUMAN
+        }
+        agent_rows = [
+            (m, p) for m, p in rows if p.participant_type != ParticipantType.HUMAN
+        ]
+        if humans != {caller_id, target_id}:
+            return None
+
+        meta = dict(room.metadata_ or {})
+        stripped_meta = [
+            key
+            for key in ("brigade_agent_id", "agent_id", "brigade_agent_ids")
+            if meta.pop(key, None) is not None
+        ]
+        was_archived = bool(room.is_archived)
+        if not agent_rows and not stripped_meta and not was_archived:
+            # Nothing this helper knows how to heal — the acceptance gate
+            # rejected for some other reason; leave the room alone.
+            return None
+
+        for member, _p in agent_rows:
+            await self._db.delete(member)
+        if stripped_meta:
+            room.metadata_ = meta
+        if was_archived:
+            room.is_archived = False
+        try:
+            await self._db.commit()
+            await self._db.refresh(room)
+        except Exception:
+            await self._db.rollback()
+            logger.warning(
+                "human_dm_reclaim_failed", room_id=str(room.id), exc_info=True
+            )
+            return None
+        logger.info(
+            "human_dm_reclaimed",
+            room_id=str(room.id),
+            stripped_agents=[p.username for _m, p in agent_rows],
+            stripped_metadata=stripped_meta,
+            unarchived=was_archived,
+        )
         return room
 
     async def _clear_stale_dm_pair(self, room: Room, pair_key: str) -> None:
@@ -690,16 +765,20 @@ class RoomService:
         pair_key: str,
         slug: str,
     ) -> Room | None:
-        """Locate an existing true 1:1 *human-only* DM for this pair, if any."""
+        """Locate an existing true 1:1 *human-only* DM for this pair, if any.
+
+        Canonical hits (pair stamp, deterministic slug) are queried WITHOUT
+        the agent-member / archived exclusions on purpose: a canonical room in
+        bad state must be repaired (or have its key freed), never merely
+        skipped — a skipped room still holds the unique name, so the create
+        that follows hits IntegrityError and the endpoint wedges into 409s.
+        """
         # 1. Canonical metadata key (post-ensure rooms + backfilled legacy).
-        agent_rooms = self._agent_member_room_ids()
         by_pair = (
             await self._db.execute(
                 select(Room).where(
                     Room.room_type == RoomType.DM,
-                    Room.is_archived == False,  # noqa: E712
                     Room.metadata_["dm_pair"].astext == pair_key,
-                    Room.id.notin_(agent_rooms),
                 )
             )
         ).scalar_one_or_none()
@@ -707,22 +786,37 @@ class RoomService:
         if accepted is not None:
             return accepted
         if by_pair is not None:
-            # Pair key was stamped on an agent-tainted room — free the key so a
+            reclaimed = await self._reclaim_canonical_dm(by_pair, caller_id, target_id)
+            if reclaimed is not None:
+                return reclaimed
+            # Pair key sits on a room this pair cannot use — free the key so a
             # clean ensure can create (or find) a pure human DM.
             await self._clear_stale_dm_pair(by_pair, pair_key)
 
         # 2. Deterministic slug (unique rooms.name).
         by_name = (
             await self._db.execute(
-                select(Room).where(
-                    Room.name == slug,
-                    Room.id.notin_(agent_rooms),
-                )
+                select(Room).where(Room.name == slug)
             )
         ).scalar_one_or_none()
         accepted = self._accept_human_dm_candidate(by_name)
         if accepted is not None:
             return accepted
+        if by_name is not None:
+            reclaimed = await self._reclaim_canonical_dm(by_name, caller_id, target_id)
+            if reclaimed is not None:
+                return reclaimed
+            # The canonical name is held by a room this pair cannot reclaim
+            # (e.g. a dm silently promoted to group_dm). Creation below will
+            # conflict on rooms.name — log the blocker so the resulting 409
+            # is diagnosable instead of a dead end.
+            logger.warning(
+                "ensure_human_dm_slug_blocked",
+                room_id=str(by_name.id),
+                slug=slug,
+                room_type=str(by_name.room_type),
+                is_archived=bool(by_name.is_archived),
+            )
 
         # 3. Legacy membership: exactly two members, both humans, both the pair,
         #    no agent members, no agent metadata. Prefer most recently active.
@@ -774,6 +868,7 @@ class RoomService:
         # Ensure we never keep an agent residency flag on a "pure" human DM.
         meta.pop("brigade_agent_id", None)
         meta.pop("agent_id", None)
+        meta.pop("brigade_agent_ids", None)
         room.metadata_ = meta
         try:
             await self._db.commit()
