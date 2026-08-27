@@ -37,6 +37,7 @@ from agent_runtime.transcript_publisher import (
 )
 from agent_runtime.brigade_llm import build_brigade_llm
 from agent_runtime.config import AgentSettings, api_path, get_agent_settings
+from agent_runtime.resilient_stt import NeverFatalSTT
 from agent_runtime.voice_transcripts import VoiceTranscriptResponder
 
 logger = structlog.get_logger(__name__)
