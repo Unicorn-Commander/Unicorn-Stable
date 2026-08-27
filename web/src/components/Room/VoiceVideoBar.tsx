@@ -45,8 +45,13 @@ import {
   Box,
   Radio,
   Image as ImageIcon,
+  Shield,
+  Ear,
+  EarOff,
+  UserMinus,
   type LucideIcon,
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
@@ -61,8 +66,14 @@ import {
   DEFAULT_CALL_VIEW_MODE,
 } from "@/stores/callUiStore";
 import { isAgentParticipant, type CallViewMode } from "@/lib/roomDataProtocol";
-import { api, type ApiError, type BrigadeAgent } from "@/services/api";
+import {
+  api,
+  type ApiError,
+  type BrigadeAgent,
+  type CallModerationAction,
+} from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   runScreenShareAction,
   windowShareGuidance,
@@ -334,6 +345,207 @@ function FaceStyleTileButton({
     >
       <Icon className="h-3.5 w-3.5 md:h-3 md:w-3" />
     </button>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * CallModerationMenu — owner/admin actions on ONE live-call participant.
+ * ------------------------------------------------------------------ */
+
+interface ModerationItem {
+  action: CallModerationAction;
+  icon: LucideIcon;
+  label: string;
+  title: string;
+}
+
+const MODERATION_ITEMS: ModerationItem[] = [
+  {
+    action: "mute_mic",
+    icon: MicOff,
+    label: "Mute mic",
+    title: "Server-mute their mic — they can unmute themselves",
+  },
+  {
+    action: "silence",
+    icon: VolumeX,
+    label: "Silence",
+    title:
+      "Mute + revoke publishing — no mic/camera/share until you unsilence",
+  },
+  {
+    action: "unsilence",
+    icon: Volume2,
+    label: "Unsilence",
+    title:
+      "Restore publishing. Their mic stays off until THEY re-enable it",
+  },
+  {
+    action: "deafen",
+    icon: EarOff,
+    label: "Deafen",
+    title: "Cut what they receive — they stop hearing/seeing the room",
+  },
+  {
+    action: "undeafen",
+    icon: Ear,
+    label: "Undeafen",
+    title: "Restore what they receive",
+  },
+];
+
+/**
+ * The per-tile moderation submenu. Rendered ONLY when the local user's room
+ * role is owner/admin AND the ladder allows acting on this tile (computed in
+ * `buildTile`; the server's 403 is the backstop, not the rule — same stance
+ * as the owner-only broadcast control above).
+ *
+ * The dropdown is PORTALED to document.body with fixed positioning: the tile
+ * is `overflow-hidden`, so an in-tile absolute menu would clip to nothing on
+ * small tiles. Portaling means the control is dropped inside pop-out windows
+ * (`inPopout` guard at the call site) — the main stage always has it.
+ *
+ * One click per action, no confirm — moderation during a live show has to be
+ * FAST. The single exception is Remove from call, which is disruptive enough
+ * to warrant the shared ConfirmDialog.
+ */
+function CallModerationMenu({
+  targetName,
+  onAction,
+}: {
+  targetName: string;
+  onAction: (action: CallModerationAction) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t) || triggerRef.current?.contains(t))
+        return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    // Scroll/resize invalidate the cached rect — close rather than drift.
+    const onMove = () => setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onMove);
+    window.addEventListener("scroll", onMove, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onMove);
+      window.removeEventListener("scroll", onMove, true);
+    };
+  }, [open]);
+
+  function toggle(e: ReactMouseEvent) {
+    e.stopPropagation();
+    if (!open && triggerRef.current) {
+      const r = triggerRef.current.getBoundingClientRect();
+      setPos({
+        top: r.bottom + 4,
+        right: Math.max(8, window.innerWidth - r.right),
+      });
+    }
+    setOpen((v) => !v);
+  }
+
+  function fire(e: ReactMouseEvent, action: CallModerationAction) {
+    e.stopPropagation();
+    setOpen(false);
+    if (action === "remove_from_call") {
+      setConfirmRemove(true);
+      return;
+    }
+    onAction(action);
+  }
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={toggle}
+        aria-label={`Moderate ${targetName}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`Moderate ${targetName}`}
+        className={clsx(
+          "glass focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-200 transition-colors hover:text-white md:h-6 md:w-6",
+          open && "text-stable-purple-light ring-1 ring-stable-purple/60",
+        )}
+      >
+        <Shield className="h-3.5 w-3.5 md:h-3 md:w-3" />
+      </button>
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label={`Moderation — ${targetName}`}
+            style={{ top: pos.top, right: pos.right }}
+            className="glass-heavy fixed z-[70] w-48 overflow-hidden rounded-xl p-1 text-xs shadow-pop animate-fade-in"
+          >
+            <p className="truncate px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Moderate {targetName}
+            </p>
+            {MODERATION_ITEMS.map((item) => (
+              <button
+                key={item.action}
+                role="menuitem"
+                onClick={(e) => fire(e, item.action)}
+                title={item.title}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+              >
+                <item.icon className="h-3.5 w-3.5 text-slate-400" />
+                {item.label}
+              </button>
+            ))}
+            <div className="my-1 border-t border-line" />
+            <button
+              role="menuitem"
+              onClick={(e) => fire(e, "remove_from_call")}
+              title="Kick them out of the call (they stay a room member)"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-rose-400 transition-colors hover:bg-rose-500/15 focus-ring"
+            >
+              <UserMinus className="h-3.5 w-3.5" /> Remove from call
+            </button>
+          </div>,
+          document.body,
+        )}
+      {confirmRemove &&
+        createPortal(
+          <ConfirmDialog
+            title="Remove from call?"
+            message={
+              <>
+                Remove{" "}
+                <span className="font-semibold text-slate-100">
+                  {targetName}
+                </span>{" "}
+                from this call? They stay a member and can rejoin.
+              </>
+            }
+            confirmLabel="Remove"
+            icon={UserMinus}
+            busy={false}
+            onConfirm={() => {
+              setConfirmRemove(false);
+              onAction("remove_from_call");
+            }}
+            onClose={() => setConfirmRemove(false)}
+          />,
+          document.body,
+        )}
+    </>
   );
 }
 

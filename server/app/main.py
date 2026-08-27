@@ -32,6 +32,7 @@ from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gate
 from app.api.broadcast import router as broadcast_router
 from app.api.calls import router as calls_router
 from app.api.guests import router as guests_router
+from app.api.moderation import router as moderation_router
 from app.api.rooms import router as rooms_router
 from app.api.tokens import router as tokens_router
 from app.api.tts import router as tts_router
@@ -415,6 +416,7 @@ def create_app() -> FastAPI:
     # anything a guest can reach.
     app.include_router(guests_router, prefix="/api/v1", tags=["Guests"])
     app.include_router(calls_router, prefix="/api/v1", tags=["Calls"])
+    app.include_router(moderation_router, prefix="/api/v1", tags=["Moderation"])
     app.include_router(tts_router, prefix="/api/v1", tags=["TTS"])
     app.include_router(transcripts_router, prefix="/api/v1", tags=["Transcripts"])
     app.include_router(stt_router, prefix="/api/v1", tags=["STT"])
