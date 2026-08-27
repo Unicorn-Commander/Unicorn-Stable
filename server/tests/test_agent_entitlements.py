@@ -415,6 +415,9 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
         ]
         if target.participant_type == ParticipantType.AGENT:
             execute_results.append(_scalar_result(grant))  # entitlement lookup
+            # Closed-mode denial falls through to the wildcard (*) grant
+            # lookup; extra side_effect entries are harmless when unused.
+            execute_results.append(_scalar_result(None))
         db.execute = AsyncMock(side_effect=execute_results)
 
         from datetime import datetime, timezone
