@@ -98,6 +98,7 @@ describe("priorityModel", () => {
       unreadCounts: {},
       mentionUnreads: { mention: true },
       approvals: [approval("ap1")],
+      now: NOW,
     });
     expect(model.items.map((i) => i.kind)).toEqual([
       "mention",
@@ -116,6 +117,7 @@ describe("priorityModel", () => {
       unreadCounts: {},
       mentionUnreads: { busy: true },
       approvals: [],
+      now: NOW,
     });
     expect(model.items).toHaveLength(1);
     expect(model.items[0]?.kind).toBe("mention");
@@ -136,6 +138,7 @@ describe("priorityModel", () => {
       unreadCounts: {},
       mentionUnreads: {},
       approvals: [],
+      now: NOW,
     });
     expect(model.items).toHaveLength(0);
   });
@@ -149,6 +152,7 @@ describe("priorityModel", () => {
       unreadCounts: {},
       mentionUnreads: {},
       approvals: [],
+      now: NOW,
     });
     expect(model.channelUnreadRooms).toHaveLength(5);
     expect(model.moreChannelCount).toBe(2);
@@ -163,6 +167,7 @@ describe("priorityModel", () => {
       unreadCounts: { c1: 6 },
       mentionUnreads: {},
       approvals: [],
+      now: NOW,
     });
     expect(model.items).toEqual([
       expect.objectContaining({ kind: "channel", unread: 6 }),
@@ -194,7 +199,7 @@ describe("agentFeed", () => {
         last_message: agentMsg(10, "recent"),
       }),
     ];
-    const feed = agentFeed(rooms, {});
+    const feed = agentFeed(rooms, {}, { now: NOW });
     expect(feed.waiting.map((r) => r.room.id)).toEqual(["waiting"]);
     expect(feed.recent.map((r) => r.room.id)).toEqual(["recent"]);
   });
@@ -209,7 +214,7 @@ describe("agentFeed", () => {
         last_message: agentMsg(i, `w${i}`),
       }),
     );
-    const feed = agentFeed(rooms, {});
+    const feed = agentFeed(rooms, {}, { now: NOW });
     // All seven are threads with the SAME agent, so they collapse to one row
     // carrying the other six — seven consecutive "Chat with Majik" rows was
     // the bug, not the feature. The tile still counts all seven.
@@ -242,14 +247,14 @@ describe("agentFeed", () => {
       }),
       room({ id: "silent", type: "channel" }),
     ];
-    expect(agentFeed(rooms, {}).recent).toHaveLength(0);
+    expect(agentFeed(rooms, {}, { now: NOW }).recent).toHaveLength(0);
   });
 
   it("sorts recent activity newest first and caps it", () => {
     const rooms = Array.from({ length: 12 }, (_, i) =>
       room({ id: `r${i}`, type: "channel", last_message: agentMsg(i, `r${i}`) }),
     );
-    const feed = agentFeed(rooms, {});
+    const feed = agentFeed(rooms, {}, { now: NOW });
     expect(feed.recent).toHaveLength(10);
     expect(feed.recent[0]?.room.id).toBe("r0");
   });
@@ -418,7 +423,7 @@ describe("health strip semantics", () => {
     ];
 
     it("shows one row per agent, newest thread first, folding the rest", () => {
-      const feed = agentFeed(threads, {});
+      const feed = agentFeed(threads, {}, { now: NOW });
       expect(feed.waiting.map((r) => r.room.id)).toEqual(["majik-c", "qwen-a"]);
       const majik = feed.waiting[0]!;
       expect(majik.extraThreads).toBe(2);
@@ -427,7 +432,7 @@ describe("health strip semantics", () => {
     });
 
     it("still counts every waiting ROOM for the stat tile, not the rows", () => {
-      expect(agentFeed(threads, {}).waitingTotal).toBe(4);
+      expect(agentFeed(threads, {}, { now: NOW }).waitingTotal).toBe(4);
     });
 
     it("never folds rooms that have no resident agent", () => {
