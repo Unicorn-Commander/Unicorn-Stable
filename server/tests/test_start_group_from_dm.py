@@ -404,8 +404,12 @@ class KickClearsResponderBindingTest(TestCase):
         import app.api.brigade as brigade_api
 
         source = inspect.getsource(brigade_api.remove_brigade_agent)
-        # The kick path must both drop the member row AND clear the binding
-        # (reassigned, not mutated, for JSONB change detection).
-        self.assertIn('meta.get("brigade_agent_id") == brigade_agent_id', source)
-        self.assertIn('meta.pop("brigade_agent_id", None)', source)
-        self.assertIn("room.metadata_ = meta", source)
+        # The kick path must both drop the member row AND revoke the residency
+        # binding. Since the multi-agent SET form, that is delegated to
+        # remove_resident_agent (drops the agent from brigade_agent_ids and
+        # re-points the canonical scalar at whoever remains), reassigned — not
+        # mutated — for JSONB change detection.
+        self.assertIn(
+            "room.metadata_ = remove_resident_agent(room.metadata_, brigade_agent_id)",
+            source,
+        )
