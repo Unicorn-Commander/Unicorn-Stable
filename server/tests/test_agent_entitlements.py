@@ -403,14 +403,18 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
         from app.api import rooms as rooms_api
 
         db = AsyncMock()
+        from app.models.room import RoomType as _RoomType
+
         execute_results = [
             _scalar_result(SimpleNamespace(id=_uuid())),  # caller membership
+            # The DM guard loads the room up front (a 1:1 DM refuses invites).
+            _scalar_result(
+                SimpleNamespace(id=_uuid(), room_type=_RoomType.CHANNEL)
+            ),
             _scalar_result(target),  # target participant
         ]
         if target.participant_type == ParticipantType.AGENT:
             execute_results.append(_scalar_result(grant))  # entitlement lookup
-        # After join_room (mocked), the DM auto-promote block re-reads the room.
-        execute_results.append(_scalar_result(None))
         db.execute = AsyncMock(side_effect=execute_results)
 
         from datetime import datetime, timezone
@@ -472,9 +476,14 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
 
         target = self._agent_target()
         db = AsyncMock()
+        from app.models.room import RoomType as _RoomType
+
         db.execute = AsyncMock(
             side_effect=[
                 _scalar_result(SimpleNamespace(id=_uuid())),
+                _scalar_result(
+                    SimpleNamespace(id=_uuid(), room_type=_RoomType.CHANNEL)
+                ),
                 _scalar_result(target),
                 _scalar_result(_grant("the-colonel", AgentAccessEffect.DENY)),
             ]
