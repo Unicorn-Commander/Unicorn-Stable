@@ -275,10 +275,15 @@ class AliasCoverageTests(TestCase):
         self.assertTrue(spoken_name_match("the General, thoughts?", GENERAL))
 
     def test_the_common_word_false_positive_this_protects_against(self) -> None:
-        self.assertFalse(
+        """Why the article is not stripped: the bare word is ordinary English.
+
+        With "general" as a needle this ordinary sentence addresses an agent.
+        The real roster is checked against the same sentence to show it does
+        not — that pair is the argument for keeping the strict form.
+        """
+        self.assertTrue(
             spoken_name_match("that is the general idea, roughly", {"general"})
-            and False
         )
-        # Stated plainly: were "general" a needle, this sentence WOULD match —
-        # which is exactly why it is not one.
-        self.assertTrue(spoken_name_match("that is the general idea", {"general"}))
+        self.assertFalse(
+            spoken_name_match("that is the general idea, roughly", GENERAL)
+        )
