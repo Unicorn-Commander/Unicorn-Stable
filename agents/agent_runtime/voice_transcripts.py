@@ -62,6 +62,8 @@ from typing import Any, Awaitable, Callable
 
 import structlog
 
+from agent_runtime import voice_dispatch
+
 logger = structlog.get_logger(__name__)
 
 # Wire contract mirror of web/src/lib/roomDataProtocol.ts TranscriptMessage.
@@ -302,6 +304,38 @@ def other_agents_present(room: Any, self_identity: str) -> bool:
     return False
 
 
+def call_roster(room: Any, self_identity: str) -> tuple[dict[str, set[str]], int]:
+    """(other agents → their spoken names, human count) for the live call.
+
+    The dispatcher needs both: other agents so an utterance naming one of them
+    reads as "addressed elsewhere" rather than merely "not mine", and the human
+    count because one human alone with one agent is a DM, not a conversation
+    the agent should stay out of.
+
+    The local participant is US (a worker), so only remotes are counted; the
+    egress recorder and hidden broadcast viewers are not people and are
+    excluded by the same prefixes the server uses.
+    """
+    others: dict[str, set[str]] = {}
+    humans = 0
+    try:
+        remotes = list(getattr(room, "remote_participants", {}).values())
+    except Exception:
+        return others, 0
+    for participant in remotes:
+        identity = str(getattr(participant, "identity", "") or "")
+        if not identity or identity == self_identity:
+            continue
+        if identity.startswith("broadcast-") or identity.startswith("EG_"):
+            continue
+        if is_agent_identity(identity):
+            agent_id = identity.removeprefix("agent-")
+            others[agent_id] = mention_needles(agent_id, None)
+        else:
+            humans += 1
+    return others, humans
+
+
 class VoiceTranscriptResponder:
     """Bridges grouped browser-STT utterances into the AgentSession pipeline.
 
@@ -358,6 +392,13 @@ class VoiceTranscriptResponder:
         self._drain_task: asyncio.Task[None] | None = None
         self._reply_lock = asyncio.Lock()
         self._closed = False
+        # Shared per-room dispatch state. Every worker for this room in this
+        # process resolves the SAME object — that shared identity is what
+        # makes the floor a mutex rather than a per-agent flag.
+        self._room_key = voice_dispatch.make_room_key(
+            getattr(room, "name", None)
+        )
+        self._floor = voice_dispatch.floor_for(self._room_key)
 
     # ------------------------------------------------------------------ #
     # Inputs
@@ -455,10 +496,45 @@ class VoiceTranscriptResponder:
             )
             return
 
-        # Addressing: sole resident agent → every human utterance is for us
-        # (the DM rule); other agents present → require our spoken name (the
-        # channel @-rule, adapted for speech).
-        if other_agents_present(self._room, self._agent_identity):
+        # ADDRESSING — voice dispatch v1 (docs/voice-dispatch-spec-2026-08-09).
+        # One shared decision per room: name addressing, sticky follow-ups,
+        # the nobody class, and the floor mutex. The old rule ("answer
+        # everything unless another agent is here") made a sole resident agent
+        # reply to two humans talking to each other.
+        decision = None
+        if voice_dispatch.dispatch_enabled():
+            others, humans = call_roster(self._room, self._agent_identity)
+            decision = voice_dispatch.decide(
+                state=self._floor,
+                me=self._brigade_agent_id,
+                my_names=self._needles,
+                speaker=utterance.participant_id,
+                speaker_is_agent=is_agent_identity(utterance.participant_id),
+                text=utterance.text,
+                other_agent_names=others,
+                human_count=humans,
+                now=self._clock(),
+            )
+            # EVERY decision is logged with the rule that produced it — the
+            # spec requires it, and a future classifier's eval set is real
+            # logged decisions, never a synthetic holdout.
+            logger.info(
+                "voice_dispatch_decision",
+                room=self._room_key,
+                me=self._brigade_agent_id,
+                speaker=utterance.participant_id,
+                speaker_name=utterance.name,
+                respond=decision.respond,
+                rule=decision.rule,
+                addressed=decision.addressed,
+                other_agents=sorted(others),
+                humans=humans,
+                preview=utterance.text[:80],
+            )
+            if not decision.respond:
+                return
+        elif other_agents_present(self._room, self._agent_identity):
+            # Kill switch engaged: the pre-dispatch behaviour, unchanged.
             if not spoken_mention(utterance.text, self._needles):
                 logger.info(
                     "voice_transcript_not_addressed",
@@ -475,12 +551,18 @@ class VoiceTranscriptResponder:
                 speaker=utterance.participant_id,
                 chars=len(utterance.text),
             )
+            voice_dispatch.observe_reply_finished(
+                self._floor, self._brigade_agent_id
+            )
             return
 
         if self._acquire_rate_slot is not None:
             try:
                 if not await self._acquire_rate_slot():
                     logger.warning("voice_transcript_rate_limited")
+                    voice_dispatch.observe_reply_finished(
+                        self._floor, self._brigade_agent_id
+                    )
                     return
             except Exception:
                 logger.debug("voice_transcript_rate_check_failed", exc_info=True)
@@ -537,6 +619,12 @@ class VoiceTranscriptResponder:
                     chars=len(utterance.text),
                     persisted=committed,
                 )
+            # The floor is released on EVERY exit from the turn, delivered or
+            # not: a failed reply that kept the floor would mute every other
+            # agent in the room until the lease expired.
+            voice_dispatch.observe_reply_finished(
+                self._floor, self._brigade_agent_id
+            )
 
     async def _speak_reply(
         self, text: str, on_commit: Callable[[], None]
