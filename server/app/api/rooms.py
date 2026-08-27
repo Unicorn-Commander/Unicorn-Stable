@@ -23,7 +23,7 @@ from app.deps import (
     require_room_member,
     require_room_member_or_guest,
 )
-from app.models.room import MemberRole, Room, RoomMember
+from app.models.room import MemberRole, Room, RoomMember, RoomType
 from app.schemas.message import MessageResponse
 from app.schemas.room import (
     EnsureHumanDmBody,
@@ -692,6 +692,28 @@ async def invite_member(
             detail="You must be a member of this room to invite others",
         )
 
+    # 1:1 DMs are closed two-person rooms. The old behaviour silently
+    # promoted the DM to a group_dm in place when a 3rd member landed here —
+    # converting a private thread without either side asking, and leaving the
+    # promoted room squatting on the DM's canonical name (which wedges
+    # /dms/ensure). The product flow is explicit: POST /rooms/{id}/start-group
+    # creates a NEW group room and leaves the DM untouched.
+    room_row = (
+        await db.execute(select(Room).where(Room.id == room_id))
+    ).scalar_one_or_none()
+    if room_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
+        )
+    if room_row.room_type == RoomType.DM:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This is a 1:1 direct message — use 'Start a group' to bring "
+                "more people in"
+            ),
+        )
+
     # Resolve target Participant — create on-demand from Keycloak if needed.
     if body.participant_id is not None:
         target = (
@@ -737,25 +759,6 @@ async def invite_member(
         participant_id=target.id,
         role="member",
     )
-
-    # Auto-promote a DM (2 people) → group_dm once a 3rd person is added.
-    try:
-        from app.models.room import RoomType as _RT
-
-        room_row = (
-            await db.execute(select(Room).where(Room.id == room_id))
-        ).scalar_one_or_none()
-        if room_row is not None and room_row.room_type == _RT.DM:
-            count = (
-                await db.execute(
-                    select(RoomMember).where(RoomMember.room_id == room_id)
-                )
-            ).scalars().all()
-            if len(count) >= 3:
-                room_row.room_type = _RT.GROUP_DM
-                await db.commit()
-    except Exception:
-        logger.warning("dm_promote_failed", exc_info=True)
 
     # Fire-and-forget invite email. If SMTP isn't configured or fails, the
     # invite itself still succeeds — the user just won't get notified until

@@ -178,6 +178,64 @@ def _is_broadcast_identity(identity: str) -> bool:
     """
     return str(identity or "").startswith("broadcast-")
 
+def _is_agent_identity(identity: str) -> bool:
+    """True for agent worker identities — ``agent-<brigade_agent_id>`` plus the
+    legacy bare type-shaped workers (``agent-brigade``/``agent-triage``)."""
+    return str(identity or "").startswith("agent-")
+
+
+async def _release_agents_if_no_humans(
+    livekit: LiveKitService, room: Room
+) -> None:
+    """Hang up agent workers once the last human leaves the call.
+
+    Agent voice workers are dispatched into a call when humans join, but a
+    worker only ends when its LiveKit job shuts down — and nothing used to
+    shut it down, so agents sat alone in "empty" LiveKit rooms holding job
+    slots and keeping the recording idle-stop from ever seeing the room as
+    empty. An agent never keeps a call open on its own; text conversation
+    continues through the server responder regardless of any call.
+    """
+    try:
+        info = await livekit.get_room(room.livekit_room_name)
+    except Exception:
+        return  # room already gone from LiveKit — nothing to release
+    participants = info.get("participants", [])
+    humans = [
+        p
+        for p in participants
+        if not call_recording.is_service_identity(getattr(p, "identity", ""))
+        and not _is_agent_identity(getattr(p, "identity", ""))
+    ]
+    if humans:
+        return
+    agents = [
+        str(getattr(p, "identity", ""))
+        for p in participants
+        if _is_agent_identity(getattr(p, "identity", ""))
+    ]
+    if not agents:
+        return
+    released: list[str] = []
+    for identity in agents:
+        try:
+            await livekit.remove_participant(room.livekit_room_name, identity)
+            released.append(identity)
+        except Exception:
+            logger.warning(
+                "call_agent_release_failed",
+                room_id=str(room.id),
+                identity=identity,
+                exc_info=True,
+            )
+    if released:
+        logger.info(
+            "call_agents_released",
+            room_id=str(room.id),
+            released=released,
+        )
+
+
 def _joined_by(event: Any, participant_id: str | None) -> dict[str, Any]:
     """Name the joiner for the ``call_occupancy`` frame.
 
@@ -344,6 +402,19 @@ async def _handle_participant_left(
     # Re-probed occupancy: the last leaver takes this to 0, which is the
     # room-scoped "the call ended" signal the clients key off.
     await _broadcast_call_occupancy(redis, livekit, room)
+
+    # Agents never hold a call open: once the last human leaves, hang up any
+    # agent workers so the room can actually empty — and so the recording
+    # idle-stop just below can see it as empty (it counts agents as real
+    # participants). Fail-open like everything else in this webhook.
+    try:
+        await _release_agents_if_no_humans(livekit, room)
+    except Exception:
+        logger.error(
+            "call_agent_release_sweep_failed",
+            room_id=str(room.id),
+            exc_info=True,
+        )
 
     # If that was the last real participant, stop this call's recording now
     # instead of waiting out LiveKit's empty_timeout (which would append
