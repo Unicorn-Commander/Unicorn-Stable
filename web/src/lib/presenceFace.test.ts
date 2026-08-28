@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_AGENT_FACE_CONTEXTS,
+  agentFaceBudget,
   agentSlugFromIdentity,
   faceMountPlan,
   isAgentIdentity,
@@ -763,5 +764,46 @@ describe("Build In Public cast — 2026-08-28", () => {
     expect(puppetForAgent("deepseek-flash", null)!.label).toBe("Sprint");
     // Corporal Qwen is a different, pre-existing agent and keeps its own face.
     expect(puppetForAgent("corporal-qwen", null)!.texture).toContain("corporal-qwen");
+  });
+});
+
+describe("agentFaceBudget — spent, not forfeited", () => {
+  const six = ["majik", "the-general", "rook", "grok", "shox", "codex"];
+
+  it("gives every agent a face when the room is within budget", () => {
+    const ids = ["majik", "rook"];
+    expect(agentFaceBudget(ids, null)).toEqual(new Set(ids));
+  });
+
+  it("still animates SOMEBODY when the room is over budget", () => {
+    // The old all-or-nothing rule animated nobody here, which made the
+    // failure worst exactly when the room was most interesting.
+    const chosen = agentFaceBudget(six, null);
+    expect(chosen.size).toBe(MAX_AGENT_FACE_CONTEXTS);
+  });
+
+  it("always spends a slot on the agent that is speaking", () => {
+    const chosen = agentFaceBudget(six, "codex"); // last in tile order
+    expect(chosen.has("codex")).toBe(true);
+    expect(chosen.size).toBe(MAX_AGENT_FACE_CONTEXTS);
+  });
+
+  it("keeps the rest of the set stable as the speaker changes", () => {
+    const a = agentFaceBudget(six, "codex");
+    const b = agentFaceBudget(six, "shox");
+    const stable = [...a].filter((id) => b.has(id));
+    // Only the speaker slot churns; the others hold their contexts.
+    expect(stable.length).toBeGreaterThanOrEqual(MAX_AGENT_FACE_CONTEXTS - 2);
+  });
+
+  it("ignores a speaker that is not an agent tile", () => {
+    const chosen = agentFaceBudget(six, "aaron_1111");
+    expect(chosen.has("aaron_1111")).toBe(false);
+    expect(chosen.size).toBe(MAX_AGENT_FACE_CONTEXTS);
+  });
+
+  it("handles an empty room and a zero budget without throwing", () => {
+    expect(agentFaceBudget([], null).size).toBe(0);
+    expect(agentFaceBudget(six, "rook", 0).size).toBe(0);
   });
 });

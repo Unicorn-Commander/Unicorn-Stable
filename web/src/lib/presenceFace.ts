@@ -333,6 +333,36 @@ export function withinAgentFaceBudget(agentTileCount: number): boolean {
   return agentTileCount > 0 && agentTileCount <= MAX_AGENT_FACE_CONTEXTS;
 }
 
+/**
+ * WHICH agent tiles may hold a live face, when there are more agents than
+ * WebGL contexts we are willing to spend.
+ *
+ * The budget used to be all-or-nothing: over the limit, EVERY agent fell back
+ * to a still portrait. A Build In Public room with Majik, The General, Rook
+ * and three CLI agents is six agent tiles, so on the night it mattered most
+ * nobody's mouth would have moved at all — the failure got worse exactly as
+ * the room got more interesting.
+ *
+ * Now the budget is spent rather than forfeited, and it is spent on the agent
+ * that is SPEAKING, because a moving mouth on the one making the sound is the
+ * whole point; the remaining slots go in stable tile order so the set does not
+ * thrash (each change costs a context teardown) as the conversation moves.
+ */
+export function agentFaceBudget(
+  agentTileIds: readonly string[],
+  speakingId: string | null | undefined,
+  max: number = MAX_AGENT_FACE_CONTEXTS,
+): Set<string> {
+  const chosen = new Set<string>();
+  if (max <= 0) return chosen;
+  if (speakingId && agentTileIds.includes(speakingId)) chosen.add(speakingId);
+  for (const id of agentTileIds) {
+    if (chosen.size >= max) break;
+    chosen.add(id);
+  }
+  return chosen;
+}
+
 export interface FaceMountPlanInput {
   /** The user's face-style preference (stores/facePrefStore). */
   style: FaceStyle;

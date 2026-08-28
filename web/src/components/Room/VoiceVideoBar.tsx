@@ -94,7 +94,7 @@ import {
   isVrmSurfaceEligible,
   mapAgentState,
   resolveCallTilePersona,
-  withinAgentFaceBudget,
+  agentFaceBudget,
   type CallTilePersona,
   type RoomAgentMember,
 } from "@/lib/presenceFace";
@@ -1827,15 +1827,16 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // WebGL-face budget: agent tiles may talk on ANY stage surface while the
   // call has few enough agents that one context each stays cheap. Counts the
   // same robust agent-ness the tiles use (identity/kind/roster).
-  const agentFaceBudgetOk = useMemo(
-    () =>
-      withinAgentFaceBudget(
-        participants.filter(
-          (p) => isAgentIdentity(p.id) || p.isAgentKind || p.isAgent,
-        ).length,
-      ),
-    [participants],
-  );
+  // Spent, not forfeited: over the limit the budget goes to whoever is
+  // SPEAKING plus the next tiles in stable order, instead of every agent
+  // losing its face at once (a six-agent show room used to animate nobody).
+  const agentFaceBudgetIds = useMemo(() => {
+    const agentIds = participants
+      .filter((p) => isAgentIdentity(p.id) || p.isAgentKind || p.isAgent)
+      .map((p) => p.id);
+    const speaking = agentIds.find((id) => speakingIds.has(id)) ?? null;
+    return agentFaceBudget(agentIds, speaking);
+  }, [participants, speakingIds]);
 
   // Mirror the REAL video-presence signal into the call-UI store so layout
   // decisions (CallRoomLayout's audio-first intent) can tell an audio call
@@ -2272,7 +2273,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             ? (action) => void moderateParticipant(lkIdentity, lkLabel, action)
             : undefined
         }
-        agentFaceBudgetOk={agentFaceBudgetOk}
+        agentFaceBudgetOk={agentFaceBudgetIds.has(p.id)}
         size={opts?.size ?? "normal"}
         fill={opts?.fill}
         hidden={hidden}
