@@ -99,6 +99,15 @@ class EnsureRelayTests(IsolatedAsyncioTestCase):
         await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))
         lk.dispatch_agent.assert_not_awaited()
 
+    async def test_idempotent_against_a_suffixed_worker_identity(self) -> None:
+        """The runtime derives identities like `agent-relay-bec0`. An exact
+        match misses that and dispatches a second copy of the same voice —
+        found by live-fire, not by reading the code."""
+        for identity in ("agent-relay-bec0", "agent-rook-9f2a"):
+            lk = _livekit(["aaron_1111", identity])
+            await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))
+            lk.dispatch_agent.assert_not_awaited()
+
     async def test_a_failed_probe_is_silent_not_fatal(self) -> None:
         lk = AsyncMock()
         lk.get_room = AsyncMock(side_effect=RuntimeError("livekit down"))
