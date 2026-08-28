@@ -26,13 +26,23 @@ CONFIGURATION comes from the room's metadata, read at dispatch:
   * ``voice_relay_agent_id`` — the persona whose Kokoro voice to use (default
     ``rook`` → ``am_echo`` via KOKORO_VOICE_PRESETS).
 
-WHAT IT DELIBERATELY DOES NOT DO. No LLM, no STT, no turn-taking. It never
-generates a word of its own, so it cannot hallucinate, cannot be prompt-
+EARS (added 2026-08-28). The relay also carries the human's SPOKEN words back
+into the room as their own message, so the brain on the Mac can answer them.
+The browser already publishes committed captions as ``transcript`` data
+messages; the relay groups them and persists each finished utterance through
+the same ``internal/voice-user-message`` endpoint the Brigade voice path uses.
+That closes the loop with no new machinery: speak → your line lands in the
+room → the runner sees it and Rook replies → the relay says the reply aloud.
+
+⚠️ EARS ARE ONLY OPENED WHEN THIS IS THE SOLE AGENT IN THE CALL. A Brigade
+voice worker persists the same utterances itself, so a second writer would
+double every line the human says. Sole-agent is also exactly the case the
+feature is for: one human, one agent, just talk.
+
+WHAT IT DELIBERATELY DOES NOT DO. No LLM, no turn-taking, and it never
+generates a word of its own — so it cannot hallucinate, cannot be prompt-
 injected into saying something Rook did not write, and cannot pile onto a
-conversation — the failure modes voice_dispatch exists to prevent are simply
-absent, because this worker has nothing to decide. Input (Aaron speaking to
-Rook) stays on the existing path: the foot pedal types into Stable, or he
-types, and the runner answers.
+conversation. It transports words; it does not author them.
 """
 
 from __future__ import annotations
@@ -45,6 +55,12 @@ from typing import Any
 import structlog
 
 from agent_runtime.base import StableAgent
+from agent_runtime.transcript_publisher import TranscriptPublisher
+from agent_runtime.voice_transcripts import (
+    TranscriptAggregator,
+    classify_transcript,
+    is_agent_identity,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -152,10 +168,34 @@ def should_speak(payload: Any, source_username: str) -> str | None:
     return spoken or None
 
 
+def sole_agent_in_call(room: Any, self_identity: str) -> bool:
+    """True when no OTHER agent worker is in this call.
+
+    The ears only open in that case. A Brigade voice worker persists the same
+    human utterances itself, so a second writer would double every line the
+    person says — and a doubled question gets answered twice.
+    """
+    try:
+        remotes = list(getattr(room, "remote_participants", {}).values())
+    except Exception:
+        return False
+    for participant in remotes:
+        identity = str(getattr(participant, "identity", "") or "")
+        if identity and identity != self_identity and is_agent_identity(identity):
+            return False
+    return True
+
+
 class VoiceRelayAgent(StableAgent):
     """Joins a call and speaks one participant's messages. No brain attached."""
 
     agent_type = "relay"
+
+    @staticmethod
+    def _clock() -> float:
+        import time as _time
+
+        return _time.monotonic()
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -163,6 +203,10 @@ class VoiceRelayAgent(StableAgent):
         self._relay_persona = DEFAULT_RELAY_PERSONA
         self._session: Any = None
         self._spoken_ids: set[str] = set()
+        self._heard_segments: set[str] = set()
+        self._transcripts: TranscriptAggregator | None = None
+        self._publisher: TranscriptPublisher | None = None
+        self._ears_task: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._speaker_task: asyncio.Task[None] | None = None
 
@@ -192,6 +236,17 @@ class VoiceRelayAgent(StableAgent):
         self._speaker_task = asyncio.create_task(
             self._speak_loop(), name=f"voice-relay-speaker:{self._relay_persona}"
         )
+        # Ears: carry the human's spoken words into the room so the brain on
+        # the Mac can answer them. Only when nothing else is already doing it.
+        self._transcripts = TranscriptAggregator()
+        self._publisher = TranscriptPublisher(
+            room=ctx.room,
+            agent_identity=self._identity or self._source_username,
+            agent_name=self._relay_persona,
+        )
+        self._ears_task = asyncio.create_task(
+            self._ears_loop(), name=f"voice-relay-ears:{self._relay_persona}"
+        )
         logger.info(
             "voice_relay_started",
             room=getattr(ctx.room, "name", ""),
@@ -211,6 +266,9 @@ class VoiceRelayAgent(StableAgent):
             if isinstance(raw, (bytes, bytearray)):
                 raw = raw.decode("utf-8", "replace")
             payload = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(payload, dict) and payload.get("type") == "transcript":
+                self._on_transcript(payload)
+                return
             spoken = should_speak(payload, self._source_username)
             if spoken is None:
                 return
@@ -230,6 +288,56 @@ class VoiceRelayAgent(StableAgent):
             )
         except Exception:
             logger.warning("voice_relay_data_failed", exc_info=True)
+
+    def _on_transcript(self, payload: dict[str, Any]) -> None:
+        """One caption frame from the browser. Sync; never raises."""
+        if self._transcripts is None:
+            return
+        verdict, normalized = classify_transcript(payload)
+        if verdict != "final" or not normalized:
+            return
+        segment = str(normalized.get("segment_id") or "")
+        if segment and segment in self._heard_segments:
+            return  # replayed frame; saying it twice would ask twice
+        if segment:
+            self._heard_segments.add(segment)
+        try:
+            self._transcripts.ingest(payload, now=self._clock())
+        except Exception:
+            logger.debug("voice_relay_transcript_ingest_failed", exc_info=True)
+
+    async def _ears_loop(self) -> None:
+        """Drain finished utterances and persist each as the speaker's message."""
+        while True:
+            try:
+                await asyncio.sleep(0.4)
+                if self._transcripts is None or self._publisher is None:
+                    continue
+                due = self._transcripts.pop_due(now=self._clock())
+                if not due:
+                    continue
+                if not sole_agent_in_call(self._room, self._identity):
+                    # Another agent owns the human's words in this room.
+                    logger.info(
+                        "voice_relay_ears_stood_down",
+                        utterances=len(due),
+                        reason="another agent is in the call",
+                    )
+                    continue
+                for utterance in due:
+                    self._publisher.persist_user_utterance(
+                        utterance.participant_id, utterance.text
+                    )
+                    logger.info(
+                        "voice_relay_heard",
+                        speaker=utterance.participant_id,
+                        chars=len(utterance.text),
+                        preview=utterance.text[:80],
+                    )
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.warning("voice_relay_ears_failed", exc_info=True)
 
     async def _speak_loop(self) -> None:
         """Speak queued lines one at a time.
@@ -269,7 +377,7 @@ class VoiceRelayAgent(StableAgent):
         logger.info("voice_relay_spoke", chars=len(text))
 
     async def _shutdown_steps(self) -> None:  # pragma: no cover — lifecycle
-        task = self._speaker_task
-        if task is not None and not task.done():
-            task.cancel()
+        for task in (self._speaker_task, self._ears_task):
+            if task is not None and not task.done():
+                task.cancel()
         await super()._shutdown_steps()
