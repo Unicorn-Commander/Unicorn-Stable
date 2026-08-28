@@ -211,13 +211,18 @@ async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
     if config is None:
         return
     source, persona = config
-    wanted = {f"agent-{persona}", "agent-relay"}
+    # PREFIX match, not equality. Live-fire caught this: the runtime derives a
+    # worker identity that can carry a suffix (`agent-relay-bec0`), so an
+    # exact-name guard silently misses the relay that is already in the room
+    # and dispatches a second one — two copies of one voice, talking over each
+    # other in the same voice, on camera.
+    prefixes = (f"agent-{persona}", "agent-relay")
     try:
         state = await livekit.get_room(room.livekit_room_name)
         identities = {
             str(getattr(p, "identity", "") or "") for p in state.get("participants", [])
         }
-        if identities & wanted:
+        if any(i.startswith(prefixes) for i in identities):
             return
         # Only join once a real person is here — an empty room needs no voice.
         humans = [
