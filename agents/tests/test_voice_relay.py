@@ -137,3 +137,77 @@ class VoiceBindingTests(TestCase):
         from plugins.tts import _resolve_kokoro_voice
 
         self.assertEqual(_resolve_kokoro_voice(DEFAULT_RELAY_PERSONA, None), "am_echo")
+
+
+class SoleAgentTests(TestCase):
+    """The ears only open when nothing else owns the human's words.
+
+    A Brigade voice worker persists the same utterances itself, so two writers
+    would double every line the person says — and a doubled question gets
+    answered twice.
+    """
+
+    @staticmethod
+    def _room(identities):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            remote_participants={
+                i: SimpleNamespace(identity=i) for i in identities
+            }
+        )
+
+    def test_alone_with_the_human_the_ears_open(self) -> None:
+        from voice_relay.agent import sole_agent_in_call
+
+        room = self._room(["aaron_1111"])
+        self.assertTrue(sole_agent_in_call(room, "agent-claude-code"))
+
+    def test_another_agent_present_closes_the_ears(self) -> None:
+        from voice_relay.agent import sole_agent_in_call
+
+        room = self._room(["aaron_1111", "agent-majik"])
+        self.assertFalse(sole_agent_in_call(room, "agent-claude-code"))
+
+    def test_our_own_identity_does_not_count_against_us(self) -> None:
+        from voice_relay.agent import sole_agent_in_call
+
+        room = self._room(["aaron_1111", "agent-claude-code"])
+        self.assertTrue(sole_agent_in_call(room, "agent-claude-code"))
+
+    def test_a_broken_roster_fails_closed(self) -> None:
+        """Unable to tell who is here ⇒ do not write. A duplicated question is
+        worse than a missed one, because the human sees it answered twice."""
+        from types import SimpleNamespace
+
+        from voice_relay.agent import sole_agent_in_call
+
+        broken = SimpleNamespace(remote_participants=None)
+        self.assertFalse(sole_agent_in_call(broken, "agent-claude-code"))
+
+
+class TranscriptIntakeTests(TestCase):
+    """What the relay accepts as a human's spoken line."""
+
+    def test_agent_speech_and_interim_frames_are_not_heard(self) -> None:
+        from agent_runtime.voice_transcripts import classify_transcript
+
+        interim = {"isFinal": False, "source": "local_mic", "text": "hel"}
+        self.assertEqual(classify_transcript(interim)[0], "interim")
+
+        agent_line = {
+            "isFinal": True, "source": "agent", "text": "I am Majik",
+            "participantId": "agent-majik",
+        }
+        self.assertEqual(classify_transcript(agent_line)[0], "agent_speaker")
+
+    def test_a_committed_human_line_is_heard(self) -> None:
+        from agent_runtime.voice_transcripts import classify_transcript
+
+        verdict, norm = classify_transcript({
+            "isFinal": True, "source": "local_mic", "text": "where are we?",
+            "participantId": "aaron_1111", "name": "Aaron", "segmentId": "s1",
+        })
+        self.assertEqual(verdict, "final")
+        self.assertEqual(norm["text"], "where are we?")
+        self.assertEqual(norm["participant_id"], "aaron_1111")
