@@ -55,7 +55,7 @@ from typing import Any
 import structlog
 
 from agent_runtime.base import StableAgent
-from agent_runtime.transcript_publisher import TranscriptPublisher
+from agent_runtime.transcript_publisher import VoiceHistoryPersister
 from agent_runtime.voice_transcripts import (
     TranscriptAggregator,
     classify_transcript,
@@ -205,7 +205,7 @@ class VoiceRelayAgent(StableAgent):
         self._spoken_ids: set[str] = set()
         self._heard_segments: set[str] = set()
         self._transcripts: TranscriptAggregator | None = None
-        self._publisher: TranscriptPublisher | None = None
+        self._publisher: VoiceHistoryPersister | None = None
         self._ears_task: asyncio.Task[None] | None = None
         # The live LiveKit room handle. The base class keeps the room NAME and
         # id, not the object, so the relay holds its own reference — reaching
@@ -245,10 +245,14 @@ class VoiceRelayAgent(StableAgent):
         # the Mac can answer them. Only when nothing else is already doing it.
         self._lk_room = ctx.room
         self._transcripts = TranscriptAggregator()
-        self._publisher = TranscriptPublisher(
+        # VoiceHistoryPersister, not TranscriptPublisher: the two live in the
+        # same module and only the former can write a human's turn back to the
+        # room. Picking the class by filename is how the first attempt shipped
+        # an AttributeError that the loop swallowed.
+        self._publisher = VoiceHistoryPersister(
             room=ctx.room,
-            agent_identity=self._identity or self._source_username,
-            agent_name=self._relay_persona,
+            livekit_room_name=ctx.room.name,
+            brigade_agent_id=self._relay_persona,
         )
         self._ears_task = asyncio.create_task(
             self._ears_loop(), name=f"voice-relay-ears:{self._relay_persona}"
