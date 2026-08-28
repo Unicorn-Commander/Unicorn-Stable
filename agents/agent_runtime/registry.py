@@ -177,7 +177,14 @@ class AgentRegistry:
             getattr(req.room, "metadata", "") or "" if req.room else "", "agent_identity"
         )
         identity = override or agent_participant_identity(agent_type, brigade_agent_id)
-        display_name = agent_participant_name(agent_type, brigade_agent_id)
+        name_override = self._string_from_metadata(
+            getattr(getattr(req, "job", None), "metadata", "") or "", "agent_display_name"
+        ) or self._string_from_metadata(
+            getattr(req.room, "metadata", "") or "" if req.room else "", "agent_display_name"
+        )
+        display_name = name_override or agent_participant_name(
+            agent_type, brigade_agent_id
+        )
 
         logger.info(
             "registry_accepting_job",

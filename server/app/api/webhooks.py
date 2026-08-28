@@ -195,7 +195,29 @@ def _relay_source_and_persona(room: Room) -> tuple[str, str] | None:
     return source.strip(), persona
 
 
-async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
+async def _relay_display_name(db: AsyncSession, source_username: str) -> str | None:
+    """The display name of the participant the relay speaks for.
+
+    Passed to the worker so its LiveKit participant carries that name. Without
+    it the tile reads "stable-relay" anywhere the client cannot cross-reference
+    the room's member list.
+    """
+    try:
+        row = (
+            await db.execute(
+                select(Participant.display_name).where(
+                    Participant.username == source_username
+                )
+            )
+        ).scalar_one_or_none()
+    except Exception:
+        return None
+    return row.strip() if isinstance(row, str) and row.strip() else None
+
+
+async def _ensure_voice_relay(
+    livekit: LiveKitService, room: Room, db: AsyncSession | None = None
+) -> None:
     """Put the room's voice relay in the call, once, when a human is present.
 
     The relay speaks a text-only agent's messages aloud (agents/voice_relay).
@@ -239,6 +261,7 @@ async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
         logger.debug("voice_relay_presence_probe_failed", exc_info=True)
         return
 
+    display_name = await _relay_display_name(db, source) if db is not None else None
     try:
         await livekit.dispatch_agent(
             room_name=room.livekit_room_name,
@@ -252,6 +275,7 @@ async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
                 # names nobody, which is why the tile showed "Stable Relay"
                 # over the generated head.
                 "agent_identity": source,
+                **({"agent_display_name": display_name} if display_name else {}),
             },
         )
         logger.info(
@@ -413,7 +437,7 @@ async def _handle_participant_joined(
     # A text-only agent (Rook) gets a voice in this call, if the room asked
     # for one. Fail-open by contract, like the recording below.
     try:
-        await _ensure_voice_relay(livekit, room)
+        await _ensure_voice_relay(livekit, room, db)
     except Exception:
         logger.error("voice_relay_ensure_failed", room_id=str(room.id), exc_info=True)
 
