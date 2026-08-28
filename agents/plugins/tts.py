@@ -74,6 +74,15 @@ KOKORO_VOICE_PRESETS: dict[str, str] = {
     # /v1/voices and deliberately assigned to NO other agent, so Majik stays
     # acoustically distinct in multi-agent calls.
     "majik": "am_puck",
+    # Rook — Aaron's own seat (participant agent-claude-code), so the preset is
+    # keyed on the brigade id "claude-code"; "rook" is the same voice under the
+    # show name. am_echo picked by Aaron from the 2026-08-28 audition, and it
+    # is free of the two voices resident in the Build In Public room (majik
+    # am_puck, the-general am_michael) — an agent that sounds like another
+    # agent on camera is indistinguishable to a viewer. sgt-swift gave am_echo
+    # up for this.
+    "claude-code": "am_echo",
+    "rook": "am_echo",
     "the-general": "am_michael",
     "gunny": "am_adam",
     "judge-advocate": "bm_lewis",
@@ -85,7 +94,12 @@ KOKORO_VOICE_PRESETS: dict[str, str] = {
     "maj-devops": "am_michael",
     "sgt-cipher": "am_adam",
     "sgt-scribe": "af_bella",
-    "sgt-swift": "am_echo",
+    # Moved off am_echo (now Rook's) 2026-08-28. bm_lewis rather than one of
+    # the American voices because its other holders are legal/finance agents
+    # that will not share a room with a Swift dev agent, whereas am_adam and
+    # am_michael are already worn by its actual peers (cpt-fullstack,
+    # sgt-cipher, code-reviewer, maj-devops).
+    "sgt-swift": "bm_lewis",
     "sgt-cocoa": "am_onyx",
     "corporal-qwen": "bm_george",
     "prof-datasci": "af_bella",

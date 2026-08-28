@@ -417,3 +417,53 @@ class PrimaryAgentResolutionTests(TestCase):
 
         for meta in ("", "not json", "[]", '{"voice_primary_agent_id": ""}', None):
             self.assertIsNone(primary_agent_id(SimpleNamespace(metadata=meta)), meta)
+
+
+class VoicePresetTests(TestCase):
+    """Voice assignments that must hold for the Build In Public room.
+
+    Two agents sharing a voice is invisible in a preset table and obvious the
+    moment they both speak on camera, so the constraint is asserted rather
+    than remembered.
+    """
+
+    def test_rook_is_am_echo_under_both_of_its_ids(self) -> None:
+        from plugins.tts import KOKORO_VOICE_PRESETS
+
+        self.assertEqual(KOKORO_VOICE_PRESETS["claude-code"], "am_echo")
+        self.assertEqual(KOKORO_VOICE_PRESETS["rook"], "am_echo")
+
+    def test_the_e03_room_has_three_distinct_voices(self) -> None:
+        from plugins.tts import KOKORO_VOICE_PRESETS
+
+        room = ["claude-code", "majik", "the-general"]
+        voices = [KOKORO_VOICE_PRESETS[a] for a in room]
+        self.assertEqual(len(set(voices)), len(room), voices)
+
+    def test_no_agent_still_holds_rooks_voice(self) -> None:
+        from plugins.tts import KOKORO_VOICE_PRESETS
+
+        others = {
+            agent: voice
+            for agent, voice in KOKORO_VOICE_PRESETS.items()
+            if voice == "am_echo" and agent not in ("claude-code", "rook")
+        }
+        self.assertEqual(others, {})
+
+    def test_every_preset_resolves_to_a_voice_orator_actually_serves(self) -> None:
+        """The 18 voices the Kokoro deployment loads, verified 2026-08-28.
+
+        bm_daniel is in the table and NOT in that list, which is why the
+        fallback map exists — resolution, not the raw table, is what must be
+        served.
+        """
+        from plugins.tts import _resolve_kokoro_voice, KOKORO_VOICE_PRESETS
+
+        served = {
+            "af", "af_alloy", "af_bella", "af_heart", "af_nicole", "af_nova",
+            "af_river", "af_sarah", "af_sky", "am_adam", "am_echo",
+            "am_michael", "am_onyx", "am_puck", "bf_emma", "bf_isabella",
+            "bm_george", "bm_lewis",
+        }
+        for agent in KOKORO_VOICE_PRESETS:
+            self.assertIn(_resolve_kokoro_voice(agent, None), served, agent)
