@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock
 
+from unittest.mock import MagicMock
+
 from app.api.webhooks import _ensure_voice_relay, _relay_source_and_persona
 
 ROOK = "agent-claude-code"
@@ -79,6 +81,37 @@ class EnsureRelayTests(IsolatedAsyncioTestCase):
         # brigade_agent_id and leave a restarted Brigade worker unable to tell
         # which persona it is.
         self.assertIs(kwargs["merge_metadata"], True)
+
+    async def test_carries_the_sources_display_name_when_the_db_knows_it(self) -> None:
+        """Without this the tile reads "stable-relay" wherever the client
+        cannot cross-reference the room's member list."""
+        lk = _livekit(["aaron_1111"])
+        db = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = "Rook"
+        db.execute = AsyncMock(return_value=result)
+        await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}), db)
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertEqual(meta["agent_display_name"], "Rook")
+        self.assertEqual(meta["agent_identity"], ROOK)
+
+    async def test_an_unknown_source_still_dispatches_without_a_name(self) -> None:
+        """A missing display name must not block the voice."""
+        lk = _livekit(["aaron_1111"])
+        db = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        db.execute = AsyncMock(return_value=result)
+        await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}), db)
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertNotIn("agent_display_name", meta)
+
+    async def test_a_broken_name_lookup_never_blocks_the_relay(self) -> None:
+        lk = _livekit(["aaron_1111"])
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=RuntimeError("db down"))
+        await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}), db)
+        lk.dispatch_agent.assert_awaited_once()
 
     async def test_empty_call_gets_no_relay(self) -> None:
         """An empty room needs no voice — and dispatching into one burns a
