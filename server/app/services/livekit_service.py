@@ -258,6 +258,20 @@ class LiveKitService:
         )
         return updated
 
+    async def get_room_metadata(self, room_name: str) -> dict[str, Any]:
+        """The room's current LiveKit metadata as a dict ({} when absent/bad)."""
+        rooms = await self.list_rooms(names=[room_name])
+        if not rooms:
+            return {}
+        raw = getattr(rooms[0], "metadata", "") or ""
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
     async def update_room_metadata(self, room_name: str, metadata: str) -> None:
         """Update a LiveKit room's metadata JSON string in-place.
 
@@ -278,6 +292,7 @@ class LiveKitService:
         room_name: str,
         agent_name: str = "stable-brigade",
         metadata: dict[str, Any] | None = None,
+        merge_metadata: bool = False,
     ) -> dict[str, Any]:
         """Explicitly dispatch a worker job so an agent joins the room as a
         participant (the real LiveKit in-room path).
@@ -295,7 +310,21 @@ class LiveKitService:
         `brigade_agent_id` from `ctx.room.metadata` regardless of how it was
         assigned the job.
         """
-        metadata_str = json.dumps(metadata or {})
+        payload = dict(metadata or {})
+        if merge_metadata:
+            # REPLACING the room metadata drops keys another agent depends on —
+            # `brigade_agent_id` above all, which is how a restarted Brigade
+            # worker knows which persona it is. Losing it is what produced the
+            # "green-haired Majik" persona miss. Merge instead, so a second
+            # dispatch into a busy room is additive.
+            try:
+                existing = await self.get_room_metadata(room_name)
+            except Exception:
+                existing = {}
+            merged = dict(existing)
+            merged.update(payload)
+            payload = merged
+        metadata_str = json.dumps(payload)
 
         # Bake metadata into the room first so the worker'''s job handler can
         # read brigade_agent_id from ctx.room.metadata. This also means that if

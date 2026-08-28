@@ -72,8 +72,13 @@ class EnsureRelayTests(IsolatedAsyncioTestCase):
                 "agent_type": "relay",
                 "voice_relay_source": ROOK,
                 "voice_relay_agent_id": "rook",
+                "agent_identity": ROOK,
             },
         )
+        # Merging matters: replacing the room metadata would drop
+        # brigade_agent_id and leave a restarted Brigade worker unable to tell
+        # which persona it is.
+        self.assertIs(kwargs["merge_metadata"], True)
 
     async def test_empty_call_gets_no_relay(self) -> None:
         """An empty room needs no voice — and dispatching into one burns a
@@ -96,6 +101,13 @@ class EnsureRelayTests(IsolatedAsyncioTestCase):
 
     async def test_idempotent_on_the_generic_relay_identity_too(self) -> None:
         lk = _livekit(["aaron_1111", "agent-relay"])
+        await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))
+        lk.dispatch_agent.assert_not_awaited()
+
+    async def test_idempotent_against_the_source_identity_it_joins_as(self) -> None:
+        """The relay joins as the participant it speaks for, so a room already
+        holding that identity must not get a second one."""
+        lk = _livekit(["aaron_1111", ROOK])
         await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))
         lk.dispatch_agent.assert_not_awaited()
 
