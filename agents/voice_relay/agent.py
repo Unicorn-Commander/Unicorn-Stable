@@ -88,10 +88,29 @@ DEFAULT_RELAY_PERSONA = "rook"
 #: which on a recorded show is worse than saying nothing.
 MAX_SPOKEN_CHARS = 900
 
-#: Ceiling on waiting for one line's playout to finish. Speech is serialised so
-#: two lines never overlap in the same voice, but a handle that never resolves
-#: must not silence every line after it.
+#: Hard ceiling on waiting for one line's playout, whatever its length.
 PLAYOUT_TIMEOUT_S = 45.0
+
+#: Characters of speech per second, measured against Kokoro output. Used to
+#: estimate how long a line takes to say.
+SPEECH_CHARS_PER_SECOND = 13.0
+
+#: Slack added to the estimate before giving up on the playout signal.
+PLAYOUT_GRACE_S = 3.0
+
+
+def playout_budget(text: str) -> float:
+    """How long to wait for one line to finish playing.
+
+    MEASURED, not guessed at 45 s: the playout handle on this deployment does
+    not resolve — a 22-character reply sat until the ceiling — so waiting on it
+    alone serialises speech at one line per timeout, which is not a
+    conversation. Estimating from length gives the queue a truthful pace: the
+    handle is still awaited and still wins when it resolves early, but a line
+    that has certainly finished stops holding the floor.
+    """
+    seconds = len(text or "") / SPEECH_CHARS_PER_SECOND + PLAYOUT_GRACE_S
+    return max(PLAYOUT_GRACE_S, min(seconds, PLAYOUT_TIMEOUT_S))
 
 _CODE_FENCE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
@@ -464,13 +483,17 @@ class VoiceRelayAgent(StableAgent):
                     # in silence — a worse failure than one line overlapping.
                     # Observed 69s for a 67-character line in a synthetic call,
                     # so the ceiling is generous but real.
+                    budget = playout_budget(text)
                     try:
-                        await asyncio.wait_for(out, timeout=PLAYOUT_TIMEOUT_S)
+                        await asyncio.wait_for(out, timeout=budget)
                     except asyncio.TimeoutError:
-                        logger.warning(
-                            "voice_relay_playout_wait_timed_out",
+                        # Expected on this deployment; the audio was handed to
+                        # the session long ago. Debug, not warning — a line per
+                        # reply at warning level is noise that hides real faults.
+                        logger.debug(
+                            "voice_relay_playout_wait_elapsed",
                             chars=len(text),
-                            seconds=PLAYOUT_TIMEOUT_S,
+                            seconds=round(budget, 1),
                         )
                 break
         logger.info("voice_relay_spoke", chars=len(text))
