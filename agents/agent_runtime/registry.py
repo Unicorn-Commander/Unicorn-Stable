@@ -167,7 +167,16 @@ class AgentRegistry:
             return
 
         brigade_agent_id = self._resolve_brigade_agent_id(req)
-        identity = agent_participant_identity(agent_type, brigade_agent_id)
+        # An explicit override wins. The voice relay uses it to join AS the
+        # participant it speaks for, so the call tile resolves to that
+        # character's name and art instead of the type-shaped `agent-relay`,
+        # which names nobody and falls through to the generated head.
+        override = self._string_from_metadata(
+            getattr(getattr(req, "job", None), "metadata", "") or "", "agent_identity"
+        ) or self._string_from_metadata(
+            getattr(req.room, "metadata", "") or "" if req.room else "", "agent_identity"
+        )
+        identity = override or agent_participant_identity(agent_type, brigade_agent_id)
         display_name = agent_participant_name(agent_type, brigade_agent_id)
 
         logger.info(

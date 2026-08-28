@@ -216,7 +216,10 @@ async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
     # exact-name guard silently misses the relay that is already in the room
     # and dispatches a second one — two copies of one voice, talking over each
     # other in the same voice, on camera.
-    prefixes = (f"agent-{persona}", "agent-relay")
+    # The relay now joins AS the source participant, so that identity is the
+    # primary thing to look for; the older forms stay so a relay dispatched
+    # before this change is still recognised and not duplicated.
+    prefixes = (source, f"agent-{persona}", "agent-relay")
     try:
         state = await livekit.get_room(room.livekit_room_name)
         identities = {
@@ -239,10 +242,16 @@ async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
     try:
         await livekit.dispatch_agent(
             room_name=room.livekit_room_name,
+            merge_metadata=True,
             metadata={
                 "agent_type": "relay",
                 "voice_relay_source": source,
                 "voice_relay_agent_id": persona,
+                # Join AS the participant we speak for, so the call tile
+                # resolves to that character's name and art. `agent-relay`
+                # names nobody, which is why the tile showed "Stable Relay"
+                # over the generated head.
+                "agent_identity": source,
             },
         )
         logger.info(
