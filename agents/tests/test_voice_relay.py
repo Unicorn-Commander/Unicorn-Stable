@@ -211,3 +211,29 @@ class TranscriptIntakeTests(TestCase):
         self.assertEqual(verdict, "final")
         self.assertEqual(norm["text"], "where are we?")
         self.assertEqual(norm["participant_id"], "aaron_1111")
+
+
+class RoomHandleTests(TestCase):
+    """The relay keeps its own room handle.
+
+    The base class stores the room NAME and id, not the object. Reaching for a
+    `self._room` that never existed made every ears drain throw — invisibly,
+    because the loop swallows and logs. Only a live call surfaced it, so the
+    attribute is pinned here.
+    """
+
+    def test_the_agent_declares_a_room_handle_up_front(self) -> None:
+        from voice_relay.agent import VoiceRelayAgent
+
+        agent = VoiceRelayAgent.__new__(VoiceRelayAgent)
+        VoiceRelayAgent.__init__(agent)
+        self.assertIsNone(agent._lk_room)
+
+    def test_the_ears_never_reach_for_an_attribute_the_base_lacks(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._ears_loop)
+        self.assertIn("self._lk_room", source)
+        self.assertNotIn("self._room,", source)

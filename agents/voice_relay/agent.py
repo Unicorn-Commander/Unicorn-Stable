@@ -207,6 +207,11 @@ class VoiceRelayAgent(StableAgent):
         self._transcripts: TranscriptAggregator | None = None
         self._publisher: TranscriptPublisher | None = None
         self._ears_task: asyncio.Task[None] | None = None
+        # The live LiveKit room handle. The base class keeps the room NAME and
+        # id, not the object, so the relay holds its own reference — reaching
+        # for a `self._room` that never existed is what made the ears throw on
+        # every drain until a live call proved it.
+        self._lk_room: Any = None
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._speaker_task: asyncio.Task[None] | None = None
 
@@ -238,6 +243,7 @@ class VoiceRelayAgent(StableAgent):
         )
         # Ears: carry the human's spoken words into the room so the brain on
         # the Mac can answer them. Only when nothing else is already doing it.
+        self._lk_room = ctx.room
         self._transcripts = TranscriptAggregator()
         self._publisher = TranscriptPublisher(
             room=ctx.room,
@@ -316,7 +322,9 @@ class VoiceRelayAgent(StableAgent):
                 due = self._transcripts.pop_due(now=self._clock())
                 if not due:
                     continue
-                if not sole_agent_in_call(self._room, self._identity):
+                if self._lk_room is None:
+                    continue
+                if not sole_agent_in_call(self._lk_room, self._identity):
                     # Another agent owns the human's words in this room.
                     logger.info(
                         "voice_relay_ears_stood_down",
