@@ -16,8 +16,8 @@ import {
   type FaceMountPlanInput,
   type PresenceRungInput,
 } from "./presenceFace";
+import { hasPuppet, puppetForAgent, puppetForTexture } from "./puppetRig";
 import { FACE_STYLE_ORDER, type FaceStyle } from "./facePreference";
-import { hasPuppet, puppetForAgent } from "./puppetRig";
 
 /** The happy path: everything on, everything available. */
 function input(over: Partial<PresenceRungInput> = {}): PresenceRungInput {
@@ -538,6 +538,143 @@ describe("resolveCallTilePersona", () => {
         { slug: "webhook-notifier-x9" },
       ]),
     ).toEqual({ slug: "brigade", name: "stable-brigade" });
+  });
+});
+
+/**
+ * ROOK — the voice relay's tile (Aaron, 2026-08-28: "the avatar needs work and
+ * the name says stable relay").
+ *
+ * Rook is his Claude Code seat: a TEXT agent whose messages a separate relay
+ * worker speaks aloud in the call. The relay joins as Rook's own username so
+ * the tile is his, which puts three things on the line at once — the name, the
+ * drawing, and (through the drawing's rig) the mouth.
+ */
+describe("resolveCallTilePersona — Rook's relay tile", () => {
+  const ROOK = {
+    slug: "claude-code",
+    name: "Rook",
+    avatarUrl: "/agent-puppets/rook-v2.png",
+  };
+
+  it("takes the roster's NAME and the roster's ART", () => {
+    const persona = resolveCallTilePersona(
+      "agent-claude-code",
+      // What the worker calls itself. `agent_participant_name(type, null)` in
+      // agent_runtime/registry returns `stable-<type>`, which is the string
+      // Aaron read off the tile.
+      "stable-relay",
+      null,
+      [ROOK],
+    );
+    expect(persona.name).toBe("Rook");
+    expect(persona.slug).toBe("claude-code");
+    expect(persona.artUrl).toBe("/agent-puppets/rook-v2.png");
+    // …and that art is a RIGGED puppet, which is what makes the mouth move.
+    expect(puppetForTexture(persona.artUrl)?.label).toBe("Rook");
+  });
+
+  it("survives the runtime's 4-hex identity suffix", () => {
+    // agent_runtime/base.py derives `agent-{type}-{id(self) & 0xFFFF:04x}`,
+    // and live-fire on 2026-08-28 saw `agent-relay-bec0` in the room — the
+    // server's duplicate guard had to switch from equality to a prefix test
+    // (6cd08e8). An equality test here would miss the roster row the same way.
+    const persona = resolveCallTilePersona(
+      "agent-claude-code-3f9a",
+      "stable-relay",
+      null,
+      [ROOK],
+    );
+    expect(persona.name).toBe("Rook");
+    // The slug is the ROSTER's, not the suffixed one — `claude-code-3f9a`
+    // resolves no art anywhere.
+    expect(persona.slug).toBe("claude-code");
+    expect(persona.artUrl).toBe("/agent-puppets/rook-v2.png");
+  });
+
+  it("does not let a DIFFERENT agent borrow Rook's face", () => {
+    // The regression that matters: Majik in the same call must keep being
+    // Majik, art and all, however Rook's row is written.
+    const members = [ROOK, { slug: "majik", name: "Majik" }];
+    const majik = resolveCallTilePersona("agent-majik", "Majik", null, members);
+    expect(majik).toEqual({ slug: "majik", name: "Majik" });
+    expect(majik.artUrl).toBeUndefined();
+    // Rook's own tile is unaffected by the company he keeps.
+    expect(
+      resolveCallTilePersona("agent-claude-code", "stable-relay", null, members)
+        .artUrl,
+    ).toBe("/agent-puppets/rook-v2.png");
+  });
+
+  it("keeps the OTHER Claude Code seats on the shared catalogue art", () => {
+    // Rook's art is bound to his PARTICIPANT, never to the `claude-code` slug —
+    // which Shafen's box, the webhook dev seats and `claude-orch1` all share.
+    // Binding it to the slug is precisely how his face would leak onto theirs.
+    const members = [
+      ROOK,
+      { slug: "shafen-claude-code", name: "Claude Code", avatarUrl: null },
+    ];
+    const shafen = resolveCallTilePersona(
+      "agent-shafen-claude-code",
+      "Claude Code",
+      null,
+      members,
+    );
+    expect(shafen.artUrl).toBeUndefined();
+    // It still resolves art — the generic Claude Code drawing, via the alias
+    // table. Correct, and NOT Rook's.
+    expect(puppetForAgent(shafen.slug, shafen.name)?.texture).toBe(
+      "/agent-puppets/claude-code.webp",
+    );
+  });
+
+  it("refuses to guess when a suffixed identity fits two rows", () => {
+    // Two members whose slugs differ only past the strip point is not evidence
+    // of anything. Same instinct as "declines to guess between TWO artful
+    // agent members" above: the generic rungs beat the wrong character.
+    const persona = resolveCallTilePersona("agent-bot-1a2b", "stable-relay", null, [
+      { slug: "bot", name: "Bot One" },
+      { slug: "bot", name: "Bot Two" },
+    ]);
+    expect(persona.name).toBe("stable-relay");
+  });
+
+  it("does not strip a suffix that is not the runtime's", () => {
+    // `harmony-local` is a real persona, not `harmony` wearing a suffix.
+    expect(
+      resolveCallTilePersona("agent-harmony-local", "Harmony Local", null, [
+        { slug: "harmony", name: "Harmony" },
+      ]).slug,
+    ).toBe("harmony-local");
+  });
+
+  it("carries no artUrl when the roster row has no picture", () => {
+    // `toEqual` on the two-key shape is load-bearing: an always-present
+    // `artUrl: null` would make every caller handle a value that means
+    // nothing.
+    expect(
+      resolveCallTilePersona("agent-majik", "Majik", null, [
+        { slug: "majik", name: "Majik", avatarUrl: null },
+      ]),
+    ).toEqual({ slug: "majik", name: "Majik" });
+    expect(
+      resolveCallTilePersona("agent-majik", "Majik", null, [
+        { slug: "majik", name: "Majik", avatarUrl: "   " },
+      ]).artUrl,
+    ).toBeUndefined();
+  });
+
+  it("carries the art through the ONE-artful-member fallback too", () => {
+    // A tile whose identity names nobody (a pre-per-identity worker) still
+    // lands on the room's single drawn resident — and must arrive with that
+    // member's picture, not just its name.
+    expect(
+      resolveCallTilePersona("agent-brigade", "stable-brigade", null, [ROOK]),
+    ).toEqual({
+      slug: "claude-code",
+      name: "Rook",
+      artUrl: "/agent-puppets/rook-v2.png",
+    });
   });
 });
 

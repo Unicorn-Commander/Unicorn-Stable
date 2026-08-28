@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PORTRAITS, EMBLEMS, brandAvatarFor } from "@/lib/brandAvatars";
-import { PUPPETS, normalizeAgentKey } from "@/lib/puppetRig";
+import { PUPPETS, normalizeAgentKey, puppetForTexture } from "@/lib/puppetRig";
 
 /**
  * The invariant these tests exist for: A PATH IN A TABLE IS NOT A PICTURE.
@@ -23,6 +23,10 @@ import { PUPPETS, normalizeAgentKey } from "@/lib/puppetRig";
 const SHIPPED = new Set(
   Object.keys({
     ...import.meta.glob("../../public/agent-puppets/*.webp"),
+    // PNG too: the puppet set was all-WebP until Rook, whose art was delivered
+    // as PNG. A glob that only saw WebP would have reported his real, shipped
+    // file as missing — the opposite of what this test is for.
+    ...import.meta.glob("../../public/agent-puppets/*.png"),
     ...import.meta.glob("../../public/agent-avatars/*.png"),
   }),
 );
@@ -58,6 +62,16 @@ describe("bundled agent art", () => {
       .filter(([, spec]) => !ships(spec.texture))
       .map(([key, spec]) => `${key} -> ${spec.texture}`);
     expect(missing).toEqual([]);
+  });
+
+  it("ships a real file for every superseded texture path too", () => {
+    // Same invariant one step further out: a participant row can name the PNG
+    // master rather than the shipped WebP, and `puppetForTexture` maps it
+    // across. If the master is ever deleted the mapping still resolves — so
+    // the file has to be asserted, not assumed.
+    const supersededRookMaster = "/agent-puppets/rook-v2.png";
+    expect(ships(supersededRookMaster)).toBe(true);
+    expect(puppetForTexture(supersededRookMaster)?.label).toBe("Rook");
   });
 
   /**
