@@ -35,10 +35,25 @@ THE FOUR LAYERS (spec §2), in the order they fire:
   the backstop that caps the bad case even when a rule misfires.
 
 THE SOLO-HUMAN EXCEPTION. With exactly one human in the call, unaddressed
-speech goes to the sole resident agent: alone in a room with one agent, you
-are talking to it — the DM rule the text responder already uses. The moment a
-second human joins, addressing is required. This is what lets a solo recording
-session stay conversational while a two-person show stays quiet.
+speech goes to ONE designated agent — the co-host — and every other agent
+still waits to be named. Alone with one agent that is just the DM rule the
+text responder already uses; alone with several it is the show format: a
+co-host who is always listening, and specialists you call on by name. Without
+a designated agent, unaddressed speech with several agents present would be
+answered by whichever worker won the race for the floor, which is
+nondeterministic and, on a recorded show, arbitrary.
+
+The moment a SECOND HUMAN joins, addressing is required from everyone,
+co-host included: two people talking to each other is the nobody class, and
+that is the whole point of it.
+
+WHO THE CO-HOST IS. ``voice_primary_agent_id`` in the room metadata, set
+deliberately. It falls back to the room's ``brigade_agent_id`` scalar, which
+works with no configuration — but that scalar is LAST-INVITED-WINS (see
+registry._resolve_brigade_agent_id: "shared mutable state that the next
+dispatch overwrites"), so relying on the fallback means inviting another agent
+silently moves the co-host mid-show. Set the explicit key for anything that
+matters.
 
 PLACEMENT, HONESTLY. The spec says the dispatcher belongs in the server,
 "single authority". This module is a single authority for every worker in the
@@ -267,6 +282,7 @@ def decide(
     text: str,
     other_agent_names: dict[str, set[str]],
     human_count: int,
+    primary_agent: str | None = None,
     now: float | None = None,
 ) -> Decision:
     """Should *this* agent answer *this* utterance?
@@ -276,6 +292,8 @@ def decide(
     forms — needed so "General, thoughts?" is recognised as *addressed
     elsewhere* rather than merely *not addressed to me*.
     ``human_count`` is the number of humans in the call (drives the solo rule).
+    ``primary_agent`` is the room's designated co-host, if any — the only
+    agent that answers unaddressed speech when one human is present.
 
     Pure apart from ``state``: no I/O, no clock unless one is omitted.
     """
@@ -322,11 +340,17 @@ def decide(
     if held is not None:
         return Decision(False, "sticky_other_agent", addressed=held)
 
-    # 3. SOLO-HUMAN EXCEPTION — one human, one agent: they are talking to us.
-    if human_count <= 1 and not other_agent_names:
-        if not state.take_floor(me, now=now):
-            return Decision(False, "floor_busy", addressed=me)
-        return Decision(True, "solo_human_sole_agent", addressed=me)
+    # 3. SOLO-HUMAN EXCEPTION — the co-host answers when nobody was named.
+    if human_count <= 1:
+        sole_agent = not other_agent_names
+        am_cohost = primary_agent is not None and primary_agent == me
+        if sole_agent or am_cohost:
+            if not state.take_floor(me, now=now):
+                return Decision(False, "floor_busy", addressed=me)
+            rule = "solo_human_sole_agent" if sole_agent else "solo_human_cohost"
+            return Decision(True, rule, addressed=me)
+        # Several agents and I am not the co-host: wait to be named. Falls
+        # through to the nobody class below so the log names the real reason.
 
     # 4. THE NOBODY CLASS. Humans talking to each other, or to no one.
     return Decision(False, "addressed_to_nobody")

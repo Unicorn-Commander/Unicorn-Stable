@@ -44,6 +44,7 @@ def _ask(
     humans: int = 2,
     now: float = 1000.0,
     speaker_is_agent: bool = False,
+    primary: str | None = None,
 ) -> Decision:
     return decide(
         state=state,
@@ -54,6 +55,7 @@ def _ask(
         text=text,
         other_agent_names=others if others is not None else {"the-general": GENERAL},
         human_count=humans,
+        primary_agent=primary,
         now=now,
     )
 
@@ -291,3 +293,127 @@ class AddressPositionTests(TestCase):
         right place to weigh that, not a substring rule.
         """
         self.assertFalse(spoken_name_match("General, thoughts?", GENERAL))
+
+
+class CoHostTests(TestCase):
+    """One human, several agents: the designated co-host answers unaddressed
+    speech and the specialists wait to be named — the E03 show format.
+
+    Without a designated agent this case has no good answer: every agent would
+    consider itself addressed and the floor mutex would hand the turn to
+    whichever worker won the race, which is arbitrary on a recorded show.
+    """
+
+    def test_cohost_answers_unaddressed_speech_when_alone_with_aaron(self) -> None:
+        state = _room()
+        d = _ask(
+            state,
+            me="majik",
+            my_names=MAJIK,
+            text="okay so where are we on the deploy",
+            humans=1,
+            primary="majik",
+        )
+        self.assertTrue(d.respond)
+        self.assertEqual(d.rule, "solo_human_cohost")
+
+    def test_the_other_agent_stays_quiet_for_the_same_utterance(self) -> None:
+        state = _room()
+        d = _ask(
+            state,
+            me="the-general",
+            my_names=GENERAL,
+            others={"majik": MAJIK},
+            text="okay so where are we on the deploy",
+            humans=1,
+            primary="majik",
+        )
+        self.assertFalse(d.respond)
+        self.assertEqual(d.rule, "addressed_to_nobody")
+
+    def test_a_specialist_still_answers_to_its_name(self) -> None:
+        state = _room()
+        d = _ask(
+            state,
+            me="the-general",
+            my_names=GENERAL,
+            others={"majik": MAJIK},
+            text="the General, thoughts?",
+            humans=1,
+            primary="majik",
+        )
+        self.assertTrue(d.respond)
+        self.assertEqual(d.rule, "addressed_by_name")
+
+    def test_a_second_human_silences_the_cohost_too(self) -> None:
+        """Two humans talking is the nobody class, co-host included — that is
+        the whole reason the nobody class exists."""
+        state = _room()
+        d = _ask(
+            state,
+            me="majik",
+            my_names=MAJIK,
+            text="so Shafen, I think we should ship it",
+            humans=2,
+            primary="majik",
+        )
+        self.assertFalse(d.respond)
+        self.assertEqual(d.rule, "addressed_to_nobody")
+
+    def test_no_cohost_designated_keeps_everyone_quiet(self) -> None:
+        state = _room()
+        d = _ask(
+            state,
+            me="majik",
+            my_names=MAJIK,
+            text="where are we on the deploy",
+            humans=1,
+            primary=None,
+        )
+        self.assertFalse(d.respond)
+        self.assertEqual(d.rule, "addressed_to_nobody")
+
+    def test_sole_agent_needs_no_designation(self) -> None:
+        state = _room()
+        d = _ask(
+            state,
+            me="majik",
+            my_names=MAJIK,
+            others={},
+            text="where are we on the deploy",
+            humans=1,
+            primary=None,
+        )
+        self.assertTrue(d.respond)
+        self.assertEqual(d.rule, "solo_human_sole_agent")
+
+
+class PrimaryAgentResolutionTests(TestCase):
+    def test_explicit_key_wins_over_the_last_invited_scalar(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        room = SimpleNamespace(
+            metadata='{"voice_primary_agent_id": "majik",'
+            ' "brigade_agent_id": "the-general"}'
+        )
+        self.assertEqual(primary_agent_id(room), "majik")
+
+    def test_falls_back_to_the_scalar(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        self.assertEqual(
+            primary_agent_id(SimpleNamespace(metadata='{"brigade_agent_id": "majik"}')),
+            "majik",
+        )
+
+    def test_missing_or_malformed_metadata_is_no_cohost_not_a_crash(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        for meta in ("", "not json", "[]", '{"voice_primary_agent_id": ""}', None):
+            self.assertIsNone(primary_agent_id(SimpleNamespace(metadata=meta)), meta)

@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import re
 import time
 from collections import OrderedDict
@@ -304,6 +305,32 @@ def other_agents_present(room: Any, self_identity: str) -> bool:
     return False
 
 
+def primary_agent_id(room: Any) -> str | None:
+    """The room's designated voice co-host, or None.
+
+    ``voice_primary_agent_id`` is the deliberate setting. It falls back to
+    ``brigade_agent_id`` so a room that has never been configured still has a
+    co-host — but that scalar is LAST-INVITED-WINS (registry, same file that
+    warns it is "shared mutable state that the next dispatch overwrites"), so
+    the fallback quietly follows whoever was invited most recently. Set the
+    explicit key on any room where it matters.
+    """
+    raw = getattr(room, "metadata", "") or ""
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    for key in ("voice_primary_agent_id", "brigade_agent_id"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def call_roster(room: Any, self_identity: str) -> tuple[dict[str, set[str]], int]:
     """(other agents → their spoken names, human count) for the live call.
 
@@ -513,6 +540,7 @@ class VoiceTranscriptResponder:
                 text=utterance.text,
                 other_agent_names=others,
                 human_count=humans,
+                primary_agent=primary_agent_id(self._room),
                 now=self._clock(),
             )
             # EVERY decision is logged with the rule that produced it — the
