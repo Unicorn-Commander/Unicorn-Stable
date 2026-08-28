@@ -154,11 +154,32 @@ export const PUPPETS: Record<string, PuppetSpec> = {
   // Brigade variant art re-homed for the webhook residents (doc-medresearch
   // alert pose and detective-holmes) — real characters, not initials.
   // ── 2026-08-28 Build In Public cast. Same Brand-Ops recipe and framing as
-  // the 08-07 batch, so DEFAULT_RIG lands within tolerance. Rook is keyed on
+  // the 08-07 batch, so DEFAULT_RIG lands within tolerance — except Rook,
+  // whose mouth is drawn lower and is calibrated below. Rook is keyed on
   // its own name AND aliased from `claude-code` below, because the seat's
   // participant username is `agent-claude-code` — the identity resolves first,
   // so without the alias Rook wears the old generic Claude Code face.
-  rook: { label: "Rook", texture: T("rook"), ...DEFAULT_RIG },
+  /**
+   * Rook's rig is MEASURED, not inherited — the one member of this batch that
+   * DEFAULT_RIG does not fit. His smile is drawn LOW on the muzzle (y
+   * 0.629–0.667, against a muzzle whose bottom ink starts at 0.703) where the
+   * 08-07 batch sits at 0.590–0.617, so DEFAULT_RIG's mouth line lands ~5%
+   * high, on bare muzzle ABOVE the smile, and its 0.048 opening then straddles
+   * the drawn line instead of growing from it. That is the "hole in the muzzle
+   * instead of a mouth" failure `openDepth` is annotated with, and the reason
+   * the note says to measure rather than reuse. Overlay: npm run
+   * puppet:calibrate.
+   */
+  rook: {
+    label: "Rook",
+    texture: T("rook"),
+    mouth: { cx: 0.500, cy: 0.660, rx: 0.055, ry: 0.017 },
+    // Only 0.043 of muzzle below the mouth line, so the opening is shallower
+    // than Majik's 0.046 — measured to the muzzle's bottom ink, with margin.
+    openDepth: 0.034,
+    eyeL: { cx: 0.414, cy: 0.445, rx: 0.030, ry: 0.028 },
+    eyeR: { cx: 0.585, cy: 0.445, rx: 0.030, ry: 0.028 },
+  },
   grok: { label: "Grok", texture: T("grok"), ...DEFAULT_RIG },
   shox: { label: "ShOX", texture: T("shox"), ...DEFAULT_RIG },
   codex: { label: "Codex", texture: T("codex"), ...DEFAULT_RIG },
@@ -246,6 +267,55 @@ export function puppetForAgent(
     const resolved = ALIASES[key] ?? key;
     const spec = PUPPETS[resolved];
     if (spec) return spec;
+  }
+  return null;
+}
+
+/**
+ * Superseded art paths — a drawing that ships under one name and is also
+ * referenced by another.
+ *
+ * `rook-v2.png` is the 1024² PNG master of Rook's portrait; `rook.webp` is the
+ * same picture re-encoded for the app (verified: mean per-pixel difference
+ * 0.5/255 against a 28/255 difference to the earlier, rejected `rook.png`).
+ * Participant rows were written against the master before the WebP existed, so
+ * without this the roster names real, shipped art that the rig table would call
+ * a stranger. Both files stay: neither is safe to delete while a database row
+ * or a cached page can still ask for it.
+ */
+const SUPERSEDED_TEXTURES: Record<string, string> = {
+  "/agent-puppets/rook-v2.png": T("rook"),
+};
+
+/**
+ * The puppet whose artwork IS this URL, or null.
+ *
+ * The other direction of `puppetForAgent`, and the seam that lets ONE
+ * PARTICIPANT wear art its slug does not name. A slug is not always a
+ * character: `claude-code` covers Aaron's seat, Shafen's box and six webhook
+ * residents, so anything keyed on it is necessarily a decision about all of
+ * them at once — which is why the alias that currently points `claude-code` at
+ * Rook has to accept giving his face to every bot that presents as "Claude
+ * Code". A member row is one participant, and this is how that row's picture
+ * becomes a rigged spec instead.
+ *
+ * Matching is EXACT against our own registered textures, on purpose. The url
+ * arrives from a database column an agent can write, and the two things it
+ * would otherwise reach are a WebGL texture upload and an `<img src>` — the
+ * first fails cross-origin (see the header) and the second is a tracking
+ * pixel. An exact match against paths this file already ships can do neither:
+ * the value returned is our constant, never the caller's string. A url we do
+ * not recognise is simply not a puppet, and the caller falls back to the slug.
+ */
+export function puppetForTexture(url: string | null | undefined): PuppetSpec | null {
+  const raw = (url ?? "").trim();
+  if (!raw) return null;
+  // Tolerate a cache-buster or fragment; anything else must match verbatim.
+  const path = raw.split(/[?#]/)[0]!;
+  if (!path) return null;
+  const canonical = SUPERSEDED_TEXTURES[path] ?? path;
+  for (const spec of Object.values(PUPPETS)) {
+    if (spec.texture === canonical) return spec;
   }
   return null;
 }
