@@ -237,3 +237,36 @@ class RoomHandleTests(TestCase):
         source = inspect.getsource(VoiceRelayAgent._ears_loop)
         self.assertIn("self._lk_room", source)
         self.assertNotIn("self._room,", source)
+
+
+class PersisterWiringTests(TestCase):
+    """The relay must use the class that can actually write a human turn.
+
+    `transcript_publisher` exports two publishers; only VoiceHistoryPersister
+    has persist_user_utterance. Choosing by filename shipped an AttributeError
+    that the ears loop caught and logged, so the feature was silently dead.
+    """
+
+    def test_it_binds_the_persister_that_owns_the_method(self) -> None:
+        from agent_runtime.transcript_publisher import (
+            TranscriptPublisher,
+            VoiceHistoryPersister,
+        )
+
+        self.assertTrue(hasattr(VoiceHistoryPersister, "persist_user_utterance"))
+        self.assertFalse(hasattr(TranscriptPublisher, "persist_user_utterance"))
+
+    def test_the_ears_call_a_method_that_exists(self) -> None:
+        import inspect
+
+        from agent_runtime.transcript_publisher import VoiceHistoryPersister
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._ears_loop)
+        self.assertIn("persist_user_utterance", source)
+        self.assertIn("VoiceHistoryPersister", inspect.getsource(VoiceRelayAgent.build_pipeline))
+        # The call shape must match the real signature.
+        sig = inspect.signature(VoiceHistoryPersister.persist_user_utterance)
+        self.assertEqual(
+            [p for p in sig.parameters if p != "self"], ["speaker_identity", "text"]
+        )
