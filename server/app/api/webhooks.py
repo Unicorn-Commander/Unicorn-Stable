@@ -178,6 +178,78 @@ def _is_broadcast_identity(identity: str) -> bool:
     """
     return str(identity or "").startswith("broadcast-")
 
+def _relay_source_and_persona(room: Room) -> tuple[str, str] | None:
+    """(source_username, relay_persona) if this room wants a voice relay.
+
+    A room opts in with ``voice_relay_source`` in its metadata — the username
+    of the participant whose messages should be spoken aloud. The persona
+    (whose voice) defaults to ``rook``. No metadata, no relay: silence is the
+    default for every room that has not asked for this.
+    """
+    meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
+    source = meta.get("voice_relay_source")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    persona = meta.get("voice_relay_agent_id")
+    persona = persona.strip() if isinstance(persona, str) and persona.strip() else "rook"
+    return source.strip(), persona
+
+
+async def _ensure_voice_relay(livekit: LiveKitService, room: Room) -> None:
+    """Put the room's voice relay in the call, once, when a human is present.
+
+    The relay speaks a text-only agent's messages aloud (agents/voice_relay).
+    It is dispatched from the webhook rather than the client because it must
+    be there whoever starts the call and from whichever device — a relay that
+    only joins when one particular browser remembers to ask for it is a relay
+    that is missing on the night it matters.
+
+    Idempotent: if a relay identity is already in the room, do nothing. Fail
+    open — this must never break the webhook, presence, or the call itself.
+    """
+    config = _relay_source_and_persona(room)
+    if config is None:
+        return
+    source, persona = config
+    wanted = {f"agent-{persona}", "agent-relay"}
+    try:
+        state = await livekit.get_room(room.livekit_room_name)
+        identities = {
+            str(getattr(p, "identity", "") or "") for p in state.get("participants", [])
+        }
+        if identities & wanted:
+            return
+        # Only join once a real person is here — an empty room needs no voice.
+        humans = [
+            i
+            for i in identities
+            if i and not i.startswith("agent-") and not call_recording.is_service_identity(i)
+        ]
+        if not humans:
+            return
+    except Exception:
+        logger.debug("voice_relay_presence_probe_failed", exc_info=True)
+        return
+
+    try:
+        await livekit.dispatch_agent(
+            room_name=room.livekit_room_name,
+            metadata={
+                "agent_type": "relay",
+                "voice_relay_source": source,
+                "voice_relay_agent_id": persona,
+            },
+        )
+        logger.info(
+            "voice_relay_dispatched",
+            room_id=str(room.id),
+            source=source,
+            persona=persona,
+        )
+    except Exception:
+        logger.error("voice_relay_dispatch_failed", room_id=str(room.id), exc_info=True)
+
+
 def _is_agent_identity(identity: str) -> bool:
     """True for agent worker identities — ``agent-<brigade_agent_id>`` plus the
     legacy bare type-shaped workers (``agent-brigade``/``agent-triage``)."""
@@ -323,6 +395,13 @@ async def _handle_participant_joined(
     await _broadcast_call_occupancy(
         redis, livekit, room, by=_joined_by(event, participant_id)
     )
+
+    # A text-only agent (Rook) gets a voice in this call, if the room asked
+    # for one. Fail-open by contract, like the recording below.
+    try:
+        await _ensure_voice_relay(livekit, room)
+    except Exception:
+        logger.error("voice_relay_ensure_failed", room_id=str(room.id), exc_info=True)
 
     # Automatic call-audio recording: any real join means a call is live in
     # this room; the DB lease inside makes "start once" true across all four

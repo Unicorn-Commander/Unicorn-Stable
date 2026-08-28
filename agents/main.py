@@ -13,6 +13,7 @@ from livekit.agents import AutoSubscribe, JobContext, JobRequest, WorkerOptions,
 from agent_runtime.config import AgentSettings, get_agent_settings
 from agent_runtime.registry import AgentRegistry
 from brigade_backed.agent import BrigadeBackedAgent
+from voice_relay import VoiceRelayAgent
 from triage.agent import TriageAgent
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ def _get_registry() -> AgentRegistry:
         _registry = AgentRegistry(settings=settings)
         _registry.register(TriageAgent)
         _registry.register(BrigadeBackedAgent)
+        _registry.register(VoiceRelayAgent)
     return _registry
 
 
@@ -139,6 +141,7 @@ def main() -> None:
     _registry = AgentRegistry(settings=settings)
     _registry.register(TriageAgent)
     _registry.register(BrigadeBackedAgent)
+    _registry.register(VoiceRelayAgent)
 
     logger.info(
         "agents_registered",
