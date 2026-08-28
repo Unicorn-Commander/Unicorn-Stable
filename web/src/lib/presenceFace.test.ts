@@ -17,6 +17,7 @@ import {
   type PresenceRungInput,
 } from "./presenceFace";
 import { FACE_STYLE_ORDER, type FaceStyle } from "./facePreference";
+import { hasPuppet, puppetForAgent } from "./puppetRig";
 
 /** The happy path: everything on, everything available. */
 function input(over: Partial<PresenceRungInput> = {}): PresenceRungInput {
@@ -593,5 +594,37 @@ describe("unicornStateFor", () => {
     expect(unicornStateFor("offline")).toBe("offline");
     expect(unicornStateFor("idle")).toBe("idle");
     expect(unicornStateFor("listening")).toBe("idle");
+  });
+});
+
+describe("Build In Public cast — 2026-08-28", () => {
+  it("Rook's seat resolves to Rook's own art, not the old Claude Code face", () => {
+    // The seat's participant username is `agent-claude-code`, so the identity
+    // resolves before the name "Rook" is ever tried — the alias is what stops
+    // Rook wearing the generic Claude Code drawing.
+    const spec = puppetForAgent("claude-code", "Rook");
+    expect(spec).not.toBeNull();
+    expect(spec!.label).toBe("Rook");
+    expect(spec!.texture).toContain("rook");
+  });
+
+  it("gives every on-camera cast member a puppet, so none fall back to the generated head", () => {
+    for (const id of ["grok", "shox", "codex", "corporal-forge", "sprint", "rook"]) {
+      expect(hasPuppet(id, null)).toBe(true);
+    }
+  });
+
+  it("keeps the cast's faces distinct from each other", () => {
+    const textures = ["grok", "shox", "codex", "corporal-forge", "sprint", "rook"].map(
+      (id) => puppetForAgent(id, null)!.texture,
+    );
+    expect(new Set(textures).size).toBe(textures.length);
+  });
+
+  it("routes the model-named lanes to their role-named characters", () => {
+    expect(puppetForAgent("qwen-35b", null)!.label).toBe("Corporal Forge");
+    expect(puppetForAgent("deepseek-flash", null)!.label).toBe("Sprint");
+    // Corporal Qwen is a different, pre-existing agent and keeps its own face.
+    expect(puppetForAgent("corporal-qwen", null)!.texture).toContain("corporal-qwen");
   });
 });

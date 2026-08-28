@@ -153,6 +153,17 @@ export const PUPPETS: Record<string, PuppetSpec> = {
   scout: { label: "Scout", texture: T("scout"), ...DEFAULT_RIG },
   // Brigade variant art re-homed for the webhook residents (doc-medresearch
   // alert pose and detective-holmes) — real characters, not initials.
+  // ── 2026-08-28 Build In Public cast. Same Brand-Ops recipe and framing as
+  // the 08-07 batch, so DEFAULT_RIG lands within tolerance. Rook is keyed on
+  // its own name AND aliased from `claude-code` below, because the seat's
+  // participant username is `agent-claude-code` — the identity resolves first,
+  // so without the alias Rook wears the old generic Claude Code face.
+  rook: { label: "Rook", texture: T("rook"), ...DEFAULT_RIG },
+  grok: { label: "Grok", texture: T("grok"), ...DEFAULT_RIG },
+  shox: { label: "ShOX", texture: T("shox"), ...DEFAULT_RIG },
+  codex: { label: "Codex", texture: T("codex"), ...DEFAULT_RIG },
+  "corporal-forge": { label: "Corporal Forge", texture: T("corporal-forge"), ...DEFAULT_RIG },
+  sprint: { label: "Sprint", texture: T("sprint"), ...DEFAULT_RIG },
   "gm-watchdog": { label: "GM Watchdog", texture: T("gm-watchdog"), ...DEFAULT_RIG },
   "research-monitor": { label: "Research Monitor", texture: T("research-monitor"), ...DEFAULT_RIG },
 };
@@ -166,6 +177,15 @@ export const PUPPETS: Record<string, PuppetSpec> = {
  * ("accounting-ops-cfo").
  */
 const ALIASES: Record<string, string> = {
+  // Aaron's Claude Code seat IS Rook — the participant is `agent-claude-code`
+  // and its display name is Rook. Without this the identity resolves to the
+  // older generic Claude Code art before the name "Rook" is ever tried.
+  // Side effect, accepted: the webhook-dev-* residents that also present as
+  // "Claude Code" pick up Rook's face. They are the same underlying agent.
+  "claude-code": "rook",
+  "qwen-35b": "corporal-forge",
+  "corporal-qwen": "corporal-qwen",
+  "deepseek-flash": "sprint",
   "prudence-finch": "prudence",
   "perrywinkle-spector": "perry",
   "perrywinkle-spector-general-counsel": "perry",
