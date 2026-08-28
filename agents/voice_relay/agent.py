@@ -76,6 +76,11 @@ DEFAULT_RELAY_PERSONA = "rook"
 #: which on a recorded show is worse than saying nothing.
 MAX_SPOKEN_CHARS = 900
 
+#: Ceiling on waiting for one line's playout to finish. Speech is serialised so
+#: two lines never overlap in the same voice, but a handle that never resolves
+#: must not silence every line after it.
+PLAYOUT_TIMEOUT_S = 45.0
+
 _CODE_FENCE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
@@ -384,7 +389,20 @@ class VoiceRelayAgent(StableAgent):
             if callable(waiter):
                 out = waiter()
                 if asyncio.iscoroutine(out) or isinstance(out, asyncio.Future):
-                    await out
+                    # BOUNDED. The wait exists to serialise speech, not to
+                    # guarantee it: a playout handle that never resolves would
+                    # hold the queue forever and every later line would be lost
+                    # in silence — a worse failure than one line overlapping.
+                    # Observed 69s for a 67-character line in a synthetic call,
+                    # so the ceiling is generous but real.
+                    try:
+                        await asyncio.wait_for(out, timeout=PLAYOUT_TIMEOUT_S)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "voice_relay_playout_wait_timed_out",
+                            chars=len(text),
+                            seconds=PLAYOUT_TIMEOUT_S,
+                        )
                 break
         logger.info("voice_relay_spoke", chars=len(text))
 

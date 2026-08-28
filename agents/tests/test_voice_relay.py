@@ -270,3 +270,34 @@ class PersisterWiringTests(TestCase):
         self.assertEqual(
             [p for p in sig.parameters if p != "self"], ["speaker_identity", "text"]
         )
+
+
+class PlayoutTimeoutTests(TestCase):
+    """Waiting for playout must be bounded.
+
+    The wait serialises speech so two lines never overlap in one voice. It is
+    not a guarantee of delivery: a handle that never resolves would hold the
+    queue forever and silence every line after it — worse than one overlap.
+    """
+
+    def test_the_wait_is_bounded_and_logs_when_it_gives_up(self) -> None:
+        import inspect
+
+        from voice_relay.agent import PLAYOUT_TIMEOUT_S, VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._say)
+        self.assertIn("wait_for", source)
+        self.assertIn("voice_relay_playout_wait_timed_out", source)
+        self.assertGreater(PLAYOUT_TIMEOUT_S, 0)
+
+    def test_a_timeout_still_counts_the_line_as_spoken(self) -> None:
+        """Giving up on the WAIT is not giving up on the audio — the line was
+        already handed to the session, so the queue must move on."""
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._say)
+        timeout_at = source.index("voice_relay_playout_wait_timed_out")
+        spoke_at = source.index("voice_relay_spoke")
+        self.assertLess(timeout_at, spoke_at)
