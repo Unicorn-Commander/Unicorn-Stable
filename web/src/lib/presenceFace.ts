@@ -74,6 +74,18 @@ export interface CallTilePersona {
   slug: string;
   /** Display name for the face's alt text and initials fallback. */
   name: string;
+  /**
+   * The artwork THIS PARTICIPANT's own roster row names, when it has one.
+   *
+   * Present only when the tile resolved to a member row, and it outranks the
+   * slug's catalogue art: a slug can be shared (every Claude Code seat in the
+   * roster normalizes to `claude-code`) while a member row is one
+   * participant, so this is the only handle that can tell Rook from Shafen's
+   * box. Consumed through `puppetRig.puppetForTexture`, which only ever
+   * returns art this app ships — the raw string is attacker-influenced and
+   * must not reach an `<img src>` or a texture upload on its own.
+   */
+  artUrl?: string;
 }
 
 /** One agent MEMBER of the room, as the membership roster knows it. */
@@ -82,6 +94,61 @@ export interface RoomAgentMember {
   slug: string;
   /** The member row's display name, when the roster has one. */
   name?: string | null;
+  /** The member row's `avatar_url`, when the roster has one. */
+  avatarUrl?: string | null;
+}
+
+/**
+ * The 4-hex-digit tail the agent runtime appends to a worker identity.
+ *
+ * `agent_runtime/base.py` derives `f"agent-{agent_type}-{id(self) & 0xFFFF:04x}"`,
+ * and live-fire on 2026-08-28 caught the consequence: the voice relay, which
+ * `registry.agent_participant_identity` names `agent-relay`, appeared in the
+ * room as `agent-relay-bec0` — the server's own duplicate guard had to be
+ * changed from an equality test to a prefix test to see it (`6cd08e8`). So a
+ * worker asked to join as `agent-claude-code` can appear as
+ * `agent-claude-code-3f9a`, and an equality test against the roster would miss
+ * the row that names the character.
+ *
+ * Deliberately narrow: exactly four lowercase hex digits, which is the format
+ * the runtime emits. `harmony-local` does not match `harmony` ("local" is not
+ * hex), so no two real personas can be folded into one by this rule.
+ */
+const RUNTIME_IDENTITY_SUFFIX = /-[0-9a-f]{4}$/;
+
+/**
+ * The room member this tile's identity names, or undefined.
+ *
+ * Exact first. A suffixed identity is accepted only when it strips to exactly
+ * ONE member — with two candidates the tile has no evidence which it is, and
+ * the honest answer is the same one rule 3 gives for two artful members: don't
+ * guess.
+ */
+function memberForIdentitySlug(
+  ownSlug: string,
+  members: readonly RoomAgentMember[],
+): RoomAgentMember | undefined {
+  if (!ownSlug) return undefined;
+  const exact = members.find((m) => m.slug === ownSlug);
+  if (exact) return exact;
+  if (!RUNTIME_IDENTITY_SUFFIX.test(ownSlug)) return undefined;
+  const stripped = ownSlug.replace(RUNTIME_IDENTITY_SUFFIX, "");
+  if (!stripped) return undefined;
+  const candidates = members.filter((m) => m.slug === stripped);
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+/** The persona a matched member row describes. */
+function personaFromMember(
+  member: RoomAgentMember,
+  displayName?: string | null,
+): CallTilePersona {
+  const art = (member.avatarUrl ?? "").trim();
+  return {
+    slug: member.slug,
+    name: member.name || displayName || displayNameForBrigadeId(member.slug),
+    ...(art ? { artUrl: art } : {}),
+  };
 }
 
 /**
@@ -150,6 +217,16 @@ function displayNameForBrigadeId(id: string): string {
  *      costume — the generic rungs are more honest than the wrong character.
  *   4. The tile's own identity/name unchanged (no art anywhere → the
  *      procedural rungs, exactly as before).
+ *
+ * When the answer comes from a member row (0 and 3), the persona carries that
+ * row's `avatar_url` as `artUrl`. Rook is why (Aaron, 2026-08-28: "the avatar
+ * needs work and the name says stable relay"): the voice relay speaks for his
+ * Claude Code seat, whose username `agent-claude-code` resolves to the slug
+ * `claude-code` — a slug SHARED with Shafen's box and six webhook seats, and
+ * bound in `puppetRig` to the generic Claude drawing. Slug-derived art can
+ * therefore only ever be somebody else's picture; his member row names his own
+ * (`/agent-puppets/rook-v2.png`), and one participant is exactly the
+ * granularity the art needs.
  */
 export function resolveCallTilePersona(
   identity: string | null | undefined,
@@ -166,15 +243,13 @@ export function resolveCallTilePersona(
   //    `agent-the-general` both in the room, each tile is its own character
   //    whether or not we have drawn art for it. It has to rank above the art
   //    check so the tile takes the roster's display name.
-  const ownMember = ownSlug
-    ? members.find((m) => m.slug === ownSlug)
-    : undefined;
-  if (ownMember) {
-    return {
-      slug: ownSlug,
-      name: ownMember.name || displayName || displayNameForBrigadeId(ownSlug),
-    };
-  }
+  //    The match tolerates the runtime's 4-hex identity suffix — see
+  //    RUNTIME_IDENTITY_SUFFIX; without that, a worker the server asks to join
+  //    as `agent-claude-code` lands as `agent-claude-code-3f9a` and misses the
+  //    row that names it, which is how a tile ends up labelled with the
+  //    worker's own type instead of the character's name.
+  const ownMember = memberForIdentitySlug(ownSlug, members);
+  if (ownMember) return personaFromMember(ownMember, displayName);
   if (brandAvatarFor(ownSlug) || brandAvatarFor(displayName ?? null)) {
     return { slug: ownSlug, name: ownName };
   }
@@ -193,13 +268,7 @@ export function resolveCallTilePersona(
   const artful = (roomFallbackAllowed ? members : []).filter(
     (m) => m.slug && (brandAvatarFor(m.slug) || brandAvatarFor(m.name ?? null)),
   );
-  if (artful.length === 1) {
-    const member = artful[0]!;
-    return {
-      slug: member.slug,
-      name: member.name || displayNameForBrigadeId(member.slug),
-    };
-  }
+  if (artful.length === 1) return personaFromMember(artful[0]!);
   return { slug: ownSlug, name: ownName };
 }
 

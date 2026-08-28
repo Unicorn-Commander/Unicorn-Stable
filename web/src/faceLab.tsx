@@ -44,11 +44,27 @@ import {
 } from "@/contexts/VoiceProvider";
 import type { TalkingFaceProbe } from "@/components/Agents/VrmAvatar";
 
-const AGENT_IDENTITY = "agent-brigade"; // what the worker REALLY joins as
-const PERSONA_SLUG = "majik"; // the room's brigade_agent_id persona
+const params = new URLSearchParams(location.search);
+
+/**
+ * WHO the lab renders. Defaults reproduce the original run exactly (the
+ * type-shaped worker identity + Majik's persona), and the overrides exist
+ * because "does the mouth move" is a question per CHARACTER, not once for the
+ * codebase: a persona reached through a different seam — Rook, whose art comes
+ * from his participant row rather than from his slug — is a different code
+ * path with its own way of silently mounting the wrong face.
+ *
+ *   ?identity= the LiveKit identity (also the probe key)
+ *   ?persona=  the art slug            ?name= display name
+ *   ?art=      CallTilePersona.artUrl — the participant's own picture
+ */
+const AGENT_IDENTITY = params.get("identity") || "agent-brigade";
+const PERSONA_SLUG = params.get("persona") || "majik";
+const PERSONA_NAME = params.get("name") || "Majik";
+const PERSONA_ART = params.get("art");
 
 const mode =
-  new URLSearchParams(location.search).get("source") === "participant"
+  params.get("source") === "participant"
     ? ("participant" as const)
     : ("analyser" as const);
 
@@ -174,7 +190,8 @@ createRoot(document.getElementById("stage")!).render(
     <AgentPresenceFace
       participantId={AGENT_IDENTITY}
       id={PERSONA_SLUG}
-      name="Majik"
+      name={PERSONA_NAME}
+      artUrl={PERSONA_ART}
       size={96}
       surface="stage"
       isSpeaking
@@ -195,6 +212,7 @@ interface Sample {
   level: number;
   levelSource: TalkingFaceProbe["levelSource"];
   source: TalkingFaceProbe["source"];
+  texture: TalkingFaceProbe["texture"];
 }
 
 const samples: Sample[] = [];
@@ -211,6 +229,7 @@ const sampler = setInterval(() => {
       level: probe.level,
       levelSource: probe.levelSource,
       source: probe.source,
+      texture: probe.texture,
     });
   }
   if (now - startedAt > WARMUP_MS + SAMPLE_MS) {
@@ -253,6 +272,15 @@ function finish(lastProbe: TalkingFaceProbe | null) {
   const result = {
     verdict,
     mode,
+    // Which character actually ran — a lab whose verdict does not name its
+    // subject is one copy-pasted URL away from proving the wrong thing.
+    identity: AGENT_IDENTITY,
+    persona: PERSONA_SLUG,
+    art: PERSONA_ART,
+    // WHICH picture mounted. `source:"puppet"` only says a rigged portrait
+    // won; it cannot tell Rook's drawing from the generic Claude one, which
+    // is the exact confusion this run exists to settle.
+    texture: samples.at(-1)?.texture ?? lastProbe?.texture ?? null,
     reason,
     faceSource,
     levelSource,

@@ -86,7 +86,7 @@ import {
 } from "@/lib/mouthShape";
 import type { FaceSource, PresenceExpression } from "@/lib/presenceFace";
 import type { FaceStyle } from "@/lib/facePreference";
-import { puppetForAgent } from "@/lib/puppetRig";
+import { puppetForAgent, puppetForTexture } from "@/lib/puppetRig";
 import { buildPortraitPuppet } from "./portraitPuppet";
 import {
   buildProceduralUnicornHead,
@@ -131,6 +131,16 @@ export interface TalkingFaceProbe {
   frames: number;
   /** rAF or the hidden-tab / throttled-rAF fallback. */
   ticker: "raf" | "interval";
+  /**
+   * The puppet artwork actually mounted, when `source` is "puppet".
+   *
+   * `source` alone answers "is this a rigged portrait", which was enough while
+   * one slug meant one character. It stopped being enough when a participant
+   * could carry its OWN art (Rook's row names rook-v2.png while his slug
+   * `claude-code` is bound to the generic Claude drawing): both mount as
+   * "puppet", and only this field says which face a viewer is looking at.
+   */
+  texture: string | null;
   vrmSrc: string | null;
   error: string | null;
 }
@@ -146,6 +156,13 @@ export interface VrmAvatarProps {
   participantId: string;
   slug: string;
   name: string;
+  /**
+   * The art this PARTICIPANT's roster row names. When it matches a puppet this
+   * app ships (`puppetForTexture`), that spec — artwork AND rig — wins over
+   * the slug's, which is how a participant whose slug is shared by several
+   * residents (`claude-code`) gets its own face instead of the catalogue's.
+   */
+  artUrl?: string | null;
   /** Model URL, or null → the branded puppet, then the procedural head. */
   vrmSrc: string | null;
   size: number;
@@ -306,6 +323,7 @@ export function VrmAvatar({
   participantId,
   slug,
   name,
+  artUrl,
   vrmSrc,
   size,
   expression = "idle",
@@ -430,6 +448,7 @@ export function VrmAvatar({
     let headRig: HeadRig | null = null;
     let loadedVrm: VRM | null = null;
     let probeSource: TalkingFaceProbe["source"] = "placeholder";
+    let probeTexture: string | null = null;
 
     /* ---- frame the subject ----------------------------------------- *
      * `margin` is how much empty room to leave around the fitted extent. An
@@ -541,6 +560,7 @@ export function VrmAvatar({
       holder.add(rig.root);
       driver = driverForHead(rig, "puppet-composite");
       probeSource = "puppet";
+      probeTexture = spec.texture;
       /* Framed TIGHTER than 1 so the quad overflows the viewport. setHeadTurn
        * translates the plane, and at a margin of 1 that slide would expose the
        * empty space past the artwork's edge. */
@@ -552,8 +572,14 @@ export function VrmAvatar({
      * texture, and 41 of Brigade's 53 avatar bindings name files that do not
      * exist — neither fact is visible until the load fails. `portraitSrc`
      * stays the source of truth for the flat portrait rung, where a 404 only
-     * costs an image. */
-    const puppetSpec = puppetForAgent(slug, name);
+     * costs an image.
+     *
+     * The participant's own `artUrl` is consulted FIRST, and only through
+     * `puppetForTexture` — which returns one of OUR shipped specs or nothing,
+     * so it keeps both guarantees above (same-origin, exists) while letting a
+     * participant whose slug is shared (`claude-code` covers every Claude Code
+     * seat) wear its own character. */
+    const puppetSpec = puppetForTexture(artUrl) ?? puppetForAgent(slug, name);
 
     /**
      * The ladder is the caller's `mountOrder` — `faceMountPlan(preference ×
@@ -802,6 +828,7 @@ export function VrmAvatar({
         fps,
         frames,
         ticker,
+        texture: probeTexture,
         vrmSrc,
         error: probeError,
       };
@@ -903,7 +930,7 @@ export function VrmAvatar({
     // VALUE is the dependency, not the array identity, so a parent that
     // rebuilds an identical plan does not tear down a live WebGL scene.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participantId, slug, name, vrmSrc, debug, mountOrderKey, preferred]);
+  }, [participantId, slug, name, artUrl, vrmSrc, debug, mountOrderKey, preferred]);
 
   return (
     <div

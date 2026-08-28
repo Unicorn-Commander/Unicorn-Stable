@@ -38,6 +38,7 @@ import clsx from "clsx";
 import { Avatar } from "@/components/ui/Avatar";
 import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { puppetForTexture } from "@/lib/puppetRig";
 import { resolveAgentVrmUrl } from "@/lib/agentVrmCatalog";
 import {
   isTalkingFaceEnabled,
@@ -70,6 +71,16 @@ export interface AgentPresenceFaceProps {
   name: string;
   /** Raw roster avatar URL — resolved through the portrait ladder here. */
   avatarUrl?: string | null;
+  /**
+   * The art THIS PARTICIPANT's own member row names (`CallTilePersona.artUrl`).
+   *
+   * Outranks `avatarUrl` and the slug's catalogue art, and only when it names
+   * a puppet this app ships (`puppetForTexture`). The slug is not always
+   * per-character — every Claude Code resident normalizes to `claude-code`,
+   * which is bound to the generic Claude drawing — so without this Rook's tile
+   * mounts, animates and lip-syncs somebody else's face.
+   */
+  artUrl?: string | null;
   /** Brigade `avatar_vrm_url` when that field exists (PR7). Null today. */
   vrmUrl?: string | null;
   emoji?: string | null;
@@ -89,6 +100,7 @@ export function AgentPresenceFace({
   id,
   name,
   avatarUrl,
+  artUrl,
   vrmUrl,
   emoji,
   size,
@@ -109,9 +121,15 @@ export function AgentPresenceFace({
    */
   const faceStyle = useFacePrefStore((s) => s.style);
 
+  /**
+   * The participant's OWN art, when the roster row names a puppet we ship.
+   * Resolved once and used for BOTH rungs, so the still portrait and the
+   * animated face can never disagree about which character this is.
+   */
+  const rosterPuppet = useMemo(() => puppetForTexture(artUrl), [artUrl]);
   const portraitSrc = useMemo(
-    () => resolveAgentPortrait(slug, name, avatarUrl),
-    [slug, name, avatarUrl],
+    () => rosterPuppet?.texture ?? resolveAgentPortrait(slug, name, avatarUrl),
+    [rosterPuppet, slug, name, avatarUrl],
   );
   const vrmSrc = useMemo(
     // An explicit "vrm" choice resolves authored models without the flag —
@@ -151,7 +169,7 @@ export function AgentPresenceFace({
    * FLAG OFF. The flag keeps gating only the generic/experimental faces (VRM,
    * procedural head) for agents that have no authored puppet.
    */
-  const puppetAvailable = puppetAvailableFor(slug, name);
+  const puppetAvailable = !!rosterPuppet || puppetAvailableFor(slug, name);
   /**
    * What the WebGL rung would mount, in order, under the user's style. Empty
    * (e.g. style "portrait", or "puppet" for an agent with no authored puppet)
@@ -279,6 +297,10 @@ export function AgentPresenceFace({
           participantId={participantId}
           slug={slug}
           name={name}
+          /* Same per-participant art the portrait rung above resolved — the
+           * renderer re-derives the SPEC from it because it needs the rig
+           * (mouth line, open depth, eyes), not just the picture. */
+          artUrl={artUrl}
           vrmSrc={vrmSrc}
           size={size}
           expression={expression}

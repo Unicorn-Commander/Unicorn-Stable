@@ -1,4 +1,5 @@
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { puppetForTexture } from "@/lib/puppetRig";
 import { isGuestCallIdentity } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import {
@@ -94,6 +95,7 @@ import {
   mapAgentState,
   resolveCallTilePersona,
   withinAgentFaceBudget,
+  type CallTilePersona,
   type RoomAgentMember,
 } from "@/lib/presenceFace";
 import { FACE_STYLE_META, type FaceStyle } from "@/lib/facePreference";
@@ -709,10 +711,15 @@ function ParticipantTile({
             (m as { brigade_agent_id?: string }).brigade_agent_id ||
             (m.username ?? "").replace(/^agent-/, ""),
           name: m.display_name,
+          /* The member row's own picture. A slug can name a WHOLE CLASS of
+           * residents (`claude-code` is every Claude Code seat we have), so
+           * this row is the finest grain the art has — see the artUrl note on
+           * CallTilePersona. */
+          avatarUrl: m.avatar_url,
         })),
     [roomMembers],
   );
-  const persona = isAgentTile
+  const persona: CallTilePersona = isAgentTile
     ? resolveCallTilePersona(p.id, p.name, roomBrigadeAgentId, agentMembers)
     : { slug: p.id.replace(/^agent-/, ""), name: p.name };
   const agent = useAppStore((s) =>
@@ -891,6 +898,12 @@ function ParticipantTile({
           id={persona.slug}
           name={persona.name}
           avatarUrl={agent?.avatar_url}
+          /* The art THIS participant's member row names, which outranks the
+           * slug's when it names a puppet we ship. Rook's seat is why: his
+           * username resolves to `claude-code`, a slug shared with every other
+           * Claude Code resident and bound to the generic Claude drawing, so
+           * without this his tile animates somebody else's face. */
+          artUrl={persona.artUrl}
           emoji={agent?.emoji}
           size={size === "large" ? 96 : 64}
           surface={faceEligible ? "stage" : "filmstrip"}
@@ -1329,10 +1342,11 @@ function AudioChip({
             (m as { brigade_agent_id?: string }).brigade_agent_id ||
             (m.username ?? "").replace(/^agent-/, ""),
           name: m.display_name,
+          avatarUrl: m.avatar_url,
         })),
     [roomMembers],
   );
-  const persona = isAgent
+  const persona: CallTilePersona = isAgent
     ? resolveCallTilePersona(id, name, roomBrigadeAgentId, agentMembers)
     : { slug: id.replace(/^agent-/, ""), name };
   const agent = useAppStore((s) =>
@@ -1355,11 +1369,16 @@ function AudioChip({
       <Avatar
         avatarUrl={
           isAgent
-            ? resolveAgentPortrait(
+            ? /* Same precedence as the stage tile, so the audio layout and the
+               * video layout can never draw two different characters for one
+               * participant. `puppetForTexture` returns one of OUR shipped
+               * paths or nothing, never the roster's raw string. */
+              (puppetForTexture(persona.artUrl)?.texture ??
+              resolveAgentPortrait(
                 persona.slug,
                 persona.name,
                 agent?.avatar_url,
-              )
+              ))
             : agent?.avatar_url
         }
         emoji={agent?.emoji}
