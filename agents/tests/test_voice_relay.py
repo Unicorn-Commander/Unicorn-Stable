@@ -301,3 +301,47 @@ class PlayoutTimeoutTests(TestCase):
         timeout_at = source.index("voice_relay_playout_wait_timed_out")
         spoke_at = source.index("voice_relay_spoke")
         self.assertLess(timeout_at, spoke_at)
+
+
+class OwnSttTests(TestCase):
+    """The relay must not depend on browser captions to hear.
+
+    Stable disables browser captions whenever the caller picks a specific
+    microphone — Web Speech cannot follow a chosen input, so rather than
+    secretly record the OS default it publishes nothing. That is everyone
+    running a real rig, so a caption-only relay is deaf for exactly the people
+    most likely to use it.
+    """
+
+    def test_it_wires_its_own_stt_and_a_vad(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent.build_pipeline)
+        self.assertIn("get_stt_plugin", source)
+        self.assertIn("silero", source)
+        # And listens to the session's own finals, not only room data.
+        self.assertIn("user_input_transcribed", source)
+
+    def test_missing_stt_is_survivable_not_fatal(self) -> None:
+        """No ears must still leave a working mouth."""
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent.build_pipeline)
+        self.assertIn("relay_stt_unavailable", source)
+
+    def test_the_two_ears_do_not_write_the_same_line_twice(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        own = inspect.getsource(VoiceRelayAgent._on_own_stt)
+        browser = inspect.getsource(VoiceRelayAgent._on_transcript)
+        self.assertIn("_heard_segments", own)
+        self.assertIn("_heard_segments", browser)
+        # Both key on the same normalized text, so whichever ear is first wins.
+        self.assertIn('f"stt:', own)
+        self.assertIn('f"stt:', browser)

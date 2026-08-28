@@ -26,13 +26,25 @@ CONFIGURATION comes from the room's metadata, read at dispatch:
   * ``voice_relay_agent_id`` — the persona whose Kokoro voice to use (default
     ``rook`` → ``am_echo`` via KOKORO_VOICE_PRESETS).
 
-EARS (added 2026-08-28). The relay also carries the human's SPOKEN words back
-into the room as their own message, so the brain on the Mac can answer them.
-The browser already publishes committed captions as ``transcript`` data
-messages; the relay groups them and persists each finished utterance through
-the same ``internal/voice-user-message`` endpoint the Brigade voice path uses.
-That closes the loop with no new machinery: speak → your line lands in the
-room → the runner sees it and Rook replies → the relay says the reply aloud.
+EARS (added 2026-08-28). The relay carries the human's SPOKEN words back into
+the room as their own message, so the brain on the Mac can answer them: speak
+→ your line lands in the room → the runner sees it and Rook replies → the
+relay says the reply aloud.
+
+It listens TWO ways, and needs only one of them to work:
+
+  * ITS OWN STT, over the human's audio track. This is the reliable ear.
+  * The browser's ``transcript`` data packets, when they happen to be there.
+
+The browser path alone was not enough, and the reason is worth writing down:
+Stable deliberately DISABLES browser captions whenever the caller picks a
+specific microphone (VoiceProvider: "Web Speech opens a second, browser-owned
+microphone and exposes no deviceId constraint") — rather than secretly
+recording the OS default. Anyone who has chosen an input, which is everyone
+running a real rig, therefore publishes no captions at all, and a relay that
+depended on them was deaf exactly for the people most likely to use it. Its
+own STT has no such dependency, and also works in browsers with no Web Speech
+API at all.
 
 ⚠️ EARS ARE ONLY OPENED WHEN THIS IS THE SOLE AGENT IN THE CALL. A Brigade
 voice worker persists the same utterances itself, so a second writer would
@@ -237,7 +249,34 @@ class VoiceRelayAgent(StableAgent):
         self._source_username, self._relay_persona = source, persona
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
-        agent = Agent(instructions="", tts=tts_plugin)
+        agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
+        # Its own ears. Wrapped the way the Brigade path wraps them: a
+        # non-streaming STT that errors repeatedly can otherwise close the
+        # whole AgentSession, which would take the MOUTH down with it.
+        try:
+            from plugins.stt import get_stt_plugin
+
+            stt_plugin = get_stt_plugin()
+            try:
+                from agent_runtime.resilient_stt import NeverFatalSTT
+
+                if not stt_plugin.capabilities.streaming:
+                    stt_plugin = NeverFatalSTT(stt_plugin)
+            except Exception:
+                logger.debug("relay_stt_resilience_unavailable", exc_info=True)
+            agent_kwargs["stt"] = stt_plugin
+            try:
+                from livekit.plugins import silero
+
+                agent_kwargs["vad"] = silero.VAD.load()
+            except Exception:
+                logger.warning("relay_vad_unavailable", exc_info=True)
+        except Exception:
+            # No ears is survivable — the relay still speaks, and the browser
+            # caption path still feeds it when captions are running.
+            logger.warning("relay_stt_unavailable", exc_info=True)
+
+        agent = Agent(**agent_kwargs)
         session = AgentSession()
         await session.start(agent=agent, room=ctx.room)
         self._session = session
@@ -262,6 +301,12 @@ class VoiceRelayAgent(StableAgent):
         self._ears_task = asyncio.create_task(
             self._ears_loop(), name=f"voice-relay-ears:{self._relay_persona}"
         )
+        # Our own STT's finals. VoiceHistoryPersister.on_user_transcript is
+        # built for exactly this event and resolves the speaker itself.
+        try:
+            session.on("user_input_transcribed", self._on_own_stt)
+        except Exception:
+            logger.warning("relay_stt_listener_failed", exc_info=True)
         logger.info(
             "voice_relay_started",
             room=getattr(ctx.room, "name", ""),
@@ -304,6 +349,28 @@ class VoiceRelayAgent(StableAgent):
         except Exception:
             logger.warning("voice_relay_data_failed", exc_info=True)
 
+    def _on_own_stt(self, ev: Any) -> None:
+        """A final from the relay's OWN STT. Sync; must never raise."""
+        try:
+            if self._publisher is None:
+                return
+            if not sole_agent_in_call(self._lk_room, self._identity):
+                return
+            text = (getattr(ev, "transcript", "") or "").strip()
+            if not bool(getattr(ev, "is_final", False)) or not text:
+                return
+            # Dedupe against the browser-caption path: whichever ear reports an
+            # utterance first wins, so a person running captions AND our STT
+            # does not get every sentence written to the room twice.
+            key = f"stt:{text.lower()}"
+            if key in self._heard_segments:
+                return
+            self._heard_segments.add(key)
+            self._publisher.on_user_transcript(ev)
+            logger.info("voice_relay_heard_own_stt", chars=len(text), preview=text[:80])
+        except Exception:
+            logger.warning("voice_relay_own_stt_failed", exc_info=True)
+
     def _on_transcript(self, payload: dict[str, Any]) -> None:
         """One caption frame from the browser. Sync; never raises."""
         if self._transcripts is None:
@@ -312,8 +379,10 @@ class VoiceRelayAgent(StableAgent):
         if verdict != "final" or not normalized:
             return
         segment = str(normalized.get("segment_id") or "")
-        if segment and segment in self._heard_segments:
-            return  # replayed frame; saying it twice would ask twice
+        text_key = f"stt:{str(normalized.get('text') or '').strip().lower()}"
+        if (segment and segment in self._heard_segments) or text_key in self._heard_segments:
+            return  # replay, or our own STT already reported this utterance
+        self._heard_segments.add(text_key)
         if segment:
             self._heard_segments.add(segment)
         try:
