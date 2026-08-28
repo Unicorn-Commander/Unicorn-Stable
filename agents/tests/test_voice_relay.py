@@ -280,14 +280,14 @@ class PlayoutTimeoutTests(TestCase):
     queue forever and silence every line after it — worse than one overlap.
     """
 
-    def test_the_wait_is_bounded_and_logs_when_it_gives_up(self) -> None:
+    def test_the_wait_is_bounded(self) -> None:
         import inspect
 
         from voice_relay.agent import PLAYOUT_TIMEOUT_S, VoiceRelayAgent
 
         source = inspect.getsource(VoiceRelayAgent._say)
         self.assertIn("wait_for", source)
-        self.assertIn("voice_relay_playout_wait_timed_out", source)
+        self.assertIn("playout_budget", source)
         self.assertGreater(PLAYOUT_TIMEOUT_S, 0)
 
     def test_a_timeout_still_counts_the_line_as_spoken(self) -> None:
@@ -298,7 +298,7 @@ class PlayoutTimeoutTests(TestCase):
         from voice_relay.agent import VoiceRelayAgent
 
         source = inspect.getsource(VoiceRelayAgent._say)
-        timeout_at = source.index("voice_relay_playout_wait_timed_out")
+        timeout_at = source.index("voice_relay_playout_wait_elapsed")
         spoke_at = source.index("voice_relay_spoke")
         self.assertLess(timeout_at, spoke_at)
 
@@ -345,3 +345,34 @@ class OwnSttTests(TestCase):
         # Both key on the same normalized text, so whichever ear is first wins.
         self.assertIn('f"stt:', own)
         self.assertIn('f"stt:', browser)
+
+
+class PlayoutBudgetTests(TestCase):
+    """The wait is paced by how long the line takes to say.
+
+    The playout handle does not resolve on this deployment — a 22-character
+    reply held the queue to the ceiling — so a fixed timeout serialises speech
+    at one line per timeout, which is not a conversation.
+    """
+
+    def test_a_short_line_waits_seconds_not_a_minute(self) -> None:
+        from voice_relay.agent import playout_budget
+
+        self.assertLess(playout_budget("Loud and clear, Aaron."), 10)
+
+    def test_a_long_line_gets_proportionally_longer(self) -> None:
+        from voice_relay.agent import playout_budget
+
+        short = playout_budget("yes")
+        long = playout_budget("word " * 100)
+        self.assertGreater(long, short)
+
+    def test_it_never_exceeds_the_hard_ceiling(self) -> None:
+        from voice_relay.agent import PLAYOUT_TIMEOUT_S, playout_budget
+
+        self.assertLessEqual(playout_budget("x" * 100000), PLAYOUT_TIMEOUT_S)
+
+    def test_empty_text_still_yields_a_positive_wait(self) -> None:
+        from voice_relay.agent import playout_budget
+
+        self.assertGreater(playout_budget(""), 0)
