@@ -478,9 +478,9 @@ class TranscriptVersusChatTests(TestCase):
 
         source = inspect.getsource(VoiceRelayAgent._on_own_stt)
         caption_at = source.index("_captions")
-        addressed_at = source.index("spoken_name_match")
-        # Captions first, unconditionally; the address check gates only chat.
-        self.assertLess(caption_at, addressed_at)
+        gate_at = source.index("_is_for_us")
+        # Captions first, unconditionally; the activation rule gates only chat.
+        self.assertLess(caption_at, gate_at)
 
     def test_only_an_addressed_line_is_persisted(self) -> None:
         import inspect
@@ -488,9 +488,9 @@ class TranscriptVersusChatTests(TestCase):
         from voice_relay.agent import VoiceRelayAgent
 
         source = inspect.getsource(VoiceRelayAgent._on_own_stt)
-        addressed_at = source.index("if not addressed")
+        gate_at = source.index("_is_for_us")
         persist_at = source.index("persist_user_utterance")
-        self.assertLess(addressed_at, persist_at)
+        self.assertLess(gate_at, persist_at)
 
     def test_addressing_uses_position_not_mere_presence(self) -> None:
         from agent_runtime.voice_dispatch import spoken_name_match
