@@ -1193,3 +1193,107 @@ async def set_member_mute(
     )
     await _broadcast_members_changed(db, room_id)
     return await _member_response_for(svc, room_id, participant_id)
+
+
+# ---------------------------------------------------------------------------
+# Voice settings — how the room's voice relay decides a spoken line is FOR
+# the agent. The web Settings UI is the intended caller; SQL was the only way
+# to change this before, which is not a setting, it is an incantation.
+# ---------------------------------------------------------------------------
+
+#: Mirrors agents/voice_relay/agent.py::ACTIVATION_MODES. The two lists are
+#: maintained by hand because the server and the agents runtime ship in
+#: different images with no shared package; each side validates independently
+#: so a drifted value degrades to the safe default rather than crashing.
+VOICE_ACTIVATION_MODES = ("name", "always", "ptt", "off")
+
+
+class RoomVoiceSettingsBody(BaseModel):
+    """The one voice setting a room owner can change today."""
+
+    activation: str = Field(..., min_length=1, max_length=16)
+
+
+@router.patch("/rooms/{room_id}/voice-settings")
+async def update_voice_settings(
+    room_id: uuid.UUID,
+    body: RoomVoiceSettingsBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+) -> dict[str, Any]:
+    """Set how the room's voice agent decides a spoken line is addressed to it.
+
+    Owner/admin only — the same ladder as call moderation, because changing who
+    the agent listens to changes what everyone in the room experiences.
+
+    Writes the room's standing setting AND broadcasts a ``relay_config`` frame
+    into the live call, so a relay already in the room switches immediately —
+    the old behaviour (setting read once at dispatch) meant a change silently
+    did nothing until everyone left and rejoined, which reads as broken.
+    ``live`` in the response says whether a live session actually heard it.
+    """
+    mode = body.activation.strip().lower()
+    if mode not in VOICE_ACTIVATION_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"activation must be one of {', '.join(VOICE_ACTIVATION_MODES)}",
+        )
+
+    room = (
+        await db.execute(select(Room).where(Room.id == room_id))
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+    membership = (
+        await db.execute(
+            select(RoomMember).where(
+                RoomMember.room_id == room_id,
+                RoomMember.participant_id == user["participant_id"],
+            )
+        )
+    ).scalar_one_or_none()
+    if membership is None or membership.role not in (MemberRole.OWNER, MemberRole.ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires one of roles: owner, admin",
+        )
+
+    meta = dict(room.metadata_ or {})
+    if not str(meta.get("voice_relay_source") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This room has no voice agent configured",
+        )
+    meta["voice_relay_activation"] = mode
+    room.metadata_ = meta  # reassigned, not mutated, for JSONB change detection
+    await db.commit()
+
+    # Best-effort live switch. No live call is the ordinary case, not a fault.
+    live = False
+    try:
+        await livekit.send_data(
+            room.livekit_room_name,
+            {
+                "type": "relay_config",
+                "activation": mode,
+                "by": str(user["participant_id"]),
+            },
+        )
+        live = True
+    except Exception:
+        logger.info(
+            "voice_settings_live_push_skipped",
+            room_id=str(room_id),
+            reason="no live media session",
+        )
+
+    logger.info(
+        "voice_settings_updated",
+        room_id=str(room_id),
+        activation=mode,
+        actor=str(user["participant_id"]),
+        live=live,
+    )
+    return {"activation": mode, "live": live}
