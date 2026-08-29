@@ -461,3 +461,53 @@ class AttributionFallbackTests(TestCase):
 
         source = inspect.getsource(VoiceRelayAgent._on_own_stt)
         self.assertIn("voice_relay_heard_but_unattributed", source)
+
+
+class TranscriptVersusChatTests(TestCase):
+    """Speech goes to the live transcript; only what is said TO the agent
+    becomes a chat message.
+
+    Persisting every spoken sentence turned a private call into a wall of chat
+    nobody asked for — and it was visible to the other person in the room.
+    """
+
+    def test_everything_heard_is_published_as_a_caption(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._on_own_stt)
+        caption_at = source.index("_captions")
+        addressed_at = source.index("spoken_name_match")
+        # Captions first, unconditionally; the address check gates only chat.
+        self.assertLess(caption_at, addressed_at)
+
+    def test_only_an_addressed_line_is_persisted(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._on_own_stt)
+        addressed_at = source.index("if not addressed")
+        persist_at = source.index("persist_user_utterance")
+        self.assertLess(addressed_at, persist_at)
+
+    def test_addressing_uses_position_not_mere_presence(self) -> None:
+        from agent_runtime.voice_dispatch import spoken_name_match
+
+        names = {"rook"}
+        self.assertTrue(spoken_name_match("rook, what is the status", names))
+        self.assertTrue(spoken_name_match("hey rook can you check", names))
+        self.assertTrue(spoken_name_match("what do you think, rook?", names))
+        # Talking ABOUT it must not put the line in chat.
+        self.assertFalse(spoken_name_match("i asked rook about it yesterday", names))
+
+    def test_the_relay_publishes_captions_itself(self) -> None:
+        """Browser captions are off whenever a mic is selected, so without
+        this the transcript panel is empty on any real rig."""
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent.build_pipeline)
+        self.assertIn("TranscriptPublisher", source)
