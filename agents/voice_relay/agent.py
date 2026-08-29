@@ -36,6 +36,13 @@ It listens TWO ways, and needs only one of them to work:
   * ITS OWN STT, over the human's audio track. This is the reliable ear.
   * The browser's ``transcript`` data packets, when they happen to be there.
 
+WHAT IT DOES WITH WHAT IT HEARS. Everything goes to the LIVE TRANSCRIPT, which
+is ephemeral and is where speech belongs — and which the relay has to publish
+itself, because Stable disables browser captions whenever a specific mic is
+selected, leaving the transcript panel empty on any real rig. Only a line
+ADDRESSED TO THE AGENT becomes a chat message. Persisting every spoken
+sentence turned a private conversation into a wall of chat nobody asked for.
+
 The browser path alone was not enough, and the reason is worth writing down:
 Stable deliberately DISABLES browser captions whenever the caller picks a
 specific microphone (VoiceProvider: "Web Speech opens a second, browser-owned
@@ -67,11 +74,16 @@ from typing import Any
 import structlog
 
 from agent_runtime.base import StableAgent
-from agent_runtime.transcript_publisher import VoiceHistoryPersister
+from agent_runtime.transcript_publisher import (
+    TranscriptPublisher,
+    VoiceHistoryPersister,
+)
+from agent_runtime.voice_dispatch import spoken_name_match
 from agent_runtime.voice_transcripts import (
     TranscriptAggregator,
     classify_transcript,
     is_agent_identity,
+    mention_needles,
 )
 
 logger = structlog.get_logger(__name__)
@@ -262,6 +274,8 @@ class VoiceRelayAgent(StableAgent):
         self._heard_segments: set[str] = set()
         self._transcripts: TranscriptAggregator | None = None
         self._publisher: VoiceHistoryPersister | None = None
+        self._captions: TranscriptPublisher | None = None
+        self._my_names: set[str] = set()
         self._ears_task: asyncio.Task[None] | None = None
         # The live LiveKit room handle. The base class keeps the room NAME and
         # id, not the object, so the relay holds its own reference — reaching
@@ -344,6 +358,19 @@ class VoiceRelayAgent(StableAgent):
             room_io = getattr(session, "room_io", None)
             return getattr(room_io, "linked_participant", None)
 
+        # Live captions. The browser normally publishes these, but Stable turns
+        # its captions OFF whenever the caller selects a specific microphone,
+        # so on a real rig the transcript panel is empty. The relay is already
+        # transcribing that audio, so it fills the gap.
+        self._captions = TranscriptPublisher(
+            room=ctx.room,
+            agent_identity=self._identity or self._source_username,
+            agent_name=self._relay_persona,
+            linked_participant_getter=_linked_participant,
+        )
+        self._my_names = mention_needles(self._relay_persona, None) | {
+            (self._relay_persona or "").replace("-", " ").lower()
+        }
         self._publisher = VoiceHistoryPersister(
             room=ctx.room,
             livekit_room_name=ctx.room.name,
@@ -427,9 +454,29 @@ class VoiceRelayAgent(StableAgent):
                     note="no human identity for this utterance; dropped",
                 )
                 return
+
+            # EVERYTHING heard goes to the LIVE TRANSCRIPT. Ephemeral, which is
+            # what a transcript is.
+            if self._captions is not None:
+                try:
+                    self._captions.on_user_transcript(ev)
+                except Exception:
+                    logger.debug("voice_relay_caption_publish_failed", exc_info=True)
+
+            # ONLY what is ADDRESSED TO US becomes a chat message. Writing every
+            # spoken sentence into the room turned a private conversation into a
+            # wall of chat nobody asked for — speech belongs in the transcript;
+            # the chat log is for things said TO the agent.
+            addressed = spoken_name_match(text, self._my_names)
+            if not addressed:
+                logger.debug(
+                    "voice_relay_heard_not_addressed", chars=len(text)
+                )
+                return
+
             self._publisher.persist_user_utterance(speaker, text)
             logger.info(
-                "voice_relay_heard_own_stt",
+                "voice_relay_heard_addressed",
                 speaker=speaker,
                 chars=len(text),
                 preview=text[:80],
