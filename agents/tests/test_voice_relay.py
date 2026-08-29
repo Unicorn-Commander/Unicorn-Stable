@@ -511,3 +511,63 @@ class TranscriptVersusChatTests(TestCase):
 
         source = inspect.getsource(VoiceRelayAgent.build_pipeline)
         self.assertIn("TranscriptPublisher", source)
+
+
+class ActivationModeTests(TestCase):
+    """How a room decides a spoken line is for the agent."""
+
+    def test_unknown_or_missing_falls_back_to_addressing_by_name(self) -> None:
+        from voice_relay.agent import DEFAULT_ACTIVATION, activation_from_metadata
+
+        for meta in ("", None, {}, "not json", {"voice_relay_activation": "banana"}):
+            self.assertEqual(activation_from_metadata(meta), DEFAULT_ACTIVATION, meta)
+        self.assertEqual(DEFAULT_ACTIVATION, "name")
+
+    def test_each_supported_mode_is_read(self) -> None:
+        from voice_relay.agent import ACTIVATION_MODES, activation_from_metadata
+
+        for mode in ACTIVATION_MODES:
+            self.assertEqual(
+                activation_from_metadata({"voice_relay_activation": mode}), mode
+            )
+
+    def _agent(self, mode: str, gate: bool = False):
+        from voice_relay.agent import VoiceRelayAgent
+
+        agent = VoiceRelayAgent.__new__(VoiceRelayAgent)
+        VoiceRelayAgent.__init__(agent)
+        agent._activation = mode
+        agent._gate_open = gate
+        agent._my_names = {"rook"}
+        return agent
+
+    def test_name_mode_needs_the_name_in_an_address_position(self) -> None:
+        agent = self._agent("name")
+        self.assertTrue(agent._is_for_us("rook, what is the status"))
+        self.assertFalse(agent._is_for_us("i asked rook about it yesterday"))
+        self.assertFalse(agent._is_for_us("what do you think about the deploy"))
+
+    def test_always_mode_takes_everything(self) -> None:
+        agent = self._agent("always")
+        self.assertTrue(agent._is_for_us("what do you think about the deploy"))
+
+    def test_off_mode_never_writes_to_chat(self) -> None:
+        agent = self._agent("off")
+        self.assertFalse(agent._is_for_us("rook, are you there"))
+
+    def test_ptt_mode_follows_the_gate_and_ignores_the_name(self) -> None:
+        """A held pedal cannot false-trigger the way a spoken name can, which
+        is the entire reason a live show would choose it."""
+        closed = self._agent("ptt", gate=False)
+        self.assertFalse(closed._is_for_us("rook, are you there"))
+        open_gate = self._agent("ptt", gate=True)
+        self.assertTrue(open_gate._is_for_us("no name spoken at all"))
+
+    def test_the_gate_is_driven_by_a_room_data_frame(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._on_data)
+        self.assertIn("talk_gate", source)
+        self.assertIn("_gate_open", source)
