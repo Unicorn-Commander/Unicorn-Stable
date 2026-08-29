@@ -376,3 +376,33 @@ class PlayoutBudgetTests(TestCase):
         from voice_relay.agent import playout_budget
 
         self.assertGreater(playout_budget(""), 0)
+
+
+class SpeakerAttributionTests(TestCase):
+    """A heard line needs an attributable speaker or it is dropped silently.
+
+    resolve_human() falls back to the session's linked participant when the STT
+    reports no speaker_id — the normal case for a non-diarizing engine. Built
+    without that getter, the relay heard every word and wrote nothing, which is
+    exactly how it failed in a live call.
+    """
+
+    def test_the_persister_is_given_a_linked_participant_getter(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent.build_pipeline)
+        self.assertIn("linked_participant_getter", source)
+        self.assertIn("room_io", source)
+
+    def test_the_getter_is_tolerant_of_a_session_without_room_io(self) -> None:
+        """Reaching through a missing room_io must not raise into the STT
+        callback — no attribution is a dropped line, not a dead relay."""
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent.build_pipeline)
+        self.assertIn('getattr(session, "room_io", None)', source)
+        self.assertIn('getattr(room_io, "linked_participant", None)', source)
