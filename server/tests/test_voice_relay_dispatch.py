@@ -45,13 +45,13 @@ class OptInTests(IsolatedAsyncioTestCase):
 
     def test_source_opts_in_and_persona_defaults_to_rook(self) -> None:
         got = _relay_source_and_persona(_room({"voice_relay_source": ROOK}))
-        self.assertEqual(got, (ROOK, "rook"))
+        self.assertEqual(got, (ROOK, "rook", "name"))
 
     def test_persona_is_overridable(self) -> None:
         got = _relay_source_and_persona(
             _room({"voice_relay_source": ROOK, "voice_relay_agent_id": "atlas"})
         )
-        self.assertEqual(got, (ROOK, "atlas"))
+        self.assertEqual(got, (ROOK, "atlas", "name"))
 
 
 class EnsureRelayTests(IsolatedAsyncioTestCase):
@@ -74,6 +74,7 @@ class EnsureRelayTests(IsolatedAsyncioTestCase):
                 "agent_type": "relay",
                 "voice_relay_source": ROOK,
                 "voice_relay_agent_id": "rook",
+                "voice_relay_activation": "name",
                 "agent_identity": ROOK,
             },
         )
@@ -164,3 +165,30 @@ class EnsureRelayTests(IsolatedAsyncioTestCase):
         lk = _livekit(["aaron_1111"])
         lk.dispatch_agent = AsyncMock(side_effect=RuntimeError("no worker"))
         await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))  # must not raise
+
+
+class ActivationPassthroughTests(IsolatedAsyncioTestCase):
+    """The worker reads LiveKit room metadata, not the database. A setting the
+    dispatch does not carry never reaches it — which is exactly how rook-aaron
+    kept behaving as "name" after being set to "always"."""
+
+    async def test_the_rooms_activation_reaches_the_worker(self) -> None:
+        lk = _livekit(["aaron_1111"])
+        room = _room(
+            {"voice_relay_source": ROOK, "voice_relay_activation": "always"}
+        )
+        await _ensure_voice_relay(lk, room)
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertEqual(meta["voice_relay_activation"], "always")
+
+    def test_it_reads_every_mode_and_defaults_conservatively(self) -> None:
+        for mode in ("name", "always", "ptt", "off"):
+            got = _relay_source_and_persona(
+                _room({"voice_relay_source": ROOK, "voice_relay_activation": mode})
+            )
+            self.assertEqual(got[2], mode)
+        # Junk falls back to the safe rule, not the permissive one.
+        got = _relay_source_and_persona(
+            _room({"voice_relay_source": ROOK, "voice_relay_activation": "  "})
+        )
+        self.assertEqual(got[2], "name")

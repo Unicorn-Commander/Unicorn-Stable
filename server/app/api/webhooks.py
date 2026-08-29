@@ -178,8 +178,8 @@ def _is_broadcast_identity(identity: str) -> bool:
     """
     return str(identity or "").startswith("broadcast-")
 
-def _relay_source_and_persona(room: Room) -> tuple[str, str] | None:
-    """(source_username, relay_persona) if this room wants a voice relay.
+def _relay_source_and_persona(room: Room) -> tuple[str, str, str] | None:
+    """(source_username, relay_persona, activation) if the room wants a relay.
 
     A room opts in with ``voice_relay_source`` in its metadata — the username
     of the participant whose messages should be spoken aloud. The persona
@@ -192,7 +192,13 @@ def _relay_source_and_persona(room: Room) -> tuple[str, str] | None:
         return None
     persona = meta.get("voice_relay_agent_id")
     persona = persona.strip() if isinstance(persona, str) and persona.strip() else "rook"
-    return source.strip(), persona
+    activation = meta.get("voice_relay_activation")
+    activation = (
+        activation.strip().lower()
+        if isinstance(activation, str) and activation.strip()
+        else "name"
+    )
+    return source.strip(), persona, activation
 
 
 async def _relay_display_name(db: AsyncSession, source_username: str) -> str | None:
@@ -232,7 +238,7 @@ async def _ensure_voice_relay(
     config = _relay_source_and_persona(room)
     if config is None:
         return
-    source, persona = config
+    source, persona, activation = config
     # PREFIX match, not equality. Live-fire caught this: the runtime derives a
     # worker identity that can carry a suffix (`agent-relay-bec0`), so an
     # exact-name guard silently misses the relay that is already in the room
@@ -270,6 +276,11 @@ async def _ensure_voice_relay(
                 "agent_type": "relay",
                 "voice_relay_source": source,
                 "voice_relay_agent_id": persona,
+                # The room's standing activation rule. The worker reads LiveKit
+                # room metadata, not the database, so a setting that is not
+                # carried here simply never reaches it — which is how
+                # rook-aaron stayed on "name" after being set to "always".
+                "voice_relay_activation": activation,
                 # Join AS the participant we speak for, so the call tile
                 # resolves to that character's name and art. `agent-relay`
                 # names nobody, which is why the tile showed "Stable Relay"
