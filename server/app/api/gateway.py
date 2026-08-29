@@ -406,22 +406,24 @@ async def set_talk_gate(
             {"type": "talk_gate", "open": bool(body.open), "by": principal.agent_id},
         )
     except Exception:
-        logger.warning(
-            "talk_gate_publish_failed",
+        # No live session is the ordinary case, not a fault: a pedal held
+        # before anyone joins the call has nobody to tell. Reporting that as a
+        # 502 would train the holder to ignore real failures, and a pedal that
+        # errors when the call has not started yet feels broken when it is not.
+        logger.info(
+            "talk_gate_undelivered",
             room=room.livekit_room_name,
-            exc_info=True,
+            open=bool(body.open),
+            reason="no live media session for this room",
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not reach the room's media session",
-        )
+        return {"room": body.room, "open": bool(body.open), "delivered": False}
     logger.info(
         "talk_gate_set",
         room=room.livekit_room_name,
         open=bool(body.open),
         by=principal.agent_id,
     )
-    return {"room": body.room, "open": bool(body.open)}
+    return {"room": body.room, "open": bool(body.open), "delivered": True}
 
 
 @router.post("/tts")
