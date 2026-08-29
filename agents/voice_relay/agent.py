@@ -312,10 +312,23 @@ class VoiceRelayAgent(StableAgent):
         # same module and only the former can write a human's turn back to the
         # room. Picking the class by filename is how the first attempt shipped
         # an AttributeError that the loop swallowed.
+        def _linked_participant() -> Any:
+            """The human this session is listening to.
+
+            resolve_human() falls back to this when the STT gives no
+            speaker_id, which is the normal case for a non-diarizing engine.
+            Without it a heard line has no attributable speaker and is dropped
+            on the floor — the relay hears you and writes nothing, which is
+            exactly how it failed live in #aaron-shafen-claudes.
+            """
+            room_io = getattr(session, "room_io", None)
+            return getattr(room_io, "linked_participant", None)
+
         self._publisher = VoiceHistoryPersister(
             room=ctx.room,
             livekit_room_name=ctx.room.name,
             brigade_agent_id=self._relay_persona,
+            linked_participant_getter=_linked_participant,
         )
         self._ears_task = asyncio.create_task(
             self._ears_loop(), name=f"voice-relay-ears:{self._relay_persona}"
