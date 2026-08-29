@@ -270,6 +270,24 @@ def human_identity(candidate: Any) -> str | None:
     return identity if _UUID_TAIL.match(tail.lower()) else None
 
 
+#: Utterances made ONLY of these carry no content worth a full agent turn.
+#: Anything containing a single non-filler word ("yes", "no", "stop") passes.
+_FILLER_TOKENS = frozenset(
+    {
+        "um", "uh", "mm", "hmm", "mhm", "hm", "ah", "er", "uhh", "umm",
+        "like", "so", "well", "okay", "ok", "yeah", "right", "you", "know",
+    }
+)
+
+_WORDS = re.compile(r"[a-z']+")
+
+
+def filler_only(text: str) -> bool:
+    """True when the utterance is nothing but conversational filler."""
+    tokens = _WORDS.findall((text or "").lower())
+    return bool(tokens) and all(t in _FILLER_TOKENS for t in tokens)
+
+
 def sole_agent_in_call(room: Any, self_identity: str) -> bool:
     """True when no OTHER agent worker is in this call.
 
@@ -451,6 +469,22 @@ class VoiceRelayAgent(StableAgent):
             if isinstance(raw, (bytes, bytearray)):
                 raw = raw.decode("utf-8", "replace")
             payload = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(payload, dict) and payload.get("type") == "relay_config":
+                # A settings change, applied LIVE. Reading the mode only at
+                # dispatch meant a change silently did nothing until everyone
+                # left and rejoined — which reads as broken, because it is.
+                mode = str(payload.get("activation") or "").strip().lower()
+                if mode in ACTIVATION_MODES:
+                    old_mode, self._activation = self._activation, mode
+                    logger.info(
+                        "voice_relay_config_changed",
+                        old=old_mode,
+                        new=mode,
+                        by=str(payload.get("by") or "")[:40],
+                    )
+                else:
+                    logger.warning("voice_relay_config_invalid", value=mode[:20])
+                return
             if isinstance(payload, dict) and payload.get("type") == "talk_gate":
                 # The external activation signal. Any device can send it — a
                 # foot pedal, a stream deck, a phone — via the gateway; the
@@ -487,8 +521,6 @@ class VoiceRelayAgent(StableAgent):
         try:
             if self._publisher is None:
                 return
-            if not sole_agent_in_call(self._lk_room, self._identity):
-                return
             text = (getattr(ev, "transcript", "") or "").strip()
             if not bool(getattr(ev, "is_final", False)) or not text:
                 return
@@ -509,33 +541,72 @@ class VoiceRelayAgent(StableAgent):
                 )
                 return
 
-            # EVERYTHING heard goes to the LIVE TRANSCRIPT. Ephemeral, which is
-            # what a transcript is.
-            if self._captions is not None:
+            # EVERYTHING heard goes to the LIVE TRANSCRIPT — but only when we
+            # are the sole agent. A Brigade voice worker already captions the
+            # participant it is linked to; a second caption stream for the same
+            # words renders every line twice in the panel.
+            if self._captions is not None and sole_agent_in_call(
+                self._lk_room, self._identity
+            ):
                 try:
                     self._captions.on_user_transcript(ev)
                 except Exception:
                     logger.debug("voice_relay_caption_publish_failed", exc_info=True)
 
-            # ONLY what is ADDRESSED TO US becomes a chat message. Writing every
-            # spoken sentence into the room turned a private conversation into a
-            # wall of chat nobody asked for — speech belongs in the transcript;
-            # the chat log is for things said TO the agent.
-            if not self._is_for_us(text):
-                logger.debug(
-                    "voice_relay_heard_not_addressed", chars=len(text)
-                )
-                return
-
-            self._publisher.persist_user_utterance(speaker, text)
-            logger.info(
-                "voice_relay_heard_addressed",
-                speaker=speaker,
-                chars=len(text),
-                preview=text[:80],
-            )
+            # Chat is a different bar than the transcript, and BOTH ears share
+            # one rule for it.
+            self._maybe_persist(speaker, text, ear="stt")
         except Exception:
             logger.warning("voice_relay_own_stt_failed", exc_info=True)
+
+    def _maybe_persist(self, speaker: str, text: str, *, ear: str) -> bool:
+        """ONE decision for both ears: does this utterance become a chat message?
+
+        The two ears (our own STT, and the browser's caption packets) used to
+        apply different rules — the caption path persisted EVERYTHING it
+        drained, which quietly resurrected the chat-flood for anyone on the
+        default microphone. Whatever the ear, the answer must be the same.
+
+        The activation gate (`_is_for_us`) runs first. Then two extra
+        constraints apply only to ``always`` mode:
+
+          * SOLE AGENT. An un-addressed line persisted next to a Brigade voice
+            worker risks the same words landing twice (the worker persists the
+            lines it replies to). ``name``/``ptt`` lines are addressed to US,
+            which the other workers will not answer, so those modes work even
+            in a multi-agent call — that is what lets "Rook, cut to camera
+            two" work on show night with Majik and The General in the room.
+            The residual edge (one line addressing us AND another agent) is
+            accepted and rare.
+          * NOT PURE FILLER. In always mode every utterance triggers a full
+            agent turn; "um" as a turn is absurd, costs a real reply, and the
+            agent then SAYS something to an utterance that meant nothing.
+        """
+        if not self._is_for_us(text):
+            logger.debug("voice_relay_heard_not_addressed", chars=len(text), ear=ear)
+            return False
+        if self._activation == "always":
+            if not sole_agent_in_call(self._lk_room, self._identity):
+                logger.debug(
+                    "voice_relay_always_stood_down",
+                    reason="another agent is in the call",
+                    ear=ear,
+                )
+                return False
+            if filler_only(text):
+                logger.debug("voice_relay_filler_skipped", preview=text[:40], ear=ear)
+                return False
+        if self._publisher is None:
+            return False
+        self._publisher.persist_user_utterance(speaker, text)
+        logger.info(
+            "voice_relay_heard_addressed",
+            speaker=speaker,
+            chars=len(text),
+            ear=ear,
+            preview=text[:80],
+        )
+        return True
 
     def _is_for_us(self, text: str) -> bool:
         """Was this line addressed to the agent, under this room's rule?"""
@@ -609,24 +680,19 @@ class VoiceRelayAgent(StableAgent):
                     continue
                 if self._lk_room is None:
                     continue
-                if not sole_agent_in_call(self._lk_room, self._identity):
-                    # Another agent owns the human's words in this room.
-                    logger.info(
-                        "voice_relay_ears_stood_down",
-                        utterances=len(due),
-                        reason="another agent is in the call",
-                    )
-                    continue
                 for utterance in due:
-                    self._publisher.persist_user_utterance(
-                        utterance.participant_id, utterance.text
-                    )
-                    logger.info(
-                        "voice_relay_heard",
-                        speaker=utterance.participant_id,
-                        chars=len(utterance.text),
-                        preview=utterance.text[:80],
-                    )
+                    # The browser attributed this line itself, but the persist
+                    # endpoint only accepts the username_<uuid> shape — an
+                    # unacceptable id would be rejected as a silent 400, so
+                    # check it HERE where it can be logged instead.
+                    speaker = human_identity(utterance.participant_id)
+                    if speaker is None:
+                        logger.warning(
+                            "voice_relay_caption_unattributed",
+                            got=str(utterance.participant_id)[:40],
+                        )
+                        continue
+                    self._maybe_persist(speaker, utterance.text, ear="captions")
             except asyncio.CancelledError:
                 return
             except Exception:

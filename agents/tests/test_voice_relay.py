@@ -262,7 +262,9 @@ class PersisterWiringTests(TestCase):
         from agent_runtime.transcript_publisher import VoiceHistoryPersister
         from voice_relay.agent import VoiceRelayAgent
 
-        source = inspect.getsource(VoiceRelayAgent._ears_loop)
+        # The persist call moved into the shared _maybe_persist; the wiring
+        # invariant (we call a method the bound class actually has) holds there.
+        source = inspect.getsource(VoiceRelayAgent._maybe_persist)
         self.assertIn("persist_user_utterance", source)
         self.assertIn("VoiceHistoryPersister", inspect.getsource(VoiceRelayAgent.build_pipeline))
         # The call shape must match the real signature.
@@ -471,26 +473,29 @@ class TranscriptVersusChatTests(TestCase):
     nobody asked for — and it was visible to the other person in the room.
     """
 
-    def test_everything_heard_is_published_as_a_caption(self) -> None:
+    def test_captions_come_before_the_chat_decision(self) -> None:
         import inspect
 
         from voice_relay.agent import VoiceRelayAgent
 
         source = inspect.getsource(VoiceRelayAgent._on_own_stt)
         caption_at = source.index("_captions")
-        gate_at = source.index("_is_for_us")
-        # Captions first, unconditionally; the activation rule gates only chat.
-        self.assertLess(caption_at, gate_at)
+        persist_at = source.index("_maybe_persist")
+        self.assertLess(caption_at, persist_at)
 
-    def test_only_an_addressed_line_is_persisted(self) -> None:
+    def test_both_ears_share_one_persist_rule(self) -> None:
+        """The caption ear used to persist EVERYTHING it drained, quietly
+        resurrecting the chat-flood for anyone on the default microphone."""
         import inspect
 
         from voice_relay.agent import VoiceRelayAgent
 
-        source = inspect.getsource(VoiceRelayAgent._on_own_stt)
-        gate_at = source.index("_is_for_us")
-        persist_at = source.index("persist_user_utterance")
-        self.assertLess(gate_at, persist_at)
+        for fn in (VoiceRelayAgent._on_own_stt, VoiceRelayAgent._ears_loop):
+            source = inspect.getsource(fn)
+            self.assertIn("_maybe_persist", source, fn.__name__)
+            self.assertNotIn(
+                "self._publisher.persist_user_utterance", source, fn.__name__
+            )
 
     def test_addressing_uses_position_not_mere_presence(self) -> None:
         from agent_runtime.voice_dispatch import spoken_name_match
@@ -571,3 +576,127 @@ class ActivationModeTests(TestCase):
         source = inspect.getsource(VoiceRelayAgent._on_data)
         self.assertIn("talk_gate", source)
         self.assertIn("_gate_open", source)
+
+
+class PersistMatrixTests(TestCase):
+    """One rule, both ears, every mode — driven through _maybe_persist."""
+
+    @staticmethod
+    def _room(identities):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            remote_participants={i: SimpleNamespace(identity=i) for i in identities}
+        )
+
+    def _agent(self, mode: str, *, gate=False, others=()):
+        from unittest.mock import MagicMock
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        agent = VoiceRelayAgent.__new__(VoiceRelayAgent)
+        VoiceRelayAgent.__init__(agent)
+        agent._activation = mode
+        agent._gate_open = gate
+        agent._my_names = {"rook"}
+        agent._identity = "agent-claude-code"
+        agent._lk_room = self._room(["aaron_1111", *others])
+        agent._publisher = MagicMock()
+        return agent
+
+    AARON = "aaron_1111-c0cf018d-f9d4-4638-a43b-23914024aad4"
+
+    def test_name_mode_persists_only_an_address(self) -> None:
+        agent = self._agent("name")
+        self.assertTrue(agent._maybe_persist(self.AARON, "rook, status?", ear="stt"))
+        self.assertFalse(
+            agent._maybe_persist(self.AARON, "we should ship it", ear="stt")
+        )
+        agent._publisher.persist_user_utterance.assert_called_once()
+
+    def test_name_mode_works_with_other_agents_in_the_call(self) -> None:
+        """The E03 fix: an addressed line persists even beside Majik and The
+        General — their workers only persist lines THEY reply to, so there is
+        no double-write for a line addressed to us."""
+        agent = self._agent("name", others=["agent-majik", "agent-the-general"])
+        self.assertTrue(
+            agent._maybe_persist(self.AARON, "rook, cut to camera two", ear="stt")
+        )
+
+    def test_always_mode_stands_down_beside_another_agent(self) -> None:
+        agent = self._agent("always", others=["agent-majik"])
+        self.assertFalse(agent._maybe_persist(self.AARON, "anything", ear="stt"))
+
+    def test_always_mode_skips_pure_filler(self) -> None:
+        agent = self._agent("always")
+        self.assertFalse(agent._maybe_persist(self.AARON, "um", ear="stt"))
+        self.assertFalse(agent._maybe_persist(self.AARON, "yeah okay so", ear="stt"))
+        self.assertTrue(agent._maybe_persist(self.AARON, "yes", ear="stt"))
+        self.assertTrue(agent._maybe_persist(self.AARON, "um, deploy it", ear="stt"))
+
+    def test_ptt_mode_follows_the_gate_for_both_ears(self) -> None:
+        for ear in ("stt", "captions"):
+            closed = self._agent("ptt", gate=False)
+            self.assertFalse(closed._maybe_persist(self.AARON, "hello", ear=ear))
+            opened = self._agent("ptt", gate=True)
+            self.assertTrue(opened._maybe_persist(self.AARON, "hello", ear=ear))
+
+    def test_off_mode_never_persists(self) -> None:
+        agent = self._agent("off")
+        self.assertFalse(agent._maybe_persist(self.AARON, "rook, hello?", ear="stt"))
+
+
+class FillerTests(TestCase):
+    def test_pure_filler_is_filler(self) -> None:
+        from voice_relay.agent import filler_only
+
+        for text in ("um", "uh", "mm", "yeah okay", "you know", "so, well…"):
+            self.assertTrue(filler_only(text), text)
+
+    def test_any_real_word_rescues_the_utterance(self) -> None:
+        from voice_relay.agent import filler_only
+
+        for text in ("yes", "no", "stop", "um, deploy it", "okay go"):
+            self.assertFalse(filler_only(text), text)
+
+    def test_empty_text_is_not_filler(self) -> None:
+        from voice_relay.agent import filler_only
+
+        self.assertFalse(filler_only(""))
+        self.assertFalse(filler_only("   "))
+
+
+class LiveConfigTests(TestCase):
+    """A settings change applies LIVE — read-once-at-dispatch meant a change
+    silently did nothing until everyone rejoined, which reads as broken."""
+
+    def _agent(self):
+        from voice_relay.agent import VoiceRelayAgent
+
+        agent = VoiceRelayAgent.__new__(VoiceRelayAgent)
+        VoiceRelayAgent.__init__(agent)
+        agent._activation = "name"
+        return agent
+
+    @staticmethod
+    def _packet(payload: dict):
+        import json as _json
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=_json.dumps(payload).encode())
+
+    def test_a_relay_config_frame_switches_the_mode(self) -> None:
+        agent = self._agent()
+        agent._on_data(self._packet({"type": "relay_config", "activation": "ptt"}))
+        self.assertEqual(agent._activation, "ptt")
+
+    def test_an_invalid_mode_is_refused_and_keeps_the_old_one(self) -> None:
+        agent = self._agent()
+        agent._on_data(self._packet({"type": "relay_config", "activation": "banana"}))
+        self.assertEqual(agent._activation, "name")
+
+    def test_a_malformed_frame_never_raises(self) -> None:
+        agent = self._agent()
+        for junk in ({"type": "relay_config"}, {"type": "relay_config", "activation": 7}):
+            agent._on_data(self._packet(junk))
+        self.assertEqual(agent._activation, "name")
