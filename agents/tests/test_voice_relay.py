@@ -262,7 +262,9 @@ class PersisterWiringTests(TestCase):
         from agent_runtime.transcript_publisher import VoiceHistoryPersister
         from voice_relay.agent import VoiceRelayAgent
 
-        source = inspect.getsource(VoiceRelayAgent._ears_loop)
+        # The persist call moved into the shared _maybe_persist; the wiring
+        # invariant (we call a method the bound class actually has) holds there.
+        source = inspect.getsource(VoiceRelayAgent._maybe_persist)
         self.assertIn("persist_user_utterance", source)
         self.assertIn("VoiceHistoryPersister", inspect.getsource(VoiceRelayAgent.build_pipeline))
         # The call shape must match the real signature.
