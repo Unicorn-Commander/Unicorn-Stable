@@ -367,6 +367,63 @@ async def gateway_get_messages(
 # ---------------------------------------------------------------------------
 
 
+class TalkGateBody(BaseModel):
+    """Hold or release the talk gate for a room."""
+
+    room: str = Field(..., min_length=1, max_length=200)
+    open: bool
+
+
+@router.post("/talk-gate", status_code=202)
+async def set_talk_gate(
+    body: TalkGateBody,
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> dict:
+    """Say "I am addressing the agent now" (or stopped).
+
+    THE ONE PRIMITIVE for external activation. A foot pedal, a stream deck, a
+    phone button or a hotkey all become clients of this rather than each
+    needing its own integration — which is why there is no pedal-shaped
+    endpoint here.
+
+    The state is not stored: it is broadcast into the room's LiveKit session as
+    a ``talk_gate`` frame, exactly like every other in-room signal, so the
+    voice relay (agents/voice_relay) simply hears it. Nothing to reconcile,
+    nothing to leak if a holder disconnects mid-press — the next release, or
+    the relay's own teardown, ends it.
+    """
+    # A pedal press is a high-frequency event; fail OPEN on a limiter blip so a
+    # rate-limit hiccup cannot leave the gate stuck and the agent deaf.
+    await _gateway_rate_limit(principal, redis, bucket="gw_talk_gate", fail_open=True)
+    room = await _resolve_room(db, body.room)
+    await _enforce_scope(db, principal, room)
+    try:
+        await livekit.send_data(
+            room.livekit_room_name,
+            {"type": "talk_gate", "open": bool(body.open), "by": principal.agent_id},
+        )
+    except Exception:
+        logger.warning(
+            "talk_gate_publish_failed",
+            room=room.livekit_room_name,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not reach the room's media session",
+        )
+    logger.info(
+        "talk_gate_set",
+        room=room.livekit_room_name,
+        open=bool(body.open),
+        by=principal.agent_id,
+    )
+    return {"room": body.room, "open": bool(body.open)}
+
+
 @router.post("/tts")
 async def gateway_tts(
     body: GatewayTtsBody,

@@ -95,6 +95,20 @@ DEFAULT_SOURCE_USERNAME = "agent-claude-code"
 #: Persona key for the voice preset (KOKORO_VOICE_PRESETS["rook"] == am_echo).
 DEFAULT_RELAY_PERSONA = "rook"
 
+#: How a spoken line is judged to be FOR the agent.
+#:
+#:   name   — address it by name ("Rook, …"). The safe default in any room
+#:            with more than one person in it.
+#:   always — every utterance is for the agent. Right for a room that is just
+#:            you and it; wrong the moment someone else joins.
+#:   ptt    — only while an external talk gate is held (a foot pedal, a stream
+#:            deck, a phone button). Deterministic, which is what a live show
+#:            wants: a spoken name can false-trigger on camera, a held pedal
+#:            cannot.
+#:   off    — never write to chat. Transcript only.
+ACTIVATION_MODES = ("name", "always", "ptt", "off")
+DEFAULT_ACTIVATION = "name"
+
 #: A spoken line longer than this is truncated. A relay reading a 4000-word
 #: report aloud holds the floor for ten minutes with no way to interrupt it,
 #: which on a recorded show is worse than saying nothing.
@@ -164,6 +178,26 @@ def speakable(text: str, *, limit: int = MAX_SPOKEN_CHARS) -> str:
         out = (window[: cut + 1] if cut > limit * 0.6 else window).rstrip()
         out += " …the rest is in the chat."
     return out
+
+
+def activation_from_metadata(metadata: Any) -> str:
+    """How this room decides a spoken line is for the agent.
+
+    Unknown or missing values fall back to ``name``: the conservative choice,
+    because the failure mode of guessing wrong the other way is an agent that
+    barges into a human conversation.
+    """
+    data: Any = metadata
+    if isinstance(metadata, str):
+        try:
+            data = json.loads(metadata) if metadata.strip() else {}
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        return DEFAULT_ACTIVATION
+    mode = data.get("voice_relay_activation")
+    mode = mode.strip().lower() if isinstance(mode, str) else ""
+    return mode if mode in ACTIVATION_MODES else DEFAULT_ACTIVATION
 
 
 def relay_config_from_metadata(metadata: Any) -> tuple[str, str]:
@@ -276,6 +310,9 @@ class VoiceRelayAgent(StableAgent):
         self._publisher: VoiceHistoryPersister | None = None
         self._captions: TranscriptPublisher | None = None
         self._my_names: set[str] = set()
+        self._activation = DEFAULT_ACTIVATION
+        #: External talk gate (ptt mode): open while the pedal is held.
+        self._gate_open = False
         self._ears_task: asyncio.Task[None] | None = None
         # The live LiveKit room handle. The base class keeps the room NAME and
         # id, not the object, so the relay holds its own reference — reaching
@@ -300,6 +337,14 @@ class VoiceRelayAgent(StableAgent):
         if source == DEFAULT_SOURCE_USERNAME and persona == DEFAULT_RELAY_PERSONA:
             source, persona = relay_config_from_metadata(room_meta)
         self._source_username, self._relay_persona = source, persona
+        # Job metadata is this dispatch's own truth; room metadata is the
+        # room's standing setting. Same precedence as source/persona above.
+        job_activation = activation_from_metadata(job_meta)
+        self._activation = (
+            job_activation
+            if job_activation != DEFAULT_ACTIVATION
+            else activation_from_metadata(room_meta)
+        )
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
         agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
@@ -391,6 +436,7 @@ class VoiceRelayAgent(StableAgent):
             room=getattr(ctx.room, "name", ""),
             source=self._source_username,
             persona=self._relay_persona,
+            activation=self._activation,
         )
         return session
 
@@ -405,6 +451,14 @@ class VoiceRelayAgent(StableAgent):
             if isinstance(raw, (bytes, bytearray)):
                 raw = raw.decode("utf-8", "replace")
             payload = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(payload, dict) and payload.get("type") == "talk_gate":
+                # The external activation signal. Any device can send it — a
+                # foot pedal, a stream deck, a phone — via the gateway; the
+                # relay does not care which, which is the point of having ONE
+                # primitive instead of an extension per gadget.
+                self._gate_open = bool(payload.get("open"))
+                logger.info("voice_relay_talk_gate", open=self._gate_open)
+                return
             if isinstance(payload, dict) and payload.get("type") == "transcript":
                 self._on_transcript(payload)
                 return
@@ -467,8 +521,7 @@ class VoiceRelayAgent(StableAgent):
             # spoken sentence into the room turned a private conversation into a
             # wall of chat nobody asked for — speech belongs in the transcript;
             # the chat log is for things said TO the agent.
-            addressed = spoken_name_match(text, self._my_names)
-            if not addressed:
+            if not self._is_for_us(text):
                 logger.debug(
                     "voice_relay_heard_not_addressed", chars=len(text)
                 )
@@ -483,6 +536,19 @@ class VoiceRelayAgent(StableAgent):
             )
         except Exception:
             logger.warning("voice_relay_own_stt_failed", exc_info=True)
+
+    def _is_for_us(self, text: str) -> bool:
+        """Was this line addressed to the agent, under this room's rule?"""
+        mode = self._activation
+        if mode == "off":
+            return False
+        if mode == "always":
+            return True
+        if mode == "ptt":
+            # The gate is the whole signal — a held pedal cannot false-trigger
+            # the way a spoken name can, which is why a show wants it.
+            return self._gate_open
+        return spoken_name_match(text, self._my_names)
 
     def _speaker_identity(self, ev: Any) -> str | None:
         """Whose voice this was, in the form the backend accepts.
