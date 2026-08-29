@@ -204,6 +204,26 @@ def should_speak(payload: Any, source_username: str) -> str | None:
     return spoken or None
 
 
+_UUID_TAIL = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def human_identity(candidate: Any) -> str | None:
+    """A LiveKit identity the backend will accept as a human speaker.
+
+    ``internal/voice-user-message`` reads the participant UUID off the tail of
+    ``username_<uuid>`` and 400s on anything else. Handing it an agent identity
+    — which is what the generic resolver falls back to when the STT reports no
+    speaker_id — rejects every line, silently, because the post is
+    fire-and-forget. So the shape is checked HERE, where it can be rejected
+    loudly instead.
+    """
+    identity = str(candidate or "").strip()
+    if not identity or is_agent_identity(identity):
+        return None
+    tail = identity.rsplit("_", 1)[-1]
+    return identity if _UUID_TAIL.match(tail.lower()) else None
+
+
 def sole_agent_in_call(room: Any, self_identity: str) -> bool:
     """True when no OTHER agent worker is in this call.
 
@@ -398,10 +418,52 @@ class VoiceRelayAgent(StableAgent):
             if key in self._heard_segments:
                 return
             self._heard_segments.add(key)
-            self._publisher.on_user_transcript(ev)
-            logger.info("voice_relay_heard_own_stt", chars=len(text), preview=text[:80])
+            speaker = self._speaker_identity(ev)
+            if speaker is None:
+                logger.warning(
+                    "voice_relay_heard_but_unattributed",
+                    chars=len(text),
+                    preview=text[:60],
+                    note="no human identity for this utterance; dropped",
+                )
+                return
+            self._publisher.persist_user_utterance(speaker, text)
+            logger.info(
+                "voice_relay_heard_own_stt",
+                speaker=speaker,
+                chars=len(text),
+                preview=text[:80],
+            )
         except Exception:
             logger.warning("voice_relay_own_stt_failed", exc_info=True)
+
+    def _speaker_identity(self, ev: Any) -> str | None:
+        """Whose voice this was, in the form the backend accepts.
+
+        Tried in order: what the STT said, the participant this session is
+        listening to, and — only when there is exactly one — the single human
+        in the call. Ambiguity yields None rather than a guess: attributing
+        Shafen's sentence to Aaron is worse than dropping it.
+        """
+        direct = human_identity(getattr(ev, "speaker_id", None))
+        if direct:
+            return direct
+        session = self._session
+        room_io = getattr(session, "room_io", None) if session else None
+        linked = human_identity(
+            getattr(getattr(room_io, "linked_participant", None), "identity", None)
+        )
+        if linked:
+            return linked
+        humans: list[str] = []
+        try:
+            for participant in getattr(self._lk_room, "remote_participants", {}).values():
+                candidate = human_identity(getattr(participant, "identity", None))
+                if candidate:
+                    humans.append(candidate)
+        except Exception:
+            return None
+        return humans[0] if len(humans) == 1 else None
 
     def _on_transcript(self, payload: dict[str, Any]) -> None:
         """One caption frame from the browser. Sync; never raises."""

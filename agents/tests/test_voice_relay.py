@@ -406,3 +406,58 @@ class SpeakerAttributionTests(TestCase):
         source = inspect.getsource(VoiceRelayAgent.build_pipeline)
         self.assertIn('getattr(session, "room_io", None)', source)
         self.assertIn('getattr(room_io, "linked_participant", None)', source)
+
+
+class HumanIdentityTests(TestCase):
+    """The backend reads a participant UUID off `username_<uuid>` and 400s on
+    anything else. The post is fire-and-forget, so a bad shape rejects every
+    line in total silence — which is how a live call had Rook hearing every
+    word and writing none of them."""
+
+    AARON = "aaron_c0cf018d-f9d4-4638-a43b-23914024aad4"
+
+    def test_a_real_human_identity_is_accepted(self) -> None:
+        from voice_relay.agent import human_identity
+
+        self.assertEqual(human_identity(self.AARON), self.AARON)
+
+    def test_an_agent_identity_is_refused(self) -> None:
+        from voice_relay.agent import human_identity
+
+        for identity in ("agent-claude-code", "agent-majik", "agent-relay"):
+            self.assertIsNone(human_identity(identity), identity)
+
+    def test_shapes_the_backend_would_reject_are_refused_here(self) -> None:
+        from voice_relay.agent import human_identity
+
+        for junk in ("", None, "   ", "aaron", "aaron_notauuid", "testhuman"):
+            self.assertIsNone(human_identity(junk), junk)
+
+    def test_case_is_tolerated_in_the_uuid(self) -> None:
+        from voice_relay.agent import human_identity
+
+        upper = "aaron_C0CF018D-F9D4-4638-A43B-23914024AAD4"
+        self.assertEqual(human_identity(upper), upper)
+
+
+class AttributionFallbackTests(TestCase):
+    """Ambiguity must yield nothing rather than a guess — putting Shafen's
+    sentence in Aaron's mouth is worse than dropping it."""
+
+    def test_it_prefers_the_stt_speaker_then_linked_then_a_sole_human(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._speaker_identity)
+        self.assertIn("speaker_id", source)
+        self.assertIn("linked_participant", source)
+        self.assertIn("len(humans) == 1", source)
+
+    def test_an_unattributed_line_is_logged_not_silently_dropped(self) -> None:
+        import inspect
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        source = inspect.getsource(VoiceRelayAgent._on_own_stt)
+        self.assertIn("voice_relay_heard_but_unattributed", source)
