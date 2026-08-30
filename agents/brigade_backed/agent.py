@@ -38,7 +38,13 @@ from agent_runtime.transcript_publisher import (
 from agent_runtime.brigade_llm import build_brigade_llm
 from agent_runtime.config import AgentSettings, api_path, get_agent_settings
 from agent_runtime.resilient_stt import NeverFatalSTT
-from agent_runtime.voice_transcripts import VoiceTranscriptResponder
+from agent_runtime import voice_dispatch
+from agent_runtime.voice_transcripts import (
+    VoiceTranscriptResponder,
+    call_roster,
+    mention_needles,
+    primary_agent_id,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -62,6 +68,37 @@ class _CaptioningAgent(Agent):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._caption_publisher: TranscriptPublisher | None = None
+        self._reply_gate: Any = None
+
+    def set_reply_gate(self, gate: Any) -> None:
+        """Install the voice-dispatch gate over the session's OWN turn loop.
+
+        This is the enforcement point that was missing. Voice dispatch v1
+        gated only the browser-caption FALLBACK path — but with a healthy STT
+        the AgentSession's native loop replies to every final utterance of its
+        linked participant, no dispatcher consulted. Which is why, in the live
+        rehearsal, Majik answered a line addressed to Rook: the rules existed
+        and nothing routed this lane through them.
+        """
+        self._reply_gate = gate
+
+    async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
+        gate = self._reply_gate
+        if gate is not None:
+            try:
+                allowed = bool(gate(new_message))
+            except Exception:
+                # Fail OPEN: a bug in the gate must degrade to the old
+                # behaviour (chatty), never to a co-host that silently cannot
+                # speak at all. VOICE_DISPATCH_ENABLED=0 remains the explicit
+                # way to turn the gate off on purpose.
+                logger.warning("session_reply_gate_failed", exc_info=True)
+                allowed = True
+            if not allowed:
+                from livekit.agents.llm import StopResponse
+
+                raise StopResponse()
+        return await super().on_user_turn_completed(turn_ctx, new_message)
 
     def set_caption_publisher(
         self, publisher: TranscriptPublisher | None
@@ -452,8 +489,50 @@ class BrigadeBackedAgent(StableAgent):
 
         def linked_participant():
             """The one human whose audio this AgentSession actually consumes."""
-            room_io = getattr(session, "room_io", None)
+            room_io = getattr(self._session, "room_io", None)
             return getattr(room_io, "linked_participant", None)
+
+        # Route the session's own turn loop through voice dispatch. The floor
+        # and stickiness state are the same per-room objects the fallback path
+        # uses, so the two lanes cannot disagree about who holds the floor.
+        self._dispatch_me = brigade_agent_id or self.agent_type
+        self._dispatch_floor = voice_dispatch.floor_for(ctx.room.name)
+        my_needles = set(mention_needles(brigade_agent_id, self.agent_type))
+
+        def _reply_gate(new_message: Any) -> bool:
+            if not voice_dispatch.dispatch_enabled():
+                return True
+            text = (getattr(new_message, "text_content", "") or "").strip()
+            linked = linked_participant()
+            speaker = str(getattr(linked, "identity", "") or "") or "unknown-human"
+            others, humans = call_roster(ctx.room, self._identity)
+            decision = voice_dispatch.decide(
+                state=self._dispatch_floor,
+                me=self._dispatch_me,
+                my_names=my_needles,
+                speaker=speaker,
+                speaker_is_agent=False,
+                text=text,
+                other_agent_names=others,
+                human_count=humans,
+                primary_agent=primary_agent_id(ctx.room),
+            )
+            logger.info(
+                "voice_dispatch_decision",
+                source="session",
+                me=self._dispatch_me,
+                speaker=speaker,
+                respond=decision.respond,
+                rule=decision.rule,
+                addressed=decision.addressed,
+                humans=humans,
+                other_agents=sorted(others),
+                preview=text[:80],
+            )
+            return decision.respond
+
+        self._lk_agent.set_reply_gate(_reply_gate)
+        self._reply_gate_fn = _reply_gate
 
         # --- Live transcript publishing (additive, fire-and-forget) ---
         # Republish the human STT (interim + final) and Majik’s spoken
@@ -612,6 +691,24 @@ class BrigadeBackedAgent(StableAgent):
             session.on(
                 "conversation_item_added", self._transcript.on_conversation_item
             )
+        # Release the dispatch floor when this agent's reply finishes, so the
+        # next agent can be addressed without waiting out the 120s lease. The
+        # lease stays as the backstop for a worker that dies mid-turn.
+        def _release_floor(ev: Any = None) -> None:
+            try:
+                floor = getattr(self, "_dispatch_floor", None)
+                me = getattr(self, "_dispatch_me", None)
+                state = str(getattr(ev, "new_state", "") or "")
+                if floor is not None and me and state in ("listening", "idle"):
+                    voice_dispatch.observe_reply_finished(floor, me)
+            except Exception:
+                logger.debug("floor_release_failed", exc_info=True)
+
+        try:
+            session.on("agent_state_changed", _release_floor)
+        except Exception:
+            logger.debug("floor_release_wire_failed", exc_info=True)
+
         if self._voice_history is not None:
             session.on(
                 "user_input_transcribed", self._voice_history.on_user_transcript
@@ -691,6 +788,12 @@ class BrigadeBackedAgent(StableAgent):
                 fresh_agent = _CaptioningAgent(**agent_kwargs)
                 if self._transcript is not None:
                     fresh_agent.set_caption_publisher(self._transcript)
+                # The dispatch gate too — a restarted session that skipped it
+                # would reply to everything again, silently, which is the exact
+                # failure this gate exists to close.
+                gate = getattr(self, "_reply_gate_fn", None)
+                if gate is not None:
+                    fresh_agent.set_reply_gate(gate)
 
                 session = AgentSession()
                 self._wire_session_events(session)
