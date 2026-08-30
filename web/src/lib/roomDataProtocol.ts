@@ -148,6 +148,82 @@ export type UiCommandMessage = {
 } & UiCommandArgs;
 
 /* ------------------------------------------------------------------ *
+ * Voice-relay frames (talk gate + activation config)
+ * ------------------------------------------------------------------ */
+
+/**
+ * How the room's voice relay decides a spoken line is addressed to it.
+ * CLOSED union mirroring the server's VOICE_ACTIVATION_MODES
+ * (server/app/api/rooms.py) and agents/voice_relay/agent.py::ACTIVATION_MODES.
+ * Each side validates independently; an unknown value degrades to the safe
+ * default ("name") instead of crashing — see {@link coerceVoiceActivationMode}.
+ */
+export const VOICE_ACTIVATION_MODES = ["name", "always", "ptt", "off"] as const;
+export type VoiceActivationMode = (typeof VOICE_ACTIVATION_MODES)[number];
+
+export function isVoiceActivationMode(v: unknown): v is VoiceActivationMode {
+  return (
+    typeof v === "string" &&
+    (VOICE_ACTIVATION_MODES as readonly string[]).includes(v)
+  );
+}
+
+/** Absent/unknown → the server's default ("name"), never a crash. */
+export function coerceVoiceActivationMode(v: unknown): VoiceActivationMode {
+  return isVoiceActivationMode(v) ? v : "name";
+}
+
+/**
+ * The external talk gate (a foot pedal, stream deck, hotkey…) was held or
+ * released. Broadcast server-side by POST /gateway/talk-gate — the frame is
+ * the ONLY signal; nothing is stored — so the client must treat a lost close
+ * frame as possible and time the indicator out (see callUiStore's talk-gate
+ * safety timeout).
+ */
+export interface TalkGateMessage {
+  type: "talk_gate";
+  /** true = held (the relay is treating speech as addressed to it). */
+  open: boolean;
+  /** Gateway principal that sent it (an agent id, e.g. "rook"). */
+  by: string;
+}
+
+export function isTalkGateMessage(v: unknown): v is TalkGateMessage {
+  if (!v || typeof v !== "object") return false;
+  const m = v as Record<string, unknown>;
+  return (
+    m.type === "talk_gate" &&
+    typeof m.open === "boolean" &&
+    typeof m.by === "string"
+  );
+}
+
+/**
+ * The room's voice-activation mode changed (PATCH /rooms/{id}/voice-settings
+ * broadcasts this into the live call so a relay — and every open client —
+ * switches immediately instead of waiting for the next call). `activation` is
+ * validated against the closed union; a frame carrying a mode this bundle
+ * doesn't know is dropped by the decoder (the follow-up room refetch still
+ * reconciles the persisted value).
+ */
+export interface RelayConfigMessage {
+  type: "relay_config";
+  activation: VoiceActivationMode;
+  /** Participant UUID of whoever changed it. */
+  by: string;
+}
+
+export function isRelayConfigMessage(v: unknown): v is RelayConfigMessage {
+  if (!v || typeof v !== "object") return false;
+  const m = v as Record<string, unknown>;
+  return (
+    m.type === "relay_config" &&
+    isVoiceActivationMode(m.activation) &&
+    typeof m.by === "string"
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Artifact (canvas) events
  * ------------------------------------------------------------------ */
 
@@ -222,6 +298,8 @@ export function coerceArtifactEvent(v: unknown): ArtifactEventMessage | null {
 export type RoomDataMessage =
   | TranscriptMessage
   | UiCommandMessage
+  | TalkGateMessage
+  | RelayConfigMessage
   | ArtifactEventMessage;
 
 const textEncoder = new TextEncoder();
@@ -252,6 +330,13 @@ export function decodeRoomData(payload: Uint8Array): RoomDataMessage | null {
   }
   if (obj.type === "ui_command") {
     return isUiCommandMessage(obj) ? obj : null;
+  }
+  // Voice-relay frames (server-broadcast; see gateway.py + rooms.py).
+  if (obj.type === "talk_gate") {
+    return isTalkGateMessage(obj) ? obj : null;
+  }
+  if (obj.type === "relay_config") {
+    return isRelayConfigMessage(obj) ? obj : null;
   }
   // Artifact events discriminate on `event` (server broadcast envelope), with
   // `type` accepted as the legacy alias — see coerceArtifactEvent.

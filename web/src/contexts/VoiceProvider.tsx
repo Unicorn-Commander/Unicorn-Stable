@@ -28,9 +28,12 @@ import {
 } from "@/lib/roomDataProtocol";
 import {
   useCallUiStore,
+  dispatchTalkGate,
   dispatchUiCommand,
   setActiveCallRoom,
 } from "@/stores/callUiStore";
+import { applyRelayConfigToRoomQueries } from "@/lib/voiceSettings";
+import { useQueryClient } from "@tanstack/react-query";
 import { handleArtifactEvent } from "@/stores/canvasStore";
 import { playCue } from "@/lib/sounds";
 import { HumanTranscriptSession } from "@/lib/humanTranscript";
@@ -191,6 +194,10 @@ function bindTranscriptSender(
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
   const setVoiceActive = useAppStore((s) => s.setVoiceActive);
+  // For relay_config frames: the room-detail query is what the voice-settings
+  // surface renders from, so a mode change that arrives over the data channel
+  // reconciles it (patch + invalidate) instead of letting stale UI lie.
+  const queryClient = useQueryClient();
 
   const [room, setRoom] = useState<Room | null>(null);
   const [localParticipant, setLocalParticipant] =
@@ -772,6 +779,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
               // ui_command is dropped.
               if (!isAgentParticipant(participant)) return;
               dispatchUiCommand(msg, roomId);
+              return;
+            }
+            // Voice-relay frames. Legitimate ones are published by the SERVER
+            // (gateway /talk-gate, rooms /voice-settings), which arrives with
+            // NO participant; an agent worker re-broadcasting is also fine. A
+            // human browser fabricating them is not — same trust stance as
+            // ui_command, so gate on "not a human sender".
+            if (msg.type === "talk_gate") {
+              if (participant && !isAgentParticipant(participant)) return;
+              dispatchTalkGate(msg);
+              return;
+            }
+            if (msg.type === "relay_config") {
+              if (participant && !isAgentParticipant(participant)) return;
+              applyRelayConfigToRoomQueries(queryClient, roomId, msg.activation);
+              return;
             }
           }),
         );
@@ -965,6 +988,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     selectedDevices.audioinput,
     selectedDevices.videoinput,
     selectedDevices.audiooutput,
+    queryClient,
   ]);
 
   const connect = useCallback(async () => {
