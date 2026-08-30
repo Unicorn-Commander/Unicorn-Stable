@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   CallViewMode,
+  TalkGateMessage,
   TranscriptMessage,
   UiCommandMessage,
 } from "@/lib/roomDataProtocol";
@@ -88,6 +89,35 @@ export interface PopoutState {
 /** Cap the buffer so a long call can't grow memory unbounded. */
 const MAX_TRANSCRIPT_LINES = 500;
 const TRANSCRIPT_DEDUPE_WINDOW_MS = 12_000;
+
+/**
+ * How long an OPEN talk gate may stand without a close frame before the
+ * indicator clears itself. The gate is broadcast-only (nothing is stored
+ * server-side — see gateway.py /talk-gate), so a lost `open:false` frame
+ * would otherwise pin "the agent can hear you" on screen forever, which is
+ * exactly the kind of silent lie the indicator exists to prevent.
+ */
+export const TALK_GATE_SAFETY_TIMEOUT_MS = 120_000;
+
+/** The live talk-gate signal ("the pedal is held right now"). */
+export interface TalkGateState {
+  open: boolean;
+  /** Gateway principal holding the gate (an agent id), when open. */
+  by: string | null;
+}
+
+const TALK_GATE_CLOSED: TalkGateState = { open: false, by: null };
+
+// Safety-timeout handle for the open gate. Module-level (not store state):
+// it is bookkeeping for the state transition, not itself renderable state.
+let talkGateSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearTalkGateSafetyTimer(): void {
+  if (talkGateSafetyTimer !== null) {
+    clearTimeout(talkGateSafetyTimer);
+    talkGateSafetyTimer = null;
+  }
+}
 
 function transcriptWords(text: string): Set<string> {
   return new Set(
@@ -211,6 +241,13 @@ interface CallUiState {
    * stage the user is deliberately looking at.
    */
   audioHoldConsumed: boolean;
+  /**
+   * External talk gate (foot pedal / hotkey via the gateway). While open, the
+   * call surface shows the "<agent> can hear you" chip — the ONLY feedback a
+   * pedal-holder gets. Cleared by the close frame, by hang-up/call-switch
+   * (setActiveCallRoom), and by {@link TALK_GATE_SAFETY_TIMEOUT_MS}.
+   */
+  talkGate: TalkGateState;
   /** Transcript buffer (final + the current interim line per speaker). */
   transcript: TranscriptLine[];
   /**
@@ -257,6 +294,12 @@ interface CallUiState {
   setSendToMeetingOps: (on: boolean) => void;
   /** Seed session Meeting-Ops flag + call start clock when a call connects. */
   beginCallTranscriptSession: () => void;
+  /**
+   * Set the talk-gate signal. Opening (re)arms the safety timeout — a
+   * re-asserted open frame pushes the deadline out rather than stacking
+   * timers; closing cancels it.
+   */
+  setTalkGate: (open: boolean, by?: string | null) => void;
 
   ingestTranscript: (msg: TranscriptMessage) => void;
   clearTranscript: () => void;
@@ -284,6 +327,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   anyVideoLive: false,
   audioIntentHold: null,
   audioHoldConsumed: false,
+  talkGate: TALK_GATE_CLOSED,
   transcript: [],
   sendToMeetingOps:
     typeof window !== "undefined" ? getSendByDefault() : true,
@@ -400,6 +444,26 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       callStartedAt: Date.now(),
       transcript: [],
     }),
+
+  setTalkGate: (open, by) => {
+    // One timer, always for the LATEST open. Clearing first makes a repeated
+    // open frame extend the deadline instead of letting the oldest timer win.
+    clearTalkGateSafetyTimer();
+    if (open) {
+      talkGateSafetyTimer = setTimeout(() => {
+        talkGateSafetyTimer = null;
+        // A lost close frame must not pin the chip forever.
+        set({ talkGate: TALK_GATE_CLOSED });
+      }, TALK_GATE_SAFETY_TIMEOUT_MS);
+      set({ talkGate: { open: true, by: by ?? null } });
+    } else {
+      set((state) =>
+        state.talkGate.open || state.talkGate.by !== null
+          ? { talkGate: TALK_GATE_CLOSED }
+          : state,
+      );
+    }
+  },
 
   ingestTranscript: (msg) =>
     set((state) => {
@@ -529,7 +593,8 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   // show-video/show-transcript toggles are user preferences, so they're kept.
   // Pins are cleared (a pinned identity from another server is meaningless) and
   // the transient pop-out state is reset.
-  resetForServer: () =>
+  resetForServer: () => {
+    clearTalkGateSafetyTimer();
     set({
       pinnedParticipantId: {},
       hiddenTileIds: new Set(),
@@ -539,13 +604,15 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       anyVideoLive: false,
       audioIntentHold: null,
       audioHoldConsumed: false,
+      talkGate: TALK_GATE_CLOSED,
       transcript: [],
       callStartedAt: null,
       sendToMeetingOps: getSendByDefault(),
       mobileCallMode: "split",
       mobileCallModeUserOverride: false,
       mobileChatSheet: null,
-    }),
+    });
+  },
 }));
 
 /**
@@ -565,7 +632,10 @@ export function setActiveCallRoom(roomId: string | null): void {
     // intent back to its audio-first default, live-video mirror cleared, and
     // the audio-first hold re-armed for the next session. An unlifted hold is
     // unwound first so the room's real (persisted) preference is what the
-    // next call starts from.
+    // next call starts from. The talk gate is a live per-call signal, so it
+    // (and its safety timer) reset with the call too — a chip held open by
+    // the OLD call must not survive into the next one.
+    clearTalkGateSafetyTimer();
     useCallUiStore.setState((state) => {
       const hold = state.audioIntentHold;
       return {
@@ -573,6 +643,7 @@ export function setActiveCallRoom(roomId: string | null): void {
         anyVideoLive: false,
         audioIntentHold: null,
         audioHoldConsumed: false,
+        talkGate: TALK_GATE_CLOSED,
         viewModes: hold
           ? { ...state.viewModes, [hold.roomId]: hold.priorMode }
           : state.viewModes,
@@ -629,6 +700,15 @@ export const uiCommandBus = {
  * room. Unknown actions are ignored defensively even though the message was
  * pre-validated.
  */
+/**
+ * Route a validated {@link TalkGateMessage} into the store. Safe from
+ * non-React code (the VoiceProvider data handler) — the safety timeout and
+ * per-call clearing live inside setTalkGate/setActiveCallRoom.
+ */
+export function dispatchTalkGate(msg: TalkGateMessage): void {
+  useCallUiStore.getState().setTalkGate(msg.open, msg.by);
+}
+
 export function dispatchUiCommand(
   msg: UiCommandMessage,
   roomId: string | null,

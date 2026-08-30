@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, Link2, LogOut, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, Link2, LogOut, Mic, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
@@ -26,6 +26,7 @@ import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
+import { VoiceSettingsModal } from "./VoiceSettingsModal";
 import { StartGroupModal } from "./StartGroupModal";
 import type { StartGroupPick } from "./startGroupModel";
 import { ThreadPanel } from "./ThreadPanel";
@@ -36,6 +37,7 @@ import { LeaveRoomModal } from "./LeaveRoomModal";
 import { Avatar } from "@/components/Avatar";
 import { AgentPortrait } from "@/components/Agents/AgentPortrait";
 import { agentPresence } from "@/lib/agentStatus";
+import { canEditVoiceSettings, voiceRelaySource } from "@/lib/voiceSettings";
 
 // Lazy: the Knowledge panel (collection mgmt + file upload + doc lists) is a
 // distinct surface most sessions never open, so split it out of the main chunk.
@@ -102,6 +104,10 @@ export function RoomView({ roomId }: RoomViewProps) {
   // Owner-only (see `isRoomOwner` below), because minting one puts a stranger
   // in the room with camera, mic and read access.
   const [guestAccessOpen, setGuestAccessOpen] = useState(false);
+  // Voice settings — when the room's voice agent treats speech as addressed
+  // to it. Only offered when the room HAS a voice agent (voice_relay_source)
+  // and the caller is owner/admin, the exact gate the PATCH enforces.
+  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   // "Start a group with <peer>…" — the EXPLICIT DM→group conversion. 1:1 DMs
   // deliberately have no Invite (inviting silently converted the private
   // room); this replacement creates a NEW group room instead. `startGroupSeed`
@@ -339,6 +345,12 @@ export function RoomView({ roomId }: RoomViewProps) {
   // never equals the participant UUID — so a member never sees a control that
   // could only 403. Mirrors VoiceVideoBar's broadcast-mint gate.
   const isRoomOwner = members?.find((m) => m.is_self)?.role === "owner";
+  // Voice-settings gate: the room has a voice relay AND the caller could
+  // actually change it (owner/admin — canEditVoiceSettings mirrors the
+  // server's ladder). Members don't see an entry that could only 403.
+  const voiceAgentSource = voiceRelaySource(roomDetail?.metadata_);
+  const showVoiceSettings =
+    voiceAgentSource !== null && canEditVoiceSettings(members);
   // The person on the other side of a human 1:1 — members arrive from the
   // room-members query above (is_self is server-set, the only reliable marker).
   const dmPeer = members?.find(
@@ -889,6 +901,25 @@ export function RoomView({ roomId }: RoomViewProps) {
                   Guest access…
                 </button>
                 )}
+                {/* Voice settings — when the room's voice agent listens.
+                    In this menu on EVERY viewport, labeled (the Guest-access
+                    precedent): a per-room configuration surface belongs where
+                    a person looks for room configuration. Gated to rooms
+                    that HAVE a voice agent and to owner/admin — the server's
+                    exact gate, so nobody sees a control that could only 403. */}
+                {showVoiceSettings && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setVoiceSettingsOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+                >
+                  <Mic className="h-4 w-4" />
+                  Voice settings…
+                </button>
+                )}
                 {/* 1:1 DMs: the explicit group conversion. EVERY viewport —
                     DM headers have no Invite button (removed on purpose:
                     inviting silently converted the private DM), so this
@@ -973,6 +1004,16 @@ export function RoomView({ roomId }: RoomViewProps) {
             roomId={roomId}
             roomName={displayName}
             onClose={() => setGuestAccessOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {voiceSettingsOpen && (
+          <VoiceSettingsModal
+            roomId={roomId}
+            roomName={displayName}
+            onClose={() => setVoiceSettingsOpen(false)}
           />
         )}
       </AnimatePresence>
