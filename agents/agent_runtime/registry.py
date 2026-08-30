@@ -169,19 +169,20 @@ class AgentRegistry:
         brigade_agent_id = self._resolve_brigade_agent_id(req)
         # An explicit override wins. The voice relay uses it to join AS the
         # participant it speaks for, so the call tile resolves to that
-        # character's name and art instead of the type-shaped `agent-relay`,
-        # which names nobody and falls through to the generated head.
-        override = self._string_from_metadata(
-            getattr(getattr(req, "job", None), "metadata", "") or "", "agent_identity"
-        ) or self._string_from_metadata(
-            getattr(req.room, "metadata", "") or "" if req.room else "", "agent_identity"
-        )
+        # character's name and art instead of the type-shaped `agent-relay`.
+        #
+        # JOB metadata ONLY — never the room's. The identity is a property of
+        # ONE dispatch, and room metadata is shared mutable state that the
+        # previous dispatch baked its own override into: read from there, the
+        # NEXT agent dispatched into the room (Majik, in the live rehearsal
+        # that caught this) inherits the relay's identity, joins as
+        # agent-claude-code, and LiveKit's duplicate-identity handling evicts
+        # the real relay. Exactly the class of bug the brigade_agent_id
+        # comment below already warns about.
+        job_meta_str = getattr(getattr(req, "job", None), "metadata", "") or ""
+        override = self._string_from_metadata(job_meta_str, "agent_identity")
         identity = override or agent_participant_identity(agent_type, brigade_agent_id)
-        name_override = self._string_from_metadata(
-            getattr(getattr(req, "job", None), "metadata", "") or "", "agent_display_name"
-        ) or self._string_from_metadata(
-            getattr(req.room, "metadata", "") or "" if req.room else "", "agent_display_name"
-        )
+        name_override = self._string_from_metadata(job_meta_str, "agent_display_name")
         display_name = name_override or agent_participant_name(
             agent_type, brigade_agent_id
         )

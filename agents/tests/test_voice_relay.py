@@ -700,3 +700,25 @@ class LiveConfigTests(TestCase):
         for junk in ({"type": "relay_config"}, {"type": "relay_config", "activation": 7}):
             agent._on_data(self._packet(junk))
         self.assertEqual(agent._activation, "name")
+
+
+class DispatchScopedOverrideTests(TestCase):
+    """agent_identity / agent_display_name are properties of ONE dispatch.
+
+    Read from room metadata — where the previous dispatch baked its own
+    values — the NEXT agent dispatched into the room inherits the relay's
+    identity, joins as agent-claude-code, and LiveKit's duplicate-identity
+    handling evicts the real relay. A live rehearsal caught Majik doing
+    exactly that; the room ended up with no agents at all.
+    """
+
+    def test_the_registry_reads_overrides_from_job_metadata_only(self) -> None:
+        import inspect
+
+        from agent_runtime.registry import AgentRegistry
+
+        source = inspect.getsource(AgentRegistry.on_job_request)
+        override_zone = source[source.index("agent_identity"):]
+        # The override lookups must not consult req.room metadata. The
+        # brigade_agent_id resolver may — that one deliberately falls back.
+        self.assertNotIn("req.room", override_zone.split("await req.accept")[0])

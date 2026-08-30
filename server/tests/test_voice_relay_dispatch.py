@@ -192,3 +192,29 @@ class ActivationPassthroughTests(IsolatedAsyncioTestCase):
             _room({"voice_relay_source": ROOK, "voice_relay_activation": "  "})
         )
         self.assertEqual(got[2], "name")
+
+
+class RoomMetadataScrubTests(IsolatedAsyncioTestCase):
+    """The room's metadata copy never carries per-dispatch keys."""
+
+    async def test_dispatch_room_copy_drops_identity_and_name(self) -> None:
+        import json as _json
+
+        from app.services.livekit_service import LiveKitService
+
+        api = AsyncMock()
+        svc = LiveKitService(api, "ws://x")
+        svc.update_room_metadata = AsyncMock()
+        await svc.dispatch_agent(
+            room_name="stable-x",
+            metadata={
+                "agent_type": "relay",
+                "voice_relay_source": ROOK,
+                "agent_identity": ROOK,
+                "agent_display_name": "Rook",
+            },
+        )
+        room_copy = _json.loads(svc.update_room_metadata.await_args.args[1])
+        self.assertNotIn("agent_identity", room_copy)
+        self.assertNotIn("agent_display_name", room_copy)
+        self.assertEqual(room_copy["voice_relay_source"], ROOK)
