@@ -84,6 +84,7 @@ import {
 import { ViewModeSwitcher } from "./ViewModeSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { VoiceAgentStatus } from "./VoiceAgentStatus";
+import { TalkGateIndicator } from "./TalkGateIndicator";
 import { VideoGrid } from "./VideoGrid";
 import { SplitPane } from "./SplitPane";
 import { Avatar } from "@/components/ui/Avatar";
@@ -2954,6 +2955,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
       {/* Agent working-state orb (listening / thinking / speaking). */}
       <VoiceAgentStatus />
+
+      {/* External talk gate (foot pedal via the gateway): "<agent> can hear
+          you" while held. Self-gating on the callUiStore talk-gate signal, so
+          it renders nothing in the (overwhelmingly common) no-pedal case. */}
+      <TalkGateIndicator roomId={roomId} />
 
       {/* Non-forcing prompt: someone turned a camera on while in audio compact. */}
       {videoPrompted && slim && hasAnyVideo && (
