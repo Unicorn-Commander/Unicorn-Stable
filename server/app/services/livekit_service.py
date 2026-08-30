@@ -324,14 +324,25 @@ class LiveKitService:
             merged = dict(existing)
             merged.update(payload)
             payload = merged
+        # The ROOM copy never carries per-dispatch keys. agent_identity /
+        # agent_display_name describe ONE worker's join; baked into the room
+        # they leak into every LATER dispatch that falls back to room metadata
+        # — which is how Majik once joined wearing the relay's identity and
+        # evicted it. The dispatch itself still carries the full payload.
+        room_payload = {
+            k: v
+            for k, v in payload.items()
+            if k not in ("agent_identity", "agent_display_name")
+        }
         metadata_str = json.dumps(payload)
+        room_metadata_str = json.dumps(room_payload)
 
         # Bake metadata into the room first so the worker'''s job handler can
         # read brigade_agent_id from ctx.room.metadata. This also means that if
         # explicit dispatch fails below, an auto-accepting worker can still pick
         # the job up with the right metadata.
         try:
-            await self.update_room_metadata(room_name, metadata_str)
+            await self.update_room_metadata(room_name, room_metadata_str)
         except Exception:
             logger.warning(
                 "livekit_room_metadata_update_failed",
