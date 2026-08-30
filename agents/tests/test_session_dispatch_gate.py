@@ -82,3 +82,32 @@ class GateWiringTests(TestCase):
         source = inspect.getsource(BrigadeBackedAgent._wire_session_events)
         self.assertIn("observe_reply_finished", source)
         self.assertIn("agent_state_changed", source)
+
+
+class GatedHistoryTests(TestCase):
+    """A user line becomes chat ONLY when it earns a reply.
+
+    The unconditional user_input_transcribed persister wrote every final
+    utterance of the linked human into the room — the same chat-flood the
+    relay was cured of, still alive on the Brigade lane, and the source of
+    the duplicated "rook say ready please" row in the live rehearsal.
+    """
+
+    def test_the_gate_persists_on_allow_and_on_bypass(self) -> None:
+        import inspect
+
+        from brigade_backed.agent import BrigadeBackedAgent
+
+        source = inspect.getsource(BrigadeBackedAgent.build_pipeline)
+        gate = source[source.index("def _reply_gate"):]
+        self.assertIn("_persist_user_line(speaker, text)", gate)
+        # Once on the kill-switch bypass, once on decision.respond.
+        self.assertGreaterEqual(gate.count("_persist_user_line(speaker, text)"), 2)
+
+    def test_the_unconditional_listener_yields_to_the_gate(self) -> None:
+        import inspect
+
+        from brigade_backed.agent import BrigadeBackedAgent
+
+        source = inspect.getsource(BrigadeBackedAgent._wire_session_events)
+        self.assertIn('getattr(self, "_reply_gate_fn", None) is None', source)
