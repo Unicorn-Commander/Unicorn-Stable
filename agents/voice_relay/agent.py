@@ -82,6 +82,7 @@ from agent_runtime.voice_dispatch import spoken_name_match
 from agent_runtime.voice_transcripts import (
     TranscriptAggregator,
     classify_transcript,
+    elected_user_captioner,
     is_agent_identity,
     mention_needles,
 )
@@ -337,6 +338,11 @@ class VoiceRelayAgent(StableAgent):
         # for a `self._room` that never existed is what made the ears throw on
         # every drain until a live call proved it.
         self._lk_room: Any = None
+        #: Our identity AS THE ROSTER SEES IT (the job-accept identity, e.g.
+        #: agent-claude-code) — the base class derives its own suffixed form
+        #: for logging, and an election computed over mismatched names would
+        #: quietly pick nobody.
+        self._join_identity: str = ""
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._speaker_task: asyncio.Task[None] | None = None
 
@@ -404,6 +410,10 @@ class VoiceRelayAgent(StableAgent):
         # Ears: carry the human's spoken words into the room so the brain on
         # the Mac can answer them. Only when nothing else is already doing it.
         self._lk_room = ctx.room
+        self._join_identity = str(
+            getattr(getattr(ctx.room, "local_participant", None), "identity", "")
+            or ""
+        )
         self._transcripts = TranscriptAggregator()
         # VoiceHistoryPersister, not TranscriptPublisher: the two live in the
         # same module and only the former can write a human's turn back to the
@@ -541,12 +551,12 @@ class VoiceRelayAgent(StableAgent):
                 )
                 return
 
-            # EVERYTHING heard goes to the LIVE TRANSCRIPT — but only when we
-            # are the sole agent. A Brigade voice worker already captions the
-            # participant it is linked to; a second caption stream for the same
-            # words renders every line twice in the panel.
-            if self._captions is not None and sole_agent_in_call(
-                self._lk_room, self._identity
+            # EVERYTHING heard goes to the LIVE TRANSCRIPT — through the ONE
+            # elected captioner. Every agent session transcribes the human, so
+            # without the election a three-agent call rendered every sentence
+            # three times in the panel.
+            if self._captions is not None and elected_user_captioner(
+                self._lk_room, self._join_identity or self._identity
             ):
                 try:
                     self._captions.on_user_transcript(ev)

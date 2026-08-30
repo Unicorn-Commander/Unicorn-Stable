@@ -221,6 +221,53 @@ async def _relay_display_name(db: AsyncSession, source_username: str) -> str | N
     return row.strip() if isinstance(row, str) and row.strip() else None
 
 
+#: The room settings that must survive into LiveKit room metadata. The DB row
+#: is the durable truth; the LiveKit copy is what the workers actually read.
+_VOICE_META_KEYS = (
+    "voice_primary_agent_id",
+    "voice_relay_source",
+    "voice_relay_agent_id",
+    "voice_relay_activation",
+)
+
+
+async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
+    """Carry the room's standing voice settings into the live media room.
+
+    A recreated LiveKit room starts with EMPTY metadata, and nothing used to
+    copy these keys back in — so ``primary_agent_id`` fell through to the
+    last-dispatched ``brigade_agent_id`` and the co-host drifted to whoever
+    joined most recently. Idempotent, merge-only, fail-open: presence and the
+    call must never depend on it.
+    """
+    import json as _json
+
+    meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
+    wanted = {
+        k: v
+        for k in _VOICE_META_KEYS
+        if isinstance((v := meta.get(k)), str) and v.strip()
+    }
+    if not wanted:
+        return
+    try:
+        existing = await livekit.get_room_metadata(room.livekit_room_name)
+        if all(existing.get(k) == v for k, v in wanted.items()):
+            return
+        merged = dict(existing)
+        merged.update(wanted)
+        await livekit.update_room_metadata(
+            room.livekit_room_name, _json.dumps(merged)
+        )
+        logger.info(
+            "voice_metadata_synced",
+            room_id=str(room.id),
+            keys=sorted(wanted),
+        )
+    except Exception:
+        logger.debug("voice_metadata_sync_failed", room_id=str(room.id), exc_info=True)
+
+
 async def _ensure_voice_relay(
     livekit: LiveKitService, room: Room, db: AsyncSession | None = None
 ) -> None:
@@ -444,6 +491,14 @@ async def _handle_participant_joined(
     await _broadcast_call_occupancy(
         redis, livekit, room, by=_joined_by(event, participant_id)
     )
+
+    # The room's standing voice settings ride into the live media room first,
+    # so the workers dispatched below read the configured co-host rather than
+    # whatever the last dispatch happened to leave behind.
+    try:
+        await _sync_voice_metadata(livekit, room)
+    except Exception:
+        logger.debug("voice_metadata_sync_wrapper_failed", exc_info=True)
 
     # A text-only agent (Rook) gets a voice in this call, if the room asked
     # for one. Fail-open by contract, like the recording below.
