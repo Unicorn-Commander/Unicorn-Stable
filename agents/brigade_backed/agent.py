@@ -42,6 +42,7 @@ from agent_runtime import voice_dispatch
 from agent_runtime.voice_transcripts import (
     VoiceTranscriptResponder,
     call_roster,
+    elected_user_captioner,
     mention_needles,
     primary_agent_id,
 )
@@ -497,6 +498,11 @@ class BrigadeBackedAgent(StableAgent):
         # uses, so the two lanes cannot disagree about who holds the floor.
         self._dispatch_me = brigade_agent_id or self.agent_type
         self._dispatch_floor = voice_dispatch.floor_for(ctx.room.name)
+        self._ctx_room = ctx.room
+        self._join_identity = str(
+            getattr(getattr(ctx.room, "local_participant", None), "identity", "")
+            or ""
+        )
         my_needles = set(mention_needles(brigade_agent_id, self.agent_type))
 
         def _persist_user_line(speaker: str, text: str) -> None:
@@ -707,9 +713,23 @@ class BrigadeBackedAgent(StableAgent):
         "AgentSession isn't running" 22 seconds later.
         """
         if self._transcript is not None:
-            session.on(
-                "user_input_transcribed", self._transcript.on_user_transcript
-            )
+            def _user_caption(ev: Any) -> None:
+                """USER captions go through the one-captioner election.
+
+                Every agent session transcribes the human it is linked to;
+                unelected publishers made a three-agent call render every
+                sentence three times. Our OWN replies caption unconditionally
+                below — nobody else speaks in our voice.
+                """
+                try:
+                    room = getattr(self, "_ctx_room", None)
+                    me = getattr(self, "_join_identity", "") or self._identity
+                    if room is None or elected_user_captioner(room, me):
+                        self._transcript.on_user_transcript(ev)
+                except Exception:
+                    logger.debug("user_caption_election_failed", exc_info=True)
+
+            session.on("user_input_transcribed", _user_caption)
             session.on(
                 "conversation_item_added", self._transcript.on_conversation_item
             )

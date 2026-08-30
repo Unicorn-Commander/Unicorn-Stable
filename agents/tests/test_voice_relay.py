@@ -722,3 +722,64 @@ class DispatchScopedOverrideTests(TestCase):
         # The override lookups must not consult req.room metadata. The
         # brigade_agent_id resolver may — that one deliberately falls back.
         self.assertNotIn("req.room", override_zone.split("await req.accept")[0])
+
+
+class CaptionElectionTests(TestCase):
+    """One captioner per call — pure arithmetic every worker computes alike."""
+
+    @staticmethod
+    def _room(identities):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            remote_participants={i: SimpleNamespace(identity=i) for i in identities}
+        )
+
+    def test_the_first_agent_identity_wins(self) -> None:
+        from agent_runtime.voice_transcripts import elected_user_captioner
+
+        room_for_relay = self._room(["aaron_1", "agent-majik", "agent-the-general"])
+        self.assertTrue(elected_user_captioner(room_for_relay, "agent-claude-code"))
+        room_for_majik = self._room(["aaron_1", "agent-claude-code", "agent-the-general"])
+        self.assertFalse(elected_user_captioner(room_for_majik, "agent-majik"))
+
+    def test_without_the_relay_a_brigade_worker_still_captions(self) -> None:
+        from agent_runtime.voice_transcripts import elected_user_captioner
+
+        self.assertTrue(
+            elected_user_captioner(self._room(["aaron_1", "agent-the-general"]), "agent-majik")
+        )
+        self.assertFalse(
+            elected_user_captioner(self._room(["aaron_1", "agent-majik"]), "agent-the-general")
+        )
+
+    def test_humans_and_recorders_do_not_vote(self) -> None:
+        from agent_runtime.voice_transcripts import elected_user_captioner
+
+        room = self._room(["aaron_1", "EG_rec", "broadcast-x"])
+        self.assertTrue(elected_user_captioner(room, "agent-majik"))
+
+    def test_a_broken_roster_fails_open_to_captioning(self) -> None:
+        """Occasional duplicates beat a transcript with holes."""
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import elected_user_captioner
+
+        self.assertTrue(
+            elected_user_captioner(SimpleNamespace(remote_participants=None), "agent-x")
+        )
+
+    def test_both_publishers_route_user_captions_through_it(self) -> None:
+        import inspect
+
+        from brigade_backed.agent import BrigadeBackedAgent
+        from voice_relay.agent import VoiceRelayAgent
+
+        self.assertIn(
+            "elected_user_captioner",
+            inspect.getsource(VoiceRelayAgent._on_own_stt),
+        )
+        self.assertIn(
+            "elected_user_captioner",
+            inspect.getsource(BrigadeBackedAgent._wire_session_events),
+        )

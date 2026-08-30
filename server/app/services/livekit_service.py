@@ -292,7 +292,7 @@ class LiveKitService:
         room_name: str,
         agent_name: str = "stable-brigade",
         metadata: dict[str, Any] | None = None,
-        merge_metadata: bool = False,
+        merge_metadata: bool = True,
     ) -> dict[str, Any]:
         """Explicitly dispatch a worker job so an agent joins the room as a
         participant (the real LiveKit in-room path).
@@ -303,6 +303,12 @@ class LiveKitService:
         for voice + media. The dispatched worker is told to stay silent on text
         (STABLE_TEXT_PATH_OWNS_CHAT, see agents/agent_runtime/base.py) so there
         is exactly one text reply.
+
+        ``merge_metadata`` defaults to True because REPLACEMENT is the bug
+        class: every client-triggered brigade dispatch used to overwrite the
+        room's metadata wholesale, so ``voice_primary_agent_id`` vanished and
+        the co-host fallback drifted to whoever was dispatched last — The
+        General answered a solo host who had configured Majik.
 
         `agent_name` must equal the worker'''s `WorkerOptions.agent_name`
         (registered as "stable-brigade"). `metadata` is serialized into BOTH

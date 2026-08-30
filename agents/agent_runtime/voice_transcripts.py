@@ -331,6 +331,31 @@ def primary_agent_id(room: Any) -> str | None:
     return None
 
 
+def elected_user_captioner(room: Any, self_identity: str) -> bool:
+    """Exactly ONE agent captions the humans' speech in a call.
+
+    Every agent session transcribes the human it is linked to, and every one
+    used to publish those captions — three agents in a call meant every
+    sentence rendered three times in the transcript panel. There is no shared
+    state to elect with, so the election is pure arithmetic every worker can
+    compute identically from the roster it already sees: the lexicographically
+    FIRST agent identity captions, everyone else stays quiet. Agents' own
+    spoken replies are unaffected — each captions its own voice.
+
+    Fail-open: a worker that cannot read the roster captions anyway, because
+    a transcript with occasional duplicates beats a transcript with holes.
+    """
+    candidates = {self_identity} if self_identity else set()
+    try:
+        for participant in getattr(room, "remote_participants", {}).values():
+            identity = str(getattr(participant, "identity", "") or "")
+            if is_agent_identity(identity):
+                candidates.add(identity)
+    except Exception:
+        return True
+    return bool(candidates) and min(candidates) == self_identity
+
+
 def call_roster(room: Any, self_identity: str) -> tuple[dict[str, set[str]], int]:
     """(other agents → their spoken names, human count) for the live call.
 

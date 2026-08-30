@@ -218,3 +218,72 @@ class RoomMetadataScrubTests(IsolatedAsyncioTestCase):
         self.assertNotIn("agent_identity", room_copy)
         self.assertNotIn("agent_display_name", room_copy)
         self.assertEqual(room_copy["voice_relay_source"], ROOK)
+
+
+class VoiceMetadataSyncTests(IsolatedAsyncioTestCase):
+    """The DB row is the durable truth; the LiveKit copy is what workers read.
+
+    A recreated media room starts empty, and nothing copied these keys back —
+    so primary_agent_id fell through to the last-dispatched brigade_agent_id
+    and the co-host drifted to whoever joined most recently. The General
+    answered a solo host who had configured Majik.
+    """
+
+    async def test_missing_keys_are_merged_in(self) -> None:
+        import json as _json
+
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(
+            return_value={"brigade_agent_id": "the-general"}
+        )
+        room = _room(
+            {
+                "voice_primary_agent_id": "majik",
+                "voice_relay_source": ROOK,
+                "voice_relay_activation": "ptt",
+            }
+        )
+        await _sync_voice_metadata(lk, room)
+        merged = _json.loads(lk.update_room_metadata.await_args.args[1])
+        self.assertEqual(merged["voice_primary_agent_id"], "majik")
+        self.assertEqual(merged["voice_relay_activation"], "ptt")
+        # Merge, not replace: what the dispatches wrote survives.
+        self.assertEqual(merged["brigade_agent_id"], "the-general")
+
+    async def test_already_synced_writes_nothing(self) -> None:
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(
+            return_value={"voice_primary_agent_id": "majik"}
+        )
+        await _sync_voice_metadata(lk, _room({"voice_primary_agent_id": "majik"}))
+        lk.update_room_metadata.assert_not_awaited()
+
+    async def test_a_room_with_no_voice_settings_is_untouched(self) -> None:
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = AsyncMock()
+        await _sync_voice_metadata(lk, _room({"brigade_agent_id": "majik"}))
+        lk.get_room_metadata.assert_not_awaited()
+
+    async def test_failures_never_escape(self) -> None:
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(side_effect=RuntimeError("down"))
+        await _sync_voice_metadata(lk, _room({"voice_primary_agent_id": "majik"}))
+
+
+class DispatchMergesByDefaultTests(IsolatedAsyncioTestCase):
+    async def test_replacement_requires_opting_out(self) -> None:
+        """Replacement was the bug class: client brigade dispatches wiped
+        voice_primary_agent_id and the co-host drifted to the last invite."""
+        import inspect
+
+        from app.services.livekit_service import LiveKitService
+
+        sig = inspect.signature(LiveKitService.dispatch_agent)
+        self.assertIs(sig.parameters["merge_metadata"].default, True)
