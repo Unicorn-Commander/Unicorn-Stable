@@ -357,7 +357,17 @@ def call_roster(room: Any, self_identity: str) -> tuple[dict[str, set[str]], int
             continue
         if is_agent_identity(identity):
             agent_id = identity.removeprefix("agent-")
-            others[agent_id] = mention_needles(agent_id, None)
+            needles = set(mention_needles(agent_id, None))
+            # The DISPLAY name too. The voice relay joins as its participant
+            # (identity agent-claude-code, name "Rook"), and people address it
+            # by the name they see — "Rook, …". Without this, the dispatcher
+            # cannot tell that line is addressed ELSEWHERE, and the room's
+            # co-host answers a question meant for someone else.
+            display = str(getattr(participant, "name", "") or "").strip().lower()
+            if display:
+                needles.add(display)
+                needles.add(display.replace("-", " "))
+            others[agent_id] = needles
         else:
             humans += 1
     return others, humans
