@@ -22,6 +22,7 @@ import type {
   MintGuestInviteResponse,
 } from "@/lib/guestInvite";
 import { useFederationStore } from "@/stores/federationStore";
+import type { VoiceActivationMode } from "@/lib/roomDataProtocol";
 
 /**
  * The API origin of the ACTIVE federated instance. Falls back to the build-time
@@ -143,6 +144,16 @@ export interface RoomMember {
   joined_at: string;
   last_read_at?: string | null;
   status?: string;
+}
+
+/**
+ * Result of PATCH /rooms/{id}/voice-settings. `live:true` means a live call
+ * heard the change immediately; `live:false` means it saved and applies from
+ * the next call (the caller's toast should say which).
+ */
+export interface VoiceSettingsResponse {
+  activation: VoiceActivationMode;
+  live: boolean;
 }
 
 /** Verbs of POST /rooms/{id}/moderation — live-call moderation (owner/admin). */
@@ -1230,6 +1241,24 @@ class StableApiClient {
       "POST",
       `/api/v1/rooms/${roomId}/moderation`,
       { participant_id: participantId, action },
+    );
+  }
+
+  /**
+   * Set how the room's voice agent decides a spoken line is addressed to it
+   * (owner/admin only — the same ladder as call moderation). The server also
+   * broadcasts a `relay_config` frame into any live call so a relay already
+   * in the room switches immediately. Errors: 403 not owner/admin, 404 no
+   * such room, 409 the room has no voice agent, 422 bad mode.
+   */
+  async updateVoiceSettings(
+    roomId: string,
+    activation: VoiceActivationMode,
+  ): Promise<VoiceSettingsResponse> {
+    return this.request<VoiceSettingsResponse>(
+      "PATCH",
+      `/api/v1/rooms/${roomId}/voice-settings`,
+      { activation },
     );
   }
 
