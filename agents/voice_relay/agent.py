@@ -78,7 +78,11 @@ from agent_runtime.transcript_publisher import (
     TranscriptPublisher,
     VoiceHistoryPersister,
 )
-from agent_runtime.voice_dispatch import spoken_name_match
+from agent_runtime.voice_dispatch import (
+    fuzzy_spoken_name_match,
+    log_name_near_miss,
+    spoken_name_match,
+)
 from agent_runtime.voice_transcripts import (
     TranscriptAggregator,
     classify_transcript,
@@ -100,6 +104,10 @@ DEFAULT_RELAY_PERSONA = "rook"
 #:
 #:   name   — address it by name ("Rook, …"). The safe default in any room
 #:            with more than one person in it.
+#:   window — a named line opens a sliding conversation window; follow-ups
+#:            inside it need no wakeword, and side talk after it closes is
+#:            ignored. This is the natural back-and-forth mode. The pedal
+#:            is not required.
 #:   always — every utterance is for the agent. Right for a room that is just
 #:            you and it; wrong the moment someone else joins.
 #:   ptt    — only while an external talk gate is held (a foot pedal, a stream
@@ -107,8 +115,17 @@ DEFAULT_RELAY_PERSONA = "rook"
 #:            wants: a spoken name can false-trigger on camera, a held pedal
 #:            cannot.
 #:   off    — never write to chat. Transcript only.
-ACTIVATION_MODES = ("name", "always", "ptt", "off")
+ACTIVATION_MODES = ("name", "window", "always", "ptt", "off")
 DEFAULT_ACTIVATION = "name"
+
+#: Sliding conversation window for ``window`` mode. 75s sits in the 60–90s
+#: range Aaron asked for on 2026-08-30: long enough for a follow-up after a
+#: reply, short enough that two humans talking after the window closes stay
+#: off the agent's plate. Overridable per room via
+#: ``voice_relay_window_seconds``.
+DEFAULT_WINDOW_SECONDS = 75
+MIN_WINDOW_SECONDS = 15
+MAX_WINDOW_SECONDS = 300
 
 #: A spoken line longer than this is truncated. A relay reading a 4000-word
 #: report aloud holds the floor for ten minutes with no way to interrupt it,
@@ -199,6 +216,54 @@ def activation_from_metadata(metadata: Any) -> str:
     mode = data.get("voice_relay_activation")
     mode = mode.strip().lower() if isinstance(mode, str) else ""
     return mode if mode in ACTIVATION_MODES else DEFAULT_ACTIVATION
+
+
+def clamp_window_seconds(value: Any) -> int:
+    """Keep a window length inside the live range; junk becomes the default."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_WINDOW_SECONDS
+    return max(MIN_WINDOW_SECONDS, min(MAX_WINDOW_SECONDS, n))
+
+
+def window_seconds_from_metadata(metadata: Any) -> int:
+    """Per-room window length, or the 75s default."""
+    data: Any = metadata
+    if isinstance(metadata, str):
+        try:
+            data = json.loads(metadata) if metadata.strip() else {}
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        return DEFAULT_WINDOW_SECONDS
+    raw = data.get("voice_relay_window_seconds")
+    if raw is None or raw == "":
+        return DEFAULT_WINDOW_SECONDS
+    return clamp_window_seconds(raw)
+
+
+def aliases_from_metadata(metadata: Any, persona: str) -> set[str]:
+    """Extra wakeword aliases. Rook always accepts 'rookie'."""
+    data: Any = metadata
+    if isinstance(metadata, str):
+        try:
+            data = json.loads(metadata) if metadata.strip() else {}
+        except Exception:
+            data = {}
+    out: set[str] = set()
+    if (persona or "").strip().lower() in {"rook", "claude-code"}:
+        out.add("rookie")
+    if not isinstance(data, dict):
+        return out
+    raw = data.get("voice_relay_aliases")
+    if isinstance(raw, str):
+        out.update(p.strip().lower() for p in raw.split(",") if p.strip())
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.add(item.strip().lower())
+    return out
 
 
 def relay_config_from_metadata(metadata: Any) -> tuple[str, str]:
@@ -330,6 +395,11 @@ class VoiceRelayAgent(StableAgent):
         self._captions: TranscriptPublisher | None = None
         self._my_names: set[str] = set()
         self._activation = DEFAULT_ACTIVATION
+        #: Sliding conversation window (window mode). Monotonic deadline;
+        #: 0 means closed. Each addressed line and each spoken reply slides it.
+        self._window_until = 0.0
+        self._window_seconds = DEFAULT_WINDOW_SECONDS
+        self._name_aliases: set[str] = set()
         #: External talk gate (ptt mode): open while the pedal is held.
         self._gate_open = False
         self._ears_task: asyncio.Task[None] | None = None
@@ -369,6 +439,15 @@ class VoiceRelayAgent(StableAgent):
             if job_activation != DEFAULT_ACTIVATION
             else activation_from_metadata(room_meta)
         )
+        job_window = window_seconds_from_metadata(job_meta)
+        self._window_seconds = (
+            job_window
+            if job_window != DEFAULT_WINDOW_SECONDS
+            else window_seconds_from_metadata(room_meta)
+        )
+        self._name_aliases = aliases_from_metadata(job_meta, self._relay_persona)
+        if not self._name_aliases:
+            self._name_aliases = aliases_from_metadata(room_meta, self._relay_persona)
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
         agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
@@ -486,10 +565,16 @@ class VoiceRelayAgent(StableAgent):
                 mode = str(payload.get("activation") or "").strip().lower()
                 if mode in ACTIVATION_MODES:
                     old_mode, self._activation = self._activation, mode
+                    raw_window = payload.get("window_seconds")
+                    if raw_window is not None and raw_window != "":
+                        self._window_seconds = clamp_window_seconds(raw_window)
+                    if mode != "window":
+                        self._window_until = 0.0
                     logger.info(
                         "voice_relay_config_changed",
                         old=old_mode,
                         new=mode,
+                        window_seconds=self._window_seconds,
                         by=str(payload.get("by") or "")[:40],
                     )
                 else:
@@ -593,7 +678,23 @@ class VoiceRelayAgent(StableAgent):
             agent then SAYS something to an utterance that meant nothing.
         """
         if not self._is_for_us(text):
-            logger.debug("voice_relay_heard_not_addressed", chars=len(text), ear=ear)
+            reason = log_name_near_miss(text, self._listen_names())
+            if reason:
+                # Visible on purpose: a silent miss is how "Rook isn't
+                # responding" burns forty minutes. The transcript panel
+                # already has the line; this log is why we did not chat it.
+                logger.info(
+                    "voice_relay_address_near_miss",
+                    reason=reason,
+                    chars=len(text),
+                    ear=ear,
+                    preview=text[:80],
+                    activation=self._activation,
+                )
+            else:
+                logger.debug(
+                    "voice_relay_heard_not_addressed", chars=len(text), ear=ear
+                )
             return False
         if self._activation == "always":
             if not sole_agent_in_call(self._lk_room, self._identity):
@@ -618,6 +719,17 @@ class VoiceRelayAgent(StableAgent):
         )
         return True
 
+    def _listen_names(self) -> set[str]:
+        return set(self._my_names) | set(self._name_aliases)
+
+    def _addressed_by_name(self, text: str) -> bool:
+        names = self._listen_names()
+        return spoken_name_match(text, names) or fuzzy_spoken_name_match(text, names)
+
+    def _touch_window(self) -> None:
+        if self._activation == "window":
+            self._window_until = self._clock() + self._window_seconds
+
     def _is_for_us(self, text: str) -> bool:
         """Was this line addressed to the agent, under this room's rule?"""
         mode = self._activation
@@ -629,7 +741,16 @@ class VoiceRelayAgent(StableAgent):
             # The gate is the whole signal — a held pedal cannot false-trigger
             # the way a spoken name can, which is why a show wants it.
             return self._gate_open
-        return spoken_name_match(text, self._my_names)
+        if mode == "window":
+            now = self._clock()
+            if self._addressed_by_name(text):
+                self._window_until = now + self._window_seconds
+                return True
+            if now < self._window_until:
+                self._window_until = now + self._window_seconds
+                return True
+            return False
+        return self._addressed_by_name(text)
 
     def _speaker_identity(self, ev: Any) -> str | None:
         """Whose voice this was, in the form the backend accepts.
@@ -760,6 +881,7 @@ class VoiceRelayAgent(StableAgent):
                             seconds=round(budget, 1),
                         )
                 break
+        self._touch_window()
         logger.info("voice_relay_spoke", chars=len(text))
 
     async def _shutdown_steps(self) -> None:  # pragma: no cover — lifecycle

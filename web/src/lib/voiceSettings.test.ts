@@ -126,7 +126,7 @@ describe("voiceActivationOptions (mode → human language)", () => {
     return found;
   }
 
-  it("covers all four modes, default first, off last", () => {
+  it("covers every mode, default first, window second, off last", () => {
     const options = voiceActivationOptions("Rook");
     expect(options.map((o) => o.mode)).toEqual([...VOICE_ACTIVATION_MODES]);
     expect(options.at(0)?.mode).toBe("name");
@@ -135,6 +135,8 @@ describe("voiceActivationOptions (mode → human language)", () => {
 
   it("speaks human, not wire ids, and weaves the agent's real name in", () => {
     expect(opt("Rook", "name").label).toBe("Only when named — say “Rook, …”");
+    expect(opt("Rook", "window").label).toBe("Named line, then a conversation");
+    expect(opt("Rook", "window").description).toContain("Rook");
     expect(opt("Rook", "always").label).toBe("Everything I say");
     expect(opt("Rook", "ptt").label).toBe("Only while my talk key is held");
     expect(opt("Rook", "off").label).toBe("Never — transcript only");

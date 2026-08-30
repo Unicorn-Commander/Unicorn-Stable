@@ -228,6 +228,8 @@ _VOICE_META_KEYS = (
     "voice_relay_source",
     "voice_relay_agent_id",
     "voice_relay_activation",
+    "voice_relay_window_seconds",
+    "voice_relay_aliases",
 )
 
 
@@ -243,15 +245,23 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
     import json as _json
 
     meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
-    wanted = {
-        k: v
-        for k in _VOICE_META_KEYS
-        if isinstance((v := meta.get(k)), str) and v.strip()
-    }
+    wanted: dict[str, Any] = {}
+    for k in _VOICE_META_KEYS:
+        v = meta.get(k)
+        if isinstance(v, str) and v.strip():
+            wanted[k] = v
+        elif isinstance(v, (int, float)) and k == "voice_relay_window_seconds":
+            wanted[k] = str(int(v))
+        elif isinstance(v, (list, tuple)) and k == "voice_relay_aliases":
+            aliases = ",".join(str(x).strip() for x in v if str(x).strip())
+            if aliases:
+                wanted[k] = aliases
     if not wanted:
         return
     try:
         existing = await livekit.get_room_metadata(room.livekit_room_name)
+        if not isinstance(existing, dict):
+            existing = {}
         if all(existing.get(k) == v for k, v in wanted.items()):
             return
         merged = dict(existing)
@@ -297,8 +307,12 @@ async def _ensure_voice_relay(
     prefixes = (source, f"agent-{persona}", "agent-relay")
     try:
         state = await livekit.get_room(room.livekit_room_name)
+        raw_participants = (
+            state.get("participants", []) if isinstance(state, dict) else []
+        )
         identities = {
-            str(getattr(p, "identity", "") or "") for p in state.get("participants", [])
+            str(getattr(p, "identity", "") or "")
+            for p in (raw_participants or [])
         }
         if any(i.startswith(prefixes) for i in identities):
             return
@@ -315,6 +329,7 @@ async def _ensure_voice_relay(
         return
 
     display_name = await _relay_display_name(db, source) if db is not None else None
+    room_meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
     try:
         await livekit.dispatch_agent(
             room_name=room.livekit_room_name,
@@ -328,6 +343,15 @@ async def _ensure_voice_relay(
                 # carried here simply never reaches it — which is how
                 # rook-aaron stayed on "name" after being set to "always".
                 "voice_relay_activation": activation,
+                **(
+                    {
+                        "voice_relay_window_seconds": str(
+                            int(room_meta.get("voice_relay_window_seconds") or 75)
+                        )
+                    }
+                    if activation == "window"
+                    else {}
+                ),
                 # Join AS the participant we speak for, so the call tile
                 # resolves to that character's name and art. `agent-relay`
                 # names nobody, which is why the tile showed "Stable Relay"

@@ -84,8 +84,9 @@ export interface VoiceActivationOption {
 }
 
 /**
- * The four modes in HUMAN language, with the agent's actual name woven in.
- * Order is deliberate: default first, then increasingly open, "off" last.
+ * The modes in HUMAN language, with the agent's actual name woven in.
+ * Order is deliberate: default first, then the conversation window, then
+ * increasingly open, "off" last.
  */
 export function voiceActivationOptions(
   agentName: string,
@@ -96,6 +97,11 @@ export function voiceActivationOptions(
       mode: "name",
       label: `Only when named — say “${name}, …”`,
       description: `Speech reaches ${name} only when a line starts with its name.`,
+    },
+    {
+      mode: "window",
+      label: `Named line, then a conversation`,
+      description: `Say “${name}, …” once. Follow-ups for about a minute need no name. Side talk after that is ignored.`,
     },
     {
       mode: "always",

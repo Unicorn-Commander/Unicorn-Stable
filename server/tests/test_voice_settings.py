@@ -96,7 +96,7 @@ class VoiceSettingsTests(IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 422)
 
     async def test_every_supported_mode_is_accepted(self) -> None:
-        for mode in ("name", "always", "ptt", "off"):
+        for mode in ("name", "window", "always", "ptt", "off"):
             result, *_ = await self._call(activation=mode)
             self.assertEqual(result["activation"], mode)
 

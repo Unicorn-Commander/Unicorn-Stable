@@ -40,6 +40,7 @@ import { HumanTranscriptSession } from "@/lib/humanTranscript";
 import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
 import { DeviceCheckDialog } from "@/components/Call/DeviceCheckDialog";
 import {
+  pickAudioInputDevice,
   readDevicePreferences,
   saveDevicePreference,
   setElementSink,
@@ -258,10 +259,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setSelectedDevices((current) => ({
       audioinput: next.audioinput.some((d) => d.deviceId === current.audioinput)
         ? current.audioinput
-        : next.audioinput.find((d) => d.deviceId === saved.audioinput)
-            ?.deviceId ||
-          next.audioinput[0]?.deviceId ||
-          "",
+        : pickAudioInputDevice(next.audioinput, saved.audioinput),
       videoinput: next.videoinput.some((d) => d.deviceId === current.videoinput)
         ? current.videoinput
         : next.videoinput.find((d) => d.deviceId === saved.videoinput)

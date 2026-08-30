@@ -262,6 +262,14 @@ class MintKeyBody(BaseModel):
     rate_limit_rpm: int = Field(30, ge=1, le=600)
 
 
+class PatchKeyBody(BaseModel):
+    """Partial update. Omitted fields stay as they are. 405 was the old answer."""
+
+    label: str | None = None
+    allowed_rooms: list[str] | None = None
+    rate_limit_rpm: int | None = Field(default=None, ge=1, le=600)
+
+
 # ---------------------------------------------------------------------------
 # Message endpoints
 # ---------------------------------------------------------------------------
@@ -794,6 +802,46 @@ async def list_gateway_keys(
             }
             for r in rows
         ]
+    }
+
+
+@router.patch("/keys/{key_id}")
+async def patch_gateway_key(
+    key_id: uuid.UUID,
+    body: PatchKeyBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Update rooms/rate/label on an existing key. Operator-only.
+
+    Mint-and-swap was the only option because this returned 405. A live
+    room that needs 360 rpm on both name forms should not require a new
+    secret.
+    """
+    verify_key_admin_bearer(request)
+    row = (
+        await db.execute(select(AgentGatewayKey).where(AgentGatewayKey.id == key_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Key not found")
+    if row.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="Key is revoked")
+    if body.label is not None:
+        row.label = body.label
+    if body.allowed_rooms is not None:
+        row.allowed_rooms = body.allowed_rooms
+    if body.rate_limit_rpm is not None:
+        row.rate_limit_rpm = body.rate_limit_rpm
+    await db.commit()
+    logger.info("gateway_key_patched", key_id=str(key_id), agent_id=row.agent_id)
+    return {
+        "id": str(row.id),
+        "agent_id": row.agent_id,
+        "key_prefix": row.key_prefix,
+        "label": row.label,
+        "allowed_rooms": row.allowed_rooms,
+        "rate_limit_rpm": row.rate_limit_rpm,
+        "revoked": False,
     }
 
 

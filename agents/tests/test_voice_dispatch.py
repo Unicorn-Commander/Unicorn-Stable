@@ -74,6 +74,21 @@ class NameMatchingTests(TestCase):
     def test_empty_text_matches_nothing(self) -> None:
         self.assertFalse(spoken_name_match("", MAJIK))
 
+    def test_fuzzy_leading_token_recovers_a_mutated_wakeword(self) -> None:
+        from agent_runtime.voice_dispatch import fuzzy_spoken_name_match
+
+        rook = {"rook", "rookie"}
+        self.assertTrue(fuzzy_spoken_name_match("rok, status", rook))
+        self.assertTrue(fuzzy_spoken_name_match("rooks what is next", rook))
+        self.assertFalse(fuzzy_spoken_name_match("look at the board", rook))
+        self.assertFalse(fuzzy_spoken_name_match("brook, status", rook))
+
+    def test_near_miss_log_catches_a_mention_that_is_not_an_address(self) -> None:
+        from agent_runtime.voice_dispatch import log_name_near_miss
+
+        reason = log_name_near_miss("i asked rook about it yesterday", {"rook"})
+        self.assertEqual(reason, "mention_not_address:rook")
+
 
 class ScenarioTests(TestCase):
     """The six DoD scenarios, in the order the spec lists them."""
