@@ -499,12 +499,32 @@ class BrigadeBackedAgent(StableAgent):
         self._dispatch_floor = voice_dispatch.floor_for(ctx.room.name)
         my_needles = set(mention_needles(brigade_agent_id, self.agent_type))
 
+        def _persist_user_line(speaker: str, text: str) -> None:
+            """The user's spoken line becomes chat ONLY when it earns a reply.
+
+            The unconditional user_input_transcribed persister wrote EVERY
+            final utterance of the linked human into the room — the same
+            chat-flood the relay was cured of, still alive on the Brigade
+            lane. With the gate deciding replies, the gate is also the one
+            place that knows whether the line deserves to be in the log.
+            """
+            history = self._voice_history
+            if history is None or not text:
+                return
+            try:
+                history.persist_user_utterance(speaker, text)
+            except Exception:
+                logger.debug("gated_history_persist_failed", exc_info=True)
+
         def _reply_gate(new_message: Any) -> bool:
-            if not voice_dispatch.dispatch_enabled():
-                return True
             text = (getattr(new_message, "text_content", "") or "").strip()
             linked = linked_participant()
             speaker = str(getattr(linked, "identity", "") or "") or "unknown-human"
+            if not voice_dispatch.dispatch_enabled():
+                # Kill switch: the old behaviour exactly — reply to everything,
+                # and keep the full voice conversation in chat.
+                _persist_user_line(speaker, text)
+                return True
             others, humans = call_roster(ctx.room, self._identity)
             decision = voice_dispatch.decide(
                 state=self._dispatch_floor,
@@ -529,6 +549,8 @@ class BrigadeBackedAgent(StableAgent):
                 other_agents=sorted(others),
                 preview=text[:80],
             )
+            if decision.respond:
+                _persist_user_line(speaker, text)
             return decision.respond
 
         self._lk_agent.set_reply_gate(_reply_gate)
@@ -709,7 +731,11 @@ class BrigadeBackedAgent(StableAgent):
         except Exception:
             logger.debug("floor_release_wire_failed", exc_info=True)
 
-        if self._voice_history is not None:
+        # The user-line persister moves INTO the reply gate when one exists:
+        # only a line that earns a reply lands in chat. Without a gate (none
+        # installed, e.g. a build path that never wired one), keep the old
+        # unconditional listener so voice history does not silently vanish.
+        if self._voice_history is not None and getattr(self, "_reply_gate_fn", None) is None:
             session.on(
                 "user_input_transcribed", self._voice_history.on_user_transcript
             )
