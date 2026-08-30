@@ -535,3 +535,61 @@ class RosterDisplayNameTests(TestCase):
         )
         others, _ = call_roster(room, "agent-claude-code")
         self.assertIn("majik", others["majik"])
+
+
+class NoCohostTests(TestCase):
+    """voice_primary_agent_id="nobody" means NO co-host — every agent named.
+
+    The show design that needs it: Rook is the agent Aaron talks to (via the
+    relay), and Majik lives in the DJ app with its own wake word. Without an
+    explicit opt-out, the scalar fallback hands the co-host to the
+    last-invited agent and SOMEBODY always answers unaddressed speech.
+    """
+
+    def test_nobody_disables_the_cohost_and_beats_the_fallback(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        room = SimpleNamespace(
+            metadata='{"voice_primary_agent_id": "nobody",'
+            ' "brigade_agent_id": "the-general"}'
+        )
+        self.assertIsNone(primary_agent_id(room))
+
+    def test_none_and_off_spell_the_same_thing(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        for word in ("none", "off", "NOBODY"):
+            room = SimpleNamespace(
+                metadata='{"voice_primary_agent_id": "%s"}' % word
+            )
+            self.assertIsNone(primary_agent_id(room), word)
+
+    def test_a_real_name_still_wins(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        room = SimpleNamespace(metadata='{"voice_primary_agent_id": "majik"}')
+        self.assertEqual(primary_agent_id(room), "majik")
+
+    def test_with_no_cohost_unaddressed_solo_speech_dispatches_nobody(self) -> None:
+        from agent_runtime.voice_dispatch import RoomFloor, decide
+
+        d = decide(
+            state=RoomFloor(),
+            me="majik",
+            my_names={"majik"},
+            speaker="aaron_1",
+            speaker_is_agent=False,
+            text="okay let us look at the set list",
+            other_agent_names={"claude-code": {"rook"}},
+            human_count=1,
+            primary_agent=None,
+            now=1000.0,
+        )
+        self.assertFalse(d.respond)
+        self.assertEqual(d.rule, "addressed_to_nobody")

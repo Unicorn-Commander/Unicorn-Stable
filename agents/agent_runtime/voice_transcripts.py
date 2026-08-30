@@ -324,10 +324,19 @@ def primary_agent_id(room: Any) -> str | None:
         return None
     if not isinstance(meta, dict):
         return None
-    for key in ("voice_primary_agent_id", "brigade_agent_id"):
-        value = meta.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    explicit = meta.get("voice_primary_agent_id")
+    if isinstance(explicit, str) and explicit.strip():
+        value = explicit.strip().lower()
+        # An explicit "nobody" beats the fallback: it is how a show room says
+        # "no co-host at all — every agent waits to be named". Without it the
+        # scalar fallback below hands the co-host to the last-invited agent,
+        # and there is no way to opt OUT of having one.
+        if value in ("nobody", "none", "off"):
+            return None
+        return explicit.strip()
+    fallback = meta.get("brigade_agent_id")
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback.strip()
     return None
 
 
