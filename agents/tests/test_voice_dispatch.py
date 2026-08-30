@@ -467,3 +467,71 @@ class VoicePresetTests(TestCase):
         }
         for agent in KOKORO_VOICE_PRESETS:
             self.assertIn(_resolve_kokoro_voice(agent, None), served, agent)
+
+
+class RosterDisplayNameTests(TestCase):
+    """The roster must know what each agent is CALLED, not just its identity.
+
+    The voice relay joins as identity agent-claude-code with the display name
+    "Rook". People address what they see. Without the display name in the
+    needles, "Rook, cut to camera two" reads as unaddressed — and the room's
+    co-host answers a question meant for someone else.
+    """
+
+    @staticmethod
+    def _room(members):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            remote_participants={
+                identity: SimpleNamespace(identity=identity, name=name)
+                for identity, name in members
+            }
+        )
+
+    def test_the_display_name_lands_in_the_needles(self) -> None:
+        from agent_runtime.voice_transcripts import call_roster
+
+        others, humans = call_roster(
+            self._room(
+                [("aaron_1111", "aaron"), ("agent-claude-code", "Rook")]
+            ),
+            "agent-majik",
+        )
+        self.assertEqual(humans, 1)
+        self.assertIn("rook", others["claude-code"])
+
+    def test_the_cohost_yields_a_line_addressed_to_rook(self) -> None:
+        """The scenario that forced this: e03, Aaron solo, Majik as co-host.
+        "Rook, say ready" must be ADDRESSED ELSEWHERE for Majik, not
+        unaddressed solo speech the co-host rule hands to it."""
+        from agent_runtime.voice_dispatch import RoomFloor, decide
+
+        d = decide(
+            state=RoomFloor(),
+            me="majik",
+            my_names={"majik"},
+            speaker="aaron_1111",
+            speaker_is_agent=False,
+            text="rook, say ready please",
+            other_agent_names={"claude-code": {"claude-code", "claude code", "rook"}},
+            human_count=1,
+            primary_agent="majik",
+            now=1000.0,
+        )
+        self.assertFalse(d.respond)
+        self.assertEqual(d.rule, "addressed_other_agent")
+        self.assertEqual(d.addressed, "claude-code")
+
+    def test_a_nameless_participant_still_resolves(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_runtime.voice_transcripts import call_roster
+
+        room = SimpleNamespace(
+            remote_participants={
+                "agent-majik": SimpleNamespace(identity="agent-majik", name="")
+            }
+        )
+        others, _ = call_roster(room, "agent-claude-code")
+        self.assertIn("majik", others["majik"])
