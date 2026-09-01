@@ -313,23 +313,35 @@ class TranscriptPublisher:
         except Exception:
             logger.debug("transcript_agent_publish_failed", exc_info=True)
 
-    def publish_agent_final(self, text: str) -> None:
+    def publish_agent_final(
+        self,
+        text: str,
+        *,
+        name: str | None = None,
+        participant_id: str | None = None,
+    ) -> None:
         """Publish a committed agent caption line OUTSIDE the session events.
 
         Used by the emergency direct-reply path (the session is dead, so no
         ``conversation_item_added`` will ever fire for this reply). Same
         envelope, same segmenting, same never-raise contract as
         ``on_conversation_item``.
+
+        ``name``/``participant_id`` override the publisher's own agent for ONE
+        line: the voice relay speaks for several senders through one session,
+        and a caption labelled with the relay's name over Grok's words would
+        misattribute them on camera.
         """
         try:
             content = (text or "").strip()
             if not content:
                 return
             self._agent_seq += 1
-            segment_id = f"{self._agent_identity}-{self._agent_seq}-{_now_ms()}"
+            identity = participant_id or self._agent_identity
+            segment_id = f"{identity}-{self._agent_seq}-{_now_ms()}"
             self._publish(
-                participant_id=self._agent_identity,
-                name=self._agent_name,
+                participant_id=identity,
+                name=name or self._agent_name,
                 text=content,
                 is_final=True,
                 segment_id=segment_id,
