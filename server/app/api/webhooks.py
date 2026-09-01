@@ -230,7 +230,32 @@ _VOICE_META_KEYS = (
     "voice_relay_activation",
     "voice_relay_window_seconds",
     "voice_relay_aliases",
+    "voice_relay_voices",
 )
+
+
+def _relay_voices_json(value: Any) -> str | None:
+    """``voice_relay_voices`` as the JSON string LiveKit metadata can carry.
+
+    The DB stores a dict; an older row (or a hand-written one) may already
+    hold the string. Both are accepted, and the dict form is serialised with
+    sorted keys so the idempotent "already synced" comparison in
+    ``_sync_voice_metadata`` compares like with like.
+    """
+    if isinstance(value, dict):
+        voices = {
+            str(k).strip(): str(v).strip()
+            for k, v in value.items()
+            if str(k).strip() and str(v).strip()
+        }
+        return json.dumps(voices, sort_keys=True) if voices else None
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        return _relay_voices_json(parsed)
+    return None
 
 
 async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
@@ -248,7 +273,11 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
     wanted: dict[str, Any] = {}
     for k in _VOICE_META_KEYS:
         v = meta.get(k)
-        if isinstance(v, str) and v.strip():
+        if k == "voice_relay_voices":
+            encoded = _relay_voices_json(v)
+            if encoded:
+                wanted[k] = encoded
+        elif isinstance(v, str) and v.strip():
             wanted[k] = v
         elif isinstance(v, (int, float)) and k == "voice_relay_window_seconds":
             wanted[k] = str(int(v))
@@ -330,6 +359,9 @@ async def _ensure_voice_relay(
 
     display_name = await _relay_display_name(db, source) if db is not None else None
     room_meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
+    # The cast (sender → voice). Carried as a JSON string, like every other
+    # value in LiveKit metadata; the worker accepts either form.
+    voices_json = _relay_voices_json(room_meta.get("voice_relay_voices"))
     try:
         await livekit.dispatch_agent(
             room_name=room.livekit_room_name,
@@ -352,6 +384,7 @@ async def _ensure_voice_relay(
                     if activation == "window"
                     else {}
                 ),
+                **({"voice_relay_voices": voices_json} if voices_json else {}),
                 # Join AS the participant we speak for, so the call tile
                 # resolves to that character's name and art. `agent-relay`
                 # names nobody, which is why the tile showed "Stable Relay"

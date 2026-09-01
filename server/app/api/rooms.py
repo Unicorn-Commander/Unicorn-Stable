@@ -1224,6 +1224,26 @@ class RoomVoiceSettingsBody(BaseModel):
 
     activation: str = Field(..., min_length=1, max_length=16)
     window_seconds: int | None = Field(default=None, ge=1, le=600)
+    #: The cast: sender USERNAME → Kokoro voice id (``{"agent-grok":
+    #: "am_onyx"}``). Omitted = unchanged; ``{}`` = clear. Voice ids are not
+    #: checked against the served list here — the server does not know what
+    #: Kokoro serves; the relay does, and falls back with a log line.
+    voices: dict[str, str] | None = None
+
+
+def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
+    """Trim and shape-check a cast map; junk entries are a 422, not a silent drop."""
+    cleaned: dict[str, str] = {}
+    for key, value in raw.items():
+        sender = str(key or "").strip()
+        voice = str(value or "").strip()
+        if not sender or len(sender) > 64 or not voice or len(voice) > 32:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="voices must map a username (≤64 chars) to a voice id (≤32 chars)",
+            )
+        cleaned[sender] = voice
+    return cleaned
 
 
 @router.patch("/rooms/{room_id}/voice-settings")
@@ -1251,6 +1271,7 @@ async def update_voice_settings(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"activation must be one of {', '.join(VOICE_ACTIVATION_MODES)}",
         )
+    voices = _clean_relay_voices(body.voices) if body.voices is not None else None
 
     room = (
         await db.execute(select(Room).where(Room.id == room_id))
@@ -1286,6 +1307,11 @@ async def update_voice_settings(
     )
     if mode == "window":
         meta["voice_relay_window_seconds"] = window_seconds
+    if voices is not None:
+        if voices:
+            meta["voice_relay_voices"] = voices
+        else:
+            meta.pop("voice_relay_voices", None)
     room.metadata_ = meta  # reassigned, not mutated, for JSONB change detection
     await db.commit()
 
@@ -1307,6 +1333,9 @@ async def update_voice_settings(
         }
         if mode == "window":
             frame["window_seconds"] = window_seconds
+        if voices is not None:
+            # The relay re-reads its cast from this frame, live.
+            frame["voices"] = voices
         await livekit.send_data(room.livekit_room_name, frame)
         live = True
     except Exception:
@@ -1323,9 +1352,11 @@ async def update_voice_settings(
         window_seconds=window_seconds if mode == "window" else None,
         actor=str(user["participant_id"]),
         live=live,
+        voices=voices,
     )
     return {
         "activation": mode,
         "live": live,
         **({"window_seconds": window_seconds} if mode == "window" else {}),
+        **({"voices": voices} if voices is not None else {}),
     }
