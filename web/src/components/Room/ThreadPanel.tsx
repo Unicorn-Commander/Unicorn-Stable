@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { X, Send, CornerDownRight, MessagesSquare } from "lucide-react";
@@ -17,7 +17,10 @@ interface ThreadPanelProps {
 
 export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
   const currentUser = useAppStore((s) => s.currentUser);
-  const messages = useAppStore((s) => s.messages[roomId])?.items ?? [];
+  const messagesState = useAppStore((s) => s.messages[roomId]);
+  // Memoized: `?? []` would mint a new array every render and re-fire the
+  // thread-refresh effect below on every store change.
+  const messages = useMemo(() => messagesState?.items ?? [], [messagesState]);
   const parent = messages.find((m) => m.id === parentId);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);

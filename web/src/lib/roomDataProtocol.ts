@@ -158,7 +158,13 @@ export type UiCommandMessage = {
  * Each side validates independently; an unknown value degrades to the safe
  * default ("name") instead of crashing — see {@link coerceVoiceActivationMode}.
  */
-export const VOICE_ACTIVATION_MODES = ["name", "always", "ptt", "off"] as const;
+export const VOICE_ACTIVATION_MODES = [
+  "name",
+  "window",
+  "always",
+  "ptt",
+  "off",
+] as const;
 export type VoiceActivationMode = (typeof VOICE_ACTIVATION_MODES)[number];
 
 export function isVoiceActivationMode(v: unknown): v is VoiceActivationMode {
@@ -186,6 +192,11 @@ export interface TalkGateMessage {
   open: boolean;
   /** Gateway principal that sent it (an agent id, e.g. "rook"). */
   by: string;
+  /**
+   * The agent the held pedal addresses (a username, e.g. "agent-grok").
+   * Absent = the room's relay persona — the pre-E04 behaviour.
+   */
+  target?: string;
 }
 
 export function isTalkGateMessage(v: unknown): v is TalkGateMessage {
@@ -194,7 +205,8 @@ export function isTalkGateMessage(v: unknown): v is TalkGateMessage {
   return (
     m.type === "talk_gate" &&
     typeof m.open === "boolean" &&
-    typeof m.by === "string"
+    typeof m.by === "string" &&
+    (m.target === undefined || typeof m.target === "string")
   );
 }
 
@@ -211,6 +223,8 @@ export interface RelayConfigMessage {
   activation: VoiceActivationMode;
   /** Participant UUID of whoever changed it. */
   by: string;
+  /** Present when activation is `window`. Sliding follow-up window in seconds. */
+  window_seconds?: number;
 }
 
 export function isRelayConfigMessage(v: unknown): v is RelayConfigMessage {

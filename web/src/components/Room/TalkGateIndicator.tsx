@@ -19,6 +19,14 @@ import {
  * frame, hang-up or call-switch, and the 120s safety timeout (a lost close
  * frame must not pin the chip forever) all end it — this component only reads.
  */
+/** "agent-grok" → "Grok" when the room has no member row to name it from. */
+function targetLabel(target: string): string {
+  const bare = target.replace(/^agent-/, "").replace(/[-_]+/g, " ").trim();
+  return bare
+    ? bare.replace(/\b\w/g, (c) => c.toUpperCase())
+    : target;
+}
+
 export function TalkGateIndicator({ roomId }: { roomId: string }) {
   const talkGate = useCallUiStore((s) => s.talkGate);
   const members = useAppStore((s) => s.participants[roomId]);
@@ -26,11 +34,18 @@ export function TalkGateIndicator({ roomId }: { roomId: string }) {
 
   if (!talkGate.open) return null;
 
-  const source = voiceRelaySource(room?.metadata_);
+  // A pedal that NAMED an agent (E04) is addressing that agent, not the
+  // relay persona — the chip must say so, or the holder cannot tell whether
+  // Grok or Rook is about to answer.
+  const source = talkGate.target ?? voiceRelaySource(room?.metadata_);
   const resolved = voiceAgentDisplayName(members, source);
   // Chip copy starts the sentence, so the generic fallback gets its capital.
   const agentName =
-    resolved === FALLBACK_AGENT_NAME ? "The agent" : resolved;
+    resolved !== FALLBACK_AGENT_NAME
+      ? resolved
+      : talkGate.target
+        ? targetLabel(talkGate.target)
+        : "The agent";
 
   return (
     <div

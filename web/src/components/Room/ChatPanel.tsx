@@ -578,7 +578,9 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
       return;
     }
     if (handledDeepLinkRef.current === key) return;
-    const arrayIndex = messages.findIndex((m) => m.id === messageId);
+    // Read via messagesRef: keying this effect on the array itself would let a
+    // mid-flash edit/reaction cancel the highlight; length is the real trigger.
+    const arrayIndex = messagesRef.current.findIndex((m) => m.id === messageId);
     if (arrayIndex === -1) return;
     handledDeepLinkRef.current = key;
     virtuosoRef.current?.scrollToIndex({

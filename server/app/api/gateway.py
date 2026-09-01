@@ -262,6 +262,14 @@ class MintKeyBody(BaseModel):
     rate_limit_rpm: int = Field(30, ge=1, le=600)
 
 
+class PatchKeyBody(BaseModel):
+    """Partial update. Omitted fields stay as they are. 405 was the old answer."""
+
+    label: str | None = None
+    allowed_rooms: list[str] | None = None
+    rate_limit_rpm: int | None = Field(default=None, ge=1, le=600)
+
+
 # ---------------------------------------------------------------------------
 # Message endpoints
 # ---------------------------------------------------------------------------
@@ -372,6 +380,12 @@ class TalkGateBody(BaseModel):
 
     room: str = Field(..., min_length=1, max_length=200)
     open: bool
+    #: Who the held pedal addresses: an agent USERNAME (``agent-grok``), or
+    #: ``rook``/omitted for the relay's own persona. The relay persists the
+    #: heard line as ``@<target> …`` so that agent's poller sees a mention.
+    target: str | None = Field(
+        default=None, min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_.\-]+$"
+    )
 
 
 @router.post("/talk-gate", status_code=202)
@@ -400,11 +414,16 @@ async def set_talk_gate(
     await _gateway_rate_limit(principal, redis, bucket="gw_talk_gate", fail_open=True)
     room = await _resolve_room(db, body.room)
     await _enforce_scope(db, principal, room)
+    target = (body.target or "").strip() or None
+    frame: dict[str, Any] = {
+        "type": "talk_gate",
+        "open": bool(body.open),
+        "by": principal.agent_id,
+    }
+    if target:
+        frame["target"] = target
     try:
-        await livekit.send_data(
-            room.livekit_room_name,
-            {"type": "talk_gate", "open": bool(body.open), "by": principal.agent_id},
-        )
+        await livekit.send_data(room.livekit_room_name, frame)
     except Exception:
         # No live session is the ordinary case, not a fault: a pedal held
         # before anyone joins the call has nobody to tell. Reporting that as a
@@ -416,14 +435,15 @@ async def set_talk_gate(
             open=bool(body.open),
             reason="no live media session for this room",
         )
-        return {"room": body.room, "open": bool(body.open), "delivered": False}
+        return {"room": body.room, "open": bool(body.open), "target": target, "delivered": False}
     logger.info(
         "talk_gate_set",
         room=room.livekit_room_name,
         open=bool(body.open),
         by=principal.agent_id,
+        target=target,
     )
-    return {"room": body.room, "open": bool(body.open), "delivered": True}
+    return {"room": body.room, "open": bool(body.open), "target": target, "delivered": True}
 
 
 @router.post("/tts")
@@ -794,6 +814,46 @@ async def list_gateway_keys(
             }
             for r in rows
         ]
+    }
+
+
+@router.patch("/keys/{key_id}")
+async def patch_gateway_key(
+    key_id: uuid.UUID,
+    body: PatchKeyBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Update rooms/rate/label on an existing key. Operator-only.
+
+    Mint-and-swap was the only option because this returned 405. A live
+    room that needs 360 rpm on both name forms should not require a new
+    secret.
+    """
+    verify_key_admin_bearer(request)
+    row = (
+        await db.execute(select(AgentGatewayKey).where(AgentGatewayKey.id == key_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Key not found")
+    if row.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="Key is revoked")
+    if body.label is not None:
+        row.label = body.label
+    if body.allowed_rooms is not None:
+        row.allowed_rooms = body.allowed_rooms
+    if body.rate_limit_rpm is not None:
+        row.rate_limit_rpm = body.rate_limit_rpm
+    await db.commit()
+    logger.info("gateway_key_patched", key_id=str(key_id), agent_id=row.agent_id)
+    return {
+        "id": str(row.id),
+        "agent_id": row.agent_id,
+        "key_prefix": row.key_prefix,
+        "label": row.label,
+        "allowed_rooms": row.allowed_rooms,
+        "rate_limit_rpm": row.rate_limit_rpm,
+        "revoked": False,
     }
 
 

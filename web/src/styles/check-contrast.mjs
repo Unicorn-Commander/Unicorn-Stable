@@ -360,7 +360,6 @@ const STATE_MIN_CONTRAST = 3.0;
  */
 const STATE_MIN_DELTA_E = 15;
 
-let failures = 0;
 let checks = 0;
 const report = [];
 
@@ -376,7 +375,6 @@ for (const p of PALETTES) {
   const light = new Set(Object.keys(paletteLight[p] ?? {}));
   const missing = dark.filter((t) => !light.has(t));
   if (missing.length) {
-    failures++;
     report.push(
       `LEAK  ${p}: ${missing.length} token(s) set in dark but not light — ` +
         `they will leak into light mode: ${missing.join(", ")}`,
@@ -404,7 +402,6 @@ for (const palette of PALETTES) {
           const ratio = contrast(fg, bg);
           checks++;
           if (ratio < threshold) {
-            failures++;
             report.push(
               `${kind}  ${palette}/${mode}: ${t} on ${bname} = ` +
                 `${ratio.toFixed(2)}:1 (needs ${threshold}:1)`,
@@ -431,7 +428,6 @@ for (const palette of PALETTES) {
           if (ratio >= STATE_MIN_CONTRAST) continue;
           const dE = separationDeltaE(a.c, b.c);
           if (dE >= STATE_MIN_DELTA_E) continue;
-          failures++;
           report.push(
             `STATE ${palette}/${mode}: ${group.name} — ${a.t} vs ${b.t} are ` +
               `not tellable apart: ${ratio.toFixed(2)}:1 luminance ` +

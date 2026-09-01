@@ -51,6 +51,29 @@ describe("talk_gate frames", () => {
     expect(useCallUiStore.getState().talkGate.open).toBe(true);
   });
 
+  it("an open frame's target rides along and dies with the close", () => {
+    setActiveCallRoom(ROOM);
+    dispatchTalkGate({
+      type: "talk_gate",
+      open: true,
+      by: "pedal",
+      target: "agent-grok",
+    });
+    expect(useCallUiStore.getState().talkGate).toEqual({
+      open: true,
+      by: "pedal",
+      target: "agent-grok",
+    });
+    dispatchTalkGate({ type: "talk_gate", open: false, by: "pedal" });
+    expect(useCallUiStore.getState().talkGate.target).toBeUndefined();
+    // The next un-targeted press must not inherit the old target.
+    dispatchTalkGate({ type: "talk_gate", open: true, by: "pedal" });
+    expect(useCallUiStore.getState().talkGate).toEqual({
+      open: true,
+      by: "pedal",
+    });
+  });
+
   it("a close while already closed is a state no-op", () => {
     const before = useCallUiStore.getState().talkGate;
     dispatchTalkGate({ type: "talk_gate", open: false, by: "rook" });

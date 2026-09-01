@@ -421,7 +421,12 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
     staleTime: 60_000,
   });
 
-  const favoriteIds = preferences?.favorite_people_ids ?? [];
+  // Memoized: `?? []` would mint a new array every render and cascade through
+  // favoriteSet + the toggle callback below.
+  const favoriteIds = useMemo(
+    () => preferences?.favorite_people_ids ?? [],
+    [preferences],
+  );
   const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds]);
 
   const isOnline = useCallback(

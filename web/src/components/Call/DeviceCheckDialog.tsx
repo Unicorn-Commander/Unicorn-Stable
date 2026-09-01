@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, Mic, Volume2, X } from "lucide-react";
-import type { StableDeviceKind } from "@/lib/mediaDevices";
+import {
+  PREFERRED_AUDIO_INPUT_LABEL,
+  quietMicWarning,
+  type StableDeviceKind,
+} from "@/lib/mediaDevices";
 
 interface Props {
   devices: Record<StableDeviceKind, MediaDeviceInfo[]>;
@@ -22,7 +26,9 @@ export function DeviceCheckDialog({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [level, setLevel] = useState(0);
+  const [sampledMs, setSampledMs] = useState(0);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const sampleStartRef = useRef(0);
 
   useEffect(() => {
     let stopped = false;
@@ -46,11 +52,13 @@ export function DeviceCheckDialog({
         analyser.fftSize = 256;
         audio.createMediaStreamSource(stream).connect(analyser);
         const values = new Uint8Array(analyser.frequencyBinCount);
+        sampleStartRef.current = performance.now();
         const sample = () => {
           analyser.getByteTimeDomainData(values);
           let sum = 0;
           for (const value of values) sum += ((value - 128) / 128) ** 2;
           setLevel(Math.min(1, Math.sqrt(sum / values.length) * 4));
+          setSampledMs(performance.now() - sampleStartRef.current);
           frame = requestAnimationFrame(sample);
         };
         sample();
@@ -144,6 +152,41 @@ export function DeviceCheckDialog({
               style={{ width: `${Math.max(2, level * 100)}%` }}
             />
           </div>
+          {(() => {
+            const selectedMic = devices.audioinput.find(
+              (d) => d.deviceId === selected.audioinput,
+            );
+            const warning = quietMicWarning({
+              selectedLabel: selectedMic?.label || "",
+              hasPreferredAlternative: devices.audioinput.some(
+                (d) =>
+                  d.label === PREFERRED_AUDIO_INPUT_LABEL ||
+                  d.label.startsWith(`${PREFERRED_AUDIO_INPUT_LABEL} `),
+              ),
+              level,
+              sampledMs,
+            });
+            if (!warning) return null;
+            const preferred = devices.audioinput.find(
+              (d) =>
+                d.label === PREFERRED_AUDIO_INPUT_LABEL ||
+                d.label.startsWith(`${PREFERRED_AUDIO_INPUT_LABEL} `),
+            );
+            return (
+              <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-950/40 px-3 py-2 text-sm text-amber-100">
+                <p>{warning}</p>
+                {preferred && preferred.deviceId !== selected.audioinput && (
+                  <button
+                    type="button"
+                    className="mt-2 font-medium text-amber-50 underline"
+                    onClick={() => void onSelect("audioinput", preferred.deviceId)}
+                  >
+                    Switch to {PREFERRED_AUDIO_INPUT_LABEL}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           {picker("videoinput", "Camera", Camera)}

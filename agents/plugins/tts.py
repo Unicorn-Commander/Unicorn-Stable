@@ -121,12 +121,43 @@ _ORATOR_VOICE_FALLBACKS: dict[str, str] = {
     "bm_daniel": "bm_lewis",
 }
 
+#: What the deployed Kokoro actually serves — MEASURED against
+#: ``GET /v1/voices`` on 2026-09-01, not copied from the model card. A room
+#: setting that names a voice outside this list would synthesise nothing and
+#: fail silently mid-show, so the relay checks against it before trusting a
+#: per-sender voice (see ``known_kokoro_voice``).
+KOKORO_SERVED_VOICES: frozenset[str] = frozenset(
+    {
+        "af", "af_alloy", "af_bella", "af_heart", "af_nicole", "af_nova",
+        "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_michael", "am_onyx", "am_puck",
+        "bf_emma", "bf_isabella",
+        "bm_george", "bm_lewis",
+    }
+)
+
 
 def _resolve_kokoro_voice(personality: str, explicit: str | None) -> str:
     voice = explicit or KOKORO_VOICE_PRESETS.get(
         personality, KOKORO_VOICE_PRESETS["default"]
     )
     return _ORATOR_VOICE_FALLBACKS.get(voice, voice)
+
+
+def known_kokoro_voice(voice: Any) -> str | None:
+    """The served voice id for ``voice``, or None when Kokoro does not have it.
+
+    Applies the same alias fallbacks the presets rely on (``bm_daniel`` ->
+    ``bm_lewis``) so a caller can hand in anything a preset would, and gets
+    back the id that will actually produce audio.
+    """
+    if not isinstance(voice, str):
+        return None
+    candidate = voice.strip().lower()
+    if not candidate:
+        return None
+    candidate = _ORATOR_VOICE_FALLBACKS.get(candidate, candidate)
+    return candidate if candidate in KOKORO_SERVED_VOICES else None
 
 
 # Strip model "thinking" out of text before it is spoken. Some local models

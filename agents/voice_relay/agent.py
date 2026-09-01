@@ -25,6 +25,20 @@ CONFIGURATION comes from the room's metadata, read at dispatch:
     speak (default ``agent-claude-code``, Rook's seat).
   * ``voice_relay_agent_id`` — the persona whose Kokoro voice to use (default
     ``rook`` → ``am_echo`` via KOKORO_VOICE_PRESETS).
+  * ``voice_relay_voices`` — OPTIONAL, added 2026-09-01 for E04: a JSON
+    object (or its JSON-encoded string, since LiveKit metadata is a string)
+    mapping sender USERNAME → Kokoro voice id, e.g.
+    ``{"agent-grok": "am_onyx", "agent-flow": "bm_lewis"}``. One relay then
+    speaks for every sender in the map, each in its own voice, on top of the
+    legacy single source above (which keeps the persona's voice). A voice id
+    Kokoro does not serve is logged and falls back to the persona voice —
+    never to silence. Absent, nothing changes.
+
+THE TALK GATE can name a TARGET (``talk_gate`` frame, ``target`` field, added
+2026-09-01). A held pedal then addresses that agent rather than the relay's
+own persona: the heard line is persisted as ``@<target> <text>`` so the named
+gateway agent's poller sees a mention. No target, or the persona itself, is
+the old behaviour.
 
 EARS (added 2026-08-28). The relay carries the human's SPOKEN words back into
 the room as their own message, so the brain on the Mac can answer them: speak
@@ -69,7 +83,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 import structlog
 
@@ -78,7 +92,11 @@ from agent_runtime.transcript_publisher import (
     TranscriptPublisher,
     VoiceHistoryPersister,
 )
-from agent_runtime.voice_dispatch import spoken_name_match
+from agent_runtime.voice_dispatch import (
+    fuzzy_spoken_name_match,
+    log_name_near_miss,
+    spoken_name_match,
+)
 from agent_runtime.voice_transcripts import (
     TranscriptAggregator,
     classify_transcript,
@@ -100,6 +118,10 @@ DEFAULT_RELAY_PERSONA = "rook"
 #:
 #:   name   — address it by name ("Rook, …"). The safe default in any room
 #:            with more than one person in it.
+#:   window — a named line opens a sliding conversation window; follow-ups
+#:            inside it need no wakeword, and side talk after it closes is
+#:            ignored. This is the natural back-and-forth mode. The pedal
+#:            is not required.
 #:   always — every utterance is for the agent. Right for a room that is just
 #:            you and it; wrong the moment someone else joins.
 #:   ptt    — only while an external talk gate is held (a foot pedal, a stream
@@ -107,8 +129,17 @@ DEFAULT_RELAY_PERSONA = "rook"
 #:            wants: a spoken name can false-trigger on camera, a held pedal
 #:            cannot.
 #:   off    — never write to chat. Transcript only.
-ACTIVATION_MODES = ("name", "always", "ptt", "off")
+ACTIVATION_MODES = ("name", "window", "always", "ptt", "off")
 DEFAULT_ACTIVATION = "name"
+
+#: Sliding conversation window for ``window`` mode. 75s sits in the 60–90s
+#: range Aaron asked for on 2026-08-30: long enough for a follow-up after a
+#: reply, short enough that two humans talking after the window closes stay
+#: off the agent's plate. Overridable per room via
+#: ``voice_relay_window_seconds``.
+DEFAULT_WINDOW_SECONDS = 75
+MIN_WINDOW_SECONDS = 15
+MAX_WINDOW_SECONDS = 300
 
 #: A spoken line longer than this is truncated. A relay reading a 4000-word
 #: report aloud holds the floor for ten minutes with no way to interrupt it,
@@ -201,6 +232,54 @@ def activation_from_metadata(metadata: Any) -> str:
     return mode if mode in ACTIVATION_MODES else DEFAULT_ACTIVATION
 
 
+def clamp_window_seconds(value: Any) -> int:
+    """Keep a window length inside the live range; junk becomes the default."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_WINDOW_SECONDS
+    return max(MIN_WINDOW_SECONDS, min(MAX_WINDOW_SECONDS, n))
+
+
+def window_seconds_from_metadata(metadata: Any) -> int:
+    """Per-room window length, or the 75s default."""
+    data: Any = metadata
+    if isinstance(metadata, str):
+        try:
+            data = json.loads(metadata) if metadata.strip() else {}
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        return DEFAULT_WINDOW_SECONDS
+    raw = data.get("voice_relay_window_seconds")
+    if raw is None or raw == "":
+        return DEFAULT_WINDOW_SECONDS
+    return clamp_window_seconds(raw)
+
+
+def aliases_from_metadata(metadata: Any, persona: str) -> set[str]:
+    """Extra wakeword aliases. Rook always accepts 'rookie'."""
+    data: Any = metadata
+    if isinstance(metadata, str):
+        try:
+            data = json.loads(metadata) if metadata.strip() else {}
+        except Exception:
+            data = {}
+    out: set[str] = set()
+    if (persona or "").strip().lower() in {"rook", "claude-code"}:
+        out.add("rookie")
+    if not isinstance(data, dict):
+        return out
+    raw = data.get("voice_relay_aliases")
+    if isinstance(raw, str):
+        out.update(p.strip().lower() for p in raw.split(",") if p.strip())
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.add(item.strip().lower())
+    return out
+
+
 def relay_config_from_metadata(metadata: Any) -> tuple[str, str]:
     """(source_username, relay_persona) from room/job metadata.
 
@@ -225,13 +304,92 @@ def relay_config_from_metadata(metadata: Any) -> tuple[str, str]:
     )
 
 
-def should_speak(payload: Any, source_username: str) -> str | None:
-    """The text to speak from one data packet, or None.
+def preset_voice(persona: str) -> str:
+    """The Kokoro voice a persona speaks with — the table the session TTS reads."""
+    from plugins.tts import _resolve_kokoro_voice
 
-    Returns None for everything that is not a fresh, visible, non-empty
-    message from the configured source. Deleted messages are skipped: a line
-    the author retracted must not still be read aloud.
+    return _resolve_kokoro_voice((persona or "").strip() or DEFAULT_RELAY_PERSONA, None)
+
+
+def _metadata_dict(metadata: Any) -> dict[str, Any]:
+    data: Any = metadata
+    if isinstance(metadata, str):
+        try:
+            data = json.loads(metadata) if metadata.strip() else {}
+        except Exception:
+            data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def relay_voices_from_metadata(
+    metadata: Any, source_username: str, persona: str
+) -> dict[str, str]:
+    """sender username → Kokoro voice id, for every sender this relay speaks for.
+
+    The legacy single source is always present, in the persona's voice, so a
+    room with no ``voice_relay_voices`` key behaves exactly as before. The map
+    may be a JSON object or its JSON-encoded string — LiveKit metadata is a
+    string, and the server serialises the DB dict on the way in.
+
+    A voice id the deployed Kokoro does not serve is REPLACED by the persona
+    voice and logged (``voice_relay_voice_unknown``). The alternative — keep
+    the id and let synthesis fail — is a sender who is silent on camera for a
+    reason nobody in the room can see.
     """
+    from plugins.tts import known_kokoro_voice
+
+    fallback = preset_voice(persona)
+    voices: dict[str, str] = {source_username: fallback}
+    raw = _metadata_dict(metadata).get("voice_relay_voices")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            logger.warning("voice_relay_voices_invalid", preview=raw[:80])
+            raw = {}
+    if raw is None:
+        return voices
+    if not isinstance(raw, dict):
+        logger.warning("voice_relay_voices_invalid", got=type(raw).__name__)
+        return voices
+    for key, value in raw.items():
+        sender = key.strip() if isinstance(key, str) else ""
+        if not sender:
+            continue
+        voice = known_kokoro_voice(value)
+        if voice is None:
+            logger.warning(
+                "voice_relay_voice_unknown",
+                sender=sender,
+                voice=str(value)[:32],
+                fallback=fallback,
+            )
+            voice = fallback
+        voices[sender] = voice
+    return voices
+
+
+class SpokenLine(NamedTuple):
+    """One line to say: which voice, what words, and whose they are."""
+
+    voice: str
+    text: str
+    sender: str
+    name: str
+
+
+def sender_display_name(sender: dict[str, Any]) -> str:
+    """The name a caption for this sender's words should carry."""
+    name = sender.get("display_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    username = str(sender.get("username") or "").strip()
+    bare = username[6:] if username.startswith("agent-") else username
+    return bare.replace("-", " ").replace("_", " ").title() or "Agent"
+
+
+def _fresh_message(payload: Any) -> tuple[str, dict[str, Any]] | None:
+    """(sender_username, message) for a fresh, visible message packet, else None."""
     if not isinstance(payload, dict):
         return None
     if payload.get("type") != "new_message":
@@ -242,13 +400,79 @@ def should_speak(payload: Any, source_username: str) -> str | None:
     sender = message.get("sender")
     if not isinstance(sender, dict):
         return None
-    if (sender.get("username") or "").strip() != source_username:
+    return (sender.get("username") or "").strip(), message
+
+
+def should_speak(payload: Any, source_username: str) -> str | None:
+    """The text to speak from one data packet, or None.
+
+    Returns None for everything that is not a fresh, visible, non-empty
+    message from the configured source. Deleted messages are skipped: a line
+    the author retracted must not still be read aloud.
+    """
+    fresh = _fresh_message(payload)
+    if fresh is None:
+        return None
+    username, message = fresh
+    if username != source_username:
         return None
     content = message.get("content")
     if not isinstance(content, str):
         return None
     spoken = speakable(content)
     return spoken or None
+
+
+def should_speak_as(payload: Any, voices: dict[str, str]) -> SpokenLine | None:
+    """The (voice, text, sender, name) to say for one packet, or None.
+
+    Multi-sender form of ``should_speak``: any sender in ``voices`` is spoken,
+    in that sender's voice. Same refusals — wrong packet type, deleted,
+    unknown sender, nothing left once markup is stripped.
+    """
+    fresh = _fresh_message(payload)
+    if fresh is None:
+        return None
+    username, message = fresh
+    if not username or username not in voices:
+        return None
+    content = message.get("content")
+    if not isinstance(content, str):
+        return None
+    spoken = speakable(content)
+    if not spoken:
+        return None
+    sender = message.get("sender") if isinstance(message.get("sender"), dict) else {}
+    return SpokenLine(
+        voice=voices[username],
+        text=spoken,
+        sender=username,
+        name=sender_display_name(sender),
+    )
+
+
+_TARGET_SHAPE = re.compile(r"^[A-Za-z0-9_.\-]{2,64}$")
+
+
+def gate_target(raw: Any, persona: str, source_username: str) -> str | None:
+    """The agent a held pedal addresses, or None for the relay's own persona.
+
+    Anything that names the relay itself (its persona, its seat username, or
+    either with/without the ``agent-`` prefix) collapses to None, so the old
+    behaviour is exactly what an explicit "talk to Rook" produces. Junk that
+    could not be a username is None too — a mention token is going into a
+    persisted message, and it must be a mention the poller can resolve.
+    """
+    if not isinstance(raw, str):
+        return None
+    target = raw.strip()
+    if not target or not _TARGET_SHAPE.match(target):
+        return None
+    persona = (persona or "").strip().lower()
+    source = (source_username or "").strip().lower()
+    bare_source = source[6:] if source.startswith("agent-") else source
+    self_names = {persona, f"agent-{persona}", source, bare_source} - {""}
+    return None if target.lower() in self_names else target
 
 
 _UUID_TAIL = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -307,8 +531,14 @@ def sole_agent_in_call(room: Any, self_identity: str) -> bool:
     return True
 
 
+async def _replay(frames: list[Any]) -> Any:
+    """Hand pre-synthesised frames to ``say(audio=...)`` as the stream it wants."""
+    for frame in frames:
+        yield frame
+
+
 class VoiceRelayAgent(StableAgent):
-    """Joins a call and speaks one participant's messages. No brain attached."""
+    """Joins a call and speaks the cast's messages. No brain attached."""
 
     agent_type = "relay"
 
@@ -330,8 +560,24 @@ class VoiceRelayAgent(StableAgent):
         self._captions: TranscriptPublisher | None = None
         self._my_names: set[str] = set()
         self._activation = DEFAULT_ACTIVATION
+        #: Sliding conversation window (window mode). Monotonic deadline;
+        #: 0 means closed. Each addressed line and each spoken reply slides it.
+        self._window_until = 0.0
+        self._window_seconds = DEFAULT_WINDOW_SECONDS
+        self._name_aliases: set[str] = set()
         #: External talk gate (ptt mode): open while the pedal is held.
         self._gate_open = False
+        #: Who the held pedal addresses, when not the relay's own persona.
+        #: Set with each open frame, cleared with each close.
+        self._gate_target: str | None = None
+        #: sender username → Kokoro voice id. Empty until build_pipeline reads
+        #: the room; ``_speaking_for()`` then substitutes the legacy single
+        #: source so a relay built by hand in a test still has a map.
+        self._voices: dict[str, str] = {}
+        #: The persona's own voice — the one the session TTS was built with.
+        self._persona_voice: str = ""
+        #: Lazily-built TTS plugins for the OTHER voices, keyed by voice id.
+        self._voice_tts: dict[str, Any] = {}
         self._ears_task: asyncio.Task[None] | None = None
         # The live LiveKit room handle. The base class keeps the room NAME and
         # id, not the object, so the relay holds its own reference — reaching
@@ -343,7 +589,7 @@ class VoiceRelayAgent(StableAgent):
         #: for logging, and an election computed over mismatched names would
         #: quietly pick nobody.
         self._join_identity: str = ""
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queue: asyncio.Queue[SpokenLine] = asyncio.Queue()
         self._speaker_task: asyncio.Task[None] | None = None
 
     async def build_pipeline(self, ctx: Any) -> Any:
@@ -369,6 +615,25 @@ class VoiceRelayAgent(StableAgent):
             if job_activation != DEFAULT_ACTIVATION
             else activation_from_metadata(room_meta)
         )
+        job_window = window_seconds_from_metadata(job_meta)
+        self._window_seconds = (
+            job_window
+            if job_window != DEFAULT_WINDOW_SECONDS
+            else window_seconds_from_metadata(room_meta)
+        )
+        self._name_aliases = aliases_from_metadata(job_meta, self._relay_persona)
+        if not self._name_aliases:
+            self._name_aliases = aliases_from_metadata(room_meta, self._relay_persona)
+        # The cast. Job metadata carries the key when the dispatch had it (the
+        # webhook passes the room's setting through); the room copy is the
+        # standing setting for a relay dispatched before the room was wired.
+        self._persona_voice = preset_voice(persona)
+        voices_meta = (
+            job_meta
+            if "voice_relay_voices" in _metadata_dict(job_meta)
+            else room_meta
+        )
+        self._voices = relay_voices_from_metadata(voices_meta, source, persona)
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
         agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
@@ -465,8 +730,13 @@ class VoiceRelayAgent(StableAgent):
             source=self._source_username,
             persona=self._relay_persona,
             activation=self._activation,
+            voices=dict(self._voices),
         )
         return session
+
+    def _speaking_for(self) -> dict[str, str]:
+        """The live cast: the map read at dispatch, or the legacy single source."""
+        return self._voices or {self._source_username: self._persona_voice}
 
     # ------------------------------------------------------------------ #
     # Inputs
@@ -483,16 +753,32 @@ class VoiceRelayAgent(StableAgent):
                 # A settings change, applied LIVE. Reading the mode only at
                 # dispatch meant a change silently did nothing until everyone
                 # left and rejoined — which reads as broken, because it is.
+                if "voices" in payload:
+                    # A cast change, applied live for the same reason: a
+                    # voice that only changes after everyone rejoins is a
+                    # voice that never changes during a show.
+                    self._voices = relay_voices_from_metadata(
+                        {"voice_relay_voices": payload.get("voices")},
+                        self._source_username,
+                        self._relay_persona,
+                    )
+                    logger.info("voice_relay_voices_changed", voices=dict(self._voices))
                 mode = str(payload.get("activation") or "").strip().lower()
                 if mode in ACTIVATION_MODES:
                     old_mode, self._activation = self._activation, mode
+                    raw_window = payload.get("window_seconds")
+                    if raw_window is not None and raw_window != "":
+                        self._window_seconds = clamp_window_seconds(raw_window)
+                    if mode != "window":
+                        self._window_until = 0.0
                     logger.info(
                         "voice_relay_config_changed",
                         old=old_mode,
                         new=mode,
+                        window_seconds=self._window_seconds,
                         by=str(payload.get("by") or "")[:40],
                     )
-                else:
+                elif "voices" not in payload:
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
                 return
             if isinstance(payload, dict) and payload.get("type") == "talk_gate":
@@ -501,13 +787,29 @@ class VoiceRelayAgent(StableAgent):
                 # relay does not care which, which is the point of having ONE
                 # primitive instead of an extension per gadget.
                 self._gate_open = bool(payload.get("open"))
-                logger.info("voice_relay_talk_gate", open=self._gate_open)
+                # The target rides with the OPEN frame and dies with the
+                # close: a stale target on the next press would send Aaron's
+                # words to whoever he addressed last time.
+                self._gate_target = (
+                    gate_target(
+                        payload.get("target"),
+                        self._relay_persona,
+                        self._source_username,
+                    )
+                    if self._gate_open
+                    else None
+                )
+                logger.info(
+                    "voice_relay_talk_gate",
+                    open=self._gate_open,
+                    target=self._gate_target,
+                )
                 return
             if isinstance(payload, dict) and payload.get("type") == "transcript":
                 self._on_transcript(payload)
                 return
-            spoken = should_speak(payload, self._source_username)
-            if spoken is None:
+            line = should_speak_as(payload, self._speaking_for())
+            if line is None:
                 return
             message_id = str((payload.get("message") or {}).get("id") or "")
             # The same message can arrive twice (reconnect replay); saying it
@@ -516,11 +818,13 @@ class VoiceRelayAgent(StableAgent):
                 return
             if message_id:
                 self._spoken_ids.add(message_id)
-            self._queue.put_nowait(spoken)
+            self._queue.put_nowait(line)
             logger.info(
                 "voice_relay_queued",
                 message_id=message_id[:8],
-                chars=len(spoken),
+                chars=len(line.text),
+                sender=line.sender,
+                voice=line.voice,
                 depth=self._queue.qsize(),
             )
         except Exception:
@@ -593,7 +897,23 @@ class VoiceRelayAgent(StableAgent):
             agent then SAYS something to an utterance that meant nothing.
         """
         if not self._is_for_us(text):
-            logger.debug("voice_relay_heard_not_addressed", chars=len(text), ear=ear)
+            reason = log_name_near_miss(text, self._listen_names())
+            if reason:
+                # Visible on purpose: a silent miss is how "Rook isn't
+                # responding" burns forty minutes. The transcript panel
+                # already has the line; this log is why we did not chat it.
+                logger.info(
+                    "voice_relay_address_near_miss",
+                    reason=reason,
+                    chars=len(text),
+                    ear=ear,
+                    preview=text[:80],
+                    activation=self._activation,
+                )
+            else:
+                logger.debug(
+                    "voice_relay_heard_not_addressed", chars=len(text), ear=ear
+                )
             return False
         if self._activation == "always":
             if not sole_agent_in_call(self._lk_room, self._identity):
@@ -608,7 +928,21 @@ class VoiceRelayAgent(StableAgent):
                 return False
         if self._publisher is None:
             return False
-        self._publisher.persist_user_utterance(speaker, text)
+        # A held pedal that NAMES an agent hands the line to that agent: the
+        # persisted text carries the mention its poller matches on, and the
+        # relay's own brain never sees a turn. The conversation window is left
+        # alone on purpose — this line was for someone else.
+        target = self._gate_target if self._gate_open else None
+        content = f"@{target} {text}" if target else text
+        if target:
+            logger.info(
+                "voice_relay_gate_target",
+                target=target,
+                speaker=speaker,
+                chars=len(text),
+                ear=ear,
+            )
+        self._publisher.persist_user_utterance(speaker, content)
         logger.info(
             "voice_relay_heard_addressed",
             speaker=speaker,
@@ -617,6 +951,17 @@ class VoiceRelayAgent(StableAgent):
             preview=text[:80],
         )
         return True
+
+    def _listen_names(self) -> set[str]:
+        return set(self._my_names) | set(self._name_aliases)
+
+    def _addressed_by_name(self, text: str) -> bool:
+        names = self._listen_names()
+        return spoken_name_match(text, names) or fuzzy_spoken_name_match(text, names)
+
+    def _touch_window(self) -> None:
+        if self._activation == "window":
+            self._window_until = self._clock() + self._window_seconds
 
     def _is_for_us(self, text: str) -> bool:
         """Was this line addressed to the agent, under this room's rule?"""
@@ -629,7 +974,16 @@ class VoiceRelayAgent(StableAgent):
             # The gate is the whole signal — a held pedal cannot false-trigger
             # the way a spoken name can, which is why a show wants it.
             return self._gate_open
-        return spoken_name_match(text, self._my_names)
+        if mode == "window":
+            now = self._clock()
+            if self._addressed_by_name(text):
+                self._window_until = now + self._window_seconds
+                return True
+            if now < self._window_until:
+                self._window_until = now + self._window_seconds
+                return True
+            return False
+        return self._addressed_by_name(text)
 
     def _speaker_identity(self, ev: Any) -> str | None:
         """Whose voice this was, in the form the backend accepts.
@@ -717,21 +1071,84 @@ class VoiceRelayAgent(StableAgent):
         """
         while True:
             try:
-                text = await self._queue.get()
+                line = await self._queue.get()
             except asyncio.CancelledError:
                 return
             try:
-                await self._say(text)
+                await self._say(line)
             except asyncio.CancelledError:
                 return
             except Exception:
                 logger.error("voice_relay_say_failed", exc_info=True)
 
-    async def _say(self, text: str) -> None:
+    def _uses_session_voice(self, voice: str) -> bool:
+        """True when the line belongs to the voice the session TTS was built with."""
+        return not voice or voice == self._persona_voice
+
+    def _tts_for_voice(self, voice: str) -> Any:
+        """The TTS plugin for one of the OTHER voices, built once and kept."""
+        plugin = self._voice_tts.get(voice)
+        if plugin is None:
+            from plugins.tts import get_tts_plugin
+
+            plugin = get_tts_plugin(personality=self._relay_persona, voice_id=voice)
+            self._voice_tts[voice] = plugin
+            logger.info("voice_relay_voice_tts_built", voice=voice)
+        return plugin
+
+    async def _synthesize(self, voice: str, text: str) -> list[Any]:
+        """PCM frames for ``text`` in ``voice``; empty on any failure.
+
+        Synthesised UP FRONT rather than streamed into ``say()``: the Kokoro
+        plugin is one-shot anyway (a whole WAV per request, 0.65 s measured for
+        a nine-second line), and holding the frames lets the caller fall back
+        to the session voice when this one produced nothing — the alternative
+        is a ``say()`` fed an empty generator, which is silence with a log
+        line nobody is watching.
+        """
+        frames: list[Any] = []
+        try:
+            async with self._tts_for_voice(voice).synthesize(text) as stream:
+                async for ev in stream:
+                    frame = getattr(ev, "frame", None)
+                    if frame is not None:
+                        frames.append(frame)
+        except Exception:
+            logger.error("voice_relay_voice_synth_failed", voice=voice, exc_info=True)
+            return []
+        return frames
+
+    async def _say(self, line: SpokenLine | str) -> None:
         session = self._session
         if session is None:
             return
-        result = session.say(text)
+        if isinstance(line, str):
+            line = SpokenLine(self._persona_voice, line, self._source_username, "")
+        text = line.text
+        if self._uses_session_voice(line.voice):
+            result = session.say(text)
+        else:
+            # livekit-agents 1.6.7: ``say(text, *, audio=AsyncIterable[AudioFrame])``
+            # plays supplied audio instead of running the session's TTS, so
+            # one session speaks in any number of voices without swapping
+            # its plugin under the speak lock.
+            frames = await self._synthesize(line.voice, text)
+            if frames:
+                result = session.say(text, audio=_replay(frames))
+                # The tile still says Rook; the caption says whose words
+                # these were.
+                if self._captions is not None:
+                    self._captions.publish_agent_final(
+                        text, name=line.name, participant_id=line.sender
+                    )
+            else:
+                logger.warning(
+                    "voice_relay_voice_fallback",
+                    voice=line.voice,
+                    sender=line.sender,
+                    fallback=self._persona_voice,
+                )
+                result = session.say(text)
         # Version-tolerant across livekit-agents 1.x: say() may return a
         # SpeechHandle, an awaitable, or an awaitable resolving to a handle.
         if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
@@ -760,7 +1177,10 @@ class VoiceRelayAgent(StableAgent):
                             seconds=round(budget, 1),
                         )
                 break
-        logger.info("voice_relay_spoke", chars=len(text))
+        self._touch_window()
+        logger.info(
+            "voice_relay_spoke", chars=len(text), sender=line.sender, voice=line.voice
+        )
 
     async def _shutdown_steps(self) -> None:  # pragma: no cover — lifecycle
         for task in (self._speaker_task, self._ears_task):

@@ -1205,13 +1205,45 @@ async def set_member_mute(
 #: maintained by hand because the server and the agents runtime ship in
 #: different images with no shared package; each side validates independently
 #: so a drifted value degrades to the safe default rather than crashing.
-VOICE_ACTIVATION_MODES = ("name", "always", "ptt", "off")
+VOICE_ACTIVATION_MODES = ("name", "window", "always", "ptt", "off")
+DEFAULT_WINDOW_SECONDS = 75
+MIN_WINDOW_SECONDS = 15
+MAX_WINDOW_SECONDS = 300
+
+
+def _clamp_window_seconds(value: Any) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_WINDOW_SECONDS
+    return max(MIN_WINDOW_SECONDS, min(MAX_WINDOW_SECONDS, n))
 
 
 class RoomVoiceSettingsBody(BaseModel):
-    """The one voice setting a room owner can change today."""
+    """The voice settings a room owner can change today."""
 
     activation: str = Field(..., min_length=1, max_length=16)
+    window_seconds: int | None = Field(default=None, ge=1, le=600)
+    #: The cast: sender USERNAME → Kokoro voice id (``{"agent-grok":
+    #: "am_onyx"}``). Omitted = unchanged; ``{}`` = clear. Voice ids are not
+    #: checked against the served list here — the server does not know what
+    #: Kokoro serves; the relay does, and falls back with a log line.
+    voices: dict[str, str] | None = None
+
+
+def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
+    """Trim and shape-check a cast map; junk entries are a 422, not a silent drop."""
+    cleaned: dict[str, str] = {}
+    for key, value in raw.items():
+        sender = str(key or "").strip()
+        voice = str(value or "").strip()
+        if not sender or len(sender) > 64 or not voice or len(voice) > 32:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="voices must map a username (≤64 chars) to a voice id (≤32 chars)",
+            )
+        cleaned[sender] = voice
+    return cleaned
 
 
 @router.patch("/rooms/{room_id}/voice-settings")
@@ -1239,6 +1271,7 @@ async def update_voice_settings(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"activation must be one of {', '.join(VOICE_ACTIVATION_MODES)}",
         )
+    voices = _clean_relay_voices(body.voices) if body.voices is not None else None
 
     room = (
         await db.execute(select(Room).where(Room.id == room_id))
@@ -1267,20 +1300,43 @@ async def update_voice_settings(
             detail="This room has no voice agent configured",
         )
     meta["voice_relay_activation"] = mode
+    window_seconds = (
+        _clamp_window_seconds(body.window_seconds)
+        if body.window_seconds is not None
+        else _clamp_window_seconds(meta.get("voice_relay_window_seconds"))
+    )
+    if mode == "window":
+        meta["voice_relay_window_seconds"] = window_seconds
+    if voices is not None:
+        if voices:
+            meta["voice_relay_voices"] = voices
+        else:
+            meta.pop("voice_relay_voices", None)
     room.metadata_ = meta  # reassigned, not mutated, for JSONB change detection
     await db.commit()
 
-    # Best-effort live switch. No live call is the ordinary case, not a fault.
+    # Best-effort live switch AND a missing-relay dispatch. send_data only
+    # reaches a worker already in the room — a call started before this room
+    # was wired never got a relay, and hanging up twice was the only way to
+    # summon one (2026-08-30). _ensure_voice_relay is the same join-webhook
+    # helper, now also fired from this endpoint.
     live = False
     try:
-        await livekit.send_data(
-            room.livekit_room_name,
-            {
-                "type": "relay_config",
-                "activation": mode,
-                "by": str(user["participant_id"]),
-            },
-        )
+        from app.api.webhooks import _ensure_voice_relay, _sync_voice_metadata
+
+        await _sync_voice_metadata(livekit, room)
+        await _ensure_voice_relay(livekit, room, db)
+        frame = {
+            "type": "relay_config",
+            "activation": mode,
+            "by": str(user["participant_id"]),
+        }
+        if mode == "window":
+            frame["window_seconds"] = window_seconds
+        if voices is not None:
+            # The relay re-reads its cast from this frame, live.
+            frame["voices"] = voices
+        await livekit.send_data(room.livekit_room_name, frame)
         live = True
     except Exception:
         logger.info(
@@ -1293,7 +1349,14 @@ async def update_voice_settings(
         "voice_settings_updated",
         room_id=str(room_id),
         activation=mode,
+        window_seconds=window_seconds if mode == "window" else None,
         actor=str(user["participant_id"]),
         live=live,
+        voices=voices,
     )
-    return {"activation": mode, "live": live}
+    return {
+        "activation": mode,
+        "live": live,
+        **({"window_seconds": window_seconds} if mode == "window" else {}),
+        **({"voices": voices} if voices is not None else {}),
+    }

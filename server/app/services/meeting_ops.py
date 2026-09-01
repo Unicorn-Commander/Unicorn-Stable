@@ -3,6 +3,15 @@
 Stable can export a finalized call transcript as a structured JSON payload
 and, when configured, POST it to a Meeting-Ops ingest URL.
 
+SLA, measured 2026-08-30: this is POST-CALL. The ingest fires after
+LiveKit egress ends and the outbox worker claims the transcript export
+(see call_recording.py). There is no in-progress session record on the
+ring the seat queries, so a live "did we cover everything" audit during
+the call cannot work today. Which ring: MEETING_OPS_URL / org slug on
+this Stable instance (prod vs dogfood are inverted — see
+reference_meeting_ops_prod_vs_dogfood_hosts.md). Duplicate sessions for
+one call are a known bug (export_id per browser).
+
 No secrets are hardcoded. Configure via env:
 
   MEETING_OPS_URL          Base URL (e.g. https://meetingops.example.com)

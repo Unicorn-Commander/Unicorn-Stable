@@ -528,6 +528,26 @@ class ActivationModeTests(TestCase):
             self.assertEqual(activation_from_metadata(meta), DEFAULT_ACTIVATION, meta)
         self.assertEqual(DEFAULT_ACTIVATION, "name")
 
+    def test_window_seconds_clamp_and_default(self) -> None:
+        from voice_relay.agent import (
+            DEFAULT_WINDOW_SECONDS,
+            clamp_window_seconds,
+            window_seconds_from_metadata,
+        )
+
+        self.assertEqual(window_seconds_from_metadata({}), DEFAULT_WINDOW_SECONDS)
+        self.assertEqual(
+            window_seconds_from_metadata({"voice_relay_window_seconds": 90}), 90
+        )
+        self.assertEqual(clamp_window_seconds(5), 15)
+        self.assertEqual(clamp_window_seconds(9999), 300)
+
+    def test_rook_aliases_include_rookie(self) -> None:
+        from voice_relay.agent import aliases_from_metadata
+
+        self.assertIn("rookie", aliases_from_metadata({}, "rook"))
+        self.assertIn("hey-you", aliases_from_metadata({"voice_relay_aliases": "hey-you"}, "majik"))
+
     def test_each_supported_mode_is_read(self) -> None:
         from voice_relay.agent import ACTIVATION_MODES, activation_from_metadata
 
@@ -535,6 +555,7 @@ class ActivationModeTests(TestCase):
             self.assertEqual(
                 activation_from_metadata({"voice_relay_activation": mode}), mode
             )
+        self.assertIn("window", ACTIVATION_MODES)
 
     def _agent(self, mode: str, gate: bool = False):
         from voice_relay.agent import VoiceRelayAgent
@@ -549,8 +570,10 @@ class ActivationModeTests(TestCase):
     def test_name_mode_needs_the_name_in_an_address_position(self) -> None:
         agent = self._agent("name")
         self.assertTrue(agent._is_for_us("rook, what is the status"))
+        self.assertTrue(agent._is_for_us("rok, what is the status"))
         self.assertFalse(agent._is_for_us("i asked rook about it yesterday"))
         self.assertFalse(agent._is_for_us("what do you think about the deploy"))
+        self.assertFalse(agent._is_for_us("look at the board"))
 
     def test_always_mode_takes_everything(self) -> None:
         agent = self._agent("always")
@@ -567,6 +590,28 @@ class ActivationModeTests(TestCase):
         self.assertFalse(closed._is_for_us("rook, are you there"))
         open_gate = self._agent("ptt", gate=True)
         self.assertTrue(open_gate._is_for_us("no name spoken at all"))
+
+    def test_window_mode_opens_on_a_name_and_slides_without_it(self) -> None:
+        """Aaron's 2026-08-30 ask: named line, then follow-ups, then silence."""
+        agent = self._agent("window")
+        agent._window_seconds = 75
+        agent._clock = lambda: 1000.0
+        self.assertFalse(agent._is_for_us("what about the deploy"))
+        self.assertTrue(agent._is_for_us("rook, status"))
+        agent._clock = lambda: 1030.0
+        self.assertTrue(agent._is_for_us("and the other thing"))
+        agent._clock = lambda: 1030.0 + 76
+        self.assertFalse(agent._is_for_us("side talk after the window closed"))
+
+    def test_window_mode_accepts_a_fuzzy_leading_name(self) -> None:
+        agent = self._agent("window")
+        agent._clock = lambda: 0.0
+        self.assertTrue(agent._is_for_us("rok, what is the status"))
+        # Fresh agent: "look" is one edit from "rook" but the onset differs,
+        # so it must not open a window.
+        other = self._agent("window")
+        other._clock = lambda: 0.0
+        self.assertFalse(other._is_for_us("look at the board"))
 
     def test_the_gate_is_driven_by_a_room_data_frame(self) -> None:
         import inspect

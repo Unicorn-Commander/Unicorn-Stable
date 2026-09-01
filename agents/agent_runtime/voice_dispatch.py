@@ -85,6 +85,9 @@ __all__ = [
     "dispatch_enabled",
     "decide",
     "STICKY_WINDOW_S",
+    "spoken_name_match",
+    "fuzzy_spoken_name_match",
+    "log_name_near_miss",
 ]
 
 #: How long a speaker's claim on an agent survives without re-addressing.
@@ -181,6 +184,97 @@ def spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool:
     return any(
         _addresses(lc, n.strip().lower()) for n in names if n and n.strip()
     )
+
+
+_FIRST_TOKEN = re.compile(r"[a-z']+")
+
+
+def _first_token(text_lc: str) -> str:
+    match = _FIRST_TOKEN.search(text_lc or "")
+    return match.group(0) if match else ""
+
+
+def _edit_distance(a: str, b: str, cap: int = 2) -> int:
+    """Levenshtein with an early exit once the distance exceeds ``cap``."""
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        row = [i]
+        min_row = i
+        for j, cb in enumerate(b, 1):
+            ins = row[j - 1] + 1
+            delete = prev[j] + 1
+            sub = prev[j - 1] + (ca != cb)
+            val = min(ins, delete, sub)
+            row.append(val)
+            if val < min_row:
+                min_row = val
+        if min_row > cap:
+            return cap + 1
+        prev = row
+    return prev[-1]
+
+
+def fuzzy_spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool:
+    """Leading token is one edit from a name of length >= 4.
+
+    Whisper ate a leading synthetic "Rook," twice on 2026-08-30 (human
+    "hey rook" worked). A one-edit first-token match recovers "ruk",
+    "rook", "rooks" without treating every mention as an address.
+    Names shorter than 4 are skipped: one edit on "maj" is too greedy.
+    """
+    token = _first_token((text or "").lower())
+    if len(token) < 3:
+        return False
+    for raw in names:
+        name = (raw or "").strip().lower()
+        if not name:
+            continue
+        needle = name.split()[0]
+        if len(needle) < 4:
+            continue
+        # First letter must match: "look" is one edit from "rook" and is a
+        # real English word. Whisper mutating the rest of the name is the
+        # failure we recover; swapping the onset is not.
+        if token[0] != needle[0]:
+            continue
+        if _edit_distance(token, needle, cap=1) <= 1:
+            return True
+    return False
+
+
+def log_name_near_miss(
+    text: str, names: set[str] | frozenset[str]
+) -> str | None:
+    """Reason string when a line looks like a missed address, else None.
+
+    Logged so a miss is visible instead of silent. Two shapes:
+      * the name is IN the line but not in an address position
+      * the first token is two edits from a name (close, not close enough)
+    """
+    lc = (text or "").lower()
+    if not lc:
+        return None
+    token = _first_token(lc)
+    for raw in names:
+        name = (raw or "").strip().lower()
+        if not name:
+            continue
+        if name in lc and not spoken_name_match(text, {name}):
+            return f"mention_not_address:{name}"
+        needle = name.split()[0]
+        if token and len(needle) >= 4:
+            dist = _edit_distance(token, needle, cap=2)
+            if dist == 2:
+                return f"fuzzy_distance_2:{token}~{needle}"
+    return None
 
 
 @dataclass
