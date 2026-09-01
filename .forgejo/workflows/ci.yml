@@ -69,6 +69,10 @@ jobs:
         # 16KiB canary WARNs on the known uvicorn websockets-sansio upgrade
         # cliff (> ~8KiB headers silently swallowed, h11 HTTP path fine).
         run: python ../scripts/ws_handshake_probe.py --serve
+      - name: pytest (full server suite, incl. asyncio-marked tests)
+        run: |
+          pip install -q pytest pytest-asyncio
+          python -m pytest -q
       - name: focused unit and behavior tests
         run: |
           python -m unittest -q tests/test_enterprise_trust.py
