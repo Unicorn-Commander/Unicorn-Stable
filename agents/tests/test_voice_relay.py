@@ -828,3 +828,81 @@ class CaptionElectionTests(TestCase):
             "elected_user_captioner",
             inspect.getsource(BrigadeBackedAgent._wire_session_events),
         )
+
+
+class AudioUngateTests(TestCase):
+    """_unblock_audio_output must resolve RoomIO's subscription gate.
+
+    The gate (``_subscribed_fut``) blocks the first captured frame until a
+    VISIBLE participant subscribes; a hidden harness or a late browser never
+    resolves it, and the relay then publishes 79 s of -107 dBFS comfort noise
+    while logging voice_relay_spoke. These tests pin the repair: the future is
+    resolved wherever it sits in the output chain, and a missing attribute is
+    survivable, never fatal.
+    """
+
+    @staticmethod
+    def _future():
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.create_future()
+        finally:
+            loop.close()
+
+    def test_resolves_gate_on_direct_output(self):
+        from types import SimpleNamespace
+
+        from voice_relay.agent import _unblock_audio_output
+
+        fut = self._future()
+        out = SimpleNamespace(_subscribed_fut=fut)
+        session = SimpleNamespace(output=SimpleNamespace(audio=out))
+        _unblock_audio_output(session)
+        self.assertTrue(fut.done())
+
+    def test_resolves_gate_behind_synchronizer_wrapper(self):
+        from types import SimpleNamespace
+
+        from voice_relay.agent import _unblock_audio_output
+
+        fut = self._future()
+        inner = SimpleNamespace(_subscribed_fut=fut, next_in_chain=None)
+        wrapper = SimpleNamespace(next_in_chain=inner)
+        session = SimpleNamespace(output=SimpleNamespace(audio=wrapper))
+        _unblock_audio_output(session)
+        self.assertTrue(fut.done())
+
+    def test_already_resolved_gate_is_left_alone(self):
+        from types import SimpleNamespace
+
+        from voice_relay.agent import _unblock_audio_output
+
+        fut = self._future()
+        fut.set_result("subscribed-for-real")
+        out = SimpleNamespace(_subscribed_fut=fut)
+        session = SimpleNamespace(output=SimpleNamespace(audio=out))
+        _unblock_audio_output(session)  # must not raise InvalidStateError
+        self.assertEqual(fut.result(), "subscribed-for-real")
+
+    def test_missing_gate_is_survivable(self):
+        from types import SimpleNamespace
+
+        from voice_relay.agent import _unblock_audio_output
+
+        # No audio output at all, and an output chain without the attribute:
+        _unblock_audio_output(SimpleNamespace(output=None))
+        tail = SimpleNamespace(next_in_chain=None)
+        head = SimpleNamespace(next_in_chain=tail)
+        _unblock_audio_output(SimpleNamespace(output=SimpleNamespace(audio=head)))
+
+    def test_cyclic_chain_terminates(self):
+        from types import SimpleNamespace
+
+        from voice_relay.agent import _unblock_audio_output
+
+        a = SimpleNamespace()
+        b = SimpleNamespace(next_in_chain=a)
+        a.next_in_chain = b
+        _unblock_audio_output(SimpleNamespace(output=SimpleNamespace(audio=a)))
