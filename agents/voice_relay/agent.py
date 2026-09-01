@@ -537,6 +537,47 @@ async def _replay(frames: list[Any]) -> Any:
         yield frame
 
 
+
+def _unblock_audio_output(session: Any) -> None:
+    """Let the mouth speak into a room nobody has (visibly) subscribed to yet.
+
+    RoomIO's audio output gates its FIRST frame on the track publication's
+    ``wait_for_subscription()``: ``capture_frame`` awaits an internal
+    ``_subscribed_fut`` that resolves only when a visible participant
+    subscribes to the relay's track. A relay's rooms routinely have no such
+    subscriber — a measuring harness joins hidden, a browser subscribes late
+    or selectively — and then the first ``say()`` wedges on frame one forever
+    while the published track free-runs Opus-DTX comfort noise. That is the
+    -107 dBFS "speech" of E03 night: every layer logged success and the wire
+    carried silence.
+
+    Measured 2026-09-01 in stable-build-in-public-e04: same room, same line,
+    same voice went from peak 2/32767 (digital silence, playout never
+    resolving) to peak 17586/32767 with 2910 ms voiced once this future was
+    resolved up front. A broadcast relay must speak regardless of subscriber
+    accounting, so resolve the gate at session start.
+
+    Walks the output chain (a transcription synchronizer may wrap RoomIO's
+    output). On a library version without the attribute this is a no-op and
+    stock behavior remains.
+    """
+    out = getattr(getattr(session, "output", None), "audio", None)
+    seen: set[int] = set()
+    while out is not None and id(out) not in seen:
+        seen.add(id(out))
+        fut = getattr(out, "_subscribed_fut", None)
+        if fut is not None:
+            try:
+                if not fut.done():
+                    fut.set_result(None)
+                    logger.info("voice_relay_audio_ungated")
+            except Exception:
+                logger.warning("voice_relay_audio_ungate_failed", exc_info=True)
+            return
+        out = getattr(out, "next_in_chain", None)
+    logger.warning("voice_relay_audio_gate_not_found")
+
+
 class VoiceRelayAgent(StableAgent):
     """Joins a call and speaks the cast's messages. No brain attached."""
 
@@ -666,6 +707,9 @@ class VoiceRelayAgent(StableAgent):
         agent = Agent(**agent_kwargs)
         session = AgentSession()
         await session.start(agent=agent, room=ctx.room)
+        # Without this the first say() can block forever on a room with no
+        # visible subscriber, and the track carries only comfort-noise silence.
+        _unblock_audio_output(session)
         self._session = session
 
         ctx.room.on("data_received", self._on_data)
