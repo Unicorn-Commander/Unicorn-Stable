@@ -23,7 +23,8 @@ export function pickAudioInputDevice(
   devices: Array<{ deviceId: string; label: string }>,
   savedId?: string,
 ): string {
-  if (!devices.length) return "";
+  const [first] = devices;
+  if (!first) return "";
   const preferred = devices.find((d) =>
     labelIs(d, PREFERRED_AUDIO_INPUT_LABEL),
   );
@@ -32,7 +33,7 @@ export function pickAudioInputDevice(
   if (preferred && (!saved || savedIsQuiet)) return preferred.deviceId;
   if (saved) return saved.deviceId;
   if (preferred) return preferred.deviceId;
-  return devices[0].deviceId;
+  return first.deviceId;
 }
 
 /**
