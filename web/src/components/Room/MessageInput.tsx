@@ -435,7 +435,6 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       window.visualViewport?.removeEventListener("resize", onResize);
       ro?.disconnect();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Persist draft per room. Restoring on switch is handled by re-mounting:
@@ -448,7 +447,6 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   // Re-load draft when the room changes (covers same-component reuse).
   useEffect(() => {
     setContent(getDraft(roomId));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
   // Quote-reply: another component can request text be inserted into this
@@ -486,7 +484,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     const cursorPos = e.target.selectionStart;
     const textBeforeCursor = value.slice(0, cursorPos);
     const mentionMatch = textBeforeCursor.match(/@(\w*)$/);
-    const emojiMatch = textBeforeCursor.match(/:([a-z0-9_+\-]{2,})$/i);
+    const emojiMatch = textBeforeCursor.match(/:([a-z0-9_+-]{2,})$/i);
     // Slash commands are only recognized at position 0 (applySlashCommand
     // does the same). Once a space/newline is typed the menu closes and the
     // message sends literally — matching /help still works on send.

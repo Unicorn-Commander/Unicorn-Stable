@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useMemo, useRef } from "react";
 import { api } from "@/services/api";
 import type { Message, SendMessageRequest } from "@/services/api";
 import { ws } from "@/services/websocket";
@@ -179,7 +179,9 @@ export function useChat(roomId: string | null): UseChatReturn {
   const currentUser = useAppStore((s) => s.currentUser);
   const initialLoadDone = useRef<Set<string>>(new Set());
 
-  const messages = messagesState?.items ?? [];
+  // Memoized: `?? []` would mint a new array every render and rebuild the
+  // send/edit/delete callbacks below each time.
+  const messages = useMemo(() => messagesState?.items ?? [], [messagesState]);
   const hasMore = messagesState?.hasMore ?? true;
   const loading = messagesState?.loading ?? false;
 
