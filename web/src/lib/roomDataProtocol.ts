@@ -192,6 +192,11 @@ export interface TalkGateMessage {
   open: boolean;
   /** Gateway principal that sent it (an agent id, e.g. "rook"). */
   by: string;
+  /**
+   * The agent the held pedal addresses (a username, e.g. "agent-grok").
+   * Absent = the room's relay persona — the pre-E04 behaviour.
+   */
+  target?: string;
 }
 
 export function isTalkGateMessage(v: unknown): v is TalkGateMessage {
@@ -200,7 +205,8 @@ export function isTalkGateMessage(v: unknown): v is TalkGateMessage {
   return (
     m.type === "talk_gate" &&
     typeof m.open === "boolean" &&
-    typeof m.by === "string"
+    typeof m.by === "string" &&
+    (m.target === undefined || typeof m.target === "string")
   );
 }
 

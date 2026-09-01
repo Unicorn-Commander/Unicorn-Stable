@@ -49,6 +49,19 @@ describe("talk_gate decoding", () => {
     const frame = { type: "talk_gate", open: true, by: "pedal-1" } as const;
     expect(decodeRoomData(encodeRoomData(frame))).toEqual(frame);
   });
+
+  it("carries an optional target (E04 pedal-to-agent) and rejects a non-string one", () => {
+    const frame = {
+      type: "talk_gate",
+      open: true,
+      by: "pedal-1",
+      target: "agent-grok",
+    } as const;
+    expect(decodeRoomData(encodeRoomData(frame))).toEqual(frame);
+    expect(
+      isTalkGateMessage({ type: "talk_gate", open: true, by: "x", target: 7 }),
+    ).toBe(false);
+  });
 });
 
 describe("relay_config decoding", () => {

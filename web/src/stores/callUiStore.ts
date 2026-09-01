@@ -104,6 +104,11 @@ export interface TalkGateState {
   open: boolean;
   /** Gateway principal holding the gate (an agent id), when open. */
   by: string | null;
+  /**
+   * The agent the pedal addresses (a username, e.g. "agent-grok"), when the
+   * open frame named one. Absent = the room's relay persona.
+   */
+  target?: string;
 }
 
 const TALK_GATE_CLOSED: TalkGateState = { open: false, by: null };
@@ -299,7 +304,7 @@ interface CallUiState {
    * re-asserted open frame pushes the deadline out rather than stacking
    * timers; closing cancels it.
    */
-  setTalkGate: (open: boolean, by?: string | null) => void;
+  setTalkGate: (open: boolean, by?: string | null, target?: string | null) => void;
 
   ingestTranscript: (msg: TranscriptMessage) => void;
   clearTranscript: () => void;
@@ -445,7 +450,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       transcript: [],
     }),
 
-  setTalkGate: (open, by) => {
+  setTalkGate: (open, by, target) => {
     // One timer, always for the LATEST open. Clearing first makes a repeated
     // open frame extend the deadline instead of letting the oldest timer win.
     clearTalkGateSafetyTimer();
@@ -455,7 +460,13 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
         // A lost close frame must not pin the chip forever.
         set({ talkGate: TALK_GATE_CLOSED });
       }, TALK_GATE_SAFETY_TIMEOUT_MS);
-      set({ talkGate: { open: true, by: by ?? null } });
+      set({
+        talkGate: {
+          open: true,
+          by: by ?? null,
+          ...(target ? { target } : {}),
+        },
+      });
     } else {
       set((state) =>
         state.talkGate.open || state.talkGate.by !== null
@@ -706,7 +717,7 @@ export const uiCommandBus = {
  * per-call clearing live inside setTalkGate/setActiveCallRoom.
  */
 export function dispatchTalkGate(msg: TalkGateMessage): void {
-  useCallUiStore.getState().setTalkGate(msg.open, msg.by);
+  useCallUiStore.getState().setTalkGate(msg.open, msg.by, msg.target);
 }
 
 export function dispatchUiCommand(
