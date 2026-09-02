@@ -362,13 +362,28 @@ interface ModerationItem {
   title: string;
 }
 
+/** Mute — the item's meaning flips per target, so it is not in the static list. */
+const MUTE_MIC_ITEM: ModerationItem = {
+  action: "mute_mic",
+  icon: MicOff,
+  label: "Mute mic",
+  title: "Server-mute their mic — they can unmute themselves",
+};
+
+/**
+ * AGENT-ONLY. LiveKit refuses the server-side unmute (412 "remote unmute not
+ * enabled" — see server/app/api/moderation.py), so a human target still
+ * re-enables their own mic; there is no menu item for that. An agent has no
+ * hands, so this asks its voice relay to unmute itself over the data channel.
+ */
+const UNMUTE_MIC_ITEM: ModerationItem = {
+  action: "unmute_mic",
+  icon: Mic,
+  label: "Unmute mic",
+  title: "Ask the agent to unmute itself — the only way back from a server mute",
+};
+
 const MODERATION_ITEMS: ModerationItem[] = [
-  {
-    action: "mute_mic",
-    icon: MicOff,
-    label: "Mute mic",
-    title: "Server-mute their mic — they can unmute themselves",
-  },
   {
     action: "silence",
     icon: VolumeX,
@@ -415,9 +430,15 @@ const MODERATION_ITEMS: ModerationItem[] = [
 function CallModerationMenu({
   targetName,
   onAction,
+  isAgentTarget,
+  micMuted,
 }: {
   targetName: string;
   onAction: (action: CallModerationAction) => void;
+  /** Only an agent target can be sent `unmute_mic` — the server 400s a human. */
+  isAgentTarget: boolean;
+  /** Current mic state (`!isMicrophoneEnabled`) — decides Mute vs. Unmute. */
+  micMuted: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -470,6 +491,12 @@ function CallModerationMenu({
     onAction(action);
   }
 
+  // Unmute only replaces Mute when there is something to undo AND someone to
+  // send it to — a muted human re-enables their own mic instead (see
+  // UNMUTE_MIC_ITEM), so the item never appears for a human target.
+  const micItem = isAgentTarget && micMuted ? UNMUTE_MIC_ITEM : MUTE_MIC_ITEM;
+  const items = [micItem, ...MODERATION_ITEMS];
+
   return (
     <>
       <button
@@ -500,7 +527,7 @@ function CallModerationMenu({
             <p className="truncate px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               Moderate {targetName}
             </p>
-            {MODERATION_ITEMS.map((item) => (
+            {items.map((item) => (
               <button
                 key={item.action}
                 role="menuitem"
@@ -1008,7 +1035,12 @@ function ParticipantTile({
             the menu portals to the main document, so it would be dropped
             into a window that cannot show it. */}
         {onModerate && !inPopout && (
-          <CallModerationMenu targetName={p.name} onAction={onModerate} />
+          <CallModerationMenu
+            targetName={p.name}
+            onAction={onModerate}
+            isAgentTarget={isAgentTile}
+            micMuted={p.isMuted}
+          />
         )}
         {/* Owner-only: mint a URL an OBS browser source can point at. Solves
             the window-id orphaning that made pop-out capture unusable on a
@@ -1570,6 +1602,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     async (identity: string, label: string, action: CallModerationAction) => {
       const verb: Record<CallModerationAction, string> = {
         mute_mic: "Muted",
+        unmute_mic: "Unmuted",
         silence: "Silenced",
         unsilence: "Unsilenced",
         deafen: "Deafened",

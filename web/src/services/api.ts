@@ -159,6 +159,12 @@ export interface VoiceSettingsResponse {
 /** Verbs of POST /rooms/{id}/moderation — live-call moderation (owner/admin). */
 export type CallModerationAction =
   | "mute_mic"
+  /**
+   * AGENT PARTICIPANTS ONLY (server 400s a human target). LiveKit refuses a
+   * server-side unmute, so this asks the agent's voice relay to unmute
+   * itself over the room's data channel — see server/app/api/moderation.py.
+   */
+  | "unmute_mic"
   | "silence"
   | "unsilence"
   | "deafen"

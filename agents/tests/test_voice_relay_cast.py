@@ -175,6 +175,93 @@ class OnDataCastTests(TestCase):
         self.assertEqual(agent._voices, {ROOK: "am_echo"})
 
 
+def _audio_pub(*, muted: bool = True) -> SimpleNamespace:
+    from livekit import rtc
+
+    track = SimpleNamespace(muted=muted, unmute=MagicMock())
+    return SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO, muted=muted, track=track)
+
+
+def _video_pub(*, muted: bool = True) -> SimpleNamespace:
+    from livekit import rtc
+
+    track = SimpleNamespace(muted=muted, unmute=MagicMock())
+    return SimpleNamespace(kind=rtc.TrackKind.KIND_VIDEO, muted=muted, track=track)
+
+
+def _room_with(publications: dict) -> SimpleNamespace:
+    participant = SimpleNamespace(track_publications=publications)
+    return SimpleNamespace(local_participant=participant)
+
+
+class UnmuteOwnAudioTests(TestCase):
+    """The self-unmute LiveKit forces onto the target: no server path exists
+    (``MuteRoomTrackRequest(muted=False)`` is refused — see
+    server/app/api/moderation.py), so the relay must do this to itself."""
+
+    def test_unmutes_a_muted_audio_publication(self) -> None:
+        pub = _audio_pub(muted=True)
+        agent = _agent(_lk_room=_room_with({"TR_mic": pub}))
+        self.assertTrue(agent._unmute_own_audio(reason="control"))
+        pub.track.unmute.assert_called_once()
+
+    def test_already_unmuted_is_a_noop(self) -> None:
+        pub = _audio_pub(muted=False)
+        agent = _agent(_lk_room=_room_with({"TR_mic": pub}))
+        self.assertFalse(agent._unmute_own_audio(reason="control"))
+        pub.track.unmute.assert_not_called()
+
+    def test_video_publication_is_never_touched(self) -> None:
+        """A mic mute must not accidentally unmute a stage/face video track."""
+        pub = _video_pub(muted=True)
+        agent = _agent(_lk_room=_room_with({"TR_stage": pub}))
+        self.assertFalse(agent._unmute_own_audio(reason="control"))
+        pub.track.unmute.assert_not_called()
+
+    def test_no_room_yet_is_a_noop_not_a_crash(self) -> None:
+        agent = _agent(_lk_room=None)
+        self.assertFalse(agent._unmute_own_audio(reason="control"))
+
+    def test_a_track_that_refuses_to_unmute_does_not_raise(self) -> None:
+        pub = _audio_pub(muted=True)
+        pub.track.unmute.side_effect = RuntimeError("ffi gone")
+        agent = _agent(_lk_room=_room_with({"TR_mic": pub}))
+        self.assertFalse(agent._unmute_own_audio(reason="control"))
+
+
+class OnDataUnmuteControlTests(TestCase):
+    @staticmethod
+    def _frame(payload: dict) -> SimpleNamespace:
+        return SimpleNamespace(data=json.dumps(payload).encode())
+
+    def test_unmute_action_unmutes_the_track(self) -> None:
+        pub = _audio_pub(muted=True)
+        agent = _agent(_lk_room=_room_with({"TR_mic": pub}))
+        agent._on_data(
+            self._frame({"type": "voice_relay_control", "action": "unmute"})
+        )
+        pub.track.unmute.assert_called_once()
+
+    def test_unknown_action_does_not_raise_or_touch_the_track(self) -> None:
+        pub = _audio_pub(muted=True)
+        agent = _agent(_lk_room=_room_with({"TR_mic": pub}))
+        agent._on_data(
+            self._frame({"type": "voice_relay_control", "action": "mute"})
+        )
+        pub.track.unmute.assert_not_called()
+
+    def test_a_moderation_mute_then_the_control_packet_recovers(self) -> None:
+        """End-to-end shape of the recipe: mute leaves the track muted (this
+        relay never mutes itself), the control packet is what undoes it."""
+        pub = _audio_pub(muted=True)
+        agent = _agent(_lk_room=_room_with({"TR_mic": pub}))
+        self.assertTrue(pub.track.muted)
+        agent._on_data(
+            self._frame({"type": "voice_relay_control", "action": "unmute"})
+        )
+        pub.track.unmute.assert_called_once()
+
+
 class GateTargetTests(TestCase):
     def test_a_named_agent_is_the_target(self) -> None:
         self.assertEqual(gate_target("agent-grok", "rook", ROOK), "agent-grok")
@@ -285,6 +372,24 @@ class _FakeStream:
         if not self._frames:
             raise StopAsyncIteration
         return SimpleNamespace(frame=self._frames.pop(0))
+
+
+class UnmuteBeforeSpeakTests(IsolatedAsyncioTestCase):
+    """A queued line must not be lost into a muted track — see
+    ``VoiceRelayAgent._say``'s defensive unmute."""
+
+    async def test_a_muted_track_is_unmuted_before_the_line_is_said(self) -> None:
+        pub = _audio_pub(muted=True)
+        agent = _agent(_session=_FakeSession(), _lk_room=_room_with({"TR_mic": pub}))
+        await agent._say(SpokenLine("am_echo", "hello", ROOK, "Rook"))
+        pub.track.unmute.assert_called_once()
+        self.assertEqual(agent._session.calls, [("hello", None)])
+
+    async def test_an_already_unmuted_track_is_left_alone(self) -> None:
+        pub = _audio_pub(muted=False)
+        agent = _agent(_session=_FakeSession(), _lk_room=_room_with({"TR_mic": pub}))
+        await agent._say(SpokenLine("am_echo", "hello", ROOK, "Rook"))
+        pub.track.unmute.assert_not_called()
 
 
 class PerVoiceSayTests(IsolatedAsyncioTestCase):

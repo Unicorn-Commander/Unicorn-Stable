@@ -825,6 +825,20 @@ class VoiceRelayAgent(StableAgent):
                 elif "voices" not in payload:
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
                 return
+            if isinstance(payload, dict) and payload.get("type") == "voice_relay_control":
+                # A moderator's "mute mic" server-mutes this relay's track (see
+                # server/app/api/moderation.py:mute_mic); LiveKit refuses the
+                # server-side unmute (412 "remote unmute not enabled"), so the
+                # only way back is the target unmuting ITSELF. This packet —
+                # api/moderation.py's ``unmute_mic`` action — is that request.
+                action = str(payload.get("action") or "").strip().lower()
+                if action == "unmute":
+                    self._unmute_own_audio(reason="control")
+                else:
+                    logger.warning(
+                        "voice_relay_control_invalid", action=action[:20]
+                    )
+                return
             if isinstance(payload, dict) and payload.get("type") == "talk_gate":
                 # The external activation signal. Any device can send it — a
                 # foot pedal, a stream deck, a phone — via the gateway; the
@@ -873,6 +887,48 @@ class VoiceRelayAgent(StableAgent):
             )
         except Exception:
             logger.warning("voice_relay_data_failed", exc_info=True)
+
+    def _unmute_own_audio(self, *, reason: str) -> bool:
+        """Unmute this relay's own published AUDIO track(s). True if any track
+        was actually muted (and is now unmuted); False when there was nothing
+        to do — no room yet, no local participant, no audio published, or it
+        was already unmuted.
+
+        LiveKit's server-side unmute (``MuteRoomTrackRequest(muted=False)``)
+        is refused by this deployment — 412 "remote unmute not enabled" (see
+        LiveKitService.mute_participant). The SFU only lets a track's OWN
+        publisher unmute it, so a moderator's ``mute_mic`` on this relay (see
+        server/app/api/moderation.py) can only be undone from HERE. Never
+        raises: called from the sync data callback and defensively before
+        every line spoken, and a mute lookup failing must not cost a line.
+        """
+        room = self._lk_room
+        participant = getattr(room, "local_participant", None) if room is not None else None
+        publications = getattr(participant, "track_publications", None) or {}
+        try:
+            from livekit import rtc
+
+            audio_kind = rtc.TrackKind.KIND_AUDIO
+        except Exception:
+            audio_kind = None
+        changed = False
+        for pub in publications.values():
+            track = getattr(pub, "track", None)
+            if track is None:
+                continue
+            kind = getattr(pub, "kind", None)
+            if audio_kind is not None and kind is not None and kind != audio_kind:
+                continue
+            if not (getattr(pub, "muted", False) or getattr(track, "muted", False)):
+                continue
+            try:
+                track.unmute()
+                changed = True
+            except Exception:
+                logger.warning("voice_relay_unmute_track_failed", exc_info=True)
+        if changed:
+            logger.info("voice_relay_unmuted", reason=reason)
+        return changed
 
     def _on_own_stt(self, ev: Any) -> None:
         """A final from the relay's OWN STT. Sync; must never raise."""
@@ -1166,6 +1222,13 @@ class VoiceRelayAgent(StableAgent):
         session = self._session
         if session is None:
             return
+        # Defensive: a moderator's ``mute_mic`` (server/app/api/moderation.py)
+        # can land between two queued lines. The normal path is the
+        # ``voice_relay_control`` unmute packet reaching ``_on_data`` first,
+        # but that packet can be lost or arrive late — better a self-check
+        # here than a queue that silently empties into a muted track.
+        if self._unmute_own_audio(reason="before_speak"):
+            logger.info("voice_relay_unmute_before_speak")
         if isinstance(line, str):
             line = SpokenLine(self._persona_voice, line, self._source_username, "")
         text = line.text
