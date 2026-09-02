@@ -287,3 +287,69 @@ class DispatchMergesByDefaultTests(IsolatedAsyncioTestCase):
 
         sig = inspect.signature(LiveKitService.dispatch_agent)
         self.assertIs(sig.parameters["merge_metadata"].default, True)
+
+
+class FaceAndCastFlagPassthroughTests(IsolatedAsyncioTestCase):
+    """``voice_relay_video`` / ``voice_relay_multi`` reach the worker the only
+    way anything does: through the dispatch and the room's LiveKit metadata.
+    Off is the default and is NOT sent on dispatch (byte-identical dispatch
+    for a room that never asked); the sync carries an explicit false so a
+    face switched off stays off after a room recreate."""
+
+    async def test_flags_ride_the_dispatch_only_when_on(self) -> None:
+        lk = _livekit(["aaron_1111"])
+        await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertNotIn("voice_relay_video", meta)
+        self.assertNotIn("voice_relay_multi", meta)
+
+        lk = _livekit(["aaron_1111"])
+        await _ensure_voice_relay(
+            lk,
+            _room(
+                {
+                    "voice_relay_source": ROOK,
+                    "voice_relay_video": True,
+                    "voice_relay_multi": "true",
+                    "voice_relay_voices": {"agent-grok": "am_onyx"},
+                }
+            ),
+        )
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertEqual(meta["voice_relay_video"], "true")
+        self.assertEqual(meta["voice_relay_multi"], "true")
+        self.assertEqual(meta["voice_relay_voices"], '{"agent-grok": "am_onyx"}')
+
+    async def test_a_false_flag_is_not_sent_on_dispatch(self) -> None:
+        lk = _livekit(["aaron_1111"])
+        await _ensure_voice_relay(
+            lk, _room({"voice_relay_source": ROOK, "voice_relay_video": False})
+        )
+        self.assertNotIn("voice_relay_video", lk.dispatch_agent.await_args.kwargs["metadata"])
+
+    async def test_sync_carries_true_and_false_as_strings(self) -> None:
+        import json as _json
+
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(return_value={"voice_relay_video": "true"})
+        room = _room(
+            {"voice_relay_source": ROOK, "voice_relay_video": False, "voice_relay_multi": True}
+        )
+        await _sync_voice_metadata(lk, room)
+        merged = _json.loads(lk.update_room_metadata.await_args.args[1])
+        self.assertEqual(merged["voice_relay_video"], "false")
+        self.assertEqual(merged["voice_relay_multi"], "true")
+
+    async def test_a_room_without_flags_syncs_none(self) -> None:
+        import json as _json
+
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(return_value={})
+        await _sync_voice_metadata(lk, _room({"voice_relay_source": ROOK}))
+        merged = _json.loads(lk.update_room_metadata.await_args.args[1])
+        self.assertNotIn("voice_relay_video", merged)
+        self.assertNotIn("voice_relay_multi", merged)

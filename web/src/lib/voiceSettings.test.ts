@@ -17,6 +17,7 @@ import {
   voiceRelayActivation,
   voiceRelaySource,
   voiceSettingsSavedToast,
+  voiceRelayFlag,
 } from "./voiceSettings";
 
 function member(over: Partial<RoomMember> = {}): RoomMember {
@@ -209,5 +210,17 @@ describe("applyRelayConfigToRoomQueries (relay_config reconcile)", () => {
     const qc = new QueryClient();
     applyRelayConfigToRoomQueries(qc, "room-9", "off");
     expect(qc.getQueryData(["room", "room-9"])).toBeUndefined();
+  });
+});
+
+describe("voiceRelayFlag", () => {
+  it("defaults to off and reads every spelling the row can hold", () => {
+    expect(voiceRelayFlag(undefined, "voice_relay_video")).toBe(false);
+    expect(voiceRelayFlag({}, "voice_relay_video")).toBe(false);
+    expect(voiceRelayFlag({ voice_relay_video: true }, "voice_relay_video")).toBe(true);
+    expect(voiceRelayFlag({ voice_relay_video: "true" }, "voice_relay_video")).toBe(true);
+    expect(voiceRelayFlag({ voice_relay_video: "false" }, "voice_relay_video")).toBe(false);
+    expect(voiceRelayFlag({ voice_relay_multi: 1 }, "voice_relay_multi")).toBe(true);
+    expect(voiceRelayFlag({ voice_relay_multi: "junk" }, "voice_relay_multi")).toBe(false);
   });
 });

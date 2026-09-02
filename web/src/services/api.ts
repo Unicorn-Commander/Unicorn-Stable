@@ -154,6 +154,23 @@ export interface RoomMember {
 export interface VoiceSettingsResponse {
   activation: VoiceActivationMode;
   live: boolean;
+  /** Relay participants publish a rendered puppet as their camera. */
+  video?: boolean;
+  /** Every other sender in the cast gets its own LiveKit participant. */
+  multi?: boolean;
+}
+
+/**
+ * Optional fields of PATCH /rooms/{id}/voice-settings. Omitted = unchanged.
+ * `voices`: sender username → Kokoro voice id (`{}` clears the cast).
+ * `video` / `multi`: the relay's face and per-member participant flags —
+ * both default OFF server-side; a room that never sets them gets the relay
+ * exactly as it was.
+ */
+export interface VoiceSettingsExtras {
+  voices?: Record<string, string>;
+  video?: boolean;
+  multi?: boolean;
 }
 
 /** Verbs of POST /rooms/{id}/moderation — live-call moderation (owner/admin). */
@@ -1254,11 +1271,12 @@ class StableApiClient {
   async updateVoiceSettings(
     roomId: string,
     activation: VoiceActivationMode,
+    extras: VoiceSettingsExtras = {},
   ): Promise<VoiceSettingsResponse> {
     return this.request<VoiceSettingsResponse>(
       "PATCH",
       `/api/v1/rooms/${roomId}/voice-settings`,
-      { activation },
+      { activation, ...extras },
     );
   }
 

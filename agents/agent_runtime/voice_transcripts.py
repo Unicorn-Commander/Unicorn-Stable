@@ -88,6 +88,18 @@ def is_agent_identity(participant_id: str | None) -> bool:
     return bool(participant_id) and str(participant_id).startswith("agent-")
 
 
+def is_cast_puppet(participant: Any) -> bool:
+    """A participant the voice relay HOSTS for a cast member (voice_relay/cast.py):
+    an ``agent-*`` identity with a mouth and a face but no ears and no brain.
+    It must not be elected to caption, and it is not "another agent" for the
+    relay's sole-agent rule. Read off the join attributes the relay stamps."""
+    try:
+        attrs = getattr(participant, "attributes", None) or {}
+        return str(attrs.get("stable.cast") or "") == "1"
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class Utterance:
     """One grouped, reply-worthy piece of human speech."""
@@ -358,7 +370,7 @@ def elected_user_captioner(room: Any, self_identity: str) -> bool:
     try:
         for participant in getattr(room, "remote_participants", {}).values():
             identity = str(getattr(participant, "identity", "") or "")
-            if is_agent_identity(identity):
+            if is_agent_identity(identity) and not is_cast_puppet(participant):
                 candidates.add(identity)
     except Exception:
         return True

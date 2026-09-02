@@ -44,6 +44,27 @@ export function voiceRelayActivation(
   return coerceVoiceActivationMode(metadata?.voice_relay_activation);
 }
 
+/** The relay's face / per-member participant flags (2026-09-02). */
+export type VoiceRelayFlag = "voice_relay_video" | "voice_relay_multi";
+
+/**
+ * A relay flag as the room row holds it. The DB writes booleans; a hand-edit
+ * or a LiveKit-metadata copy may hold "true"/"false" strings. Absent = off —
+ * the same default the worker and the server apply.
+ */
+export function voiceRelayFlag(
+  metadata: Record<string, unknown> | null | undefined,
+  key: VoiceRelayFlag,
+): boolean {
+  const raw = metadata?.[key];
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw !== 0;
+  if (typeof raw === "string") {
+    return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+  }
+  return false;
+}
+
 /**
  * May this member list's caller change the voice settings? Owner/admin only —
  * the exact gate the server enforces, so a member never sees a control that

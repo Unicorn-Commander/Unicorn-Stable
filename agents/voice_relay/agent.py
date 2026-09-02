@@ -33,6 +33,16 @@ CONFIGURATION comes from the room's metadata, read at dispatch:
     legacy single source above (which keeps the persona's voice). A voice id
     Kokoro does not serve is logged and falls back to the persona voice —
     never to silence. Absent, nothing changes.
+  * ``voice_relay_video`` — OPTIONAL, added 2026-09-02, default off: publish
+    a rendered puppet as this participant's CAMERA track (and each cast
+    member's, below) so the agent shows up in the grid, on
+    ``/broadcast/{room}/{identity}`` and in OBS like a human on a webcam.
+    See agent_runtime/puppet_video.py.
+  * ``voice_relay_multi`` — OPTIONAL, added 2026-09-02, default off: every
+    OTHER sender in ``voice_relay_voices`` becomes its OWN participant
+    (identity = the sender's username), hosted by this relay process, with
+    its own audio track — so Grok's words leave Grok's tile, not Rook's.
+    See voice_relay/cast.py. With both flags off, nothing below changes.
 
 THE TALK GATE can name a TARGET (``talk_gate`` frame, ``target`` field, added
 2026-09-01). A held pedal then addresses that agent rather than the relay's
@@ -88,6 +98,12 @@ from typing import Any, NamedTuple
 import structlog
 
 from agent_runtime.base import StableAgent
+from agent_runtime.puppet_video import (
+    PuppetVideo,
+    build_spec,
+    load_manifest,
+    tap_audio_output,
+)
 from agent_runtime.transcript_publisher import (
     TranscriptPublisher,
     VoiceHistoryPersister,
@@ -102,8 +118,10 @@ from agent_runtime.voice_transcripts import (
     classify_transcript,
     elected_user_captioner,
     is_agent_identity,
+    is_cast_puppet,
     mention_needles,
 )
+from voice_relay.cast import CastMember, cast_identities
 
 logger = structlog.get_logger(__name__)
 
@@ -369,6 +387,37 @@ def relay_voices_from_metadata(
     return voices
 
 
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in _TRUE_WORDS
+
+
+RELAY_FLAG_KEYS = ("voice_relay_video", "voice_relay_multi")
+
+
+def relay_flags_from_metadata(metadata: Any) -> dict[str, bool]:
+    """``{"video": bool, "multi": bool}`` from room/job metadata. Both default
+    OFF: a room that has not asked for faces gets exactly the relay it had."""
+    data = _metadata_dict(metadata)
+    return {
+        "video": _truthy(data.get("voice_relay_video")),
+        "multi": _truthy(data.get("voice_relay_multi")),
+    }
+
+
+def flags_present(metadata: Any) -> bool:
+    """Does this metadata SAY anything about the flags? (Job metadata that is
+    silent must not override a room that opted in.)"""
+    data = _metadata_dict(metadata)
+    return any(k in data for k in RELAY_FLAG_KEYS)
+
+
 class SpokenLine(NamedTuple):
     """One line to say: which voice, what words, and whose they are."""
 
@@ -527,6 +576,9 @@ def sole_agent_in_call(room: Any, self_identity: str) -> bool:
     for participant in remotes:
         identity = str(getattr(participant, "identity", "") or "")
         if identity and identity != self_identity and is_agent_identity(identity):
+            # A cast puppet this relay hosts is a mouth, not another worker.
+            if is_cast_puppet(participant):
+                continue
             return False
     return True
 
@@ -632,6 +684,15 @@ class VoiceRelayAgent(StableAgent):
         self._join_identity: str = ""
         self._queue: asyncio.Queue[SpokenLine] = asyncio.Queue()
         self._speaker_task: asyncio.Task[None] | None = None
+        #: Faces + cast (2026-09-02). Both OFF unless the room says otherwise.
+        self._video = False
+        self._multi = False
+        #: This participant's own face, when ``_video``.
+        self._puppet: PuppetVideo | None = None
+        #: sender username → hosted participant, when ``_multi``.
+        self._cast: dict[str, CastMember] = {}
+        self._visuals_task: asyncio.Task[None] | None = None
+        self._manifest: dict[str, Any] | None = None
 
     async def build_pipeline(self, ctx: Any) -> Any:
         """A session with a MOUTH ONLY — TTS, no LLM, no STT, no VAD."""
@@ -675,6 +736,12 @@ class VoiceRelayAgent(StableAgent):
             else room_meta
         )
         self._voices = relay_voices_from_metadata(voices_meta, source, persona)
+        # Faces and cast. Same precedence: the dispatch's own metadata wins
+        # when it speaks to the question, the room's standing setting otherwise.
+        flags = relay_flags_from_metadata(
+            job_meta if flags_present(job_meta) else room_meta
+        )
+        self._video, self._multi = flags["video"], flags["multi"]
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
         agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
@@ -768,6 +835,9 @@ class VoiceRelayAgent(StableAgent):
             session.on("user_input_transcribed", self._on_own_stt)
         except Exception:
             logger.warning("relay_stt_listener_failed", exc_info=True)
+        # Faces and cast members, off the critical path: a slow puppet join
+        # must never delay the first spoken line.
+        self._schedule_visuals()
         logger.info(
             "voice_relay_started",
             room=getattr(ctx.room, "name", ""),
@@ -775,8 +845,141 @@ class VoiceRelayAgent(StableAgent):
             persona=self._relay_persona,
             activation=self._activation,
             voices=dict(self._voices),
+            video=self._video,
+            multi=self._multi,
         )
         return session
+
+    # ------------------------------------------------------------------ #
+    # Faces + cast (voice_relay_video / voice_relay_multi)
+    # ------------------------------------------------------------------ #
+
+    def _puppet_manifest(self) -> dict[str, Any]:
+        if self._manifest is None:
+            self._manifest = load_manifest()
+        return self._manifest
+
+    def _schedule_visuals(self) -> None:
+        """Reconcile faces/cast with the current flags, in the background."""
+        if self._visuals_task is not None and not self._visuals_task.done():
+            # A change while one is running: let it finish, then run again.
+            self._visuals_task.add_done_callback(lambda _t: self._schedule_visuals())
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (a unit test building the agent by hand).
+            self._visuals_task = None
+            return
+        self._visuals_task = loop.create_task(
+            self._reconcile_visuals(), name=f"voice-relay-visuals:{self._relay_persona}"
+        )
+
+    async def _reconcile_visuals(self) -> None:
+        """Make the room match the flags: own face on/off, cast joined/left.
+        Every step is fail-open — a face that cannot be drawn must not cost a
+        line of speech."""
+        try:
+            await self._reconcile_own_face()
+        except Exception:
+            logger.warning("voice_relay_face_reconcile_failed", exc_info=True)
+        try:
+            await self._reconcile_cast()
+        except Exception:
+            logger.warning("voice_relay_cast_reconcile_failed", exc_info=True)
+
+    async def _reconcile_own_face(self) -> None:
+        room = self._lk_room
+        if room is None:
+            return
+        if self._video and self._puppet is None:
+            spec = build_spec(
+                self._join_identity or self._source_username,
+                None,
+                self._puppet_manifest(),
+            )
+            puppet = PuppetVideo(spec)
+            await puppet.start(room)
+            self._puppet = puppet
+            # The mouth follows whatever the session actually sends to the wire.
+            if self._session is not None and not tap_audio_output(
+                self._session, puppet.feed
+            ):
+                logger.warning("voice_relay_face_audio_tap_missing")
+        elif not self._video and self._puppet is not None:
+            puppet, self._puppet = self._puppet, None
+            await puppet.stop()
+
+    def _cast_wanted(self) -> list[str]:
+        """The senders that should have their own participant right now."""
+        if not self._multi:
+            return []
+        return cast_identities(self._speaking_for(), self._source_username)
+
+    async def _reconcile_cast(self) -> None:
+        wanted = self._cast_wanted()
+        # Leave: members no longer in the cast (or multi switched off).
+        for identity in [i for i in self._cast if i not in wanted]:
+            member = self._cast.pop(identity)
+            await member.close()
+            logger.info("voice_relay_cast_left", identity=identity)
+        room = self._lk_room
+        if room is None or not wanted:
+            return
+        taken = set()
+        try:
+            taken = {
+                str(getattr(p, "identity", "") or "")
+                for p in getattr(room, "remote_participants", {}).values()
+            }
+        except Exception:
+            pass
+        settings = self._settings
+        voices = self._speaking_for()
+        for identity in wanted:
+            member = self._cast.get(identity)
+            if member is not None:
+                if member.video_enabled != self._video:
+                    await member.set_video(self._video)
+                member.voice = voices.get(identity, member.voice)
+                continue
+            if identity in taken:
+                # The real worker is in the room under this name. Joining as
+                # it would EVICT it (duplicate identity) — the cast never wins
+                # that fight.
+                logger.warning("voice_relay_cast_identity_taken", identity=identity)
+                continue
+            spec = build_spec(identity, None, self._puppet_manifest())
+            member = CastMember(
+                identity=identity,
+                display_name=spec.display_name,
+                voice=voices.get(identity, self._persona_voice),
+                spec=spec,
+                host_identity=self._join_identity or self._source_username,
+                room_name=getattr(room, "name", "") or self._room_name,
+                url=settings.livekit_url,
+                api_key=settings.livekit_api_key,
+                api_secret=settings.livekit_api_secret,
+                video=self._video,
+            )
+            if await member.connect():
+                self._cast[identity] = member
+
+    async def _stop_visuals(self) -> None:
+        if self._visuals_task is not None and not self._visuals_task.done():
+            self._visuals_task.cancel()
+        for identity, member in list(self._cast.items()):
+            try:
+                await member.close()
+            except Exception:
+                logger.debug("voice_relay_cast_close_failed", identity=identity, exc_info=True)
+        self._cast.clear()
+        if self._puppet is not None:
+            puppet, self._puppet = self._puppet, None
+            try:
+                await puppet.stop()
+            except Exception:
+                logger.debug("voice_relay_face_stop_failed", exc_info=True)
 
     def _speaking_for(self) -> dict[str, str]:
         """The live cast: the map read at dispatch, or the legacy single source."""
@@ -807,6 +1010,18 @@ class VoiceRelayAgent(StableAgent):
                         self._relay_persona,
                     )
                     logger.info("voice_relay_voices_changed", voices=dict(self._voices))
+                    self._schedule_visuals()
+                if "video" in payload or "multi" in payload:
+                    # Faces on or off, live, for the same reason as the rest of
+                    # this frame: a setting that waits for a rejoin is not one.
+                    if "video" in payload:
+                        self._video = _truthy(payload.get("video"))
+                    if "multi" in payload:
+                        self._multi = _truthy(payload.get("multi"))
+                    logger.info(
+                        "voice_relay_visuals_changed", video=self._video, multi=self._multi
+                    )
+                    self._schedule_visuals()
                 mode = str(payload.get("activation") or "").strip().lower()
                 if mode in ACTIVATION_MODES:
                     old_mode, self._activation = self._activation, mode
@@ -822,7 +1037,7 @@ class VoiceRelayAgent(StableAgent):
                         window_seconds=self._window_seconds,
                         by=str(payload.get("by") or "")[:40],
                     )
-                elif "voices" not in payload:
+                elif not any(k in payload for k in ("voices", "video", "multi")):
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
                 return
             if isinstance(payload, dict) and payload.get("type") == "talk_gate":
@@ -1169,6 +1384,27 @@ class VoiceRelayAgent(StableAgent):
         if isinstance(line, str):
             line = SpokenLine(self._persona_voice, line, self._source_username, "")
         text = line.text
+        member = self._cast.get(line.sender) if self._cast else None
+        if member is not None and member.ready:
+            # This sender has its OWN participant: the words leave its mouth
+            # and its tile, not the relay's. Falls through to the relay's own
+            # voice only if synthesis produced nothing, so a broken cast
+            # voice degrades to the old behaviour rather than to silence.
+            frames = await self._synthesize(line.voice, text)
+            if frames and await member.speak(frames, budget_s=playout_budget(text)):
+                if self._captions is not None:
+                    self._captions.publish_agent_final(
+                        text, name=line.name, participant_id=line.sender
+                    )
+                self._touch_window()
+                logger.info(
+                    "voice_relay_cast_spoke",
+                    chars=len(text),
+                    sender=line.sender,
+                    voice=line.voice,
+                )
+                return
+            logger.warning("voice_relay_cast_fallback", sender=line.sender)
         if self._uses_session_voice(line.voice):
             result = session.say(text)
         else:
@@ -1230,4 +1466,8 @@ class VoiceRelayAgent(StableAgent):
         for task in (self._speaker_task, self._ears_task):
             if task is not None and not task.done():
                 task.cancel()
+        try:
+            await asyncio.wait_for(self._stop_visuals(), timeout=8.0)
+        except Exception:
+            logger.debug("voice_relay_visuals_stop_failed", exc_info=True)
         await super()._shutdown_steps()

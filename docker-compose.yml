@@ -337,6 +337,9 @@ services:
     command: ["start"]
     volumes:
       - ./agents:/app
+      # Puppet art for the relay's camera tracks (agent_runtime/puppet_video.py).
+      # The web client ships the same set; the worker only reads it.
+      - ./web/public/agent-puppets:/app/puppets:ro
     environment:
       # Container names, not aliases — see the backend note. The agents worker
       # actually hit the flagship LiveKit with dogfood keys (401 invalid API

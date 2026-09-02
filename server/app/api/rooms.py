@@ -1211,6 +1211,15 @@ MIN_WINDOW_SECONDS = 15
 MAX_WINDOW_SECONDS = 300
 
 
+def _flag_on(value: Any) -> bool:
+    """A relay flag as the row holds it (bool) or a hand-edit left it (str)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _clamp_window_seconds(value: Any) -> int:
     try:
         n = int(value)
@@ -1229,6 +1238,13 @@ class RoomVoiceSettingsBody(BaseModel):
     #: checked against the served list here — the server does not know what
     #: Kokoro serves; the relay does, and falls back with a log line.
     voices: dict[str, str] | None = None
+    #: Publish a rendered puppet as each relay participant's CAMERA track, so
+    #: agents show in the grid, on /broadcast and in OBS like a human on a
+    #: webcam. Omitted = unchanged. Default off.
+    video: bool | None = None
+    #: Give every OTHER sender in ``voices`` its own LiveKit participant
+    #: (identity = username), hosted by the relay. Omitted = unchanged.
+    multi: bool | None = None
 
 
 def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
@@ -1312,6 +1328,10 @@ async def update_voice_settings(
             meta["voice_relay_voices"] = voices
         else:
             meta.pop("voice_relay_voices", None)
+    if body.video is not None:
+        meta["voice_relay_video"] = bool(body.video)
+    if body.multi is not None:
+        meta["voice_relay_multi"] = bool(body.multi)
     room.metadata_ = meta  # reassigned, not mutated, for JSONB change detection
     await db.commit()
 
@@ -1336,6 +1356,10 @@ async def update_voice_settings(
         if voices is not None:
             # The relay re-reads its cast from this frame, live.
             frame["voices"] = voices
+        if body.video is not None:
+            frame["video"] = bool(body.video)
+        if body.multi is not None:
+            frame["multi"] = bool(body.multi)
         await livekit.send_data(room.livekit_room_name, frame)
         live = True
     except Exception:
@@ -1357,6 +1381,11 @@ async def update_voice_settings(
     return {
         "activation": mode,
         "live": live,
+        # Reported only once a room has ever set them — same "omitted means
+        # unchanged/absent" contract as the request body, and a response a
+        # room that never asked for faces would not recognise as its own.
+        **({"video": _flag_on(meta.get("voice_relay_video"))} if "voice_relay_video" in meta else {}),
+        **({"multi": _flag_on(meta.get("voice_relay_multi"))} if "voice_relay_multi" in meta else {}),
         **({"window_seconds": window_seconds} if mode == "window" else {}),
         **({"voices": voices} if voices is not None else {}),
     }

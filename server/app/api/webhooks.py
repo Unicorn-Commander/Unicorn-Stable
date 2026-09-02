@@ -231,7 +231,22 @@ _VOICE_META_KEYS = (
     "voice_relay_window_seconds",
     "voice_relay_aliases",
     "voice_relay_voices",
+    # Faces + one participant per cast member (2026-09-02). Booleans in the
+    # DB, "true"/"false" strings in LiveKit metadata; both default off.
+    "voice_relay_video",
+    "voice_relay_multi",
 )
+
+_VOICE_FLAG_KEYS = ("voice_relay_video", "voice_relay_multi")
+
+
+def _flag_on(value: Any) -> bool:
+    """A room-metadata flag, in whichever form the row or a hand-edit left it."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _relay_voices_json(value: Any) -> str | None:
@@ -277,6 +292,11 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
             encoded = _relay_voices_json(v)
             if encoded:
                 wanted[k] = encoded
+        elif k in _VOICE_FLAG_KEYS:
+            # Carried even when OFF, so a room that switches a face off gets
+            # the "false" the worker reads rather than a stale "true".
+            if v is not None and v != "":
+                wanted[k] = "true" if _flag_on(v) else "false"
         elif isinstance(v, str) and v.strip():
             wanted[k] = v
         elif isinstance(v, (int, float)) and k == "voice_relay_window_seconds":
@@ -385,6 +405,12 @@ async def _ensure_voice_relay(
                     else {}
                 ),
                 **({"voice_relay_voices": voices_json} if voices_json else {}),
+                # Faces / per-member participants, only when the room asked.
+                **{
+                    k: "true"
+                    for k in _VOICE_FLAG_KEYS
+                    if _flag_on(room_meta.get(k))
+                },
                 # Join AS the participant we speak for, so the call tile
                 # resolves to that character's name and art. `agent-relay`
                 # names nobody, which is why the tile showed "Stable Relay"
