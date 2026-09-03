@@ -319,6 +319,14 @@ class SpecAndManifestTests(TestCase):
                 "agent-codex": ("Codex", False),
                 "agent-grok": ("Grok", False),
                 "agent-chatgpt": ("ChatGPT", False),
+                "agent-control-room": ("Control Room", True),
+                "agent-chat-companion": ("Chat Companion", True),
+                "agent-dikdik-haiku": ("Dikdik", True),
+                "agent-eland-qwen": ("Eland", True),
+                "agent-gerenuk-codex": ("Gerenuk", True),
+                "agent-kudu-sonnet": ("Kudu", True),
+                "agent-okapi-grok": ("Okapi", True),
+                "agent-oryx-gpt": ("Oryx", True),
             }
             amber, grey = (245, 166, 35), (138, 143, 152)
             for identity, (name, drawn) in crew.items():

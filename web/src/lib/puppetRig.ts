@@ -190,6 +190,16 @@ export const PUPPETS: Record<string, PuppetSpec> = {
   zen: { label: "Zen", texture: T("zen"), ...DEFAULT_RIG },
   producer: { label: "Producer", texture: T("producer"), ...DEFAULT_RIG },
   "shafen-claude-code": { label: "Flow", texture: T("shafen-claude-code"), ...DEFAULT_RIG },
+  // Full roster, 2026-09-03: the show's control room and chat companion, and
+  // Shafen's six antelope seats (Brand-Ops renders, brand magic-unicorn).
+  "control-room": { label: "Control Room", texture: T("control-room"), ...DEFAULT_RIG },
+  "chat-companion": { label: "Chat Companion", texture: T("chat-companion"), ...DEFAULT_RIG },
+  dikdik: { label: "Dikdik", texture: T("dikdik"), ...DEFAULT_RIG },
+  eland: { label: "Eland", texture: T("eland"), ...DEFAULT_RIG },
+  gerenuk: { label: "Gerenuk", texture: T("gerenuk"), ...DEFAULT_RIG },
+  kudu: { label: "Kudu", texture: T("kudu"), ...DEFAULT_RIG },
+  okapi: { label: "Okapi", texture: T("okapi"), ...DEFAULT_RIG },
+  oryx: { label: "Oryx", texture: T("oryx"), ...DEFAULT_RIG },
   "gm-watchdog": { label: "GM Watchdog", texture: T("gm-watchdog"), ...DEFAULT_RIG },
   "research-monitor": { label: "Research Monitor", texture: T("research-monitor"), ...DEFAULT_RIG },
 };
@@ -230,6 +240,14 @@ const ALIASES: Record<string, string> = {
   // 2026-09-02 crew set — no longer the generic Claude Code drawing.
   "shafen-s-claude-code": "shafen-claude-code",
   flow: "shafen-claude-code",
+  // Shafen's seats are named <animal>-<model>; the character is the animal.
+  "dikdik-haiku": "dikdik",
+  "eland-qwen": "eland",
+  "gerenuk-codex": "gerenuk",
+  "kudu-sonnet": "kudu",
+  "okapi-grok": "okapi",
+  "oryx-gpt": "oryx",
+  "reddit-scout": "scout",
   "dev-shafen-z13": "claude-code",
   // Webhook residents are addressed by username (their display names are
   // generic), so the usernames are the reliable key.

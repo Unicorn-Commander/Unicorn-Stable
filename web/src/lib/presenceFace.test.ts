@@ -760,8 +760,15 @@ describe("Build In Public cast — 2026-08-28", () => {
 
   const DRAWN_CREW = [
     "rook", "majik", "shox", "corporal-forge", "sprint", "zen", "producer",
-    "shafen-claude-code",
+    "shafen-claude-code", "control-room", "chat-companion", "dikdik", "eland",
+    "gerenuk", "kudu", "okapi", "oryx",
   ];
+
+  it("routes Shafen's animal-named seats to their characters", () => {
+    expect(puppetForAgent("dikdik-haiku", "Dikdik Haiku")!.label).toBe("Dikdik");
+    expect(puppetForAgent("okapi-grok", null)!.label).toBe("Okapi");
+    expect(puppetForAgent("reddit-scout", "Reddit Scout")!.label).toBe("Scout");
+  });
 
   it("gives every drawn crew member a puppet, so none fall back to the generated head", () => {
     for (const id of DRAWN_CREW) {

@@ -129,6 +129,76 @@
   "source": "https://qianwen-res.oss-accelerate-overseas.aliyuncs.com/logo_qwen3.png",
   "made_by": "vendor logo tile"
  },
+ "control-room": {
+  "file": "control-room.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Control Room",
+  "stable_username": "agent-control-room",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass"
+ },
+ "chat-companion": {
+  "file": "chat-companion.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Chat Companion",
+  "stable_username": "agent-chat-companion",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass"
+ },
+ "dikdik": {
+  "file": "dikdik.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Dikdik",
+  "stable_username": "agent-dikdik-haiku",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+  "voice": "bf_isabella"
+ },
+ "eland": {
+  "file": "eland.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Eland",
+  "stable_username": "agent-eland-qwen",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+  "voice": "af_nicole"
+ },
+ "gerenuk": {
+  "file": "gerenuk.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Gerenuk",
+  "stable_username": "agent-gerenuk-codex",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+  "voice": "af_alloy"
+ },
+ "kudu": {
+  "file": "kudu.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Kudu",
+  "stable_username": "agent-kudu-sonnet",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+  "voice": "af_river"
+ },
+ "okapi": {
+  "file": "okapi.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Okapi",
+  "stable_username": "agent-okapi-grok",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+  "voice": "am_michael"
+ },
+ "oryx": {
+  "file": "oryx.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Oryx",
+  "stable_username": "agent-oryx-gpt",
+  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+  "voice": "af_sarah"
+ },
  "_about": {
   "note": "Build In Public crew tiles. Keys are relay slugs (agent_runtime/puppet_video.py slug_of, after _ALIASES). internal=drawn puppet, amber frame; external=vendor logo tile, grey frame, no mouth rig. Source of truth for the art: ~/Projects/rook-bin/puppet (build-tiles.py). Consumed by the relay via PUPPET_MANIFEST=/app/puppets/manifest.json.",
   "reviewed": "Aaron looked at the sheet 2026-09-02"

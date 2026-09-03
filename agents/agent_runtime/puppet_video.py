@@ -161,6 +161,8 @@ for _id in (
     "shox", "corporal-forge", "sprint", "gm-watchdog", "research-monitor",
     # Build In Public crew (2026-09-02 puppet set): drawn puppets get a mouth.
     "zen", "producer", "shafen-claude-code",
+    # Full roster 2026-09-03: control room, chat companion, Shafen's antelopes.
+    "control-room", "chat-companion", "dikdik", "eland", "gerenuk", "kudu", "okapi", "oryx",
 ):
     _RIGS.setdefault(_id, DEFAULT_RIG)
 # External seats (codex, grok, chatgpt, gemini, deepseek, qwen) are VENDOR LOGO
@@ -175,6 +177,14 @@ _ALIASES = {
     "qwen-35b": "corporal-forge",
     "deepseek-flash": "sprint",
     "flow": "shafen-claude-code",
+    # Shafen's seats are <animal>-<model>; the character is the animal.
+    "dikdik-haiku": "dikdik",
+    "eland-qwen": "eland",
+    "gerenuk-codex": "gerenuk",
+    "kudu-sonnet": "kudu",
+    "okapi-grok": "okapi",
+    "oryx-gpt": "oryx",
+    "reddit-scout": "scout",
 }
 
 
