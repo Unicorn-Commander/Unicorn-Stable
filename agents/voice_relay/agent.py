@@ -275,17 +275,33 @@ def window_seconds_from_metadata(metadata: Any) -> int:
     return clamp_window_seconds(raw)
 
 
+#: Spoken-name aliases a persona ALWAYS answers to, on top of the room's
+#: ``voice_relay_aliases``. Whisper's spellings of a name are not the name:
+#: it ate a leading "Rook," twice on 2026-08-30, and a four-syllable Greek
+#: name gets every vowel it can think of.
+BUILTIN_ALIASES: dict[str, frozenset[str]] = {
+    "rook": frozenset({"rookie"}),
+    "claude-code": frozenset({"rookie"}),
+    # Persephone — Aaron's main assistant seat (2026-09-03). The wake word is
+    # "persephone" / "hey persephone"; these are the transcript forms seen or
+    # expected from whisper for the same sound.
+    "persephone": frozenset({
+        "persephoné", "persefone", "persephony", "persephanie", "persephonie",
+        "persephonee", "persaphone", "persephone's",
+    }),
+}
+
+
 def aliases_from_metadata(metadata: Any, persona: str) -> set[str]:
-    """Extra wakeword aliases. Rook always accepts 'rookie'."""
+    """Extra wakeword aliases. Rook always accepts 'rookie'; Persephone her
+    whisper misspellings (BUILTIN_ALIASES)."""
     data: Any = metadata
     if isinstance(metadata, str):
         try:
             data = json.loads(metadata) if metadata.strip() else {}
         except Exception:
             data = {}
-    out: set[str] = set()
-    if (persona or "").strip().lower() in {"rook", "claude-code"}:
-        out.add("rookie")
+    out: set[str] = set(BUILTIN_ALIASES.get((persona or "").strip().lower(), ()))
     if not isinstance(data, dict):
         return out
     raw = data.get("voice_relay_aliases")

@@ -548,6 +548,33 @@ class ActivationModeTests(TestCase):
         self.assertIn("rookie", aliases_from_metadata({}, "rook"))
         self.assertIn("hey-you", aliases_from_metadata({"voice_relay_aliases": "hey-you"}, "majik"))
 
+    def test_persephone_answers_to_whispers_spellings(self) -> None:
+        """The seat's wake word is one sound; whisper writes it several ways."""
+        from agent_runtime.voice_dispatch import fuzzy_spoken_name_match, spoken_name_match
+        from agent_runtime.voice_transcripts import mention_needles
+        from voice_relay.agent import aliases_from_metadata
+
+        names = mention_needles("persephone", None) | aliases_from_metadata({}, "persephone")
+        for heard in (
+            "Persephone, what's on my calendar",
+            "hey persephony, remind me at four",
+            "Persefone can you check the mail",
+            "okay Persephanie, read that back",
+            "persaphone, stop",
+        ):
+            self.assertTrue(
+                spoken_name_match(heard, names) or fuzzy_spoken_name_match(heard, names),
+                heard,
+            )
+        # Not every "pers-" word is her: the near misses stay near misses.
+        for heard in ("personally I'd rather stop", "the persistent volume is full", "perfect, send it"):
+            self.assertFalse(
+                spoken_name_match(heard, names) or fuzzy_spoken_name_match(heard, names),
+                heard,
+            )
+        # Rook keeps his alias; nobody inherits hers.
+        self.assertNotIn("persephony", aliases_from_metadata({}, "rook"))
+
     def test_each_supported_mode_is_read(self) -> None:
         from voice_relay.agent import ACTIVATION_MODES, activation_from_metadata
 
