@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { identityFor } from "@/lib/identity";
 import { shouldShowCallDock } from "@/lib/callAwareness";
+import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
 
 /**
  * CallDock — the persistent, app-level representation of a LIVE call while you
@@ -32,6 +33,9 @@ export function CallDock() {
     remoteParticipants,
     isConnected,
     disconnect,
+    devices,
+    selectedDevices,
+    switchDevice,
     // version is read purely to re-render on mic/track/participant changes
     // (LiveKit reuses the same participant objects, so a bump is the signal).
     version,
@@ -129,6 +133,13 @@ export function CallDock() {
         >
           {micOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
         </button>
+        <DevicePickerButton
+          kind="audioinput"
+          devices={devices.audioinput}
+          selected={selectedDevices.audioinput}
+          onSelect={switchDevice}
+          size="sm"
+        />
 
         <button
           type="button"
@@ -144,6 +155,13 @@ export function CallDock() {
         >
           {camOn ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
         </button>
+        <DevicePickerButton
+          kind="videoinput"
+          devices={devices.videoinput}
+          selected={selectedDevices.videoinput}
+          onSelect={switchDevice}
+          size="sm"
+        />
 
         <button
           type="button"

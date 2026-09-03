@@ -1,132 +1,64 @@
 import { useCallback } from "react";
-import { api, type ApiError } from "@/services/api";
+import { api } from "@/services/api";
+import { residentAgentIds } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
-import { useVoice } from "@/contexts/VoiceProvider";
+import { useVoice, type ConnectOptions } from "@/contexts/VoiceProvider";
 import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
+import { runStartCall } from "@/lib/directCall";
 
 /**
  * The single seam for STARTING a call.
  *
- * Two shapes of "start a call" used to be one shape:
+ * Two shapes of "start a call":
  *   * a CHANNEL call is an open door — you walk in, and anyone who cares is
- *     told by a toast. Nothing rings. Fifty people do not get an interruptive
- *     banner because one of them clicked a phone icon.
- *   * a DM call is a CALL — a named person is rung on every device they have
- *     open, and the caller is told what happened.
+ *     told by a toast. Nothing rings.
+ *   * a DM / group-DM call is a CALL — the other human(s) are rung on every
+ *     device they have open, and the caller is told what happened.
  *
- * Both used to do the same thing (`VoiceProvider.connect()`), which is why
- * nobody has ever been rung. This hook keeps `connect()` as the channel path
- * untouched and routes DMs through POST /rooms/{id}/call/ring first.
+ * ORDER MATTERS and is pinned by `lib/directCall.test.ts`: connect first
+ * (device check, or straight in when the "join immediately" preference / a
+ * deep link says so), ring only once we are actually on the line. The old
+ * order — ring, THEN open the device dialog — is why "when I dial in it keeps
+ * calling": the callee rang and the caller's card pulsed while the caller
+ * was still choosing a mic, and cancelling the dialog rang on regardless.
  *
  * NOTE on `connect()`: it reads `activeRoomId` from the app store, not an
- * argument. Both call sites (Header, MessageInput) act on the room in view, so
- * that holds — but it is why `startCall` takes the room id only to decide
- * POLICY and never to pick the LiveKit room.
+ * argument. Every call site acts on the room in view, so that holds — it is
+ * why `startCall` takes the room id only to decide POLICY and never to pick
+ * the LiveKit room.
  */
+export interface StartCallOptions extends ConnectOptions {
+  /** DM / group DM only: false joins silently (deep link `ring=0`). */
+  ring?: boolean;
+}
+
 export function useDirectCall() {
-  const { connect } = useVoice();
+  const { connect, disconnect } = useVoice();
 
   const startCall = useCallback(
-    async (roomId: string) => {
+    async (roomId: string, opts?: StartCallOptions) => {
       const state = useAppStore.getState();
       const room = state.rooms.find((r) => r.id === roomId);
-      const roomType = room?.type ?? "channel";
-
-      // Channels keep their existing behaviour exactly: join, no ring.
-      if (roomType === "channel") {
-        await connect();
-        return;
-      }
-
       const out = useOutgoingCallStore.getState();
-      const label = room?.name || "them";
-
-      try {
-        const res = await api.ringRoom(roomId);
-
-        // The other side is ALREADY on this room's call — this is a (re)join
-        // (moving the call to this device), not an offer. No outgoing card,
-        // no ring: connect, and LiveKit hands this identity's media over.
-        if (res.state === "in_call") {
-          await connect();
-          return;
-        }
-
-        if (res.state !== "ringing") {
-          // Nobody was rung. Say WHY, per person, and do not join an empty
-          // room — a caller alone in a LiveKit room with no explanation is
-          // the exact "staring at nothing" failure.
-          const offline = res.targets.filter((t) => t.state === "offline");
-          const busy = res.targets.filter((t) => t.state === "busy");
-          const phase = busy.length > 0 ? "busy" : "offline";
-          const detail =
-            busy.length > 0
-              ? `${busy.map((t) => t.display_name).join(", ")} is already on a call.`
-              : `${offline.map((t) => t.display_name).join(", ") || label} isn't online right now.`;
-          out.showOutcome({
-            callId: null,
-            roomId,
-            label,
-            phase,
-            detail,
-            targets: res.targets,
-            expiresAt: null,
-          });
-          return;
-        }
-
-        // "unknown" means presence could not be READ — we rang anyway, and we
-        // say so rather than promising a ring we can't confirm.
-        const uncertain = res.targets.filter((t) => t.state === "unknown");
-        const detail =
-          uncertain.length > 0
-            ? `Ringing ${label}… (couldn't confirm they're online)`
-            : `Ringing ${label}…`;
-
-        out.ring({
-          callId: res.call_id,
+      const { ring, ...connectOpts } = opts ?? {};
+      return runStartCall(
+        {
           roomId,
-          label,
-          detail,
-          targets: res.targets,
-          expiresAt: res.expires_at,
-        });
-
-        // Join our own room so we're already there when they pick up.
-        await connect();
-      } catch (err) {
-        const e = err as ApiError;
-
-        // 409 = "there is nobody in this conversation to ring". The server
-        // only rings HUMAN participants, so every agent DM lands here. That
-        // is not a failure: an agent DM has no one to ring, you simply JOIN,
-        // and the agent is dispatched by the LiveKit room itself -- which is
-        // exactly what main did before ringing existed. Without this
-        // fall-through the phone button reports "Call failed" instead of
-        // starting the call, and in this database 43 of 48 DMs are
-        // human<->agent, so it would break voice for ~90% of DMs including
-        // every "talk to an agent" conversation.
-        if (e?.status === 409) {
-          await connect();
-          return;
-        }
-
-        out.showOutcome({
-          callId: null,
-          roomId,
-          label,
-          phase: "failed",
-          detail:
-            e?.detail ||
-            (e?.status === 403
-              ? "You're not a member of this conversation."
-              : "Couldn't start the call. Check your connection."),
-          targets: [],
-          expiresAt: null,
-        });
-      }
+          roomType: room?.type ?? "channel",
+          hasAgents: residentAgentIds(room).length > 0,
+          label: room?.name || "them",
+          ring,
+        },
+        {
+          connect: () => connect(connectOpts),
+          ringRoom: (id) => api.ringRoom(id),
+          ring: out.ring,
+          showOutcome: out.showOutcome,
+          disconnect,
+        },
+      );
     },
-    [connect],
+    [connect, disconnect],
   );
 
   return { startCall };

@@ -39,6 +39,9 @@ import { playCue } from "@/lib/sounds";
 import { HumanTranscriptSession } from "@/lib/humanTranscript";
 import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
 import { DeviceCheckDialog } from "@/components/Call/DeviceCheckDialog";
+import { readCallJoinPrefs } from "@/lib/callJoinPrefs";
+import { matchDevice } from "@/lib/callDeepLink";
+import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
 import {
   pickAudioInputDevice,
   readDevicePreferences,
@@ -68,6 +71,29 @@ import {
  *   3. call room.startAudio() to satisfy the autoplay policy — on mobile the
  *      agent's audio is blocked until a user gesture unblocks it (audioBlocked).
  */
+/**
+ * How to enter a call. Every field optional — a bare `connect()` is the
+ * phone button: device check unless the "join immediately" preference is
+ * on. Deep links (`hooks/useCallDeepLink`) fill the rest in.
+ */
+export interface ConnectOptions {
+  /** Skip the pre-join dialog regardless of the preference. */
+  skipDeviceCheck?: boolean;
+  /** Microphone by deviceId or label (see lib/callDeepLink.matchDevice). */
+  mic?: string | null;
+  /** Camera by deviceId or label. */
+  cam?: string | null;
+  /** Publish the camera on join (Stable calls are audio-first: default off). */
+  video?: boolean;
+}
+
+/** Resolved per-join choices handed to join(): ids, not labels. */
+interface JoinOverrides {
+  audioinput?: string;
+  videoinput?: string;
+  video?: boolean;
+}
+
 interface VoiceContextValue {
   room: Room | null;
   localParticipant: LocalParticipant | null;
@@ -87,7 +113,8 @@ interface VoiceContextValue {
    * recompute when the underlying track set changes.
    */
   version: number;
-  connect: () => Promise<void>;
+  /** Resolves true once connected, false when the user backed out of the device check. */
+  connect: (opts?: ConnectOptions) => Promise<boolean>;
   disconnect: () => void;
   startAudio: () => Promise<void>;
   /**
@@ -227,6 +254,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const roomRef = useRef<Room | null>(null);
   const connectingRef = useRef(false);
+  // The connect() awaiting the device-check dialog's verdict (Join / Cancel).
+  // One at a time: a second connect() while the dialog is up settles the
+  // first as "backed out" rather than leaving a promise dangling forever.
+  const pendingConnectRef = useRef<{
+    resolve: (joined: boolean) => void;
+    overrides: JoinOverrides;
+  } | null>(null);
   // Join cue fires once per connect() — Reconnected/state churn must not
   // re-chime. Reset when a fresh Room is created in connect().
   const joinCuePlayedRef = useRef(false);
@@ -434,6 +468,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const disconnect = useCallback(() => {
     const r = roomRef.current;
+    // Hanging up while your call is still ringing IS cancelling it. Before
+    // this the card kept pulsing "Calling…" every 2.4 s — and the callee's
+    // devices kept ringing — for the rest of the 45 s window after you left.
+    void useOutgoingCallStore.getState().cancelActive();
     // Capture call room before we clear activeCallRoomId so export knows where
     // to POST. Hang-up is the natural finalize point for "Send to Meeting-Ops".
     const callRoomId = useCallUiStore.getState().activeCallRoomId;
@@ -530,9 +568,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setAudioBlocked(!r.canPlaybackAudio);
   }, []);
 
-  const join = useCallback(async () => {
+  const join = useCallback(async (overrides?: JoinOverrides): Promise<boolean> => {
     const roomId = useAppStore.getState().activeRoomId;
-    if (!roomId || connectingRef.current) return;
+    if (!roomId || connectingRef.current) return false;
+    // Deep-link / immediate-join choices arrive as ids; they win over the
+    // (possibly stale-in-closure) selected state for THIS join.
+    const chosen = {
+      audioinput: overrides?.audioinput ?? selectedDevices.audioinput,
+      videoinput: overrides?.videoinput ?? selectedDevices.videoinput,
+    };
     const leftover = roomRef.current;
     if (leftover) {
       if (leftover.state !== ConnectionState.Disconnected) {
@@ -542,7 +586,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         // call, nothing to do. If it's a different room, this connect() is an
         // explicit call-switch (you can only be in one LiveKit room): tear the
         // old call down, then fall through to join the new one.
-        if (useCallUiStore.getState().activeCallRoomId === roomId) return;
+        if (useCallUiStore.getState().activeCallRoomId === roomId) return true;
         disconnect();
       } else {
         // A room object left behind by a just-ended call must not brick the
@@ -571,13 +615,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         adaptiveStream: { pauseVideoInBackground: false },
         dynacast: true,
         audioCaptureDefaults: {
-          deviceId: selectedDevices.audioinput || undefined,
+          deviceId: chosen.audioinput || undefined,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         },
         videoCaptureDefaults: {
-          deviceId: selectedDevices.videoinput || undefined,
+          deviceId: chosen.videoinput || undefined,
         },
       });
       roomRef.current = r;
@@ -823,7 +867,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // deviceId constraint. Do not secretly capture the OS default when the
       // caller deliberately selected another input; agent STT remains active.
       const browserSttCanFollowInput =
-        !selectedDevices.audioinput || selectedDevices.audioinput === "default";
+        !chosen.audioinput || chosen.audioinput === "default";
       if (browserSttCanFollowInput) {
         humanSession.start();
         r.on(
@@ -863,6 +907,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         .catch((e) =>
           console.error("failed to enable microphone on call start", e),
         );
+
+      // Deep link `video=1`: camera on from the first frame. Same
+      // fire-and-forget shape as the mic — a denied camera must not stall the
+      // agent dispatch below.
+      if (overrides?.video) {
+        void r.localParticipant
+          .setCameraEnabled(true)
+          .catch((e) => console.error("failed to enable camera on call start", e));
+      }
 
       // Best-effort unblock of remote-audio playback; if the browser still
       // blocks it (mobile), audioBlocked drives the tap-to-hear prompt.
@@ -973,9 +1026,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         title: "Couldn't start the call",
         body: message,
       });
-      return;
+      return false;
     }
     connectingRef.current = false;
+    return true;
   }, [
     setVoiceActive,
     sync,
@@ -989,18 +1043,102 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     queryClient,
   ]);
 
-  const connect = useCallback(async () => {
-    const active = roomRef.current;
-    if (
-      active &&
-      active.state !== ConnectionState.Disconnected &&
-      useCallUiStore.getState().activeCallRoomId ===
-        useAppStore.getState().activeRoomId
-    )
-      return;
-    await refreshDevices();
-    setShowDeviceCheck(true);
-  }, [refreshDevices]);
+  /**
+   * Turn deep-link `mic` / `cam` (id OR label) into device ids, unlocking
+   * labels with a one-shot permission probe when the browser has not shown
+   * them yet. A miss falls back to what the app would have used anyway and
+   * says so in a toast — a call on the wrong mic is fixable in one click
+   * from the call bar; no call is not.
+   */
+  const resolveOverrides = useCallback(
+    async (opts?: ConnectOptions): Promise<JoinOverrides> => {
+      const overrides: JoinOverrides = { video: opts?.video };
+      if (!opts?.mic && !opts?.cam) return overrides;
+      if (!navigator.mediaDevices?.enumerateDevices) return overrides;
+
+      let all = await navigator.mediaDevices.enumerateDevices();
+      const wantedKinds = (
+        [
+          ["audioinput", opts.mic],
+          ["videoinput", opts.cam],
+        ] as const
+      ).filter(([, want]) => !!want);
+      // Labels are blank until a media permission has been granted. If any
+      // wanted device fails to match on ids alone, ask once, then re-read.
+      const idsOnlyMiss = wantedKinds.some(
+        ([kind, want]) =>
+          !matchDevice(all.filter((d) => d.kind === kind), want),
+      );
+      if (idsOnlyMiss && all.some((d) => !d.label)) {
+        try {
+          const probe = await navigator.mediaDevices.getUserMedia({
+            audio: !!opts.mic,
+            video: !!opts.cam,
+          });
+          probe.getTracks().forEach((t) => t.stop());
+        } catch {
+          // Denied — match against whatever labels we have.
+        }
+        all = await navigator.mediaDevices.enumerateDevices();
+      }
+      await refreshDevices();
+
+      const userId = useAppStore.getState().currentUser?.id;
+      for (const [kind, want] of wantedKinds) {
+        const pool = all.filter((d) => d.kind === kind);
+        const hit = matchDevice(pool, want);
+        const noun = kind === "audioinput" ? "Mic" : "Camera";
+        if (hit) {
+          overrides[kind] = hit.deviceId;
+          setSelectedDevices((current) => ({ ...current, [kind]: hit.deviceId }));
+          saveDevicePreference(userId, kind, hit.deviceId);
+        } else {
+          const fallbackId =
+            kind === "audioinput"
+              ? pickAudioInputDevice(pool, readDevicePreferences(userId).audioinput)
+              : readDevicePreferences(userId).videoinput || pool[0]?.deviceId || "";
+          const fallback = pool.find((d) => d.deviceId === fallbackId);
+          useAppStore.getState().pushToast({
+            title: `${noun} "${want}" not found`,
+            body: fallback
+              ? `Using ${fallback.label || "the default " + noun.toLowerCase()} instead.`
+              : `No ${noun.toLowerCase()} is available; joining without one.`,
+          });
+        }
+      }
+      return overrides;
+    },
+    [refreshDevices],
+  );
+
+  const connect = useCallback(
+    async (opts?: ConnectOptions): Promise<boolean> => {
+      const active = roomRef.current;
+      if (
+        active &&
+        active.state !== ConnectionState.Disconnected &&
+        useCallUiStore.getState().activeCallRoomId ===
+          useAppStore.getState().activeRoomId
+      )
+        return true;
+      await refreshDevices();
+      const overrides = await resolveOverrides(opts);
+      const skip =
+        opts?.skipDeviceCheck ??
+        readCallJoinPrefs(useAppStore.getState().currentUser?.id).skipDeviceCheck;
+      if (skip) return join(overrides);
+
+      // Pre-join check. The promise settles on Join (→ the join's own
+      // outcome) or Cancel (false) — so a caller can ring only once we are
+      // genuinely on the line, and ring nobody when the user backs out.
+      pendingConnectRef.current?.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        pendingConnectRef.current = { resolve, overrides };
+        setShowDeviceCheck(true);
+      });
+    },
+    [refreshDevices, resolveOverrides, join],
+  );
 
   // NOTE: the call intentionally PERSISTS across navigation now. We used to
   // disconnect whenever `activeRoomId` changed (leaving/switching rooms ended
@@ -1049,10 +1187,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           selected={selectedDevices}
           onSelect={switchDevice}
           onRefresh={refreshDevices}
-          onCancel={() => setShowDeviceCheck(false)}
+          onCancel={() => {
+            setShowDeviceCheck(false);
+            const pending = pendingConnectRef.current;
+            pendingConnectRef.current = null;
+            pending?.resolve(false);
+          }}
           onJoin={() => {
             setShowDeviceCheck(false);
-            void join();
+            const pending = pendingConnectRef.current;
+            pendingConnectRef.current = null;
+            // The dialog's own picks were applied through switchDevice, so
+            // only the deep-link `video` flag still rides on the overrides.
+            void join({ video: pending?.overrides.video }).then(
+              (joined) => pending?.resolve(joined),
+              () => pending?.resolve(false),
+            );
           }}
         />
       )}

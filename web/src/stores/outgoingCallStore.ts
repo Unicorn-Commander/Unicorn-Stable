@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { api } from "@/services/api";
 
 /**
  * The CALLER's half of a direct call.
@@ -79,6 +80,12 @@ interface OutgoingCallState {
   ) => void;
   /** Show a terminal outcome for a ring that never became a call. */
   showOutcome: (call: OutgoingCall) => void;
+  /**
+   * Hang-up while still ringing: settle locally NOW (the card and its
+   * ringback pulse stop this frame), then tell the server so every callee
+   * device stops too. No-op unless a call is actually ringing. Never throws.
+   */
+  cancelActive: () => Promise<void>;
   clear: () => void;
 }
 
@@ -117,6 +124,19 @@ export const useOutgoingCallStore = create<OutgoingCallState>((set, get) => ({
   },
 
   showOutcome: (call) => set({ call }),
+
+  cancelActive: async () => {
+    const cur = get().call;
+    if (!cur || cur.phase !== "ringing") return;
+    get().settle("canceled", "You left the call.", { callId: cur.callId });
+    if (!cur.callId) return;
+    try {
+      await api.cancelCall(cur.callId);
+    } catch {
+      // 410 (already over) or unreachable — the server's own deadline and
+      // the participant_left backstop end it for the other side.
+    }
+  },
 
   clear: () => set({ call: null }),
 }));

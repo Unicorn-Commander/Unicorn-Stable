@@ -481,6 +481,32 @@ class CallService:
         logger.info("call_resolved", call_id=call_id, resolution=resolution, by=by_id)
         return call
 
+    async def cancel_ringing_by_caller(self, caller_id: str) -> dict[str, Any] | None:
+        """Cancel the caller's OWN still-ringing offer, if any. Returns it.
+
+        The safety net behind "hang up while it's still ringing": the client
+        cancels on hang-up too, but a tab that crashed, a native wrapper that
+        was quit, or a socket that died would otherwise leave the callee's
+        devices ringing (and the caller's card pulsing) for the rest of the
+        45s window for a call nobody is waiting in. The LiveKit
+        ``participant_left`` webhook calls this for the leaver, so the media
+        plane — not the client — is what finally stops the ring.
+
+        Only a call this participant is the CALLER of is touched: a callee
+        leaving some other room must not cancel an offer aimed at them.
+        """
+        latched = await self._busy_call_id(caller_id)
+        if latched is None:
+            return None
+        call = await self.get_call(latched)
+        if (
+            call is None
+            or call.get("state") != "ringing"
+            or str(call.get("caller_id")) != str(caller_id)
+        ):
+            return None
+        return await self._resolve(call, "canceled", by_id=caller_id)
+
     async def accept(self, call: dict[str, Any], *, participant_id: str, display_name: str) -> dict[str, Any]:
         return await self._resolve(call, "accepted", by_id=participant_id, by_name=display_name)
 
