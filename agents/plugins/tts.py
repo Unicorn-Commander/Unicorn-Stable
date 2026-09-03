@@ -83,6 +83,10 @@ KOKORO_VOICE_PRESETS: dict[str, str] = {
     # up for this.
     "claude-code": "am_echo",
     "rook": "am_echo",
+    # Persephone — Aaron's main assistant seat (participant agent-persephone),
+    # 2026-09-03. af_heart is HERS: Corporal Forge moved to af_bella the same
+    # day so the one voice Aaron talks to all day is worn by nobody else.
+    "persephone": "af_heart",
     "the-general": "am_michael",
     "gunny": "am_adam",
     "judge-advocate": "bm_lewis",

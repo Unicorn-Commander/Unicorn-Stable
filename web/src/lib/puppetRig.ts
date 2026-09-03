@@ -200,6 +200,8 @@ export const PUPPETS: Record<string, PuppetSpec> = {
   kudu: { label: "Kudu", texture: T("kudu"), ...DEFAULT_RIG },
   okapi: { label: "Okapi", texture: T("okapi"), ...DEFAULT_RIG },
   oryx: { label: "Oryx", texture: T("oryx"), ...DEFAULT_RIG },
+  // Persephone — Aaron's main assistant seat (agent-persephone), 2026-09-03.
+  persephone: { label: "Persephone", texture: T("persephone"), ...DEFAULT_RIG },
   "gm-watchdog": { label: "GM Watchdog", texture: T("gm-watchdog"), ...DEFAULT_RIG },
   "research-monitor": { label: "Research Monitor", texture: T("research-monitor"), ...DEFAULT_RIG },
 };

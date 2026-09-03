@@ -163,6 +163,8 @@ for _id in (
     "zen", "producer", "shafen-claude-code",
     # Full roster 2026-09-03: control room, chat companion, Shafen's antelopes.
     "control-room", "chat-companion", "dikdik", "eland", "gerenuk", "kudu", "okapi", "oryx",
+    # Persephone — Aaron's main assistant seat (2026-09-03).
+    "persephone",
 ):
     _RIGS.setdefault(_id, DEFAULT_RIG)
 # External seats (codex, grok, chatgpt, gemini, deepseek, qwen) are VENDOR LOGO

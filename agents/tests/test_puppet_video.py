@@ -327,6 +327,7 @@ class SpecAndManifestTests(TestCase):
                 "agent-kudu-sonnet": ("Kudu", True),
                 "agent-okapi-grok": ("Okapi", True),
                 "agent-oryx-gpt": ("Oryx", True),
+                "agent-persephone": ("Persephone", True),
             }
             amber, grey = (245, 166, 35), (138, 143, 152)
             for identity, (name, drawn) in crew.items():

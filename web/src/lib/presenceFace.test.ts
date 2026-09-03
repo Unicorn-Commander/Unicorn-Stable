@@ -761,7 +761,7 @@ describe("Build In Public cast — 2026-08-28", () => {
   const DRAWN_CREW = [
     "rook", "majik", "shox", "corporal-forge", "sprint", "zen", "producer",
     "shafen-claude-code", "control-room", "chat-companion", "dikdik", "eland",
-    "gerenuk", "kudu", "okapi", "oryx",
+    "gerenuk", "kudu", "okapi", "oryx", "persephone",
   ];
 
   it("routes Shafen's animal-named seats to their characters", () => {

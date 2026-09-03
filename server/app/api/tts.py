@@ -41,11 +41,15 @@ MAX_TTS_CHARS = 4000
 # same "default" the voice pipeline uses (af_bella); requests with no agent at
 # all fall back to settings.tts_default_voice (af_heart, Majik).
 AGENT_VOICES = {
-    "majik": "af_heart",
+    # Majik is am_puck (agents/plugins/tts.py, Aaron 2026-08-10 "he needs a male
+    # voice"); this mirror had drifted to af_heart, which is Persephone's since 2026-09-03.
+    "majik": "am_puck",
     # Rook — Aaron's seat. Missing from this map on 2026-08-30 silently
     # fell through to af_bella, so agent:"rook" wore the wrong voice.
     "rook": "am_echo",
     "claude-code": "am_echo",
+    # Persephone — Aaron's main assistant seat, 2026-09-03. Mirrors agents/plugins/tts.py.
+    "persephone": "af_heart",
     "the-general": "am_michael",
     "gunny": "am_adam",
     "judge-advocate": "bm_lewis",

@@ -455,6 +455,19 @@ class VoicePresetTests(TestCase):
         voices = [KOKORO_VOICE_PRESETS[a] for a in room]
         self.assertEqual(len(set(voices)), len(room), voices)
 
+    def test_persephone_owns_af_heart_and_the_named_seats_stay_distinct(self) -> None:
+        """Aaron's assistant seat (2026-09-03) speaks af_heart and nobody else
+        in the preset table does; Rook / Majik / The General / Persephone are
+        four different voices on camera."""
+        from plugins.tts import KOKORO_VOICE_PRESETS
+
+        self.assertEqual(KOKORO_VOICE_PRESETS["persephone"], "af_heart")
+        holders = [a for a, v in KOKORO_VOICE_PRESETS.items() if v == "af_heart"]
+        self.assertEqual(holders, ["persephone"])
+        room = ["claude-code", "majik", "the-general", "persephone"]
+        voices = [KOKORO_VOICE_PRESETS[a] for a in room]
+        self.assertEqual(len(set(voices)), len(room), voices)
+
     def test_no_agent_still_holds_rooks_voice(self) -> None:
         from plugins.tts import KOKORO_VOICE_PRESETS
 
