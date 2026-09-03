@@ -5,6 +5,19 @@ POST /rooms/{room_id}/moderation acts on the room's LiveKit session:
   * ``mute_mic``          — server-mute every audio track the target publishes.
                             The target can re-enable their own mic (client
                             unmute); this is "please stop talking", not a gag.
+  * ``unmute_mic``        — AGENT PARTICIPANTS ONLY. LiveKit's server-side
+                            unmute (``MuteRoomTrackRequest(muted=False)``) is
+                            refused by this deployment (412 "remote unmute not
+                            enabled" — see LiveKitService.mute_participant), so
+                            a human ``mute_mic`` target undoes it the same way
+                            ``unsilence`` does: by turning their own mic back
+                            on. An agent worker has no hands, so instead this
+                            sends a ``voice_relay_control`` data packet
+                            (``{"type": "voice_relay_control", "action":
+                            "unmute"}``) to the target's LiveKit identity; the
+                            voice-relay agent (agents/voice_relay/agent.py)
+                            unmutes its own published audio track on receipt.
+                            No-op, logged, if the target never joined LiveKit.
   * ``silence``           — mute audio AND revoke ``can_publish``: the target
                             cannot re-open mic/camera/share until unsilenced.
   * ``unsilence``         — restore ``can_publish`` ONLY. Deliberately never
@@ -54,7 +67,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.tokens import livekit_identity
 # Reuse the webhook's parser so the identity wire format (username_<uuid>)
 # keeps ONE reader — same reasoning as api/calls.py.
-from app.api.webhooks import _extract_participant_id
+from app.api.webhooks import _extract_participant_id, _is_agent_identity
 from app.deps import get_current_user, get_db, get_livekit
 from app.models.participant import Participant, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember
@@ -66,6 +79,7 @@ router = APIRouter()
 
 ModerationAction = Literal[
     "mute_mic",
+    "unmute_mic",
     "silence",
     "unsilence",
     "deafen",
@@ -259,11 +273,35 @@ async def moderate_call_participant(
     )
     _assert_can_target(actor, target_membership, body.action.replace("_", " "))
 
+    if body.action == "unmute_mic" and not _is_agent_identity(identity):
+        # A human target unmutes by turning their own mic back on (see
+        # ``unsilence``) — there is no server-side path for it, and adding
+        # one would be exactly the silent third-party mic-open the
+        # ``unsilence`` docstring above refuses to build.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="unmute_mic only applies to agent participants",
+        )
+
     muted_sids: list[str] = []
     try:
         if body.action == "mute_mic":
             muted_sids = await livekit.mute_participant(
                 room.livekit_room_name, identity, muted=True
+            )
+        elif body.action == "unmute_mic":
+            # NOT a server-side unmute (refused by the SFU — see
+            # LiveKitService.mute_participant). The relay unmutes ITSELF on
+            # receipt of this control packet, the same channel
+            # rooms.update_voice_settings uses to push ``relay_config``.
+            await livekit.send_data(
+                room.livekit_room_name,
+                {
+                    "type": "voice_relay_control",
+                    "action": "unmute",
+                    "by": str(user["participant_id"]),
+                },
+                destination_identities=[identity],
             )
         elif body.action == "silence":
             # Mute first (instant quiet), then revoke publish so the mic can't

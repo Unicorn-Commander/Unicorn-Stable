@@ -274,6 +274,57 @@ class ModerationEndpointTests(IsolatedAsyncioTestCase):
         )
         lk.update_participant_permissions.assert_not_awaited()
 
+    async def test_unmute_mic_sends_the_relay_control_packet(self) -> None:
+        """No server-side unmute exists (see LiveKitService.mute_participant's
+        412 note) — this goes over the same data channel
+        rooms.update_voice_settings uses to push ``relay_config``."""
+        lk = await self._dispatch("unmute_mic")
+        lk.mute_participant.assert_not_awaited()
+        lk.update_participant_permissions.assert_not_awaited()
+        lk.send_data.assert_awaited_once()
+        args, kwargs = lk.send_data.await_args
+        room_name, payload = args[0], args[1]
+        self.assertEqual(room_name, "lk-room-1")
+        self.assertEqual(payload["type"], "voice_relay_control")
+        self.assertEqual(payload["action"], "unmute")
+        self.assertEqual(kwargs["destination_identities"], ["agent-majik"])
+
+    async def test_unmute_mic_response_shape(self) -> None:
+        lk = AsyncMock(spec=LiveKitService)
+        resp = await self._call(
+            actor_role=MemberRole.OWNER,
+            target="agent-majik",
+            action="unmute_mic",
+            livekit=lk,
+        )
+        self.assertEqual(resp.status, "ok")
+        self.assertEqual(resp.action, "unmute_mic")
+        self.assertEqual(resp.target_identity, "agent-majik")
+        self.assertEqual(resp.muted_track_sids, [])
+
+    async def test_unmute_mic_rejected_for_a_human_uuid_target(self) -> None:
+        pid = _uuid()
+        with self.assertRaises(HTTPException) as ctx:
+            await self._call(
+                actor_role=MemberRole.OWNER,
+                target=str(pid),
+                action="unmute_mic",
+                target_membership=_member(MemberRole.MEMBER),
+                target_participant=_human_row(pid),
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_unmute_mic_rejected_for_a_raw_human_identity(self) -> None:
+        """The identity-passthrough path (call-tile shape) gets the same gate
+        as the UUID path — ``agent-`` is the only thing that grants it."""
+        with self.assertRaises(HTTPException) as ctx:
+            await self._call(
+                actor_role=MemberRole.OWNER,
+                target=f"aaron_{_uuid()}",
+                action="unmute_mic",
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
     async def test_silence_dispatch(self) -> None:
         lk = await self._dispatch("silence")
         lk.mute_participant.assert_awaited_once_with(
