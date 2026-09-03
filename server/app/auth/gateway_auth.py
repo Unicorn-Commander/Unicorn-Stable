@@ -41,6 +41,21 @@ class GatewayAuthError(Exception):
         super().__init__(detail)
 
 
+# Gateway-key prefixes we recognize (anything else on an Authorization header
+# is treated as a JWT). Keys are minted with the first prefix.
+KEY_PREFIXES = ("sbk-", "ubk-", "sk-")
+
+#: The agent id of the native Talk Controls desk app. A key bound to it may
+#: manage voice settings in its scoped rooms without the column being set —
+#: the app's identity IS the grant (deps.get_room_controller).
+TALK_CONTROLS_AGENT_ID = "talk-controls-app"
+
+
+def is_gateway_key(token: str) -> bool:
+    """True when a bearer credential is shaped like a gateway key, not a JWT."""
+    return bool(token) and token.startswith(KEY_PREFIXES)
+
+
 @dataclass
 class GatewayPrincipal:
     """The authenticated caller of the gateway, mapped to a scoped agent identity."""
@@ -53,6 +68,16 @@ class GatewayPrincipal:
     rate_key: str  # rate-limit identity (never the shared secret)
     rate_limit_rpm: int
     human_sub: str | None  # for audit metadata (JWT path)
+    # Key path only: the row id (for audit) and the voice-settings grant.
+    key_id: str | None = None
+    can_manage_voice_settings: bool = False
+
+    def may_manage_voice_settings(self) -> bool:
+        """A KEY whose agent is the desk app, or one an operator promoted."""
+        return self.auth_kind == "key" and (
+            self.agent_id == TALK_CONTROLS_AGENT_ID
+            or bool(self.can_manage_voice_settings)
+        )
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -171,12 +196,32 @@ async def verify_gateway_key(raw_key: str, db: AsyncSession) -> GatewayPrincipal
         rate_key=f"gwkey:{row.id}",
         rate_limit_rpm=int(row.rate_limit_rpm or _default_rate_rpm()),
         human_sub=None,
+        key_id=str(row.id),
+        can_manage_voice_settings=bool(
+            getattr(row, "can_manage_voice_settings", False)
+        ),
+    )
+
+
+def room_in_key_scope(allowed_rooms: list | None, room) -> bool:
+    """The gateway's allowlist rule, shared with the voice-settings path:
+    ``"*"`` = any room; otherwise either name form must be listed."""
+    if allowed_rooms is None:
+        return False
+    return (
+        "*" in allowed_rooms
+        or getattr(room, "livekit_room_name", None) in allowed_rooms
+        or getattr(room, "name", None) in allowed_rooms
     )
 
 
 __all__ = [
     "GatewayPrincipal",
     "GatewayAuthError",
+    "KEY_PREFIXES",
+    "TALK_CONTROLS_AGENT_ID",
+    "is_gateway_key",
+    "room_in_key_scope",
     "validate_gateway_jwt",
     "verify_gateway_key",
     "derive_agent_id",

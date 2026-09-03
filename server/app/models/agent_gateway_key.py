@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, text
+from sqlalchemy import Boolean, DateTime, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,6 +33,15 @@ class AgentGatewayKey(Base, UUIDPrimaryKeyMixin):
     )
     rate_limit_rpm: Mapped[int] = mapped_column(
         Integer, nullable=False, default=30
+    )
+    # Lets this key drive a room's voice settings (PATCH
+    # /rooms/{id}/voice-settings) in the rooms it is scoped to, the way the
+    # room owner can. Off by default: an ordinary agent key posts messages, it
+    # does not reconfigure the room. The ``talk-controls-app`` agent id is
+    # granted this implicitly (see deps.get_room_controller); the column is
+    # for any other key an operator deliberately promotes.
+    can_manage_voice_settings: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
     )
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

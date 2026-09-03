@@ -11,6 +11,12 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.gateway_auth import (
+    GatewayAuthError,
+    is_gateway_key,
+    room_in_key_scope,
+    verify_gateway_key,
+)
 from app.auth.guest_auth import (
     GUEST_SESSION_PREFIX,
     GuestAuthError,
@@ -21,7 +27,7 @@ from app.auth.guest_auth import (
 from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import Settings, get_settings
 
-from app.models.room import RoomMember
+from app.models.room import Room, RoomMember
 from app.services.participant_identity import resolve_participant_for_identity
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
@@ -272,6 +278,140 @@ async def require_guest(
             detail="This endpoint requires a guest session",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Room CONTROL — the voice-settings family may be driven by a gateway key
+# ---------------------------------------------------------------------------
+#
+# The native Talk Controls desk app cannot durably hold a user JWT (minutes of
+# life, no refresh flow worth building for a pedal) but already holds a Stable
+# gateway key for /gateway/talk-gate. So the voice-settings write — and ONLY
+# that family; moderation, membership and everything else stay on
+# get_current_user — accepts a gateway key bearer when ALL of:
+#
+#   (a) the key is active (revoked → 401, exactly like the gateway),
+#   (b) it is bound to agent_id ``talk-controls-app`` OR its row carries the
+#       explicit ``can_manage_voice_settings`` grant (an ordinary agent key,
+#       say grok's, is a 403 — posting messages is not reconfiguring the room),
+#   (c) the target room is in the key's allowed_rooms (either name form, or
+#       ``"*"`` — the gateway's own allowlist rule, shared, not re-derived).
+#
+# Everything else takes the ordinary get_current_user path unchanged, so a
+# human still needs owner/admin on the room. The dependency returns the same
+# dict SHAPE for both so the handler body stays one function; the control-key
+# principal is flagged ``is_control_key`` and carries no participant_id.
+
+CONTROL_KEY_ACTOR_PREFIX = "control_key:"
+
+
+def is_control_key(user: dict[str, Any]) -> bool:
+    """True when this principal is a gateway key acting as a room controller."""
+    return bool(user.get("is_control_key"))
+
+
+def room_control_actor(user: dict[str, Any]) -> str:
+    """The audit label for whoever authorized a room-control write:
+    ``control_key:<id prefix>`` for the desk app, ``user:<participant_id>``
+    for a human. Never a secret, never a key hash."""
+    if is_control_key(user):
+        return f"{CONTROL_KEY_ACTOR_PREFIX}{str(user.get('control_key_id') or '')[:8]}"
+    return f"user:{user.get('participant_id')}"
+
+
+def control_key_user_dict(principal, room: Room) -> dict[str, Any]:
+    """The synthetic principal for an authorized control key. Same keys a
+    human dict has so handler code that reads them does not branch on
+    absence; ``participant_id`` is None on purpose — a key is not a member."""
+    key_id = str(principal.key_id or "")
+    return {
+        "sub": f"gateway-key:{key_id}",
+        "email": None,
+        "username": f"agent-{principal.agent_id}",
+        "display_name": principal.agent_id.replace("-", " ").title(),
+        "roles": [],
+        "participant_type": "agent",
+        "participant_id": None,
+        "is_control_key": True,
+        "control_key_id": key_id,
+        "control_key_agent_id": principal.agent_id,
+        "control_room_id": str(room.id),
+    }
+
+
+async def get_room_controller(
+    room_id: uuid.UUID,
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Authenticate the caller of a room-control (voice-settings) route.
+
+    A gateway key bearer is admitted under the three conditions documented
+    above and returns ``control_key_user_dict``; anything else is handed to
+    ``get_current_user`` and gets exactly the 401/403 it always got. The
+    handler still runs the owner/admin ladder for the human path — this
+    dependency does NOT widen what a JWT may do.
+
+    Name it on the voice-settings family only. It is not a general "keys may
+    act as owners" switch, and a route that does not name it cannot be
+    reached by a key.
+    """
+    auth_header = request.headers.get("Authorization") or ""
+    token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+    if not is_gateway_key(token):
+        return await get_current_user(request, settings, db)
+
+    try:
+        principal = await verify_gateway_key(token, db)
+    except GatewayAuthError as exc:
+        # Revoked or unknown key: the gateway's own 401, verbatim.
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not principal.may_manage_voice_settings():
+        logger.info(
+            "room_control_denied",
+            reason="key_not_a_controller",
+            agent_id=principal.agent_id,
+            key_id=str(principal.key_id or "")[:8],
+            room_id=str(room_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This gateway key may not manage room voice settings",
+        )
+
+    room = (
+        await db.execute(select(Room).where(Room.id == room_id))
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+    if not room_in_key_scope(principal.allowed_rooms, room):
+        logger.info(
+            "room_control_denied",
+            reason="room_out_of_key_scope",
+            agent_id=principal.agent_id,
+            key_id=str(principal.key_id or "")[:8],
+            room_id=str(room_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Gateway key is not scoped to this room",
+        )
+
+    user = control_key_user_dict(principal, room)
+    logger.info(
+        "room_control_authorized",
+        path="control_key",
+        actor=room_control_actor(user),
+        agent_id=principal.agent_id,
+        room_id=str(room_id),
+    )
     return user
 
 

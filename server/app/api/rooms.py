@@ -18,10 +18,13 @@ from app.deps import (
     get_livekit,
     get_presence,
     get_redis,
+    get_room_controller,
     get_settings_dep,
+    is_control_key,
     rate_limit,
     require_room_member,
     require_room_member_or_guest,
+    room_control_actor,
 )
 from app.models.room import MemberRole, Room, RoomMember, RoomType
 from app.schemas.message import MessageResponse
@@ -1266,14 +1269,18 @@ def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
 async def update_voice_settings(
     room_id: uuid.UUID,
     body: RoomVoiceSettingsBody,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(get_room_controller)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
 ) -> dict[str, Any]:
     """Set how the room's voice agent decides a spoken line is addressed to it.
 
     Owner/admin only — the same ladder as call moderation, because changing who
-    the agent listens to changes what everyone in the room experiences.
+    the agent listens to changes what everyone in the room experiences. The
+    one other principal admitted is a CONTROL KEY (``deps.get_room_controller``:
+    the Talk Controls desk app's gateway key, scoped to this room); it has no
+    membership row, its room scope was enforced by the dependency, and the
+    audit line says which path authorized the write.
 
     Writes the room's standing setting AND broadcasts a ``relay_config`` frame
     into the live call, so a relay already in the room switches immediately —
@@ -1295,19 +1302,29 @@ async def update_voice_settings(
     if room is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
 
-    membership = (
-        await db.execute(
-            select(RoomMember).where(
-                RoomMember.room_id == room_id,
-                RoomMember.participant_id == user["participant_id"],
+    if is_control_key(user):
+        # Belt and braces: the dependency resolved THIS room_id for the scope
+        # check; refuse if a refactor ever lets a different room through.
+        if str(user.get("control_room_id")) != str(room_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Gateway key is not scoped to this room",
             )
-        )
-    ).scalar_one_or_none()
-    if membership is None or membership.role not in (MemberRole.OWNER, MemberRole.ADMIN):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Requires one of roles: owner, admin",
-        )
+    else:
+        membership = (
+            await db.execute(
+                select(RoomMember).where(
+                    RoomMember.room_id == room_id,
+                    RoomMember.participant_id == user["participant_id"],
+                )
+            )
+        ).scalar_one_or_none()
+        if membership is None or membership.role not in (MemberRole.OWNER, MemberRole.ADMIN):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Requires one of roles: owner, admin",
+            )
+    actor = room_control_actor(user)
 
     meta = dict(room.metadata_ or {})
     if not str(meta.get("voice_relay_source") or "").strip():
@@ -1349,7 +1366,7 @@ async def update_voice_settings(
         frame = {
             "type": "relay_config",
             "activation": mode,
-            "by": str(user["participant_id"]),
+            "by": actor if is_control_key(user) else str(user["participant_id"]),
         }
         if mode == "window":
             frame["window_seconds"] = window_seconds
@@ -1374,7 +1391,10 @@ async def update_voice_settings(
         room_id=str(room_id),
         activation=mode,
         window_seconds=window_seconds if mode == "window" else None,
-        actor=str(user["participant_id"]),
+        actor=actor,
+        # Which auth path authorized the write: ``control_key:<id prefix>``
+        # (desk app gateway key) or ``user:<participant_id>`` (owner/admin JWT).
+        voice_settings_updated_by=actor,
         live=live,
         voices=voices,
     )

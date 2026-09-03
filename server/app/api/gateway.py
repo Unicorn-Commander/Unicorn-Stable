@@ -40,9 +40,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
 from app.api.messages import _build_message_service, _msg_to_response, send_message
 from app.auth.gateway_auth import (
+    KEY_PREFIXES,
     GatewayAuthError,
     GatewayPrincipal,
     hash_key,
+    room_in_key_scope,
     slugify,
     validate_gateway_jwt,
     verify_gateway_key,
@@ -78,8 +80,9 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/gateway", tags=["Gateway"])
 
 # Gateway-key prefixes we recognize (anything else on the Authorization header is
-# treated as a JWT). Keys are minted with the first prefix.
-_KEY_PREFIXES = ("sbk-", "ubk-", "sk-")
+# treated as a JWT). Keys are minted with the first prefix. Defined once in
+# auth/gateway_auth so deps.get_room_controller recognises the same shapes.
+_KEY_PREFIXES = KEY_PREFIXES
 
 
 def _gateway_enabled() -> bool:
@@ -181,8 +184,7 @@ async def _enforce_scope(
       principal already belongs. No new reach beyond the human's membership.
     """
     if principal.allowed_rooms is not None:
-        allowed = principal.allowed_rooms
-        if "*" in allowed or room.livekit_room_name in allowed or room.name in allowed:
+        if room_in_key_scope(principal.allowed_rooms, room):
             return
         raise HTTPException(
             status_code=403, detail="Gateway key is not scoped to this room"
@@ -260,6 +262,10 @@ class MintKeyBody(BaseModel):
     label: str | None = None
     allowed_rooms: list[str] = Field(default_factory=lambda: ["*"])
     rate_limit_rpm: int = Field(30, ge=1, le=600)
+    #: Promote this key to a room voice-settings controller (PATCH
+    #: /rooms/{id}/voice-settings) in its allowed rooms. ``talk-controls-app``
+    #: keys have this by identity; set it for any other key on purpose.
+    can_manage_voice_settings: bool = False
 
 
 class PatchKeyBody(BaseModel):
@@ -268,6 +274,7 @@ class PatchKeyBody(BaseModel):
     label: str | None = None
     allowed_rooms: list[str] | None = None
     rate_limit_rpm: int | None = Field(default=None, ge=1, le=600)
+    can_manage_voice_settings: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -777,6 +784,7 @@ async def mint_gateway_key(
         label=body.label,
         allowed_rooms=body.allowed_rooms or ["*"],
         rate_limit_rpm=body.rate_limit_rpm,
+        can_manage_voice_settings=bool(body.can_manage_voice_settings),
         created_by=(request.headers.get("X-Operator") or "operator"),
     )
     db.add(row)
@@ -790,6 +798,7 @@ async def mint_gateway_key(
         "key_prefix": row.key_prefix,
         "allowed_rooms": row.allowed_rooms,
         "rate_limit_rpm": row.rate_limit_rpm,
+        "can_manage_voice_settings": bool(row.can_manage_voice_settings),
     }
 
 
@@ -810,6 +819,7 @@ async def list_gateway_keys(
                 "label": r.label,
                 "allowed_rooms": r.allowed_rooms,
                 "rate_limit_rpm": r.rate_limit_rpm,
+                "can_manage_voice_settings": bool(r.can_manage_voice_settings),
                 "revoked": r.revoked_at is not None,
             }
             for r in rows
@@ -844,6 +854,8 @@ async def patch_gateway_key(
         row.allowed_rooms = body.allowed_rooms
     if body.rate_limit_rpm is not None:
         row.rate_limit_rpm = body.rate_limit_rpm
+    if body.can_manage_voice_settings is not None:
+        row.can_manage_voice_settings = bool(body.can_manage_voice_settings)
     await db.commit()
     logger.info("gateway_key_patched", key_id=str(key_id), agent_id=row.agent_id)
     return {
@@ -853,6 +865,7 @@ async def patch_gateway_key(
         "label": row.label,
         "allowed_rooms": row.allowed_rooms,
         "rate_limit_rpm": row.rate_limit_rpm,
+        "can_manage_voice_settings": bool(row.can_manage_voice_settings),
         "revoked": False,
     }
 
