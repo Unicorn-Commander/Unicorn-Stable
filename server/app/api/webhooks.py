@@ -578,6 +578,47 @@ async def _handle_participant_joined(
         )
 
 
+async def _cancel_ring_on_leave(
+    redis: Redis,
+    livekit: LiveKitService | None,
+    room: Room,
+    participant_id: str,
+) -> None:
+    """Cancel `participant_id`'s own ringing offer in `room` once they are gone.
+
+    Re-probes LiveKit before cancelling: a device handoff (same identity
+    re-joining from the phone) emits a ``participant_left`` for the OLD
+    connection while the person is still on the line, and that must not end
+    a ring they are still waiting on. A failed probe counts as "still there"
+    — the ring's own 45s deadline is the floor, so erring toward silence is
+    the wrong direction here.
+    """
+    from app.services.call_service import CallService
+
+    svc = CallService(redis)
+    call = await svc.get_call(await svc._busy_call_id(participant_id) or "")
+    if (
+        call is None
+        or call.get("state") != "ringing"
+        or str(call.get("caller_id")) != str(participant_id)
+        or str(call.get("room_id")) != str(room.id)
+    ):
+        return
+    if livekit is not None:
+        info = await livekit.get_room(room.livekit_room_name)
+        for p in info.get("participants", []):
+            if _extract_participant_id(getattr(p, "identity", "") or "") == participant_id:
+                return  # still on the line (handoff) — leave the ring alone
+    resolved = await svc.cancel_ringing_by_caller(participant_id)
+    if resolved is not None:
+        logger.info(
+            "call_ring_canceled_on_leave",
+            call_id=resolved.get("call_id"),
+            room_id=str(room.id),
+            caller_id=participant_id,
+        )
+
+
 async def _handle_participant_left(
     event: Any,
     db: AsyncSession,
@@ -638,6 +679,21 @@ async def _handle_participant_left(
                 and participant.participant_type == ParticipantType.GUEST
             ),
         )
+
+    # A caller who leaves the media room while their offer is still ringing
+    # has hung up: end the ring for every device on both sides. The client
+    # does this too on an orderly hang-up; this is the backstop for the
+    # crashed tab / quit native wrapper. Fail-open like everything here.
+    if participant_id:
+        try:
+            await _cancel_ring_on_leave(redis, livekit, room, participant_id)
+        except Exception:
+            logger.warning(
+                "call_ring_cancel_on_leave_failed",
+                room_id=str(room.id),
+                participant_id=participant_id,
+                exc_info=True,
+            )
 
     # Re-probed occupancy: the last leaver takes this to 0, which is the
     # room-scoped "the call ended" signal the clients key off.

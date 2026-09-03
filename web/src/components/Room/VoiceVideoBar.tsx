@@ -57,6 +57,8 @@ import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
+import { useVoice } from "@/contexts/VoiceProvider";
+import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
 import { useIsDesktop } from "@/hooks/usePanelResize";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
 import { buildBroadcastUrl } from "@/lib/broadcast";
@@ -1486,6 +1488,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     startAudio,
     disconnect,
   } = useStableRoom(roomId);
+  // One-click device switching from the call bar (chevron beside mic/cam).
+  const { devices, selectedDevices, switchDevice } = useVoice();
 
   // Call-UI state.
   const viewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
@@ -2566,6 +2570,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       >
         {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
       </button>
+      <DevicePickerButton
+        kind="audioinput"
+        devices={devices.audioinput}
+        selected={selectedDevices.audioinput}
+        onSelect={switchDevice}
+        size="lg"
+      />
       <button
         onClick={() => {
           bumpChrome();
@@ -2585,6 +2596,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           <VideoOff className="h-5 w-5" />
         )}
       </button>
+      <DevicePickerButton
+        kind="videoinput"
+        devices={devices.videoinput}
+        selected={selectedDevices.videoinput}
+        onSelect={switchDevice}
+        size="lg"
+      />
       <button
         onClick={disconnect}
         className="focus-ring flex h-11 w-11 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
@@ -2616,6 +2634,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               <MicOff className="h-5 w-5" />
             )}
           </button>
+          <DevicePickerButton
+            kind="audioinput"
+            devices={devices.audioinput}
+            selected={selectedDevices.audioinput}
+            onSelect={switchDevice}
+          />
           <button
             onClick={toggleCam}
             className={clsx(
@@ -2632,6 +2656,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               <VideoOff className="h-5 w-5" />
             )}
           </button>
+          <DevicePickerButton
+            kind="videoinput"
+            devices={devices.videoinput}
+            selected={selectedDevices.videoinput}
+            onSelect={switchDevice}
+          />
         </>
       )}
 

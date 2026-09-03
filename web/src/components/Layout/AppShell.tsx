@@ -38,6 +38,7 @@ import { StableMark } from "@/components/StableMark";
 import { getNotifyLevel } from "@/utils/mute";
 import { prepareRoomsForSidebar } from "@/utils/unreadModel";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
+import { useCallDeepLink } from "@/hooks/useCallDeepLink";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
@@ -183,6 +184,8 @@ export function AppShell() {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
   const { roomId: routeRoomId } = useParams<{ roomId: string }>();
+  // `/c/<id>?join=1…` — open the room already in its call (native app entry).
+  useCallDeepLink(routeRoomId);
   const location = useLocation();
   const isAgentsView = location.pathname === "/agents";
   const isBridgeView = location.pathname === "/bridge";

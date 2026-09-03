@@ -171,7 +171,7 @@ const voiceValue: VoiceContextValue = {
   error: null,
   audioBlocked: false,
   version: 1,
-  connect: async () => {},
+  connect: async () => true,
   disconnect: () => {},
   startAudio: async () => {},
   claimScreenAudio: () => {},
