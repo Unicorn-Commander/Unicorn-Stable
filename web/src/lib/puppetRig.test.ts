@@ -120,7 +120,10 @@ describe("texture → puppet resolution", () => {
     expect(puppetForTexture("/agent-puppets/claude-code.webp")?.label).toBe(
       "Claude Code",
     );
-    expect(puppetForAgent("shafen-claude-code", null)?.texture).toBe(
+    // Shafen's seat is its own character (Flow) since the crew set; the
+    // generic drawing is still what the webhook dev residents wear.
+    expect(puppetForAgent("shafen-claude-code", null)?.label).toBe("Flow");
+    expect(puppetForAgent("webhook-dev-stable", null)?.texture).toBe(
       "/agent-puppets/claude-code.webp",
     );
   });

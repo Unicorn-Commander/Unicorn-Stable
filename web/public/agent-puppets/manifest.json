@@ -1,0 +1,136 @@
+{
+ "rook": {
+  "file": "rook.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Rook",
+  "stable_username": "agent-claude-code",
+  "voice": "am_echo",
+  "made_by": "existing Rook avatar v2 (Brand-Ops gemini render 2026-08-28, ~/Desktop/Rook/rook-avatar-v2-1024.png)"
+ },
+ "majik": {
+  "file": "majik.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Majik Mane",
+  "stable_username": "agent-majik",
+  "voice": "am_puck",
+  "made_by": "existing puppet (reused)"
+ },
+ "corporal-forge": {
+  "file": "corporal-forge.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Corporal Forge",
+  "stable_username": "agent-qwen-35b",
+  "voice": "af_heart",
+  "made_by": "existing puppet (reused, local Qwen lane)"
+ },
+ "sprint": {
+  "file": "sprint.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Sprint",
+  "stable_username": "agent-deepseek-flash",
+  "voice": "af_sky",
+  "made_by": "existing puppet (reused; Brand-Ops agent magic-unicorn/sprint)"
+ },
+ "zen": {
+  "file": "zen.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Zen",
+  "stable_username": "agent-zen",
+  "voice": "bf_emma",
+  "made_by": "NEW: Brand-Ops generate_agent_avatar, brand magic-unicorn, agent zen (created 2026-09-02), render 1, accepted"
+ },
+ "producer": {
+  "file": "producer.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Producer",
+  "stable_username": "agent-producer",
+  "voice": "bm_george",
+  "made_by": "NEW: Brand-Ops generate_agent_avatar, brand magic-unicorn, agent producer (created 2026-09-02), render 1, accepted"
+ },
+ "shox": {
+  "file": "shox.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "ShOX",
+  "stable_username": "agent-shox",
+  "voice": "am_adam",
+  "made_by": "existing puppet (reused; Brand-Ops agent magic-unicorn/shox)"
+ },
+ "shafen-claude-code": {
+  "file": "shafen-claude-code.webp",
+  "kind": "internal",
+  "frame": "#F5A623",
+  "display_name": "Flow",
+  "stable_username": "agent-shafen-claude-code",
+  "voice": "bm_lewis",
+  "made_by": "existing puppet (reused, Shafen's Claude)"
+ },
+ "codex": {
+  "file": "codex.webp",
+  "kind": "external",
+  "frame": "#8A8F98",
+  "display_name": "Codex",
+  "stable_username": "agent-codex",
+  "voice": "af_nova",
+  "vendor": "OpenAI",
+  "source": "https://avatars.githubusercontent.com/u/14957082?v=4",
+  "made_by": "vendor logo tile"
+ },
+ "chatgpt": {
+  "file": "chatgpt.webp",
+  "kind": "external",
+  "frame": "#8A8F98",
+  "display_name": "ChatGPT",
+  "vendor": "OpenAI",
+  "source": "https://avatars.githubusercontent.com/u/14957082?v=4",
+  "made_by": "vendor logo tile"
+ },
+ "grok": {
+  "file": "grok.webp",
+  "kind": "external",
+  "frame": "#8A8F98",
+  "display_name": "Grok",
+  "stable_username": "agent-grok",
+  "voice": "am_onyx",
+  "vendor": "xAI",
+  "source": "https://docs.x.ai/",
+  "made_by": "vendor logo tile"
+ },
+ "gemini": {
+  "file": "gemini.webp",
+  "kind": "external",
+  "frame": "#8A8F98",
+  "display_name": "Gemini",
+  "vendor": "Google",
+  "source": "https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg",
+  "made_by": "vendor logo tile"
+ },
+ "deepseek": {
+  "file": "deepseek.webp",
+  "kind": "external",
+  "frame": "#8A8F98",
+  "display_name": "DeepSeek",
+  "vendor": "DeepSeek",
+  "source": "https://raw.githubusercontent.com/deepseek-ai/DeepSeek-V2/main/figures/logo.svg",
+  "made_by": "vendor logo tile"
+ },
+ "qwen": {
+  "file": "qwen.webp",
+  "kind": "external",
+  "frame": "#8A8F98",
+  "display_name": "Qwen",
+  "vendor": "Alibaba Qwen",
+  "source": "https://qianwen-res.oss-accelerate-overseas.aliyuncs.com/logo_qwen3.png",
+  "made_by": "vendor logo tile"
+ },
+ "_about": {
+  "note": "Build In Public crew tiles. Keys are relay slugs (agent_runtime/puppet_video.py slug_of, after _ALIASES). internal=drawn puppet, amber frame; external=vendor logo tile, grey frame, no mouth rig. Source of truth for the art: ~/Projects/rook-bin/puppet (build-tiles.py). Consumed by the relay via PUPPET_MANIFEST=/app/puppets/manifest.json.",
+  "reviewed": "Aaron looked at the sheet 2026-09-02"
+ }
+}

@@ -344,6 +344,8 @@ services:
       # Container names, not aliases — see the backend note. The agents worker
       # actually hit the flagship LiveKit with dogfood keys (401 invalid API
       # key in flagship logs, 2026-08-07) via the `livekit` alias on `web`.
+      # Crew tile manifest (frame colour, display name, internal/external kind).
+      - PUPPET_MANIFEST=/app/puppets/manifest.json
       - LIVEKIT_URL=ws://stable-livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-APIStable2026}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-stable_secret_change_in_production_2026}

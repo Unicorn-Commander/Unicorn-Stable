@@ -81,6 +81,16 @@ export const PORTRAITS: Record<string, string> = {
   "deploy2-smoke": "/agent-puppets/deploy2-smoke.webp",
   "dr-glitter-mane": "/agent-puppets/dr-glitter-mane.webp",
   "dj-majik-mane": "/agent-puppets/dj-majik-mane.webp",
+  // Build In Public crew — EXTERNAL vendor models. The 2026-09-02 puppet set
+  // draws these as the vendor's official mark on a neutral field with a grey
+  // frame (rook-bin/puppet/build-tiles.py), deliberately not as a face: a
+  // logo has no mouth, so they live here and not in PUPPETS.
+  codex: "/agent-puppets/codex.webp",
+  grok: "/agent-puppets/grok.webp",
+  chatgpt: "/agent-puppets/chatgpt.webp",
+  gemini: "/agent-puppets/gemini.webp",
+  deepseek: "/agent-puppets/deepseek.webp",
+  qwen: "/agent-puppets/qwen.webp",
   // Harmony's routing variants. Separate identities in Brigade and Brand-Ops,
   // so each carries its own master rather than an alias onto `harmony` — the
   // avatars PROVENANCE manifest forbids binding an id to art it does not own.

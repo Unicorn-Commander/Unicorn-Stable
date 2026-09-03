@@ -157,14 +157,25 @@ for _id in (
     "corporal-qwen", "cpl-colophon", "perry", "prudence", "accounting-ops-cfo",
     "center-deep-lead", "contact-ops-lead", "customer-ops-lead",
     "meeting-ops-lead", "claude-code", "claude", "cmo", "code-reviewer",
-    "col-finance", "harmony", "maj-recon", "meeting-ops-dev", "scout", "grok",
-    "shox", "codex", "corporal-forge", "sprint", "gm-watchdog",
-    "research-monitor",
+    "col-finance", "harmony", "maj-recon", "meeting-ops-dev", "scout",
+    "shox", "corporal-forge", "sprint", "gm-watchdog", "research-monitor",
+    # Build In Public crew (2026-09-02 puppet set): drawn puppets get a mouth.
+    "zen", "producer", "shafen-claude-code",
 ):
     _RIGS.setdefault(_id, DEFAULT_RIG)
+# External seats (codex, grok, chatgpt, gemini, deepseek, qwen) are VENDOR LOGO
+# tiles, not faces: no rig on purpose — a mouth cavity on a logo is wrong. They
+# still get the glow ring, which is correct on any picture.
 
 #: Usernames that name a persona whose art is filed under another slug.
-_ALIASES = {"claude-code": "rook", "agent-claude-code": "rook"}
+_ALIASES = {
+    "claude-code": "rook",
+    "agent-claude-code": "rook",
+    # The crew seats whose Stable username is the model, not the character.
+    "qwen-35b": "corporal-forge",
+    "deepseek-flash": "sprint",
+    "flow": "shafen-claude-code",
+}
 
 
 def rig_for(agent_id: str) -> Rig | None:

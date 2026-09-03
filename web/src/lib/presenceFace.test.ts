@@ -18,6 +18,7 @@ import {
   type PresenceRungInput,
 } from "./presenceFace";
 import { hasPuppet, puppetForAgent, puppetForTexture } from "./puppetRig";
+import { brandAvatarFor } from "./brandAvatars";
 import { FACE_STYLE_ORDER, type FaceStyle } from "./facePreference";
 
 /** The happy path: everything on, everything available. */
@@ -607,13 +608,14 @@ describe("resolveCallTilePersona — Rook's relay tile", () => {
     ).toBe("/agent-puppets/rook-v2.png");
   });
 
-  it("keeps the OTHER Claude Code seats on the shared catalogue art", () => {
+  it("keeps the OTHER Claude Code seats on their own art, never Rook's", () => {
     // Rook's art is bound to his PARTICIPANT, never to the `claude-code` slug —
     // which Shafen's box, the webhook dev seats and `claude-orch1` all share.
     // Binding it to the slug is precisely how his face would leak onto theirs.
     const members = [
       ROOK,
       { slug: "shafen-claude-code", name: "Claude Code", avatarUrl: null },
+      { slug: "webhook-dev-stable", name: "Claude Code", avatarUrl: null },
     ];
     const shafen = resolveCallTilePersona(
       "agent-shafen-claude-code",
@@ -622,9 +624,19 @@ describe("resolveCallTilePersona — Rook's relay tile", () => {
       members,
     );
     expect(shafen.artUrl).toBeUndefined();
-    // It still resolves art — the generic Claude Code drawing, via the alias
-    // table. Correct, and NOT Rook's.
+    // Shafen's seat is Flow (2026-09-02 crew set) — its own face, NOT Rook's.
     expect(puppetForAgent(shafen.slug, shafen.name)?.texture).toBe(
+      "/agent-puppets/shafen-claude-code.webp",
+    );
+    // A webhook dev resident still wears the generic Claude Code drawing.
+    const webhook = resolveCallTilePersona(
+      "agent-webhook-dev-stable",
+      "Claude Code",
+      null,
+      members,
+    );
+    expect(webhook.artUrl).toBeUndefined();
+    expect(puppetForAgent(webhook.slug, webhook.name)?.texture).toBe(
       "/agent-puppets/claude-code.webp",
     );
   });
@@ -746,17 +758,30 @@ describe("Build In Public cast — 2026-08-28", () => {
     expect(spec!.texture).toContain("rook");
   });
 
-  it("gives every on-camera cast member a puppet, so none fall back to the generated head", () => {
-    for (const id of ["grok", "shox", "codex", "corporal-forge", "sprint", "rook"]) {
-      expect(hasPuppet(id, null)).toBe(true);
+  const DRAWN_CREW = [
+    "rook", "majik", "shox", "corporal-forge", "sprint", "zen", "producer",
+    "shafen-claude-code",
+  ];
+
+  it("gives every drawn crew member a puppet, so none fall back to the generated head", () => {
+    for (const id of DRAWN_CREW) {
+      expect(hasPuppet(id, null), id).toBe(true);
     }
   });
 
-  it("keeps the cast's faces distinct from each other", () => {
-    const textures = ["grok", "shox", "codex", "corporal-forge", "sprint", "rook"].map(
-      (id) => puppetForAgent(id, null)!.texture,
-    );
+  it("keeps the crew's faces distinct from each other", () => {
+    const textures = DRAWN_CREW.map((id) => puppetForAgent(id, null)!.texture);
     expect(new Set(textures).size).toBe(textures.length);
+  });
+
+  it("draws the external vendor seats as a logo tile, never a mouthed face", () => {
+    // The 2026-09-02 crew set: Codex/Grok/ChatGPT/Gemini/DeepSeek/Qwen are the
+    // vendor's mark on a neutral field. A mouth cavity on a logo is wrong, so
+    // they are portraits (brandAvatars), not puppets.
+    for (const id of ["codex", "grok", "chatgpt", "gemini", "deepseek", "qwen"]) {
+      expect(hasPuppet(id, null), id).toBe(false);
+      expect(brandAvatarFor(id), id).toBe(`/agent-puppets/${id}.webp`);
+    }
   });
 
   it("routes the model-named lanes to their role-named characters", () => {
@@ -768,7 +793,7 @@ describe("Build In Public cast — 2026-08-28", () => {
 });
 
 describe("agentFaceBudget — spent, not forfeited", () => {
-  const six = ["majik", "the-general", "rook", "grok", "shox", "codex"];
+  const six = ["majik", "the-general", "rook", "zen", "shox", "producer"];
 
   it("gives every agent a face when the room is within budget", () => {
     const ids = ["majik", "rook"];
@@ -783,13 +808,13 @@ describe("agentFaceBudget — spent, not forfeited", () => {
   });
 
   it("always spends a slot on the agent that is speaking", () => {
-    const chosen = agentFaceBudget(six, "codex"); // last in tile order
-    expect(chosen.has("codex")).toBe(true);
+    const chosen = agentFaceBudget(six, "producer"); // last in tile order
+    expect(chosen.has("producer")).toBe(true);
     expect(chosen.size).toBe(MAX_AGENT_FACE_CONTEXTS);
   });
 
   it("keeps the rest of the set stable as the speaker changes", () => {
-    const a = agentFaceBudget(six, "codex");
+    const a = agentFaceBudget(six, "producer");
     const b = agentFaceBudget(six, "shox");
     const stable = [...a].filter((id) => b.has(id));
     // Only the speaker slot churns; the others hold their contexts.

@@ -180,11 +180,16 @@ export const PUPPETS: Record<string, PuppetSpec> = {
     eyeL: { cx: 0.414, cy: 0.445, rx: 0.030, ry: 0.028 },
     eyeR: { cx: 0.585, cy: 0.445, rx: 0.030, ry: 0.028 },
   },
-  grok: { label: "Grok", texture: T("grok"), ...DEFAULT_RIG },
   shox: { label: "ShOX", texture: T("shox"), ...DEFAULT_RIG },
-  codex: { label: "Codex", texture: T("codex"), ...DEFAULT_RIG },
   "corporal-forge": { label: "Corporal Forge", texture: T("corporal-forge"), ...DEFAULT_RIG },
   sprint: { label: "Sprint", texture: T("sprint"), ...DEFAULT_RIG },
+  // Build In Public crew, 2026-09-02 puppet set (rook-bin/puppet/manifest.json).
+  // Codex and Grok are NOT here any more: the crew set draws external vendor
+  // models as their logo tile (see brandAvatars PORTRAITS), and a mouth on a
+  // logo is wrong. Zen, Producer and Flow are drawn puppets and get a mouth.
+  zen: { label: "Zen", texture: T("zen"), ...DEFAULT_RIG },
+  producer: { label: "Producer", texture: T("producer"), ...DEFAULT_RIG },
+  "shafen-claude-code": { label: "Flow", texture: T("shafen-claude-code"), ...DEFAULT_RIG },
   "gm-watchdog": { label: "GM Watchdog", texture: T("gm-watchdog"), ...DEFAULT_RIG },
   "research-monitor": { label: "Research Monitor", texture: T("research-monitor"), ...DEFAULT_RIG },
 };
@@ -221,8 +226,10 @@ const ALIASES: Record<string, string> = {
   // "Claude Code" already normalizes to the puppet key; these are the
   // possessive display names and per-box usernames that don't.
   "aaron-s-claude-code": "claude-code",
-  "shafen-s-claude-code": "claude-code",
-  "shafen-claude-code": "claude-code",
+  // Shafen's Claude Code seat is Flow, a character of his own since the
+  // 2026-09-02 crew set — no longer the generic Claude Code drawing.
+  "shafen-s-claude-code": "shafen-claude-code",
+  flow: "shafen-claude-code",
   "dev-shafen-z13": "claude-code",
   // Webhook residents are addressed by username (their display names are
   // generic), so the usernames are the reliable key.

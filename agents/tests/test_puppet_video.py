@@ -228,37 +228,47 @@ class SpecAndManifestTests(TestCase):
         self.assertEqual(slug_of("agent-claude-code"), "rook")
         self.assertEqual(slug_of(""), "agent")
 
+    def test_model_named_seats_resolve_to_their_characters(self) -> None:
+        """The crew seats whose Stable username is the MODEL wear the
+        character's art (same table as web/src/lib/puppetRig.ts ALIASES)."""
+        self.assertEqual(slug_of("agent-qwen-35b"), "corporal-forge")
+        self.assertEqual(slug_of("agent-deepseek-flash"), "sprint")
+        self.assertEqual(slug_of("agent-flow"), "shafen-claude-code")
+        self.assertEqual(slug_of("agent-shafen-claude-code"), "shafen-claude-code")
+
     def test_no_art_still_yields_a_named_coloured_tile(self) -> None:
-        spec = build_spec("agent-zen", None, manifest={})
+        # Zen has shipped art since the 2026-09-02 crew set; a made-up seat is
+        # the honest "no art" case now.
+        spec = build_spec("agent-nobody-yet", None, manifest={})
         self.assertIsNone(spec.image)
-        self.assertEqual(spec.display_name, "Zen")
-        self.assertEqual(spec.frame, identity_color("agent-zen"))
-        self.assertNotEqual(identity_color("agent-zen"), identity_color("agent-grok"))
+        self.assertEqual(spec.display_name, "Nobody Yet")
+        self.assertEqual(spec.frame, identity_color("agent-nobody-yet"))
+        self.assertNotEqual(identity_color("agent-nobody-yet"), identity_color("agent-grok"))
         img = PuppetRenderer(spec).render(0.0, 0.5)
         self.assertEqual(img.size, (WIDTH, HEIGHT))
 
     def test_manifest_supplies_art_name_and_frame(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            art = Path(tmp) / "zen.png"
+            art = Path(tmp) / "newbie.png"
             _art((10, 200, 10, 255)).save(art)
             manifest = Path(tmp) / "manifest.json"
             manifest.write_text(
                 json.dumps(
                     {
-                        "zen": {
-                            "file": "zen.png",
+                        "newbie": {
+                            "file": "newbie.png",
                             "kind": "external",
                             "frame": "#ff8800",
-                            "display_name": "Zen (xAI)",
+                            "display_name": "Newbie (xAI)",
                         }
                     }
                 )
             )
             loaded = load_manifest(manifest)
-            self.assertEqual(loaded["zen"]["file"], str(art))
-            spec = build_spec("agent-zen", None, loaded)
+            self.assertEqual(loaded["newbie"]["file"], str(art))
+            spec = build_spec("agent-newbie", None, loaded)
             self.assertIsNotNone(spec.image)
-            self.assertEqual(spec.display_name, "Zen (xAI)")
+            self.assertEqual(spec.display_name, "Newbie (xAI)")
             self.assertEqual(spec.frame, (255, 136, 0))
             self.assertEqual(spec.kind, "external")
             self.assertIsNone(spec.rig)  # unknown art gets no mouth cavity
@@ -273,14 +283,54 @@ class SpecAndManifestTests(TestCase):
     def test_shipped_art_is_found_when_the_checkout_has_it(self) -> None:
         """The repo's web/public/agent-puppets set is the default art source
         (mounted at /app/puppets in the container)."""
-        shipped = Path(__file__).resolve().parents[2] / "web" / "public" / "agent-puppets" / "grok.webp"
+        shipped = Path(__file__).resolve().parents[2] / "web" / "public" / "agent-puppets" / "majik.webp"
         if not shipped.is_file():
             self.skipTest("no shipped art in this checkout")
         old = os.environ.pop("PUPPET_DIR", None)
         try:
-            spec = build_spec("agent-grok", None, {})
+            spec = build_spec("agent-majik", None, {})
         finally:
             if old is not None:
                 os.environ["PUPPET_DIR"] = old
         self.assertIsNotNone(spec.image)
         self.assertIsNotNone(spec.rig)
+
+    def test_shipped_crew_manifest_covers_every_show_seat(self) -> None:
+        """web/public/agent-puppets/manifest.json (mounted at /app/puppets,
+        PUPPET_MANIFEST in compose) is the 2026-09-02 crew set: every seat in
+        the show room gets art, the manifest's name and frame, and a mouth only
+        when the art is a drawn face."""
+        puppets = Path(__file__).resolve().parents[2] / "web" / "public" / "agent-puppets"
+        manifest_path = puppets / "manifest.json"
+        if not manifest_path.is_file():
+            self.skipTest("no shipped manifest in this checkout")
+        manifest = load_manifest(manifest_path)
+        old = os.environ.pop("PUPPET_DIR", None)
+        try:
+            crew = {
+                "agent-claude-code": ("Rook", True),
+                "agent-majik": ("Majik Mane", True),
+                "agent-qwen-35b": ("Corporal Forge", True),
+                "agent-deepseek-flash": ("Sprint", True),
+                "agent-zen": ("Zen", True),
+                "agent-producer": ("Producer", True),
+                "agent-shox": ("ShOX", True),
+                "agent-shafen-claude-code": ("Flow", True),
+                "agent-codex": ("Codex", False),
+                "agent-grok": ("Grok", False),
+                "agent-chatgpt": ("ChatGPT", False),
+            }
+            amber, grey = (245, 166, 35), (138, 143, 152)
+            for identity, (name, drawn) in crew.items():
+                spec = build_spec(identity, None, manifest)
+                self.assertIsNotNone(spec.image, identity)
+                self.assertEqual(spec.display_name, name, identity)
+                self.assertEqual(spec.kind, "internal" if drawn else "external", identity)
+                self.assertEqual(spec.frame, amber if drawn else grey, identity)
+                if drawn:
+                    self.assertIsNotNone(spec.rig, f"{identity} is a face and needs a mouth")
+                else:
+                    self.assertIsNone(spec.rig, f"{identity} is a logo tile: no mouth")
+        finally:
+            if old is not None:
+                os.environ["PUPPET_DIR"] = old
