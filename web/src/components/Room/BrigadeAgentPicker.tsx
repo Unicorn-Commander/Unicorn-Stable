@@ -192,7 +192,7 @@ export function BrigadeAgentPicker({
           <Bot className="h-3 w-3" />
         </span>
         <span className="min-w-0 flex-1 truncate">
-          {humanPairDm ? "Add an agent — starts a group" : "Invite a Brigade agent"}
+          {humanPairDm ? "Add an agent — starts a group" : "Invite an agent"}
         </span>
         <ChevronDown
           className={clsx(
@@ -213,7 +213,7 @@ export function BrigadeAgentPicker({
             <p className="px-3 py-3 text-xs text-rose-400">{error}</p>
           ) : agents.length === 0 ? (
             <p className="px-3 py-3 text-xs text-slate-500">
-              No Brigade agents available. Configure <code>BRIGADE_API_KEY</code>{" "}
+              No agents available. Configure <code>BRIGADE_API_KEY</code>{" "}
               on the Stable backend.
             </p>
           ) : (

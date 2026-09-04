@@ -12,11 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.config import get_settings
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from redis.asyncio import Redis
 
 from app.deps import get_current_user, get_db, get_livekit, get_redis, rate_limit
+from app.models.agent_gateway_key import AgentGatewayKey
 from app.services.agent_access import ensure_agent_access, entitled_agent_ids
 from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
@@ -314,6 +316,74 @@ async def _fetch_brigade_agents() -> list[BrigadeAgent]:
     ]
 
 
+# Mac Studio bridge/gateway crew seats eligible for the "new chat" / invite
+# picker, keyed by the agent_id their gateway credential posts as (see
+# api/gateway.py, models/agent_gateway_key.py). Deliberately a small fixed
+# allowlist, NOT every row in agent_gateway_keys — that table also holds
+# ephemeral show-night seats (E04 one-offs), bots (reddit-scout), and
+# third-party agents (a guest's own Claude Code) that are not conversational
+# personas anyone should "start a new chat" with from this picker.
+_BRIDGE_CREW_AGENTS: dict[str, tuple[str, str]] = {
+    "claude-code": ("Rook", "Aaron's Mac Studio seat — Build In Public showrunner"),
+    "persephone": ("Persephone", "Aaron's Mac Studio seat — main assistant"),
+}
+
+
+async def _fetch_bridge_crew_agents(db: AsyncSession) -> list[BrigadeAgent]:
+    """The _BRIDGE_CREW_AGENTS entries that currently hold a live key.
+
+    Only ids with a non-revoked ``agent_gateway_keys`` row are returned, so a
+    revoked/rotated seat quietly drops out of the picker instead of dangling
+    there as an invite that will 403/404 downstream.
+    """
+    if not _BRIDGE_CREW_AGENTS:
+        return []
+    rows = (
+        (
+            await db.execute(
+                select(AgentGatewayKey.agent_id)
+                .where(
+                    AgentGatewayKey.agent_id.in_(list(_BRIDGE_CREW_AGENTS.keys())),
+                    AgentGatewayKey.revoked_at.is_(None),
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        BrigadeAgent(id=agent_id, name=name, description=desc)
+        for agent_id in rows
+        for name, desc in [_BRIDGE_CREW_AGENTS[agent_id]]
+    ]
+
+
+async def _fetch_invitable_agents(db: AsyncSession) -> list[BrigadeAgent]:
+    """Brigade's roster plus the bridge crew allowlist, merged.
+
+    The two sources degrade independently — a Brigade outage must not hide
+    Rook/Persephone (they have nothing to do with Brigade being up), and an
+    empty bridge allowlist must not change today's behavior at all. Brigade's
+    own fetch failure is only swallowed when the bridge crew has something to
+    fall back to; with an empty bridge list this re-raises exactly as
+    ``_fetch_brigade_agents`` always has, so a genuine BRIGADE_API_KEY
+    misconfiguration still surfaces to whoever is looking at the error.
+    """
+    bridge = await _fetch_bridge_crew_agents(db)
+    try:
+        brigade = await _fetch_brigade_agents()
+    except HTTPException:
+        if not bridge:
+            raise
+        logger.warning(
+            "brigade_fetch_failed_falling_back_to_bridge_crew",
+            bridge_agent_ids=[a.id for a in bridge],
+        )
+        brigade = []
+    return brigade + bridge
+
+
 async def _entitlement_set(
     db: AsyncSession, user: dict[str, Any], agent_ids: list[str]
 ) -> set[str] | None:
@@ -347,7 +417,7 @@ async def list_brigade_agents(
     Brigade is the source of truth for agents. Each entry carries `entitled`
     for THIS caller (see BrigadeAgent.entitled).
     """
-    agents = await _fetch_brigade_agents()
+    agents = await _fetch_invitable_agents(db)
     allowed = await _entitlement_set(db, user, [a.id for a in agents])
     if allowed is not None:
         for a in agents:
@@ -722,13 +792,14 @@ async def invite_brigade_agent(
     """
     settings = get_settings()
 
-    # Sanity-check the requested agent exists in Brigade.
-    agents = await _fetch_brigade_agents()
+    # Sanity-check the requested agent exists (Brigade roster or the bridge
+    # crew allowlist — see _fetch_invitable_agents).
+    agents = await _fetch_invitable_agents(db)
     valid_ids = {a.id for a in agents}
     if body.brigade_agent_id not in valid_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown Brigade agent: {body.brigade_agent_id}",
+            detail=f"Unknown agent: {body.brigade_agent_id}",
         )
 
     # Resolve the room (UUID id | slug name | LiveKit name) to its LiveKit room
