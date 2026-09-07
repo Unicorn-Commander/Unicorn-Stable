@@ -1670,13 +1670,20 @@ class StableApiClient {
 
   /** Synthesize speech for a message (read-aloud). Returns an audio blob
    * from the platform TTS (kokoro) via the backend proxy — the browser
-   * cannot reach the GPU TTS host directly. Pass `agent` (the sender's
-   * brigade agent id or display name) so the backend picks that agent's
-   * voice-call preset; explicit `voice` overrides; otherwise the suite
-   * default (af_heart, Majik's voice). */
+   * cannot reach the GPU TTS host directly. The backend resolves the voice
+   * from its per-agent preset table: `agent` (brigade agent id) first, then
+   * `senderName` (display name / participant identity); explicit `voice`
+   * overrides. With `readAloud` a sender that has no preset (human, plain
+   * model, unknown seat) gets the server's configured read-aloud default
+   * voice instead of a 422. */
   async ttsSpeech(
     text: string,
-    opts?: { voice?: string; agent?: string },
+    opts?: {
+      voice?: string;
+      agent?: string;
+      senderName?: string;
+      readAloud?: boolean;
+    },
   ): Promise<Blob> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -1689,6 +1696,8 @@ class StableApiClient {
         text,
         ...(opts?.voice ? { voice: opts.voice } : {}),
         ...(opts?.agent ? { agent: opts.agent } : {}),
+        ...(opts?.senderName ? { sender_name: opts.senderName } : {}),
+        ...(opts?.readAloud ? { read_aloud: true } : {}),
       }),
     });
     if (!response.ok) {

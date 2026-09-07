@@ -248,6 +248,7 @@ services:
       # TTS = kokoro-ha; STT = Parakeet OpenAI shim (Amanuensis-compatible).
       - KOKORO_BASE_URL=${KOKORO_BASE_URL:-http://192.168.10.10:8883}
       - TTS_DEFAULT_VOICE=${TTS_DEFAULT_VOICE:-af_heart}
+      - TTS_READ_ALOUD_DEFAULT_VOICE=${TTS_READ_ALOUD_DEFAULT_VOICE:-am_adam}
       - WHISPER_BASE_URL=${WHISPER_BASE_URL:-http://192.168.10.68:8011/v1}
       - WHISPER_MODEL=${WHISPER_MODEL:-whisper-1}
     depends_on:
