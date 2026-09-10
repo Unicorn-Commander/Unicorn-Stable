@@ -71,7 +71,8 @@ export const PORTRAITS: Record<string, string> = {
   "zpool-health": "/agent-puppets/zpool-health.webp",
   "cwo-lightsout": "/agent-puppets/cwo-lightsout.webp",
   "the-fixer": "/agent-puppets/the-fixer.webp",
-  "the-colonel": "/agent-puppets/the-colonel.webp",
+  // "the-colonel" moved to the rigged tier (puppetRig.ts) with the 2026-09-09
+  // L40 tile refresh; the two tiers must stay disjoint.
   companion: "/agent-puppets/companion.webp",
   "project-ops-assistant": "/agent-puppets/project-ops-assistant.webp",
   "project-ops-report-writer": "/agent-puppets/project-ops-report-writer.webp",
