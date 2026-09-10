@@ -1504,12 +1504,16 @@ export function MessageBubble({
       url = URL.createObjectURL(blob);
       audio.onended = finishSpeaking;
       audio.onerror = () => {
-        // Decode/network error on the blob → browser fallback.
+        // Decode/network error on the Kokoro blob → last-resort browser voice.
         if (cancelled) return;
         if (url) {
           URL.revokeObjectURL(url);
           url = null;
         }
+        console.warn(
+          "[read-aloud] Kokoro audio failed to decode/play; falling back to browser speechSynthesis",
+          audio.error,
+        );
         browserSpeechRef.current = speakWithBrowser(text, finishSpeaking);
         if (!cancelled) setTtsState("speaking");
       };
@@ -1519,31 +1523,48 @@ export function MessageBubble({
         .then(() => {
           if (!cancelled) setTtsState("speaking");
         })
-        .catch(() => {
-          // Autoplay still blocked (or codec issue) → browser TTS.
+        .catch((err: unknown) => {
+          // Autoplay still blocked (or codec issue) → last-resort browser voice.
           if (cancelled) return;
+          console.warn(
+            "[read-aloud] Kokoro audio play() rejected; falling back to browser speechSynthesis",
+            err,
+          );
           browserSpeechRef.current = speakWithBrowser(text, finishSpeaking);
           if (!cancelled) setTtsState("speaking");
         });
     };
 
-    // Per-agent voice: the backend maps the agent identifier to that agent's
-    // voice-call preset. Prefer an explicit brigade agent id stamped on the
-    // message (stable slug like "majik"); fall back to the display name,
-    // which the backend normalizes. Human senders use the suite default.
-    const voiceAgent =
-      (message.metadata as { brigade_agent_id?: string } | undefined)
-        ?.brigade_agent_id ||
-      (message.sender_type === "agent" ? message.sender_name : undefined);
+    // The voice is resolved SERVER-SIDE from the Kokoro per-agent preset table
+    // (agents/plugins/tts.py, mirrored in server/app/api/tts.py): the brigade
+    // agent id stamped on the message when there is one, else the sender's
+    // display name. `readAloud` makes the backend fall back to its configured
+    // read-aloud default voice for senders with no preset (humans, plain-model
+    // seats) instead of answering 422 — that 422 is what used to hand every
+    // unknown sender to the browser's speechSynthesis. Read-aloud does not
+    // depend on the room's voice mode being on.
+    const brigadeAgentId = (
+      message.metadata as { brigade_agent_id?: string } | undefined
+    )?.brigade_agent_id;
+    const senderName =
+      message.sender_type === "agent" ? message.sender_name : undefined;
 
     void api
-      .ttsSpeech(text, voiceAgent ? { agent: voiceAgent } : undefined)
+      .ttsSpeech(text, {
+        agent: brigadeAgentId || undefined,
+        senderName,
+        readAloud: true,
+      })
       .then((blob) => playBlob(blob))
       .catch((err) => {
         if (cancelled) return;
-        // Kokoro down / 502 / empty phonemes → still speak via the browser
-        // so the control never feels dead. Toast only if browser TTS is also
-        // unavailable.
+        // Kokoro request failed (network error / non-2xx) → last resort is
+        // the browser voice so the control never feels dead. Toast only if
+        // browser TTS is also unavailable.
+        console.warn(
+          "[read-aloud] Kokoro TTS request failed; falling back to browser speechSynthesis",
+          err,
+        );
         if (typeof window !== "undefined" && window.speechSynthesis) {
           browserSpeechRef.current = speakWithBrowser(text, finishSpeaking);
           setTtsState("speaking");

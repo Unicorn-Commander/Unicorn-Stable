@@ -326,6 +326,13 @@ class Settings(BaseSettings):
     kokoro_base_url: str = "http://192.168.10.10:8883"
     # Suite default voice = Majik (af_heart).
     tts_default_voice: str = "af_heart"
+    # Read-aloud (per-message speaker button) default for senders with no
+    # preset voice: humans, plain-model seats (ChatGPT, Gemini, ...), unknown
+    # agents. Deliberately NOT tts_default_voice — af_heart is Persephone's.
+    # The four named crew voices (af_heart/am_echo/am_puck/am_michael) are
+    # refused here (app/api/tts.py::read_aloud_default_voice). Env:
+    # TTS_READ_ALOUD_DEFAULT_VOICE.
+    tts_read_aloud_default_voice: str = "am_adam"
 
     # -- Meeting-Ops transcript federation (app/api/transcripts.py) --
     # Optional forward target for finalized call transcripts ("Send to
