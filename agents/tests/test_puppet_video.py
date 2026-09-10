@@ -343,3 +343,60 @@ class SpecAndManifestTests(TestCase):
         finally:
             if old is not None:
                 os.environ["PUPPET_DIR"] = old
+
+
+class ManifestRigTests(TestCase):
+    """The manifest's `rig` block places the mouth; the code table is the fallback."""
+
+    def _manifest(self, tmp: str, rig: object) -> dict:
+        import json
+        from pathlib import Path
+
+        art = Path(tmp) / "persephone.webp"
+        _art().save(art)
+        entry = {"file": "persephone.webp", "display_name": "Persephone", "frame": "#F5A623"}
+        if rig is not None:
+            entry["rig"] = rig
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps({"persephone": entry}), "utf-8")
+        from agent_runtime.puppet_video import load_manifest
+
+        return load_manifest(path)
+
+    def test_manifest_rig_overrides_code_table(self) -> None:
+        import tempfile
+
+        from agent_runtime.puppet_video import DEFAULT_RIG, build_spec
+
+        rig = {
+            "mouth": {"cx": 0.536, "cy": 0.564, "rx": 0.028, "ry": 0.009},
+            "open_depth": 0.028,
+            "eye_l": {"cx": 0.444, "cy": 0.429, "rx": 0.027, "ry": 0.027},
+            "eye_r": {"cx": 0.573, "cy": 0.429, "rx": 0.027, "ry": 0.027},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = build_spec("agent-persephone", None, self._manifest(tmp, rig))
+        self.assertIsNotNone(spec.rig)
+        self.assertAlmostEqual(spec.rig.mouth.cx, 0.536)
+        self.assertAlmostEqual(spec.rig.mouth.cy, 0.564)
+        self.assertAlmostEqual(spec.rig.open_depth, 0.028)
+        self.assertNotEqual(spec.rig.mouth, DEFAULT_RIG.mouth)
+
+    def test_malformed_manifest_rig_falls_back_to_code_table(self) -> None:
+        import tempfile
+
+        from agent_runtime.puppet_video import build_spec, rig_for
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = build_spec("agent-persephone", None, self._manifest(tmp, {"mouth": {"cx": 0.5}}))
+        self.assertEqual(spec.rig, rig_for("persephone"))
+
+    def test_persephone_code_rig_is_not_the_default(self) -> None:
+        from agent_runtime.puppet_video import DEFAULT_RIG, rig_for
+
+        rig = rig_for("persephone")
+        self.assertIsNotNone(rig)
+        self.assertNotEqual(rig.mouth, DEFAULT_RIG.mouth)
+        # Mouth sits above and right of the default: the v5 art's muzzle.
+        self.assertLess(rig.mouth.cy, DEFAULT_RIG.mouth.cy)
+        self.assertGreater(rig.mouth.cx, DEFAULT_RIG.mouth.cx)

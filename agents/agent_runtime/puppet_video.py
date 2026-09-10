@@ -167,6 +167,16 @@ for _id in (
     "persephone",
 ):
     _RIGS.setdefault(_id, DEFAULT_RIG)
+# Persephone v5 art (2026-09-09): mouth higher and further right than the
+# default — with DEFAULT_RIG the cavity opened on her chin while the drawn
+# mouth stayed shut. Same numbers as web/src/lib/puppetRig.ts and the
+# rook-bin manifest `rig`; the manifest wins at runtime (see build_spec).
+_RIGS["persephone"] = Rig(
+    mouth=Ellipse(0.536, 0.564, 0.028, 0.009),
+    open_depth=0.028,
+    eye_l=Ellipse(0.444, 0.429, 0.027, 0.027),
+    eye_r=Ellipse(0.573, 0.429, 0.027, 0.027),
+)
 # External seats (codex, grok, chatgpt, gemini, deepseek, qwen) are VENDOR LOGO
 # tiles, not faces: no rig on purpose — a mouth cavity on a logo is wrong. They
 # still get the glow ring, which is correct on any picture.
@@ -192,6 +202,41 @@ _ALIASES = {
 
 def rig_for(agent_id: str) -> Rig | None:
     return _RIGS.get(agent_id)
+
+
+def _ellipse_from(value: Any) -> Ellipse | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        e = Ellipse(*(float(value[k]) for k in ("cx", "cy", "rx", "ry")))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(0.0 <= v <= 1.0 for v in (e.cx, e.cy)) or e.rx <= 0 or e.ry <= 0:
+        return None
+    return e
+
+
+def rig_from_entry(entry: dict[str, Any] | None) -> Rig | None:
+    """The manifest's own ``rig`` block as a Rig, or None if absent/malformed.
+
+    The art file and its mouth position travel together in the manifest, so a
+    re-drawn face (Persephone v5) lands its cavity in the right place without a
+    code change. Anything incomplete falls back to the code table, never to a
+    half-built rig.
+    """
+    raw = (entry or {}).get("rig")
+    if not isinstance(raw, dict):
+        return None
+    mouth = _ellipse_from(raw.get("mouth"))
+    eye_l = _ellipse_from(raw.get("eye_l"))
+    eye_r = _ellipse_from(raw.get("eye_r"))
+    try:
+        depth = float(raw.get("open_depth"))
+    except (TypeError, ValueError):
+        return None
+    if mouth is None or eye_l is None or eye_r is None or not (0.0 < depth <= 0.25):
+        return None
+    return Rig(mouth=mouth, open_depth=depth, eye_l=eye_l, eye_r=eye_r)
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +363,7 @@ def build_spec(
         display_name=name,
         frame=colour,
         image=image,
-        rig=rig_for(slug) if image is not None else None,
+        rig=(rig_from_entry(entry) or rig_for(slug)) if image is not None else None,
         kind=str(entry.get("kind") or "internal"),
     )
 
