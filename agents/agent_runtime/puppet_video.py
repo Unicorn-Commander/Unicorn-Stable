@@ -167,6 +167,13 @@ for _id in (
     "persephone",
 ):
     _RIGS.setdefault(_id, DEFAULT_RIG)
+# Persephone v5 Grok idle: landmarks on the 512px framed tile.
+_RIGS["persephone"] = Rig(
+    mouth=Ellipse(0.536, 0.564, 0.028, 0.009),
+    open_depth=0.028,
+    eye_l=Ellipse(0.444, 0.429, 0.027, 0.027),
+    eye_r=Ellipse(0.573, 0.429, 0.027, 0.027),
+)
 # External seats (codex, grok, chatgpt, gemini, deepseek, qwen) are VENDOR LOGO
 # tiles, not faces: no rig on purpose — a mouth cavity on a logo is wrong. They
 # still get the glow ring, which is correct on any picture.
@@ -209,6 +216,7 @@ class PuppetSpec:
     image: Image.Image | None = None
     rig: Rig | None = None
     kind: str = "internal"
+    frames: dict[str, Image.Image] = field(default_factory=dict)
 
 
 def slug_of(identity: str) -> str:
@@ -261,6 +269,10 @@ def load_manifest(path: str | os.PathLike[str] | None = None) -> dict[str, dict[
             raw_file = entry.get("file")
             if isinstance(raw_file, str) and raw_file and not os.path.isabs(raw_file):
                 entry["file"] = str(candidate.parent / raw_file)
+            frames = entry.get("frames", {})
+            if isinstance(frames, dict):
+                entry["frames"] = {state: str(candidate.parent / value) if not os.path.isabs(value) else value
+                                   for state, value in frames.items() if isinstance(value, str)}
             out[key.strip().lower()] = entry
     return out
 
@@ -313,12 +325,31 @@ def build_spec(
         except Exception:
             logger.warning("puppet_art_unreadable", path=str(path), exc_info=True)
             image = None
+    frames = {}
+    for state, filename in (entry.get("frames") or {}).items():
+        if state not in ("idle", "talk", "talk2", "blink", "smile"):
+            continue
+        try:
+            with Image.open(filename) as raw:
+                if image is not None and raw.size == image.size:
+                    frames[state] = raw.convert("RGBA")
+        except (OSError, ValueError, TypeError):
+            logger.warning("puppet_frame_unreadable", state=state)
+    rig = rig_for(slug)
+    raw_rig = entry.get("rig")
+    if isinstance(raw_rig, dict):
+        try:
+            rig = Rig(mouth=Ellipse(**raw_rig["mouth"]), open_depth=float(raw_rig["open_depth"]),
+                      eye_l=Ellipse(**raw_rig["eye_l"]), eye_r=Ellipse(**raw_rig["eye_r"]))
+        except (TypeError, ValueError, KeyError):
+            pass
     return PuppetSpec(
         agent_id=slug,
         display_name=name,
         frame=colour,
         image=image,
-        rig=rig_for(slug) if image is not None else None,
+        frames=frames,
+        rig=rig if image is not None else None,
         kind=str(entry.get("kind") or "internal"),
     )
 
@@ -430,16 +461,19 @@ class PuppetRenderer:
             ART_TOP,
         )
         self._art = self._prepare_art()
+        self._frames = {state: self._prepare_art(art) for state, art in spec.frames.items()}
+        self._last_speech = -float("inf")
         self._base = self._render_base()
         self._font = _load_font(22)
         self._letter_font = _load_font(150)
 
     # -- one-time layers --
 
-    def _prepare_art(self) -> Image.Image | None:
-        if self.spec.image is None:
+    def _prepare_art(self, image: Image.Image | None = None) -> Image.Image | None:
+        image = image if image is not None else self.spec.image
+        if image is None:
             return None
-        art = self.spec.image.copy()
+        art = image.copy()
         art.thumbnail((ART_SIZE, ART_SIZE), Image.Resampling.LANCZOS)
         canvas = Image.new("RGBA", (ART_SIZE, ART_SIZE), (0, 0, 0, 0))
         canvas.paste(art, ((ART_SIZE - art.width) // 2, (ART_SIZE - art.height) // 2), art)
@@ -458,9 +492,10 @@ class PuppetRenderer:
 
     # -- per-frame --
 
-    def render(self, t: float, level: float) -> Image.Image:
+    def render(self, t: float, level: float, expression: str | None = None) -> Image.Image:
         """The frame at time ``t`` (seconds) with mouth ``level`` (0..1)."""
         level = max(0.0, min(1.0, level))
+        if level > 0.03: self._last_speech = t
         img = self._base.copy()
         draw = ImageDraw.Draw(img)
         bob = int(round(BOB_PX * math.sin(2 * math.pi * t / BOB_PERIOD_S)))
@@ -483,8 +518,14 @@ class PuppetRenderer:
             img.alpha_composite(glow)
 
         if self._art is not None:
-            img.alpha_composite(self._art, (x0, y0))
-            self._draw_rig(draw, x0, y0, t, level)
+            state = expression if expression in self._frames else (
+                "blink" if t % BLINK_EVERY_S < BLINK_LEN_S and "blink" in self._frames else
+                "talk" if level > 0.55 else "talk2" if level > 0.03 else
+                "smile" if 0 <= t - self._last_speech < 0.7 and "smile" in self._frames else "idle")
+            art = self._frames.get(state)
+            img.alpha_composite(art if art is not None else self._art, (x0, y0))
+            if art is None:
+                self._draw_rig(draw, x0, y0, t, level)
         else:
             self._draw_letter(draw, x0, y0, level)
 

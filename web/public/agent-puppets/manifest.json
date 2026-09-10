@@ -1,215 +1,955 @@
 {
- "rook": {
-  "file": "rook.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Rook",
-  "stable_username": "agent-claude-code",
-  "voice": "am_echo",
-  "made_by": "existing Rook avatar v2 (Brand-Ops gemini render 2026-08-28, ~/Desktop/Rook/rook-avatar-v2-1024.png)"
- },
- "majik": {
-  "file": "majik.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Majik Mane",
-  "stable_username": "agent-majik",
-  "voice": "am_puck",
-  "made_by": "existing puppet (reused)"
- },
- "corporal-forge": {
-  "file": "corporal-forge.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Corporal Forge",
-  "stable_username": "agent-qwen-35b",
-  "voice": "af_bella",
-  "made_by": "existing puppet (reused, local Qwen lane)"
- },
- "sprint": {
-  "file": "sprint.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Sprint",
-  "stable_username": "agent-deepseek-flash",
-  "voice": "af_sky",
-  "made_by": "existing puppet (reused; Brand-Ops agent magic-unicorn/sprint)"
- },
- "zen": {
-  "file": "zen.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Zen",
-  "stable_username": "agent-zen",
-  "voice": "bf_emma",
-  "made_by": "NEW: Brand-Ops generate_agent_avatar, brand magic-unicorn, agent zen (created 2026-09-02), render 1, accepted"
- },
- "producer": {
-  "file": "producer.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Producer",
-  "stable_username": "agent-producer",
-  "voice": "bm_george",
-  "made_by": "NEW: Brand-Ops generate_agent_avatar, brand magic-unicorn, agent producer (created 2026-09-02), render 1, accepted"
- },
- "shox": {
-  "file": "shox.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "ShOX",
-  "stable_username": "agent-shox",
-  "voice": "am_adam",
-  "made_by": "existing puppet (reused; Brand-Ops agent magic-unicorn/shox)"
- },
- "shafen-claude-code": {
-  "file": "shafen-claude-code.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Flow",
-  "stable_username": "agent-shafen-claude-code",
-  "voice": "bm_lewis",
-  "made_by": "existing puppet (reused, Shafen's Claude)"
- },
- "codex": {
-  "file": "codex.webp",
-  "kind": "external",
-  "frame": "#8A8F98",
-  "display_name": "Codex",
-  "stable_username": "agent-codex",
-  "voice": "af_nova",
-  "vendor": "OpenAI",
-  "source": "https://avatars.githubusercontent.com/u/14957082?v=4",
-  "made_by": "vendor logo tile"
- },
- "chatgpt": {
-  "file": "chatgpt.webp",
-  "kind": "external",
-  "frame": "#8A8F98",
-  "display_name": "ChatGPT",
-  "vendor": "OpenAI",
-  "source": "https://avatars.githubusercontent.com/u/14957082?v=4",
-  "made_by": "vendor logo tile"
- },
- "grok": {
-  "file": "grok.webp",
-  "kind": "external",
-  "frame": "#8A8F98",
-  "display_name": "Grok",
-  "stable_username": "agent-grok",
-  "voice": "am_onyx",
-  "vendor": "xAI",
-  "source": "https://docs.x.ai/",
-  "made_by": "vendor logo tile"
- },
- "gemini": {
-  "file": "gemini.webp",
-  "kind": "external",
-  "frame": "#8A8F98",
-  "display_name": "Gemini",
-  "vendor": "Google",
-  "source": "https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg",
-  "made_by": "vendor logo tile"
- },
- "deepseek": {
-  "file": "deepseek.webp",
-  "kind": "external",
-  "frame": "#8A8F98",
-  "display_name": "DeepSeek",
-  "vendor": "DeepSeek",
-  "source": "https://raw.githubusercontent.com/deepseek-ai/DeepSeek-V2/main/figures/logo.svg",
-  "made_by": "vendor logo tile"
- },
- "qwen": {
-  "file": "qwen.webp",
-  "kind": "external",
-  "frame": "#8A8F98",
-  "display_name": "Qwen",
-  "vendor": "Alibaba Qwen",
-  "source": "https://qianwen-res.oss-accelerate-overseas.aliyuncs.com/logo_qwen3.png",
-  "made_by": "vendor logo tile"
- },
- "control-room": {
-  "file": "control-room.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Control Room",
-  "stable_username": "agent-control-room",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass"
- },
- "chat-companion": {
-  "file": "chat-companion.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Chat Companion",
-  "stable_username": "agent-chat-companion",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass"
- },
- "dikdik": {
-  "file": "dikdik.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Dikdik",
-  "stable_username": "agent-dikdik-haiku",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
-  "voice": "bf_isabella"
- },
- "eland": {
-  "file": "eland.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Eland",
-  "stable_username": "agent-eland-qwen",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
-  "voice": "af_nicole"
- },
- "gerenuk": {
-  "file": "gerenuk.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Gerenuk",
-  "stable_username": "agent-gerenuk-codex",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
-  "voice": "af_alloy"
- },
- "kudu": {
-  "file": "kudu.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Kudu",
-  "stable_username": "agent-kudu-sonnet",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
-  "voice": "af_river"
- },
- "okapi": {
-  "file": "okapi.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Okapi",
-  "stable_username": "agent-okapi-grok",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
-  "voice": "am_michael"
- },
- "oryx": {
-  "file": "oryx.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Oryx",
-  "stable_username": "agent-oryx-gpt",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
-  "voice": "af_sarah"
- },
- "persephone": {
-  "file": "persephone.webp",
-  "kind": "internal",
-  "frame": "#F5A623",
-  "display_name": "Persephone",
-  "stable_username": "agent-persephone",
-  "voice": "af_heart",
-  "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass. Aaron's main assistant seat."
- },
- "_about": {
-  "note": "Build In Public crew tiles. Keys are relay slugs (agent_runtime/puppet_video.py slug_of, after _ALIASES). internal=drawn puppet, amber frame; external=vendor logo tile, grey frame, no mouth rig. Source of truth for the art: ~/Projects/rook-bin/puppet (build-tiles.py). Consumed by the relay via PUPPET_MANIFEST=/app/puppets/manifest.json.",
-  "reviewed": "Aaron looked at the sheet 2026-09-02"
- }
+  "rook": {
+    "file": "rook.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Rook",
+    "stable_username": "agent-claude-code",
+    "voice": "am_echo",
+    "made_by": "existing Rook avatar v2 (Brand-Ops gemini render 2026-08-28, ~/Desktop/Rook/rook-avatar-v2-1024.png)",
+    "chip": "chips/rook.webp",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/rook-idle.webp",
+      "talk": "frames/rook-talk.webp",
+      "talk2": "frames/rook-talk2.webp",
+      "blink": "frames/rook-blink.webp",
+      "smile": "frames/rook-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "majik": {
+    "file": "majik.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Majik",
+    "stable_username": "agent-majik",
+    "voice": "am_puck",
+    "made_by": "existing puppet (reused)",
+    "chip": "chips/majik.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/majik-idle.webp",
+      "talk": "frames/majik-talk.webp",
+      "talk2": "frames/majik-talk2.webp",
+      "blink": "frames/majik-blink.webp",
+      "smile": "frames/majik-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "corporal-forge": {
+    "file": "corporal-forge.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Corporal Forge",
+    "stable_username": "agent-qwen-35b",
+    "voice": "af_bella",
+    "made_by": "existing puppet (reused, local Qwen lane)",
+    "chip": "chips/corporal-forge.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/corporal-forge-idle.webp",
+      "talk": "frames/corporal-forge-talk.webp",
+      "talk2": "frames/corporal-forge-talk2.webp",
+      "blink": "frames/corporal-forge-blink.webp",
+      "smile": "frames/corporal-forge-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "sprint": {
+    "file": "sprint.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Sprint",
+    "stable_username": "agent-deepseek-flash",
+    "voice": "af_sky",
+    "made_by": "existing puppet (reused; Brand-Ops agent magic-unicorn/sprint)",
+    "chip": "chips/sprint.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/sprint-idle.webp",
+      "talk": "frames/sprint-talk.webp",
+      "talk2": "frames/sprint-talk2.webp",
+      "blink": "frames/sprint-blink.webp",
+      "smile": "frames/sprint-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "zen": {
+    "file": "zen.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Zen",
+    "stable_username": "agent-zen",
+    "voice": "bf_emma",
+    "made_by": "NEW: Brand-Ops generate_agent_avatar, brand magic-unicorn, agent zen (created 2026-09-02), render 1, accepted",
+    "chip": "chips/zen.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/zen-idle.webp",
+      "talk": "frames/zen-talk.webp",
+      "talk2": "frames/zen-talk2.webp",
+      "blink": "frames/zen-blink.webp",
+      "smile": "frames/zen-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "producer": {
+    "file": "producer.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Producer",
+    "stable_username": "agent-producer",
+    "voice": "bm_george",
+    "made_by": "NEW: Brand-Ops generate_agent_avatar, brand magic-unicorn, agent producer (created 2026-09-02), render 1, accepted",
+    "chip": "chips/producer.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/producer-idle.webp",
+      "talk": "frames/producer-talk.webp",
+      "talk2": "frames/producer-talk2.webp",
+      "blink": "frames/producer-blink.webp",
+      "smile": "frames/producer-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "shox": {
+    "file": "shox.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "ShOX",
+    "stable_username": "agent-shox",
+    "voice": "am_adam",
+    "made_by": "existing puppet (reused; Brand-Ops agent magic-unicorn/shox)",
+    "chip": "chips/shox.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/shox-idle.webp",
+      "talk": "frames/shox-talk.webp",
+      "talk2": "frames/shox-talk2.webp",
+      "blink": "frames/shox-blink.webp",
+      "smile": "frames/shox-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "shafen-claude-code": {
+    "file": "shafen-claude-code.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Flow",
+    "stable_username": "agent-shafen-claude-code",
+    "voice": "bm_lewis",
+    "made_by": "existing puppet (reused, Shafen's Claude)",
+    "chip": "chips/shafen-claude-code.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/shafen-claude-code-idle.webp",
+      "talk": "frames/shafen-claude-code-talk.webp",
+      "talk2": "frames/shafen-claude-code-talk2.webp",
+      "blink": "frames/shafen-claude-code-blink.webp",
+      "smile": "frames/shafen-claude-code-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "codex": {
+    "file": "codex.webp",
+    "kind": "external",
+    "frame": "#8A8F98",
+    "display_name": "Codex",
+    "stable_username": "agent-codex",
+    "voice": "af_nova",
+    "vendor": "OpenAI",
+    "source": "https://avatars.githubusercontent.com/u/14957082?v=4",
+    "made_by": "vendor logo tile",
+    "chip": "chips/codex.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/codex-idle.webp",
+      "talk": "frames/codex-talk.webp",
+      "talk2": "frames/codex-talk2.webp",
+      "blink": "frames/codex-blink.webp",
+      "smile": "frames/codex-smile.webp"
+    },
+    "animation_support": "vendor logo states remain static; speaking glow",
+    "rig": null
+  },
+  "chatgpt": {
+    "file": "chatgpt.webp",
+    "kind": "external",
+    "frame": "#8A8F98",
+    "display_name": "ChatGPT",
+    "vendor": "OpenAI",
+    "source": "https://avatars.githubusercontent.com/u/14957082?v=4",
+    "made_by": "vendor logo tile",
+    "chip": "chips/chatgpt.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/chatgpt-idle.webp",
+      "talk": "frames/chatgpt-talk.webp",
+      "talk2": "frames/chatgpt-talk2.webp",
+      "blink": "frames/chatgpt-blink.webp",
+      "smile": "frames/chatgpt-smile.webp"
+    },
+    "animation_support": "vendor logo states remain static; speaking glow",
+    "rig": null
+  },
+  "grok": {
+    "file": "grok.webp",
+    "kind": "external",
+    "frame": "#8A8F98",
+    "display_name": "Grok",
+    "stable_username": "agent-grok",
+    "voice": "am_onyx",
+    "vendor": "xAI",
+    "source": "https://docs.x.ai/",
+    "made_by": "vendor logo tile",
+    "chip": "chips/grok.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/grok-idle.webp",
+      "talk": "frames/grok-talk.webp",
+      "talk2": "frames/grok-talk2.webp",
+      "blink": "frames/grok-blink.webp",
+      "smile": "frames/grok-smile.webp"
+    },
+    "animation_support": "vendor logo states remain static; speaking glow",
+    "rig": null
+  },
+  "gemini": {
+    "file": "gemini.webp",
+    "kind": "external",
+    "frame": "#8A8F98",
+    "display_name": "Gemini",
+    "vendor": "Google",
+    "source": "https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg",
+    "made_by": "vendor logo tile",
+    "chip": "chips/gemini.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/gemini-idle.webp",
+      "talk": "frames/gemini-talk.webp",
+      "talk2": "frames/gemini-talk2.webp",
+      "blink": "frames/gemini-blink.webp",
+      "smile": "frames/gemini-smile.webp"
+    },
+    "animation_support": "vendor logo states remain static; speaking glow",
+    "rig": null
+  },
+  "deepseek": {
+    "file": "deepseek.webp",
+    "kind": "external",
+    "frame": "#8A8F98",
+    "display_name": "DeepSeek",
+    "vendor": "DeepSeek",
+    "source": "https://raw.githubusercontent.com/deepseek-ai/DeepSeek-V2/main/figures/logo.svg",
+    "made_by": "vendor logo tile",
+    "chip": "chips/deepseek.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/deepseek-idle.webp",
+      "talk": "frames/deepseek-talk.webp",
+      "talk2": "frames/deepseek-talk2.webp",
+      "blink": "frames/deepseek-blink.webp",
+      "smile": "frames/deepseek-smile.webp"
+    },
+    "animation_support": "vendor logo states remain static; speaking glow",
+    "rig": null
+  },
+  "qwen": {
+    "file": "qwen.webp",
+    "kind": "external",
+    "frame": "#8A8F98",
+    "display_name": "Qwen",
+    "vendor": "Alibaba Qwen",
+    "source": "https://qianwen-res.oss-accelerate-overseas.aliyuncs.com/logo_qwen3.png",
+    "made_by": "vendor logo tile",
+    "chip": "chips/qwen.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/qwen-idle.webp",
+      "talk": "frames/qwen-talk.webp",
+      "talk2": "frames/qwen-talk2.webp",
+      "blink": "frames/qwen-blink.webp",
+      "smile": "frames/qwen-smile.webp"
+    },
+    "animation_support": "vendor logo states remain static; speaking glow",
+    "rig": null
+  },
+  "control-room": {
+    "file": "control-room.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Control Room",
+    "stable_username": "agent-control-room",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "chip": "chips/control-room.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/control-room-idle.webp",
+      "talk": "frames/control-room-talk.webp",
+      "talk2": "frames/control-room-talk2.webp",
+      "blink": "frames/control-room-blink.webp",
+      "smile": "frames/control-room-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "chat-companion": {
+    "file": "chat-companion.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Chat Companion",
+    "stable_username": "agent-chat-companion",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "chip": "chips/chat-companion.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/chat-companion-idle.webp",
+      "talk": "frames/chat-companion-talk.webp",
+      "talk2": "frames/chat-companion-talk2.webp",
+      "blink": "frames/chat-companion-blink.webp",
+      "smile": "frames/chat-companion-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "dikdik": {
+    "file": "dikdik.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Dikdik",
+    "stable_username": "agent-dikdik-haiku",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "voice": "bf_isabella",
+    "chip": "chips/dikdik.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/dikdik-idle.webp",
+      "talk": "frames/dikdik-talk.webp",
+      "talk2": "frames/dikdik-talk2.webp",
+      "blink": "frames/dikdik-blink.webp",
+      "smile": "frames/dikdik-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "eland": {
+    "file": "eland.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Eland",
+    "stable_username": "agent-eland-qwen",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "voice": "af_nicole",
+    "chip": "chips/eland.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/eland-idle.webp",
+      "talk": "frames/eland-talk.webp",
+      "talk2": "frames/eland-talk2.webp",
+      "blink": "frames/eland-blink.webp",
+      "smile": "frames/eland-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "gerenuk": {
+    "file": "gerenuk.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Gerenuk",
+    "stable_username": "agent-gerenuk-codex",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "voice": "af_alloy",
+    "chip": "chips/gerenuk.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/gerenuk-idle.webp",
+      "talk": "frames/gerenuk-talk.webp",
+      "talk2": "frames/gerenuk-talk2.webp",
+      "blink": "frames/gerenuk-blink.webp",
+      "smile": "frames/gerenuk-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "kudu": {
+    "file": "kudu.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Kudu",
+    "stable_username": "agent-kudu-sonnet",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "voice": "af_river",
+    "chip": "chips/kudu.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/kudu-idle.webp",
+      "talk": "frames/kudu-talk.webp",
+      "talk2": "frames/kudu-talk2.webp",
+      "blink": "frames/kudu-blink.webp",
+      "smile": "frames/kudu-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "okapi": {
+    "file": "okapi.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Okapi",
+    "stable_username": "agent-okapi-grok",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "voice": "am_michael",
+    "chip": "chips/okapi.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/okapi-idle.webp",
+      "talk": "frames/okapi-talk.webp",
+      "talk2": "frames/okapi-talk2.webp",
+      "blink": "frames/okapi-blink.webp",
+      "smile": "frames/okapi-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "oryx": {
+    "file": "oryx.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Oryx",
+    "stable_username": "agent-oryx-gpt",
+    "made_by": "NEW 2026-09-03: Brand-Ops generate_agent_avatar, brand magic-unicorn, render 1, compliance pass",
+    "voice": "af_sarah",
+    "chip": "chips/oryx.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/oryx-idle.webp",
+      "talk": "frames/oryx-talk.webp",
+      "talk2": "frames/oryx-talk2.webp",
+      "blink": "frames/oryx-blink.webp",
+      "smile": "frames/oryx-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "persephone": {
+    "file": "persephone.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Persephone",
+    "stable_username": "agent-persephone",
+    "voice": "af_heart",
+    "made_by": "Persephone v5: Aaron-selected grok-4.png, Grok Imagine style-matched to Rook; white-border BFS navy key; house tile builder",
+    "chip": "chips/persephone.webp",
+    "field": "#131a28",
+    "source_sha256": "386faaa6d8a262f448bd6d7456fe89052c73c4ffca8149d2e6d70d1e6faf76ad",
+    "version": "20260909T224223Z-v5",
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/persephone-idle.webp",
+      "talk": "frames/persephone-talk.webp",
+      "talk2": "frames/persephone-talk2.webp",
+      "blink": "frames/persephone-blink.webp",
+      "smile": "frames/persephone-smile.webp"
+    },
+    "rig": {
+      "mouth": {
+        "cx": 0.536,
+        "cy": 0.564,
+        "rx": 0.028,
+        "ry": 0.009
+      },
+      "open_depth": 0.028,
+      "eye_l": {
+        "cx": 0.444,
+        "cy": 0.429,
+        "rx": 0.027,
+        "ry": 0.027
+      },
+      "eye_r": {
+        "cx": 0.573,
+        "cy": 0.429,
+        "rx": 0.027,
+        "ry": 0.027
+      }
+    }
+  },
+  "_about": {
+    "note": "Build In Public crew tiles. Keys are relay slugs (agent_runtime/puppet_video.py slug_of, after _ALIASES). internal=drawn puppet, amber frame; external=vendor logo tile, grey frame, no mouth rig. Source of truth for the art: ~/Projects/rook-bin/puppet (build-tiles.py). Consumed by the relay via PUPPET_MANIFEST=/app/puppets/manifest.json.",
+    "reviewed": "Aaron looked at the sheet 2026-09-02"
+  },
+  "codex-astra": {
+    "file": "codex-astra.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "Codex Astra",
+    "chip": "chips/codex-astra.webp",
+    "stable_username": "agent-codex-astra",
+    "made_by": "Grok Imagine: house sticker edit of existing silver mane and goggles identity",
+    "voice": "af_alloy",
+    "vendor": "OpenAI",
+    "source": "Brand-Ops render (brand-kits/magic-unicorn/agents/codex-astra/avatar.png)",
+    "source_note": "Own art on the external grey frame: OpenAI gpt-6-astra seat wearing a Magic Unicorn puppet.",
+    "field": "#131a28",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/codex-astra-idle.webp",
+      "talk": "frames/codex-astra-talk.webp",
+      "talk2": "frames/codex-astra-talk2.webp",
+      "blink": "frames/codex-astra-blink.webp",
+      "smile": "frames/codex-astra-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "the-colonel": {
+    "file": "the-colonel.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "The Colonel",
+    "stable_username": "agent-the-colonel",
+    "chip": "chips/the-colonel.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/the-colonel-idle.webp",
+      "talk": "frames/the-colonel-talk.webp",
+      "talk2": "frames/the-colonel-talk2.webp",
+      "blink": "frames/the-colonel-blink.webp",
+      "smile": "frames/the-colonel-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  },
+  "majik-mane-dj": {
+    "file": "majik-mane-dj.webp",
+    "kind": "internal",
+    "frame": "#F5A623",
+    "display_name": "DJ Majik Mane",
+    "stable_username": "agent-majik-mane-dj",
+    "chip": "chips/majik-mane-dj.webp",
+    "version": "20260909c",
+    "frames_version": "20260909c",
+    "frames": {
+      "idle": "frames/majik-mane-dj-idle.webp",
+      "talk": "frames/majik-mane-dj-talk.webp",
+      "talk2": "frames/majik-mane-dj-talk2.webp",
+      "blink": "frames/majik-mane-dj-blink.webp",
+      "smile": "frames/majik-mane-dj-smile.webp"
+    },
+    "animation_support": "real expression frames; synthetic rig fallback",
+    "rig": {
+      "mouth": {
+        "cx": 0.51,
+        "cy": 0.63,
+        "rx": 0.05,
+        "ry": 0.01
+      },
+      "open_depth": 0.03,
+      "eye_l": {
+        "cx": 0.415,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      },
+      "eye_r": {
+        "cx": 0.58,
+        "cy": 0.445,
+        "rx": 0.033,
+        "ry": 0.03
+      }
+    }
+  }
 }

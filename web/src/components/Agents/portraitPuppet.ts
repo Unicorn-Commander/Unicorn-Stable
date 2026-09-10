@@ -239,12 +239,32 @@ function loadTexture(url: string, signal?: AbortSignal): Promise<Texture> {
   });
 }
 
+type FrameState = "idle" | "talk" | "talk2" | "blink" | "smile";
+let frameManifest: Promise<Record<string, { frames?: Partial<Record<FrameState, string>>; version?: string; frames_version?: string }>> | undefined;
+async function frameUrls(texture: string) {
+  frameManifest ??= fetch("/agent-puppets/manifest.json", { cache: "no-store" })
+    .then(r => { if (!r.ok) throw new Error("manifest unavailable"); return r.json(); })
+    .catch(() => ({}));
+  const slug = texture.split("/").pop()?.split(".")[0] ?? "";
+  const entry = (await frameManifest)[slug];
+  return Object.entries(entry?.frames ?? {}).filter(([, path]) =>
+    typeof path === "string" && /^frames\/[a-z0-9-]+\.webp$/.test(path)
+  ).map(([state, path]) => [state as FrameState, `/agent-puppets/${path}?v=${encodeURIComponent(entry?.frames_version ?? entry?.version ?? "")}`] as const);
+}
+
 export async function buildPortraitPuppet(
   opts: PortraitPuppetOptions,
 ): Promise<HeadRig> {
   const rig = opts.spec;
   const texture = await loadTexture(rig.texture, opts.signal);
 
+  const frames = new Map<FrameState, Texture>();
+  await Promise.all((await frameUrls(rig.texture)).map(async ([state, url]) => {
+    try { frames.set(state, await loadTexture(url, opts.signal)); } catch { /* optional: synthetic fallback */ }
+  }));
+  if (opts.signal?.aborted) {
+    texture.dispose(); frames.forEach(t => t.dispose()); throw new Error("aborted");
+  }
   const image = texture.image as { width?: number; height?: number };
   const aspect = (image?.width ?? 1) / (image?.height ?? 1) || 1;
 
@@ -288,13 +308,25 @@ export async function buildPortraitPuppet(
   const mouthU = material.uniforms.uMouthOpen as { value: number };
   const blinkU = material.uniforms.uBlink as { value: number };
 
+  const mapU = material.uniforms.uMap as { value: Texture };
+  let mouth = 0, blink = 0, lastSpeech = -Infinity;
+  function updateFrame() {
+    const now = performance.now();
+    if (mouth > 0.03) lastSpeech = now;
+    const state: FrameState = blink > 0.5 && frames.has("blink") ? "blink" :
+      mouth > 0.55 ? "talk" : mouth > 0.03 ? "talk2" : now - lastSpeech < 700 && frames.has("smile") ? "smile" : "idle";
+    const real = frames.get(state);
+    mapU.value = real ?? texture;
+    mouthU.value = real ? 0 : mouth;
+    blinkU.value = real ? 0 : blink;
+  }
   return {
     root,
     setMouthOpen(amount) {
-      mouthU.value = Math.min(1, Math.max(0, amount));
+      mouth = Math.min(1, Math.max(0, amount)); updateFrame();
     },
     setBlink(amount) {
-      blinkU.value = Math.min(1, Math.max(0, amount));
+      blink = Math.min(1, Math.max(0, amount)); updateFrame();
     },
     /**
      * Parallax, not rotation. Rotating a flat quad reads as a spinning card —
@@ -312,6 +344,7 @@ export async function buildPortraitPuppet(
       geometry.dispose();
       material.dispose();
       texture.dispose();
+      frames.forEach(t => t.dispose());
     },
   };
 }

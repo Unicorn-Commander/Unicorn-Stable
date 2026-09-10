@@ -88,6 +88,9 @@ const T = (id: string) => `/agent-puppets/${id}.webp`;
  * adjust. Nothing else in the app changes.
  */
 export const PUPPETS: Record<string, PuppetSpec> = {
+  "the-colonel": { label: "The Colonel", texture: T("the-colonel"), ...DEFAULT_RIG },
+  "majik-mane-dj": { label: "DJ Majik Mane", texture: T("majik-mane-dj"), ...DEFAULT_RIG },
+  "codex-astra": { label: "Codex Astra", texture: T("codex-astra"), ...DEFAULT_RIG },
   majik: {
     label: "Majik",
     texture: T("majik"),
