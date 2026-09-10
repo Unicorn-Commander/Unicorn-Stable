@@ -204,7 +204,18 @@ export const PUPPETS: Record<string, PuppetSpec> = {
   okapi: { label: "Okapi", texture: T("okapi"), ...DEFAULT_RIG },
   oryx: { label: "Oryx", texture: T("oryx"), ...DEFAULT_RIG },
   // Persephone — Aaron's main assistant seat (agent-persephone), 2026-09-03.
-  persephone: { label: "Persephone", texture: T("persephone"), ...DEFAULT_RIG },
+  // 2026-09-09 (v5 art, rook-bin/puppet/manifest.json `rig`): her mouth sits
+  // higher and further right than DEFAULT_RIG, so the default cavity opened a
+  // hole on her chin while the drawn mouth never moved. Numbers are the
+  // manifest's, measured on the 512 tile.
+  persephone: {
+    label: "Persephone",
+    texture: T("persephone"),
+    mouth: { cx: 0.536, cy: 0.564, rx: 0.028, ry: 0.009 },
+    openDepth: 0.028,
+    eyeL: { cx: 0.444, cy: 0.429, rx: 0.027, ry: 0.027 },
+    eyeR: { cx: 0.573, cy: 0.429, rx: 0.027, ry: 0.027 },
+  },
   "gm-watchdog": { label: "GM Watchdog", texture: T("gm-watchdog"), ...DEFAULT_RIG },
   "research-monitor": { label: "Research Monitor", texture: T("research-monitor"), ...DEFAULT_RIG },
 };

@@ -212,3 +212,15 @@ describe("rig geometry", () => {
     ]);
   });
 });
+
+describe("persephone rig (v5 art, 2026-09-09)", () => {
+  it("has her own mouth position, not DEFAULT_RIG's", () => {
+    const rig = PUPPETS.persephone!;
+    expect(rig).toBeDefined();
+    expect(rig.mouth).not.toEqual(DEFAULT_RIG.mouth);
+    // Above and to the right of the default muzzle, per the puppet manifest.
+    expect(rig.mouth.cy).toBeLessThan(DEFAULT_RIG.mouth.cy);
+    expect(rig.mouth.cx).toBeGreaterThan(DEFAULT_RIG.mouth.cx);
+    expect(rig.openDepth).toBeGreaterThan(0);
+  });
+});
