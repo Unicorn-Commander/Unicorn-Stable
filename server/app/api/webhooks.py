@@ -487,7 +487,7 @@ async def _release_agents_if_no_humans(
         )
 
 
-def _joined_by(event: Any, participant_id: str | None) -> dict[str, Any]:
+def _joined_by(event: Any, participant_id: str | None) -> dict[str, Any] | None:
     """Name the joiner for the ``call_occupancy`` frame.
 
     ``id`` is the Stable participant UUID when the identity carries one
@@ -496,6 +496,9 @@ def _joined_by(event: Any, participant_id: str | None) -> dict[str, Any]:
     but keep a human-readable display name.
     """
     identity = str(getattr(event.participant, "identity", "") or "")
+    if _is_agent_identity(identity) or participant_id is None:
+        return None
+
     name = str(getattr(event.participant, "name", "") or "")
     if not name:
         # ``username_<uuid>`` → username; anything else stands as-is.

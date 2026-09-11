@@ -461,6 +461,8 @@ class LevelTimeline:
     def reset(self) -> None:
         self._segments.clear()
         self._play_end = 0.0
+        self._last_level = 0.0
+        self._last_at = 0.0
 
     def level_at(self, now: float | None = None) -> float:
         now = self._clock() if now is None else now
@@ -803,7 +805,10 @@ class PuppetVideo:
         clock: Callable[[], float] = time.monotonic,
         shape: str = "wide",
         plate: bool = True,
+        own_playout_only: bool = False,
     ) -> None:
+        self._own_playout_only = own_playout_only
+        self._own_playout_active = False
         self.spec = spec
         width, height = FACE_SHAPES.get(shape, FACE_SHAPES["wide"])
         self.shape = shape if shape in FACE_SHAPES else "wide"
@@ -821,8 +826,18 @@ class PuppetVideo:
 
     # -- audio in --
 
+    def begin_playout(self) -> None:
+        self.levels.reset()
+        self._own_playout_active = True
+
+    def end_playout(self) -> None:
+        self._own_playout_active = False
+        self.levels.reset()
+
     def feed(self, frame: Any) -> None:
         """Account for one outgoing ``rtc.AudioFrame``. Sync; never raises."""
+        if self._own_playout_only and not self._own_playout_active:
+            return
         try:
             data = getattr(frame, "data", None)
             if data is None:
@@ -916,7 +931,7 @@ class PuppetVideo:
 
         now = self._clock()
         t = (now - self.stats.started_at) if t is None else t
-        level = self.levels.level_at(now)
+        level = self.levels.level_at(now) if not self._own_playout_only or self._own_playout_active else 0.0
         try:
             img = self.renderer.render(t, level)
             frame = rtc.VideoFrame(

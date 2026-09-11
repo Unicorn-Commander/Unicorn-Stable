@@ -1,0 +1,17 @@
+# Dogfood only. Use with docker-compose.yml through scripts/deploy.sh.
+# Code runs from the tested image; preserve all existing persistent/public data.
+services:
+  backend:
+    image: unicorn-stable-backend:latest
+    volumes: !override
+      - backend_uploads:/home/stable/server/uploads
+      - egress_out:/egress-out:ro
+  agent-runtime:
+    image: unicorn-stable-agent-runtime:latest
+    volumes: !override
+      - /home/muut/UC-Cloud-production/Unicorn-Stable/web/public/agent-puppets:/app/puppets:ro
+  web:
+    image: unicorn-stable-web:latest
+    volumes: !override
+      - /home/muut/UC-Cloud-production/Unicorn-Stable/web/public/favicon.svg:/usr/share/nginx/html/favicon.svg:ro
+      - /home/muut/UC-Cloud-production/Unicorn-Stable/deploy/instances/dogfood.json:/usr/share/nginx/html/instances.json:ro

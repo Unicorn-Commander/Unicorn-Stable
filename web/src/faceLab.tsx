@@ -174,6 +174,7 @@ const voiceValue: VoiceContextValue = {
   connect: async () => true,
   disconnect: () => {},
   startAudio: async () => {},
+  repairAudio: async () => {},
   claimScreenAudio: () => {},
   releaseScreenAudio: () => {},
   devices: { audioinput: [], videoinput: [], audiooutput: [] },

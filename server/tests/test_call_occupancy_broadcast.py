@@ -180,8 +180,8 @@ def test_joined_by_falls_back_to_identity_username_when_unnamed():
     assert _joined_by(event, pid) == {"id": pid, "display_name": "aaron"}
 
 
-def test_joined_by_keeps_agents_nameable_but_id_less():
+def test_joined_by_suppresses_agent_start_notifications():
     event = SimpleNamespace(
         participant=SimpleNamespace(identity="agent-majik", name="Majik")
     )
-    assert _joined_by(event, None) == {"id": None, "display_name": "Majik"}
+    assert _joined_by(event, None) is None

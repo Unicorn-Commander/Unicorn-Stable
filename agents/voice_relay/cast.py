@@ -168,7 +168,7 @@ class CastMember:
                     rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),
                 )
                 if self.video_enabled:
-                    self.puppet = PuppetVideo(self.spec)
+                    self.puppet = PuppetVideo(self.spec, own_playout_only=True)
                     await self.puppet.start(room)
                 self._connected = True
                 logger.info(
@@ -193,7 +193,7 @@ class CastMember:
             return
         if enabled and self.puppet is None:
             try:
-                self.puppet = PuppetVideo(self.spec)
+                self.puppet = PuppetVideo(self.spec, own_playout_only=True)
                 await self.puppet.start(self.room)
             except Exception:
                 logger.warning("voice_relay_cast_video_failed", identity=self.identity, exc_info=True)
@@ -266,6 +266,8 @@ class CastMember:
         if not self.ready or not frames:
             return False
         pushed = 0
+        if self.puppet is not None:
+            self.puppet.begin_playout()
         started = time.monotonic()
         try:
             for frame in frames:
@@ -286,6 +288,9 @@ class CastMember:
                 logger.debug("voice_relay_cast_playout_wait_elapsed", identity=self.identity)
         except Exception:
             logger.error("voice_relay_cast_speak_failed", identity=self.identity, exc_info=True)
+        finally:
+            if self.puppet is not None:
+                self.puppet.end_playout()
         self.spoken_frames += pushed
         return pushed > 0
 

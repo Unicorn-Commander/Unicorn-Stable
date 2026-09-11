@@ -818,6 +818,12 @@ class VoiceRelayAgent(StableAgent):
         # Ears: carry the human's spoken words into the room so the brain on
         # the Mac can answer them. Only when nothing else is already doing it.
         self._lk_room = ctx.room
+        from voice_relay.audio_heartbeat import AudioHeartbeat
+        self._audio_heartbeat = AudioHeartbeat(ctx.room, human_identity)
+        try:
+            self._audio_heartbeat.start()
+        except Exception:
+            logger.warning("voice_relay_audio_monitor_start_failed", exc_info=True)
         self._join_identity = str(
             getattr(getattr(ctx.room, "local_participant", None), "identity", "")
             or ""
@@ -934,6 +940,7 @@ class VoiceRelayAgent(StableAgent):
                 spec,
                 shape=getattr(self, "_face_shape", "wide"),
                 plate=getattr(self, "_face_plate", True),
+                own_playout_only=True,
             )
             await puppet.start(room)
             self._puppet = puppet
@@ -1504,64 +1511,74 @@ class VoiceRelayAgent(StableAgent):
                 )
                 return
             logger.warning("voice_relay_cast_fallback", sender=line.sender)
-        if self._uses_session_voice(line.voice):
-            result = session.say(text)
-        else:
-            # livekit-agents 1.6.7: ``say(text, *, audio=AsyncIterable[AudioFrame])``
-            # plays supplied audio instead of running the session's TTS, so
-            # one session speaks in any number of voices without swapping
-            # its plugin under the speak lock.
-            frames = await self._synthesize(line.voice, text)
-            if frames:
-                result = session.say(text, audio=_replay(frames))
-                # The tile still says Rook; the caption says whose words
-                # these were.
-                if self._captions is not None:
-                    self._captions.publish_agent_final(
-                        text, name=line.name, participant_id=line.sender
-                    )
-            else:
-                logger.warning(
-                    "voice_relay_voice_fallback",
-                    voice=line.voice,
-                    sender=line.sender,
-                    fallback=self._persona_voice,
-                )
+        puppet = getattr(self, "_puppet", None)
+        if puppet is not None:
+            puppet.begin_playout()
+        try:
+            if self._uses_session_voice(line.voice):
                 result = session.say(text)
-        # Version-tolerant across livekit-agents 1.x: say() may return a
-        # SpeechHandle, an awaitable, or an awaitable resolving to a handle.
-        if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
-            result = await result
-        for waiter_name in ("wait_for_playout", "join"):
-            waiter = getattr(result, waiter_name, None)
-            if callable(waiter):
-                out = waiter()
-                if asyncio.iscoroutine(out) or isinstance(out, asyncio.Future):
-                    # BOUNDED. The wait exists to serialise speech, not to
-                    # guarantee it: a playout handle that never resolves would
-                    # hold the queue forever and every later line would be lost
-                    # in silence — a worse failure than one line overlapping.
-                    # Observed 69s for a 67-character line in a synthetic call,
-                    # so the ceiling is generous but real.
-                    budget = playout_budget(text)
-                    try:
-                        await asyncio.wait_for(out, timeout=budget)
-                    except asyncio.TimeoutError:
-                        # Expected on this deployment; the audio was handed to
-                        # the session long ago. Debug, not warning — a line per
-                        # reply at warning level is noise that hides real faults.
-                        logger.debug(
-                            "voice_relay_playout_wait_elapsed",
-                            chars=len(text),
-                            seconds=round(budget, 1),
+            else:
+                # livekit-agents 1.6.7: ``say(text, *, audio=AsyncIterable[AudioFrame])``
+                # plays supplied audio instead of running the session's TTS, so
+                # one session speaks in any number of voices without swapping
+                # its plugin under the speak lock.
+                frames = await self._synthesize(line.voice, text)
+                if frames:
+                    result = session.say(text, audio=_replay(frames))
+                    # The tile still says Rook; the caption says whose words
+                    # these were.
+                    if self._captions is not None:
+                        self._captions.publish_agent_final(
+                            text, name=line.name, participant_id=line.sender
                         )
-                break
+                else:
+                    logger.warning(
+                        "voice_relay_voice_fallback",
+                        voice=line.voice,
+                        sender=line.sender,
+                        fallback=self._persona_voice,
+                    )
+                    result = session.say(text)
+            # Version-tolerant across livekit-agents 1.x: say() may return a
+            # SpeechHandle, an awaitable, or an awaitable resolving to a handle.
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                result = await result
+            for waiter_name in ("wait_for_playout", "join"):
+                waiter = getattr(result, waiter_name, None)
+                if callable(waiter):
+                    out = waiter()
+                    if asyncio.iscoroutine(out) or isinstance(out, asyncio.Future):
+                        # BOUNDED. The wait exists to serialise speech, not to
+                        # guarantee it: a playout handle that never resolves would
+                        # hold the queue forever and every later line would be lost
+                        # in silence — a worse failure than one line overlapping.
+                        # Observed 69s for a 67-character line in a synthetic call,
+                        # so the ceiling is generous but real.
+                        budget = playout_budget(text)
+                        try:
+                            await asyncio.wait_for(out, timeout=budget)
+                        except asyncio.TimeoutError:
+                            # Expected on this deployment; the audio was handed to
+                            # the session long ago. Debug, not warning — a line per
+                            # reply at warning level is noise that hides real faults.
+                            logger.debug(
+                                "voice_relay_playout_wait_elapsed",
+                                chars=len(text),
+                                seconds=round(budget, 1),
+                            )
+                    break
+        finally:
+            if puppet is not None:
+                puppet.end_playout()
         self._touch_window()
         logger.info(
             "voice_relay_spoke", chars=len(text), sender=line.sender, voice=line.voice
         )
 
     async def _shutdown_steps(self) -> None:  # pragma: no cover — lifecycle
+        heartbeat = getattr(self, "_audio_heartbeat", None)
+        if heartbeat is not None:
+            await heartbeat.close()
         for task in (self._speaker_task, self._ears_task):
             if task is not None and not task.done():
                 task.cancel()

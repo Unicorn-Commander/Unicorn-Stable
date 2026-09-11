@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
@@ -50,6 +50,7 @@ interface RoomInvitedEvent {
  * Mounted once at the app shell level so it runs regardless of active room.
  */
 export function useGlobalNotifications() {
+  const announcedStarts = useRef(new Set<string>());
   // Instance-scoped presence for People directory / drawer (not room-only).
   useGlobalPresence();
 
@@ -328,7 +329,9 @@ export function useGlobalNotifications() {
         ringingRoomId: useIncomingCallStore.getState().call?.roomId ?? null,
         notifyLevel: getNotifyLevel(e.room_id),
       });
-      if (toastable) {
+      if (e.participant_count === 0) announcedStarts.current.delete(e.room_id);
+      if (toastable && !announcedStarts.current.has(e.room_id)) {
+        announcedStarts.current.add(e.room_id);
         playCue("notify");
         if (loadPrefs().inAppToasts) {
           const who = e.by?.display_name || "Someone";

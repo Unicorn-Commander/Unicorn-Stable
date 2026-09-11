@@ -90,6 +90,9 @@ describe("applyOccupancyEvent", () => {
 });
 
 describe("isFreshCallStart", () => {
+  it("does not announce a cast/unknown join without a human id", () => {
+    expect(isFreshCallStart(undefined, event({by:{id:null,display_name:"Cast fixture"}}))).toBe(false);
+  });
   it("is true for a first join in a room not already live", () => {
     expect(isFreshCallStart([], event())).toBe(true);
     expect(isFreshCallStart(undefined, event())).toBe(true);

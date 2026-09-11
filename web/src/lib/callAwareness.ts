@@ -93,7 +93,7 @@ export function isFreshCallStart(
   cachedList: readonly LiveCallEntry[] | undefined,
   event: CallOccupancyEvent,
 ): boolean {
-  if (!event.by) return false;
+  if (!event.by?.id) return false;
   if (event.participant_count !== 1) return false;
   return !(cachedList ?? []).some((c) => c.room_id === event.room_id);
 }

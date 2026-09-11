@@ -1,3 +1,4 @@
+import { LiveMicMeter } from "@/components/Call/LiveMicMeter";
 import { useIsLandscape } from "@/hooks/useIsLandscape";
 import { shouldUsePortraitStage } from "@/lib/portraitCall";
 import { PortraitCallStage } from "./PortraitCallStage";
@@ -15,7 +16,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import { RoomEvent } from "livekit-client";
+import { RoomEvent, Track } from "livekit-client";
 import type {
   LocalTrack,
   RemoteTrack,
@@ -1528,7 +1529,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     disconnect,
   } = useStableRoom(roomId);
   // One-click device switching from the call bar (chevron beside mic/cam).
-  const { devices, selectedDevices, switchDevice } = useVoice();
+  const { devices, selectedDevices, switchDevice, repairAudio } = useVoice();
 
   // Call-UI state.
   const viewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
@@ -2610,6 +2611,25 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Safe chrome: mic / cam / leave always visible in mobile Video (even when
   // the extended control cluster fades). Extended chrome includes share, hide
   // video/chat, pop-out, and the view-mode switcher.
+  const audioHealth = (
+    <div className="flex items-center justify-center gap-2">
+      <LiveMicMeter
+        track={
+          localParticipant?.getTrackPublication(Track.Source.Microphone)?.track
+            ?.mediaStreamTrack
+        }
+        muted={!isMicOn}
+      />
+      <button
+        type="button"
+        onClick={() => void repairAudio()}
+        className="focus-ring rounded px-2 py-1 text-xs text-slate-200"
+      >
+        Repair audio
+      </button>
+    </div>
+  );
+
   const safeControls = (
     <div className="glass flex shrink-0 items-center justify-center gap-1.5 rounded-2xl p-1.5">
       <button
@@ -3258,6 +3278,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           )}
         </div>
 
+        {!mobileVideoChrome && audioHealth}
+
         {/* Always-reachable safe chrome in mobile Video mode */}
         {mobileVideoChrome && (
           <div
@@ -3269,7 +3291,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               // permanent dock for mic/cam/leave.
             )}
           >
-            {safeControls}
+            <div className="rounded-2xl bg-black/70 p-1">
+              {audioHealth}
+              {safeControls}
+            </div>
           </div>
         )}
       </div>

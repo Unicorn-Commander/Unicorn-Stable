@@ -1,3 +1,4 @@
+import { enterDuplexSession, recoverCallAudio } from "@/lib/audioRecovery";
 import {
   createContext,
   useContext,
@@ -117,6 +118,7 @@ interface VoiceContextValue {
   connect: (opts?: ConnectOptions) => Promise<boolean>;
   disconnect: () => void;
   startAudio: () => Promise<void>;
+  repairAudio: () => Promise<void>;
   /**
    * ScreenShareTile ownership seam (see SCREENAUDIO-NOTE.md).
    *
@@ -228,6 +230,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
 
   const [room, setRoom] = useState<Room | null>(null);
+  const audioSessionRestore = useRef<(() => void) | null>(null);
   const [localParticipant, setLocalParticipant] =
     useState<LocalParticipant | null>(null);
   const [remoteParticipants, setRemoteParticipants] = useState<
@@ -545,6 +548,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     screenSinkEls.current.clear();
     claimedScreenAudio.current.clear();
     pendingScreenReattach.current.clear();
+    audioSessionRestore.current?.();
+    audioSessionRestore.current = null;
     setRoom(null);
     setLocalParticipant(null);
     setRemoteParticipants([]);
@@ -567,6 +572,56 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
     setAudioBlocked(!r.canPlaybackAudio);
   }, []);
+
+  const repairingAudio = useRef(false);
+  const repairAudio = useCallback(async () => {
+    const active = roomRef.current;
+    if (
+      !active ||
+      active.state !== ConnectionState.Connected ||
+      repairingAudio.current
+    )
+      return;
+    repairingAudio.current = true;
+    try {
+      await recoverCallAudio(active, Track.Source.Microphone);
+      setVersion((v) => v + 1);
+      setAudioBlocked(!active.canPlaybackAudio);
+    } catch {
+      useAppStore
+        .getState()
+        .pushToast({
+          title: "Audio needs attention",
+          body: "Check the phone's audio route, then tap Repair audio.",
+          kind: "error",
+        });
+    } finally {
+      repairingAudio.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!room) return;
+    const restore = audioSessionRestore.current ?? enterDuplexSession();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const recover = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void repairAudio(), 350);
+    };
+    const visible = () => {
+      if (document.visibilityState === "visible") recover();
+    };
+    navigator.mediaDevices?.addEventListener("devicechange", recover);
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pageshow", recover);
+    return () => {
+      clearTimeout(timer);
+      restore();
+      navigator.mediaDevices?.removeEventListener("devicechange", recover);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("pageshow", recover);
+    };
+  }, [room, repairAudio]);
 
   const join = useCallback(async (overrides?: JoinOverrides): Promise<boolean> => {
     const roomId = useAppStore.getState().activeRoomId;
@@ -848,6 +903,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // clear any leftover captions from a prior call.
       useCallUiStore.getState().beginCallTranscriptSession();
 
+      audioSessionRestore.current?.();
+      audioSessionRestore.current = enterDuplexSession();
       await r.connect(ws_url, token);
       setRoom(r);
       setVoiceActive(true);
@@ -1171,6 +1228,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         connect,
         disconnect,
         startAudio,
+        repairAudio,
         claimScreenAudio,
         releaseScreenAudio,
         devices,
