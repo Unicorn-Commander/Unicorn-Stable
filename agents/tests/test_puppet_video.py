@@ -402,28 +402,50 @@ class ManifestRigTests(TestCase):
         self.assertGreater(rig.mouth.cx, DEFAULT_RIG.mouth.cx)
 
 
-class MouthFlapTests(TestCase):
-    """Loud speech must cycle the mouth, not hold it open (Aaron, 2026-09-10)."""
+class MouthGateTests(TestCase):
+    """Loud speech must cycle the mouth at a syllable-ish rate, never flicker,
+    never hang open (Aaron, 2026-09-10: 'stays open too long' → 'a little fast')."""
 
     def _renderer_with_frames(self):
         from agent_runtime.puppet_video import PuppetRenderer
 
         spec = _spec()
-        # Same art for every state; only the chosen state name matters here.
         spec.frames = {s: _art() for s in ("idle", "talk", "talk2", "blink", "smile")}
         return PuppetRenderer(spec)
 
-    def test_continuous_loud_speech_opens_and_closes_repeatedly(self) -> None:
-        from agent_runtime.puppet_video import FLAP_HZ, BLINK_EVERY_S
+    def _drive(self, r, levels, fps=12, t0=None):
+        from agent_runtime.puppet_video import BLINK_EVERY_S
+
+        t0 = BLINK_EVERY_S + 0.5 if t0 is None else t0
+        return [r.frame_state(t0 + i / fps, lv) for i, lv in enumerate(levels)]
+
+    def test_syllabic_speech_follows_the_envelope_without_flicker(self) -> None:
+        import math
 
         r = self._renderer_with_frames()
-        # One second of frames at 12 fps, well clear of the blink window.
-        t0 = BLINK_EVERY_S + 0.5
-        states = [r.frame_state(t0 + i / 12.0, 0.9) for i in range(12)]
+        # 3 s of "syllables": level pulses at 3.5 Hz between 0.35 and 0.95.
+        levels = [0.65 + 0.30 * math.sin(2 * math.pi * 3.5 * i / 12) for i in range(36)]
+        states = self._drive(r, levels)
+        opens = [s for s in states if s in ("talk", "talk2")]
+        self.assertTrue(opens and "idle" in states)
+        runs, cur = [], 0
+        for s in states:
+            if s in ("talk", "talk2"):
+                cur += 1
+            elif cur:
+                runs.append(cur)
+                cur = 0
+        if cur:
+            runs.append(cur)
+        self.assertTrue(all(run >= 2 for run in runs), runs)  # no one-frame flicker at 12 fps
+        self.assertGreaterEqual(len(runs), 4)  # several cycles over 3 s
+        self.assertLessEqual(len(runs), 12)   # but not fluttering
+
+    def test_flat_loud_level_still_breathes(self) -> None:
+        r = self._renderer_with_frames()
+        states = self._drive(r, [0.9] * 36)
         self.assertIn("talk", states)
-        self.assertIn("idle", states)  # closes between syllables
-        transitions = sum(1 for a, b in zip(states, states[1:]) if a != b)
-        self.assertGreaterEqual(transitions, int(FLAP_HZ) * 2 - 2)
+        self.assertIn("idle", states)  # MOUTH_MAX_OPEN_S forces a close
 
     def test_silence_rests_closed_then_smiles(self) -> None:
         r = self._renderer_with_frames()
@@ -431,15 +453,6 @@ class MouthFlapTests(TestCase):
         self.assertEqual(r.frame_state(10.3, 0.0), "smile")
         self.assertEqual(r.frame_state(12.0, 0.0), "idle")
         self.assertNotIn(r.frame_state(20.0, 0.0), ("talk", "talk2"))
-
-    def test_openness_never_exceeds_level_and_is_zero_when_silent(self) -> None:
-        from agent_runtime.puppet_video import mouth_openness
-
-        for t in (0.0, 0.05, 0.11, 0.17, 0.23):
-            self.assertLessEqual(mouth_openness(0.6, t), 0.6 + 1e-9)
-            self.assertGreaterEqual(mouth_openness(0.6, t), 0.0)
-        self.assertEqual(mouth_openness(0.0, 0.3), 0.0)
-        self.assertEqual(mouth_openness(0.02, 0.3), 0.0)
 
     def test_missing_talk_frames_fall_through_without_keyerror(self) -> None:
         from agent_runtime.puppet_video import PuppetRenderer

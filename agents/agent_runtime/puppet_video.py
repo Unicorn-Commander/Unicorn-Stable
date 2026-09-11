@@ -68,16 +68,21 @@ LOUD_DBFS = -15.0
 #: relaxes over this many seconds.
 RELEASE_S = 0.12
 #: Kokoro speech sits above the LOUD line almost continuously, so a mouth
-#: driven by level alone hangs open for whole sentences (Aaron, 2026-09-10:
-#: "it stays open too long, there should be more movement"). Real mouths
-#: cycle per syllable, ~4 times a second; this modulates the level with a
-#: syllable-rate carrier so the mouth opens and closes while the voice is
-#: loud and rests closed in the gaps.
-FLAP_HZ = 3.6
-#: Fraction of each flap cycle the mouth is CLOSED. A half-wave carrier (the
-#: sine's positive lobe) closes it for the other half, so at 12 fps the
-#: renderer still lands on closed frames instead of aliasing past them.
-FLAP_CLOSED_FRACTION = 0.5
+#: driven by the absolute level hangs open for whole sentences, and a fixed
+#: syllable-rate carrier flutters (Aaron, 2026-09-10: "stays open too long"
+#: then "a little on the fast side"). Measured on a real af_heart line: the
+#: envelope has ~3.5 syllable peaks a second; gating the mouth on the level
+#: RELATIVE to its recent peak, with hysteresis and minimum dwell times,
+#: follows those syllables at ~2.3 open-close cycles a second with no
+#: one-frame flickers at 12 fps.
+MOUTH_PEAK_WINDOW_S = 0.30
+MOUTH_OPEN_REL = 0.65
+MOUTH_CLOSE_REL = 0.45
+MOUTH_MIN_OPEN_S = 0.12
+MOUTH_MIN_CLOSED_S = 0.14
+#: A flat, unbroken level (a held vowel, or a synthetic tone) never dips, so
+#: the mouth takes a breath on its own after this long open.
+MOUTH_MAX_OPEN_S = 0.35
 #: Idle motion.
 BOB_PERIOD_S = 3.2
 BOB_PX = 4.0
@@ -401,23 +406,6 @@ def openness_from_dbfs(dbfs: float) -> float:
     return (dbfs - SILENT_DBFS) / (LOUD_DBFS - SILENT_DBFS)
 
 
-def mouth_openness(level: float, t: float) -> float:
-    """How open the mouth is drawn at time ``t`` for speech level ``level``.
-
-    The level says *whether* the voice is loud; the syllable carrier says
-    *where in the flap* we are. Loud, continuous speech therefore cycles
-    open→closed ~FLAP_HZ times a second instead of hanging open, and a dip in
-    the level (a consonant, a breath) still closes the mouth immediately.
-    """
-    level = max(0.0, min(1.0, level))
-    if level <= 0.03:
-        return 0.0
-    carrier = math.sin(2.0 * math.pi * FLAP_HZ * t)
-    if carrier <= 0.0:
-        return 0.0  # the closed half of the cycle
-    return max(0.0, min(1.0, level * carrier))
-
-
 class LevelTimeline:
     """Mouth level scheduled against PLAYOUT time, not push time.
 
@@ -491,6 +479,10 @@ class PuppetRenderer:
         self._art = self._prepare_art()
         self._frames = {state: self._prepare_art(art) for state, art in spec.frames.items()}
         self._last_speech = -float("inf")
+        self._recent: deque[tuple[float, float]] = deque()  # (t, level) for the peak window
+        self._mouth_open = False
+        self._mouth_since = -float("inf")
+        self._mouth_openness = 0.0
         self._base = self._render_base()
         self._font = _load_font(22)
         self._letter_font = _load_font(150)
@@ -557,23 +549,53 @@ class PuppetRenderer:
         self._draw_plate(draw, level)
         return img
 
+    def mouth_gate(self, t: float, level: float) -> float:
+        """Advance the mouth state to time ``t`` and return its openness 0..1.
+
+        Open when the level rises above MOUTH_OPEN_REL of its recent peak,
+        close when it falls under MOUTH_CLOSE_REL, each state held at least
+        its minimum dwell so 12 fps never shows a one-frame flicker; a long
+        unbroken open takes a breath at MOUTH_MAX_OPEN_S. Silence closes it
+        at once. Idempotent for a repeated ``t``.
+        """
+        level = max(0.0, min(1.0, level))
+        while self._recent and self._recent[0][0] < t - MOUTH_PEAK_WINDOW_S:
+            self._recent.popleft()
+        if not self._recent or self._recent[-1][0] < t:
+            self._recent.append((t, level))
+        peak = max(l for _, l in self._recent)
+        rel = level / peak if peak > 0.0 else 0.0
+        held = t - self._mouth_since
+        if level <= 0.03:
+            if self._mouth_open:
+                self._mouth_open, self._mouth_since = False, t
+            self._mouth_openness = 0.0
+            return 0.0
+        if self._mouth_open:
+            if (rel < MOUTH_CLOSE_REL and held >= MOUTH_MIN_OPEN_S) or held >= MOUTH_MAX_OPEN_S:
+                self._mouth_open, self._mouth_since = False, t
+        elif rel > MOUTH_OPEN_REL and held >= MOUTH_MIN_CLOSED_S:
+            self._mouth_open, self._mouth_since = True, t
+        self._mouth_openness = level * rel if self._mouth_open else 0.0
+        return self._mouth_openness
+
     def frame_state(self, t: float, level: float, expression: str | None = None) -> str:
         """Which expression frame to show at ``t`` for speech ``level``.
 
-        Priority: an explicit expression → a blink → the syllable-modulated
-        mouth (``talk`` open, ``talk2`` half, ``idle`` closed between
-        syllables) → a short smile after the last line → idle. Frames the art
-        does not have fall through to the next rung, so a face with only
-        ``idle`` never picks a missing state.
+        Priority: an explicit expression → a blink → the gated mouth (``talk``
+        wide, ``talk2`` part-open, ``idle`` closed between syllables) → a
+        short smile after the last line → idle. Frames the art does not have
+        fall through to the next rung, so a face with only ``idle`` never
+        picks a missing state.
         """
+        openness = self.mouth_gate(t, level)
         if expression in self._frames:
             return expression
         if t % BLINK_EVERY_S < BLINK_LEN_S and "blink" in self._frames:
             return "blink"
-        openness = mouth_openness(level, t)
         if openness > 0.5 and "talk" in self._frames:
             return "talk"
-        if openness > 0.15 and "talk2" in self._frames:
+        if openness > 0.0 and "talk2" in self._frames:
             return "talk2"
         if level > 0.03:
             return "idle"  # closed between syllables, mid-line
@@ -586,7 +608,7 @@ class PuppetRenderer:
         if rig is None:
             return
         # Mouth cavity grows DOWNWARD from the closed line, like the web shader.
-        openness = mouth_openness(level, t)
+        openness = self._mouth_openness
         if openness > 0.03:
             m = rig.mouth
             cx = x0 + m.cx * ART_SIZE
