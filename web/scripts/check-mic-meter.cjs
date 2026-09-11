@@ -12,6 +12,10 @@ const path = require("path");
     });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    await page.addInitScript(() => {
+      const status = new EventTarget(); status.state = "granted";
+      Object.defineProperty(navigator, "permissions", { value: { query: async () => status } });
+    });
     await page.goto("http://127.0.0.1:5191/fixtures/mic-meter.html");
     await page.getByRole("button", { name: "Start signal" }).click();
     await page
@@ -27,6 +31,12 @@ const path = require("path");
     await page.screenshot({ path: path.join(out, "mic-silence.png") });
     await page.getByRole("button", { name: "Toggle mute" }).click();
     await page.getByRole("meter", { name: "Mic muted", exact: true }).waitFor();
+    await page.getByText("Mic permission: granted", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Simulate interrupted capture" }).click();
+    await page.getByRole("alert").filter({ hasText: "Microphone interrupted" }).waitFor();
+    await page.screenshot({ path: path.join(out, "mic-interrupted.png") });
+    const reports = await page.evaluate(() => window.micDiagnostics);
+    if (!reports.some((r) => r.reason === "track_change" && r.track_muted === true)) throw Error("Missing interruption diagnostic");
     if (errors.length) throw Error(errors.join("\n"));
     console.log(
       "PASS: signal, silence and muted meter states; no browser errors",

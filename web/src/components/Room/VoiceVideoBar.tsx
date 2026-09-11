@@ -2614,6 +2614,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const audioHealth = (
     <div className="flex items-center justify-center gap-2">
       <LiveMicMeter
+        onDiagnostic={(value) => {
+          if (!localParticipant) return;
+          void api.reportVoiceDiagnostic(roomId, { ...value, participant_sid: localParticipant.sid,
+            track_sid: localParticipant.getTrackPublication(Track.Source.Microphone)?.trackSid }).catch(() => {});
+        }}
         track={
           localParticipant?.getTrackPublication(Track.Source.Microphone)?.track
             ?.mediaStreamTrack

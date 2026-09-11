@@ -40,7 +40,15 @@ function App() {
         Silence
       </button>
       <button onClick={() => setMuted((v) => !v)}>Toggle mute</button>
-      <LiveMicMeter track={track} muted={muted} />
+      <button onClick={() => {
+        if (!track) return;
+        Object.defineProperty(track, "muted", { value: true, configurable: true });
+        track.dispatchEvent(new Event("mute"));
+      }}>Simulate interrupted capture</button>
+      <LiveMicMeter track={track} muted={muted} onDiagnostic={(value) => {
+        const target = window as unknown as { micDiagnostics?: unknown[] };
+        (target.micDiagnostics ??= []).push(value);
+      }} />
     </main>
   );
 }

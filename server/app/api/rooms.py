@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -1409,3 +1409,32 @@ async def update_voice_settings(
         **({"window_seconds": window_seconds} if mode == "window" else {}),
         **({"voices": voices} if voices is not None else {}),
     }
+
+
+class VoiceDiagnostic(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: Literal["publish", "route_change", "resume", "track_change", "permission"]
+    track_muted: bool | None
+    track_enabled: bool | None
+    ready_state: Literal["live", "ended", "missing"]
+    device_id: str | None = Field(default=None, max_length=256, pattern=r"^[a-zA-Z0-9_:+/=. -]*$")
+    sample_rate: int | None = Field(default=None, ge=1, le=384000)
+    audio_context_state: Literal["running", "suspended", "closed", "interrupted", "unavailable"]
+    permission: Literal["granted", "denied", "prompt", "unsupported"]
+    participant_sid: str = Field(default="", max_length=128, pattern=r"^[a-zA-Z0-9_-]*$")
+    track_sid: str = Field(default="", max_length=128, pattern=r"^[a-zA-Z0-9_-]*$")
+
+
+voice_diagnostic_rate_limit = rate_limit("voice_diag", "rate_limit_message_send_per_min")
+
+
+@router.post("/rooms/{room_id}/voice-diagnostics", status_code=204)
+async def report_voice_diagnostic(
+    room_id: uuid.UUID,
+    body: VoiceDiagnostic,
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    _rl: Annotated[None, Depends(voice_diagnostic_rate_limit)],
+) -> None:
+    # Client-reported fields are diagnostic claims, never authorization inputs.
+    logger.info("voice_client_diagnostic", room_id=str(room_id),
+                authenticated_participant_id=str(user["participant_id"]), **body.model_dump())

@@ -585,6 +585,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     repairingAudio.current = true;
     try {
       await recoverCallAudio(active, Track.Source.Microphone);
+      if (active.localParticipant.isMicrophoneEnabled) {
+        setSelectedDevices((current) => ({ ...current, audioinput: "default" }));
+      }
       setVersion((v) => v + 1);
       setAudioBlocked(!active.canPlaybackAudio);
     } catch {

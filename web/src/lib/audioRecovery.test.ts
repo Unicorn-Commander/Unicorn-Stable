@@ -32,6 +32,7 @@ it.each([true, false])(
       "microphone",
     );
     expect(restartTrack).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(restartTrack).toHaveBeenCalledWith({ deviceId: "default" });
     expect(startAudio).toHaveBeenCalledOnce();
   },
 );

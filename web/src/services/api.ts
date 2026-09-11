@@ -775,6 +775,10 @@ class StableApiClient {
     return this.request<HomeSummary>("GET", "/api/v1/home/summary");
   }
 
+  async reportVoiceDiagnostic(roomId: string, diagnostic: import("@/lib/micDiagnostics").MicDiagnostic & { participant_sid?: string; track_sid?: string }): Promise<void> {
+    await this.request("POST", `/api/v1/rooms/${roomId}/voice-diagnostics`, diagnostic);
+  }
+
   async getLiveKitToken(roomId: string): Promise<LiveKitTokenResponse> {
     return this.request<LiveKitTokenResponse>(
       "POST",
