@@ -415,6 +415,20 @@ def _truthy(value: Any) -> bool:
 
 
 RELAY_FLAG_KEYS = ("voice_relay_video", "voice_relay_multi")
+FACE_SHAPE_KEY = "voice_relay_face_shape"   # wide (default) | square | tall
+FACE_PLATE_KEY = "voice_relay_face_plate"   # default on; "false" hides the name plate
+
+
+def face_style_from_metadata(metadata: Any) -> dict[str, Any]:
+    """``{"shape": str, "plate": bool}`` for the rendered face. ``tall`` is what
+    a 1:1 room on a phone wants; ``wide`` stays the show/OBS default."""
+    data = _metadata_dict(metadata)
+    shape = str(data.get(FACE_SHAPE_KEY) or "wide").strip().lower()
+    if shape not in ("wide", "square", "tall"):
+        shape = "wide"
+    plate_raw = data.get(FACE_PLATE_KEY)
+    plate = True if plate_raw is None or plate_raw == "" else _truthy(plate_raw)
+    return {"shape": shape, "plate": plate}
 
 
 def relay_flags_from_metadata(metadata: Any) -> dict[str, bool]:
@@ -758,6 +772,8 @@ class VoiceRelayAgent(StableAgent):
             job_meta if flags_present(job_meta) else room_meta
         )
         self._video, self._multi = flags["video"], flags["multi"]
+        style = face_style_from_metadata(job_meta if _metadata_dict(job_meta).get(FACE_SHAPE_KEY) else room_meta)
+        self._face_shape, self._face_plate = style["shape"], style["plate"]
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
         agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
@@ -914,7 +930,11 @@ class VoiceRelayAgent(StableAgent):
                 None,
                 self._puppet_manifest(),
             )
-            puppet = PuppetVideo(spec)
+            puppet = PuppetVideo(
+                spec,
+                shape=getattr(self, "_face_shape", "wide"),
+                plate=getattr(self, "_face_plate", True),
+            )
             await puppet.start(room)
             self._puppet = puppet
             # The mouth follows whatever the session actually sends to the wire.

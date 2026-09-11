@@ -56,9 +56,25 @@ FPS = 12
 BG_COLOR = (15, 17, 23, 255)
 TEXT_COLOR = (226, 232, 240, 255)
 BORDER_PX = 6
-#: The art's box on the canvas (square, vertically centred, room for the plate).
+#: Legacy art box (kept for callers/tests that reference it); the renderer now
+#: sizes the art to FILL the frame — see PuppetRenderer.
 ART_SIZE = 288
 ART_TOP = 24
+#: Frame shapes a room can ask for (``voice_relay_face_shape``). ``wide`` is
+#: the show/OBS default; ``tall`` fills a phone held upright; ``square`` for
+#: grids. All even so the encoder is happy.
+FACE_SHAPES: dict[str, tuple[int, int]] = {
+    "wide": (640, 360),
+    "square": (480, 480),
+    "tall": (432, 768),
+}
+#: The house tiles (rook-bin/puppet/build-tiles.py) are 512² with an amber or
+#: grey ring; the sticker sits inside it. On a call the ring is a box inside
+#: the call's own box (Aaron, 2026-09-10: "a box within a box, then you sit on
+#: top of that"), so the renderer crops it away: 16 px margin + 20 px ring +
+#: 8 px of the field = 44 px each side, giving the 424² sticker on its field.
+TILE_SIZE = 512
+TILE_INSET = 44
 
 #: Speech-level → mouth mapping. Kokoro lines sit around -20 dBFS RMS with
 #: consonant gaps near -40; this window turns that into a full 0..1 swing.
@@ -233,6 +249,11 @@ class PuppetSpec:
     rig: Rig | None = None
     kind: str = "internal"
     frames: dict[str, Image.Image] = field(default_factory=dict)
+    #: The tile's flat field colour (manifest ``field``); the frame is filled
+    #: with it so the cropped sticker sits on an unbroken ground.
+    field_color: tuple[int, int, int] = BG_COLOR[:3]
+    #: True when the art is a 512² house tile with the ring — crop TILE_INSET.
+    framed: bool = False
 
 
 def slug_of(identity: str) -> str:
@@ -359,6 +380,8 @@ def build_spec(
                       eye_l=Ellipse(**raw_rig["eye_l"]), eye_r=Ellipse(**raw_rig["eye_r"]))
         except (TypeError, ValueError, KeyError):
             pass
+    framed = image is not None and image.size == (TILE_SIZE, TILE_SIZE) and bool(entry.get("frame"))
+    field_color = hex_to_rgb(entry.get("field"), BG_COLOR[:3])
     return PuppetSpec(
         agent_id=slug,
         display_name=name,
@@ -367,6 +390,8 @@ def build_spec(
         frames=frames,
         rig=rig if image is not None else None,
         kind=str(entry.get("kind") or "internal"),
+        field_color=field_color,
+        framed=framed,
     )
 
 
@@ -468,14 +493,25 @@ class LevelTimeline:
 class PuppetRenderer:
     """Draws one agent. No LiveKit here — this is what the tests exercise."""
 
-    def __init__(self, spec: PuppetSpec, *, width: int = WIDTH, height: int = HEIGHT) -> None:
+    def __init__(
+        self,
+        spec: PuppetSpec,
+        *,
+        width: int = WIDTH,
+        height: int = HEIGHT,
+        plate: bool = True,
+    ) -> None:
         self.spec = spec
         self.width = width
         self.height = height
-        self._art_box = (
-            (width - ART_SIZE) // 2,
-            ART_TOP,
-        )
+        self.plate = plate
+        # The character fills the SHORT side of the frame, like a person on a
+        # webcam: no inner card, no ring, just the sticker on its field.
+        self._art_size = min(width, height)
+        x0 = (width - self._art_size) // 2
+        # On a tall frame sit the face high, where a face is on a phone.
+        y0 = (height - self._art_size) // 2 if height <= width else int((height - self._art_size) * 0.38)
+        self._art_box = (x0, y0)
         self._art = self._prepare_art()
         self._frames = {state: self._prepare_art(art) for state, art in spec.frames.items()}
         self._last_speech = -float("inf")
@@ -484,7 +520,8 @@ class PuppetRenderer:
         self._mouth_since = -float("inf")
         self._mouth_openness = 0.0
         self._base = self._render_base()
-        self._font = _load_font(22)
+        self._vignette = self._render_vignette()
+        self._font = _load_font(18)
         self._letter_font = _load_font(150)
 
     # -- one-time layers --
@@ -494,21 +531,77 @@ class PuppetRenderer:
         if image is None:
             return None
         art = image.copy()
-        art.thumbnail((ART_SIZE, ART_SIZE), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGBA", (ART_SIZE, ART_SIZE), (0, 0, 0, 0))
-        canvas.paste(art, ((ART_SIZE - art.width) // 2, (ART_SIZE - art.height) // 2), art)
-        return canvas
+        if self.spec.framed and art.size == (TILE_SIZE, TILE_SIZE):
+            art = art.crop((TILE_INSET, TILE_INSET, TILE_SIZE - TILE_INSET, TILE_SIZE - TILE_INSET))
+            art = self._clean_corners(art)
+            art = self._key_field(art)
+        size = self._art_size
+        art = art.resize((size, size), Image.Resampling.LANCZOS) if art.size != (size, size) else art
+        return art
+
+    def _clean_corners(self, art: Image.Image) -> Image.Image:
+        """The ring's rounded inner edge reaches ~52 px in at the corners, so a
+        44 px crop keeps an amber sliver there. The sticker never touches the
+        corners, so paint everything within the corner arcs with the field."""
+        r, g, b = self.spec.field_color
+        w, h = art.size
+        rad = 34
+        mask = Image.new("L", (w, h), 0)
+        d = ImageDraw.Draw(mask)
+        for cx, cy in ((0, 0), (w, 0), (0, h), (w, h)):
+            d.pieslice([cx - rad, cy - rad, cx + rad, cy + rad], 0, 360, fill=255)
+        # Only the corner area OUTSIDE a quarter-circle of the field is ring.
+        inner = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(inner).rounded_rectangle([0, 0, w - 1, h - 1], radius=rad, fill=255)
+        from PIL import ImageChops
+        corners = ImageChops.subtract(mask, inner)
+        field = Image.new("RGBA", (w, h), (r, g, b, 255))
+        return Image.composite(field, art, corners)
+
+    def _key_field(self, art: Image.Image) -> Image.Image:
+        """Make the tile's flat field transparent so the frame's own field and
+        the edge glow show through; the sticker (white border) is untouched."""
+        r, g, b = self.spec.field_color
+        px = art.load()
+        w, h = art.size
+        for y in range(h):
+            for x in range(w):
+                pr, pg, pb, pa = px[x, y]
+                if abs(pr - r) <= 6 and abs(pg - g) <= 6 and abs(pb - b) <= 6:
+                    px[x, y] = (pr, pg, pb, 0)
+        return art
+
+    def _rig_xy(self, nx: float, ny: float) -> tuple[float, float]:
+        """Rig coordinates are normalised on the 512² tile; map them onto the
+        cropped, scaled art."""
+        if self.spec.framed:
+            scale = TILE_SIZE / (TILE_SIZE - 2 * TILE_INSET)
+            nx = (nx * TILE_SIZE - TILE_INSET) / (TILE_SIZE - 2 * TILE_INSET)
+            ny = (ny * TILE_SIZE - TILE_INSET) / (TILE_SIZE - 2 * TILE_INSET)
+            return nx, ny
+        return nx, ny
+
+    def _rig_scale(self) -> float:
+        """Radii/depths are fractions of the tile; scale them to the art box."""
+        if self.spec.framed:
+            return self._art_size * TILE_SIZE / (TILE_SIZE - 2 * TILE_INSET)
+        return float(self._art_size)
 
     def _render_base(self) -> Image.Image:
-        img = Image.new("RGBA", (self.width, self.height), BG_COLOR)
-        draw = ImageDraw.Draw(img)
+        r, g, b = self.spec.field_color
+        return Image.new("RGBA", (self.width, self.height), (r, g, b, 255))
+
+    def _render_vignette(self) -> Image.Image:
+        """A soft edge glow in the agent's colour: the speaking signal, drawn
+        as light bleeding in from the frame edge rather than a box."""
         r, g, b = self.spec.frame
-        for i in range(BORDER_PX):
-            draw.rectangle(
-                [i, i, self.width - 1 - i, self.height - 1 - i],
-                outline=(r, g, b, 255),
-            )
-        return img
+        v = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        d = ImageDraw.Draw(v)
+        band = max(12, min(self.width, self.height) // 12)
+        for i in range(band):
+            a = int(200 * (1 - i / band) ** 2)
+            d.rectangle([i, i, self.width - 1 - i, self.height - 1 - i], outline=(r, g, b, a))
+        return v
 
     # -- per-frame --
 
@@ -521,20 +614,12 @@ class PuppetRenderer:
         bob = int(round(BOB_PX * math.sin(2 * math.pi * t / BOB_PERIOD_S)))
         x0, y0 = self._art_box
         y0 += bob
-        r, g, b = self.spec.frame
 
-        # Glow ring: the speaking signal every picture supports.
+        # Speaking signal: the edge lights up in the agent's colour.
         if level > 0.02:
-            pad = int(6 + 14 * level)
-            alpha = int(60 + 160 * level)
-            glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            gd = ImageDraw.Draw(glow)
-            gd.rounded_rectangle(
-                [x0 - pad, y0 - pad, x0 + ART_SIZE + pad, y0 + ART_SIZE + pad],
-                radius=24,
-                outline=(r, g, b, alpha),
-                width=max(2, pad // 2),
-            )
+            glow = self._vignette.copy()
+            alpha = glow.getchannel("A").point(lambda a, k=0.35 + 0.65 * level: int(a * k))
+            glow.putalpha(alpha)
             img.alpha_composite(glow)
 
         if self._art is not None:
@@ -546,7 +631,8 @@ class PuppetRenderer:
         else:
             self._draw_letter(draw, x0, y0, level)
 
-        self._draw_plate(draw, level)
+        if self.plate:
+            self._draw_plate(draw, level)
         return img
 
     def mouth_gate(self, t: float, level: float) -> float:
@@ -607,30 +693,34 @@ class PuppetRenderer:
         rig = self.spec.rig
         if rig is None:
             return
+        S = self._rig_scale()
         # Mouth cavity grows DOWNWARD from the closed line, like the web shader.
         openness = self._mouth_openness
         if openness > 0.03:
             m = rig.mouth
-            cx = x0 + m.cx * ART_SIZE
-            top = y0 + m.cy * ART_SIZE
-            rx = m.rx * ART_SIZE
-            depth = rig.open_depth * ART_SIZE * openness
+            mx, my = self._rig_xy(m.cx, m.cy)
+            cx = x0 + mx * self._art_size
+            top = y0 + my * self._art_size
+            rx = m.rx * S
+            depth = rig.open_depth * S * openness
             draw.ellipse(
-                [cx - rx, top - m.ry * ART_SIZE * 0.5, cx + rx, top + depth],
+                [cx - rx, top - m.ry * S * 0.5, cx + rx, top + depth],
                 fill=(14, 10, 16, 235),
             )
         # Blink: a short lid over each eye every few seconds.
         phase = t % BLINK_EVERY_S
         if phase < BLINK_LEN_S:
             for eye in (rig.eye_l, rig.eye_r):
-                cx = x0 + eye.cx * ART_SIZE
-                cy = y0 + eye.cy * ART_SIZE
-                rx = eye.rx * ART_SIZE * 1.15
-                ry = eye.ry * ART_SIZE * 1.15
+                ex, ey = self._rig_xy(eye.cx, eye.cy)
+                cx = x0 + ex * self._art_size
+                cy = y0 + ey * self._art_size
+                rx = eye.rx * S * 1.15
+                ry = eye.ry * S * 1.15
                 draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=(246, 246, 250, 255))
                 draw.line([cx - rx, cy, cx + rx, cy], fill=(20, 20, 24, 255), width=3)
 
     def _draw_letter(self, draw: ImageDraw.ImageDraw, x0: int, y0: int, level: float) -> None:
+        ART_SIZE = self._art_size  # noqa: N806 — local shadow keeps the geometry below intact
         r, g, b = self.spec.frame
         draw.rounded_rectangle(
             [x0, y0, x0 + ART_SIZE, y0 + ART_SIZE],
@@ -667,16 +757,16 @@ class PuppetRenderer:
             tw = bbox[2] - bbox[0]
         except Exception:
             tw = 8 * len(name)
-        px, py = 18, self.height - 48
+        px, py = 14, self.height - 40
         draw.rounded_rectangle(
-            [px, py, px + tw + 44, py + 32],
-            radius=8,
-            fill=(0, 0, 0, 150),
+            [px, py, px + tw + 38, py + 26],
+            radius=13,
+            fill=(0, 0, 0, 120),
         )
         r, g, b = self.spec.frame
         dot = (r, g, b, 255) if level > 0.03 else (90, 96, 110, 255)
-        draw.ellipse([px + 12, py + 11, px + 22, py + 21], fill=dot)
-        draw.text((px + 32, py + 4), name, fill=TEXT_COLOR, font=self._font)
+        draw.ellipse([px + 10, py + 9, px + 18, py + 17], fill=dot)
+        draw.text((px + 26, py + 3), name, fill=TEXT_COLOR, font=self._font)
 
     @staticmethod
     def to_rgba_bytes(img: Image.Image) -> bytes:
@@ -711,9 +801,13 @@ class PuppetVideo:
         *,
         fps: int = FPS,
         clock: Callable[[], float] = time.monotonic,
+        shape: str = "wide",
+        plate: bool = True,
     ) -> None:
         self.spec = spec
-        self.renderer = PuppetRenderer(spec)
+        width, height = FACE_SHAPES.get(shape, FACE_SHAPES["wide"])
+        self.shape = shape if shape in FACE_SHAPES else "wide"
+        self.renderer = PuppetRenderer(spec, width=width, height=height, plate=plate)
         self.levels = LevelTimeline(clock)
         self.stats = PuppetVideoStats()
         self._fps = max(1, fps)

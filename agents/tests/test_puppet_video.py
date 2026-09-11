@@ -463,3 +463,71 @@ class MouthGateTests(TestCase):
         for i in range(12):
             self.assertEqual(r.frame_state(5.5 + i / 12.0, 0.9), "idle")
         r.render(5.6, 0.9)  # synthetic rig path still draws
+
+
+class FramelessFaceTests(TestCase):
+    """The call face is a webcam-style picture: one field, no inner box, the
+    house tile's ring cropped away, any shape the room asks for."""
+
+    def _tile(self, ring=(245, 166, 35, 255), field=(19, 26, 40, 255)) -> Image.Image:
+        from PIL import ImageDraw
+
+        im = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle([6, 6, 505, 505], 80, fill=field)
+        d.rounded_rectangle([16, 16, 495, 495], 70, outline=ring, width=20)
+        d.ellipse([140, 120, 372, 400], fill=(240, 240, 240, 255))  # the "sticker"
+        return im
+
+    def _spec(self):
+        from agent_runtime.puppet_video import DEFAULT_RIG
+
+        return PuppetSpec(agent_id="persephone", display_name="Persephone", frame=(245, 166, 35),
+                          image=self._tile(), rig=DEFAULT_RIG, field_color=(19, 26, 40), framed=True)
+
+    def test_shapes_render_at_their_size_on_the_field_with_no_border(self) -> None:
+        from agent_runtime.puppet_video import FACE_SHAPES, PuppetRenderer
+
+        for shape, (w, h) in FACE_SHAPES.items():
+            r = PuppetRenderer(self._spec(), width=w, height=h)
+            r.frame_state(1.0, 0.0)
+            img = r.render(1.0, 0.0)
+            self.assertEqual(img.size, (w, h), shape)
+            for x, y in ((1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2), (3, h // 2)):
+                self.assertEqual(img.getpixel((x, y))[:3], (19, 26, 40), f"{shape} border at {(x, y)}")
+
+    def test_ring_is_cropped_away_including_the_corners(self) -> None:
+        from agent_runtime.puppet_video import PuppetRenderer
+
+        r = PuppetRenderer(self._spec(), width=480, height=480)
+        art = r._art
+        self.assertIsNotNone(art)
+        amber = 0
+        for px in art.getdata():
+            if abs(px[0] - 245) < 20 and abs(px[1] - 166) < 20 and abs(px[2] - 35) < 40:
+                amber += 1
+        self.assertEqual(amber, 0)
+
+    def test_plate_can_be_turned_off(self) -> None:
+        from agent_runtime.puppet_video import PuppetRenderer
+
+        on = PuppetRenderer(self._spec(), width=640, height=360, plate=True)
+        off = PuppetRenderer(self._spec(), width=640, height=360, plate=False)
+        on.frame_state(9.0, 0.0); off.frame_state(9.0, 0.0)
+        a, b = on.render(9.0, 0.0), off.render(9.0, 0.0)
+        self.assertNotEqual(a.getpixel((30, 333))[:3], (19, 26, 40))  # plate pixel
+        self.assertEqual(b.getpixel((30, 333))[:3], (19, 26, 40))
+
+    def test_puppet_video_takes_a_shape(self) -> None:
+        from agent_runtime.puppet_video import PuppetVideo
+
+        pv = PuppetVideo(self._spec(), shape="tall", plate=False)
+        self.assertEqual((pv.renderer.width, pv.renderer.height), (432, 768))
+        self.assertEqual(PuppetVideo(self._spec(), shape="bogus").shape, "wide")
+
+    def test_face_style_from_metadata(self) -> None:
+        from voice_relay.agent import face_style_from_metadata
+
+        self.assertEqual(face_style_from_metadata({"voice_relay_face_shape": "tall", "voice_relay_face_plate": "false"}), {"shape": "tall", "plate": False})
+        self.assertEqual(face_style_from_metadata({}), {"shape": "wide", "plate": True})
+        self.assertEqual(face_style_from_metadata({"voice_relay_face_shape": "weird"})["shape"], "wide")
