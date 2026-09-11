@@ -1,3 +1,4 @@
+import { useIsLandscape } from "@/hooks/useIsLandscape";
 import {
   useEffect,
   useRef,
@@ -40,23 +41,6 @@ const VIDEO_STAGE_MODES: ReadonlySet<CallViewMode> = new Set<CallViewMode>([
   "spotlight",
   "screen",
 ]);
-
-const LANDSCAPE_QUERY = "(orientation: landscape)";
-
-function useIsLandscape(): boolean {
-  const [landscape, setLandscape] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia(LANDSCAPE_QUERY).matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia(LANDSCAPE_QUERY);
-    const onChange = (e: MediaQueryListEvent) => setLandscape(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return landscape;
-}
 
 /**
  * CallRoomLayout — decides how the CALL surface and the CHAT coexist.
