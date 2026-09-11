@@ -1,3 +1,6 @@
+import { useIsLandscape } from "@/hooks/useIsLandscape";
+import { shouldUsePortraitStage } from "@/lib/portraitCall";
+import { PortraitCallStage } from "./PortraitCallStage";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import { puppetForTexture } from "@/lib/puppetRig";
 import { isGuestCallIdentity } from "@/lib/guest";
@@ -606,6 +609,7 @@ interface ParticipantTileProps {
   size?: "normal" | "large";
   /** Fill the container (big-stage tiles) rather than a fixed 16:9 box. */
   fill?: boolean;
+  immersive?: boolean;
   hidden?: boolean;
   isPinned?: boolean;
   onTogglePin?: () => void;
@@ -652,6 +656,7 @@ function ParticipantTile({
   speaking,
   size = "normal",
   fill = false,
+  immersive = false,
   hidden,
   isPinned,
   onTogglePin,
@@ -890,11 +895,12 @@ function ParticipantTile({
       ref={fs.ref}
       onClick={onClick}
       className={clsx(
-        "group relative flex w-full items-center justify-center overflow-hidden rounded-2xl border border-line bg-surface-1/80 transition-all",
+        "group relative flex w-full items-center justify-center overflow-hidden bg-surface-1/80 transition-all",
+        immersive ? "rounded-none border-0" : "rounded-2xl border border-line",
         fs.isFullscreen ? "h-full" : fill ? "h-full" : "aspect-video",
         onClick && "cursor-pointer",
       )}
-      style={ringStyle}
+      style={immersive ? undefined : ringStyle}
     >
       {showVideoEl && (
         <video
@@ -904,7 +910,7 @@ function ParticipantTile({
           muted
           className={clsx(
             "h-full w-full",
-            fs.isFullscreen ? "object-contain" : "object-cover",
+            fs.isFullscreen && !immersive ? "object-contain" : "object-cover",
             // Mounted but parked while it has no frames — see videoIsBlank.
             videoIsBlank && "pointer-events-none absolute h-px w-px opacity-0",
           )}
@@ -957,8 +963,9 @@ function ParticipantTile({
       )}
 
       {/* Name plate — the persona for agents ("Majik", not "stable-brigade"). */}
-      <span className="glass absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1.5 truncate rounded-md px-2 py-0.5 text-xs font-medium text-slate-100">
+      <span className={clsx("glass absolute flex items-center gap-1.5 truncate rounded-md px-2 text-xs font-medium text-slate-100", immersive ? "py-1 left-3 top-14 max-w-[calc(100%-9rem)]" : "py-0.5 bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)]")}>
         <span className="truncate">{isAgentTile ? persona.name : p.name}</span>
+        {immersive && p.isMuted && <MicOff className="h-3 w-3 shrink-0" />}
         {isGuestTile && <GuestBadge />}
       </span>
 
@@ -979,7 +986,7 @@ function ParticipantTile({
           never hidden inside a pop-out: being streamed is not a detail. */}
       {isBroadcasting && (
         <span
-          className="pointer-events-none absolute left-1/2 top-1.5 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-pop"
+          className={clsx("pointer-events-none absolute flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-pop", immersive ? "left-3 top-24" : "left-1/2 top-1.5 -translate-x-1/2")}
           title={`${p.name} is being broadcast to an external feed right now`}
         >
           <span aria-hidden="true" className="text-[8px] leading-none">
@@ -1006,7 +1013,7 @@ function ParticipantTile({
       ) : null}
 
       {/* Status (bottom-right): muted OR speaking. */}
-      {p.isMuted && (
+      {!immersive && p.isMuted && (
         <div className="absolute bottom-1.5 right-1.5 rounded-full bg-rose-500/80 p-1">
           <MicOff className="h-3 w-3 text-white" />
         </div>
@@ -1022,7 +1029,7 @@ function ParticipantTile({
           way to PiP/fullscreen; hover-reveal on the main stage. */}
       <div
         className={clsx(
-          "absolute right-1.5 top-1.5 flex items-center gap-1",
+          immersive ? "hidden" : "absolute right-1.5 top-1.5 flex items-center gap-1",
           inPopout
             ? "opacity-100"
             : "transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100",
@@ -1948,6 +1955,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   // Whole-stage pop-out (human-only; window.open needs a user gesture + desktop).
   // Gate on BOTH desktop and the module's feature-detect (CONTRACT §3.5).
   const isDesktop = useIsDesktop();
+  const isLandscape = useIsLandscape();
   // Mobile Video intent: fade non-essential chrome after inactivity. Safe
   // controls (mic / cam / leave) stay reachable. Reduced-motion keeps chrome up.
   const mobileVideoChrome = !isDesktop && mobileCallMode === "video";
@@ -2274,6 +2282,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       onClick?: () => void;
       grip?: boolean;
       fill?: boolean;
+      immersive?: boolean;
       inPopout?: boolean;
     },
   ) {
@@ -2314,6 +2323,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         agentFaceBudgetOk={agentFaceBudgetIds.has(p.id)}
         size={opts?.size ?? "normal"}
         fill={opts?.fill}
+        immersive={opts?.immersive}
         hidden={hidden}
         inPopout={inPopout}
         speaking={speakingIds.has(p.id)}
@@ -2350,6 +2360,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       onClick?: () => void;
       grip?: boolean;
       fill?: boolean;
+      immersive?: boolean;
     },
   ) {
     const feedKey = camFeedKey(p.id);
@@ -2465,11 +2476,24 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     return null;
   }
 
+  const remotes = participants.filter((p) => !p.isLocal);
+  const self = participants.find((p) => p.isLocal);
+  const portraitOneToOne = shouldUsePortraitStage({
+    desktop: isDesktop, landscape: isLandscape, mode: mobileCallMode,
+    remoteCount: remotes.length, screenCount: screenShares.length,
+    view: viewMode, chips: showChips,
+  });
+
   // ---- The stage surface (the pop-out-able tiles), per mode -----------------
 
   let stageSurface: ReactNode = null;
   if (!showChips) {
-    if (viewMode === "grid") {
+    if (portraitOneToOne) {
+      stageSurface = <PortraitCallStage
+        remote={renderTile(remotes[0]!, { fill: true, size: "large", immersive: true })}
+        self={self ? renderTile(self, { fill: true }) : undefined}
+      />;
+    } else if (viewMode === "grid") {
       // Gallery: equal, paginated, drag-to-reorder tiles.
       stageSurface = (
         <VideoGrid
@@ -3148,8 +3172,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
       <div
         className={clsx(
-          "flex min-h-0 flex-1 border-b border-line bg-surface-1/70 backdrop-blur-md",
-          slim
+          "relative flex min-h-0 flex-1",
+          !portraitOneToOne && "border-b border-line bg-surface-1/70 backdrop-blur-md",
+          portraitOneToOne ? "flex-col bg-black" : slim
             ? "flex-row items-center gap-3 px-4 py-2"
             : "flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
         )}
@@ -3201,7 +3226,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         <div
           className={clsx(
             "flex shrink-0 items-center gap-2 transition-opacity duration-300",
-            slim ? "" : "justify-between pt-1",
+            portraitOneToOne ? "absolute inset-x-2 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] z-20 justify-center rounded-2xl bg-black/60 p-1" : slim ? "" : "justify-between pt-1",
             mobileVideoChrome &&
               !chromeVisible &&
               !prefersReducedMotion &&
@@ -3238,6 +3263,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           <div
             className={clsx(
               "flex shrink-0 justify-center pt-1 pb-[env(safe-area-inset-bottom)] transition-opacity duration-300",
+              portraitOneToOne && "absolute inset-x-0 bottom-2 z-20",
               // When extended chrome is visible, Leave is in the extended row
               // already for desktop-style bars — here safeControls is the
               // permanent dock for mic/cam/leave.
