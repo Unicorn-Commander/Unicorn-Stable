@@ -331,7 +331,16 @@ export function useChat(roomId: string | null): UseChatReturn {
       }
     });
 
+    const unsubAgentError = ws.on("agent_error", (data: WsEventPayload) => {
+      if ((data as { room_id?: string }).room_id === roomId) {
+        useAppStore.getState().pushToast({
+          title: "Agent couldn't answer", body: "Please try again.", kind: "error", roomId,
+        });
+      }
+    });
+
     return () => {
+      unsubAgentError();
       unsubMessage();
       unsubEdit();
       unsubDelete();

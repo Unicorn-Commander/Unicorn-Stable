@@ -103,8 +103,9 @@ class InviteBrigadeAgentGuardTests(IsolatedAsyncioTestCase):
         livekit = AsyncMock()
         body = InviteAgentRequest(brigade_agent_id="majik", dispatch=dispatch)
         with (
+            patch("app.api.brigade.find_agent_participant", new=AsyncMock(return_value=None)),
             patch(
-                "app.api.brigade._fetch_brigade_agents",
+                "app.api.brigade._fetch_invitable_agents",
                 new=AsyncMock(return_value=ROSTER),
             ),
             patch(

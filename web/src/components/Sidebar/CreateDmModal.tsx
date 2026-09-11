@@ -134,6 +134,16 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
         return;
       }
 
+      if (pickedAgents.length === 1 && pickedUsers.length === 0) {
+        const agent = pickedAgents[0]!;
+        const room = await api.createAgentDm(agent.id, `Chat with ${agent.name}`);
+        await qc.invalidateQueries({ queryKey: ["rooms"] });
+        onClose();
+        navigate(`/c/${room.id}`);
+        return;
+      }
+      await api.requireBrigadeAgents(pickedAgents.map((agent) => agent.id));
+
       const memberCount = pickedUsers.length + pickedAgents.length;
       const isGroup = memberCount >= 2;
       const labelParts: string[] = [];

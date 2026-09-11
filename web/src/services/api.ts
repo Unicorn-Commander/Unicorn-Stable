@@ -1012,19 +1012,27 @@ class StableApiClient {
     return all.map(mapRoomListItem);
   }
 
-  /**
-   * Start a fresh 1:1 conversation with a Brigade agent (the ChatGPT-style
-   * "New chat"). Creates a new DM room then binds the agent to it via the
-   * invite-brigade-agent path (which persists `metadata.brigade_agent_id` so
-   * the text + voice responders both know who lives in the room). Mirrors the
-   * create→invite sequence in CreateDmModal; returns the new room so the
-   * caller can navigate to it. The agent invite is best-effort — the room is
-   * still usable (and the agent re-invitable from within it) if it fails.
-   */
+  /** Resolve the selected agent's backend before creating any room. */
+  async getAgentChatRoute(agentId: string): Promise<{ backend: "brigade" | "runner"; room_id: string | null }> {
+    return this.request("GET", `/api/v1/brigade/agents/${encodeURIComponent(agentId)}/chat-route`);
+  }
+
+  async requireBrigadeAgents(agentIds: string[]): Promise<void> {
+    const routes = await Promise.all(agentIds.map((id) => this.getAgentChatRoute(id)));
+    if (routes.some((route) => route.backend !== "brigade")) {
+      throw new Error("Open the runner's existing chat. New runner rooms require administrator provisioning.");
+    }
+  }
+
   async createAgentDm(
     brigadeAgentId: string,
     displayName: string,
   ): Promise<Room> {
+    const route = await this.getAgentChatRoute(brigadeAgentId);
+    if (route.backend === "runner") {
+      if (!route.room_id) throw new Error("Runner chat is not configured");
+      return this.getRoom(route.room_id);
+    }
     const room = await this.createRoom({
       name: displayName,
       description: "",
@@ -1038,19 +1046,13 @@ class StableApiClient {
         dispatch: false,
       });
     } catch (err) {
-      // Entitlement denial (403) is not a transient bind failure: retrying
-      // from inside the room hits the same wall, so an "agentless but
-      // re-invitable" room would be a dead end. Remove the husk we just
-      // created and surface the server's message to the caller's toast.
-      if ((err as { status?: number } | null)?.status === 403) {
-        try {
-          await this.request<void>("DELETE", `/api/v1/rooms/${room.id}`);
-        } catch {
-          /* best-effort cleanup — the room is empty either way */
-        }
-        throw err;
+      // Never navigate into an empty room after a failed bind.
+      try {
+        await this.request<void>("DELETE", `/api/v1/rooms/${room.id}`);
+      } catch {
+        /* best-effort cleanup; keep the original bind error */
       }
-      console.warn("agent-invite failed for new chat", brigadeAgentId, err);
+      throw err;
     }
     return { ...room, brigade_agent_id: brigadeAgentId };
   }

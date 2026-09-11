@@ -17,6 +17,7 @@ from app.models.agent import AgentConfig
 from app.models.message import Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember, RoomType
+from app.services.agent_routing import participant_backend, find_agent_participant
 from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
@@ -460,6 +461,16 @@ class RoomService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You must be a member of this DM to start a group from it",
             )
+
+        # A runner cannot hear a newly created room until BOTH its profile
+        # and gateway scope are provisioned. Group conversion does neither.
+        for _member, participant in member_rows:
+            if participant.participant_type == ParticipantType.AGENT and participant_backend(participant) != "brigade":
+                raise HTTPException(409, "New runner rooms require administrator provisioning")
+        for agent_id in new_agent_ids or []:
+            participant = await find_agent_participant(self._db, agent_id)
+            if participant_backend(participant) != "brigade":
+                raise HTTPException(409, "New runner rooms require administrator provisioning")
 
         # Validate the extra humans BEFORE creating anything: all-or-nothing,
         # so a stale pick fails the whole call cleanly instead of minting a
