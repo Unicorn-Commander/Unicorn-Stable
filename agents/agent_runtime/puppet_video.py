@@ -67,6 +67,17 @@ LOUD_DBFS = -15.0
 #: The mouth closes faster than it opens looks wrong; it opens instantly and
 #: relaxes over this many seconds.
 RELEASE_S = 0.12
+#: Kokoro speech sits above the LOUD line almost continuously, so a mouth
+#: driven by level alone hangs open for whole sentences (Aaron, 2026-09-10:
+#: "it stays open too long, there should be more movement"). Real mouths
+#: cycle per syllable, ~4 times a second; this modulates the level with a
+#: syllable-rate carrier so the mouth opens and closes while the voice is
+#: loud and rests closed in the gaps.
+FLAP_HZ = 3.6
+#: Fraction of each flap cycle the mouth is CLOSED. A half-wave carrier (the
+#: sine's positive lobe) closes it for the other half, so at 12 fps the
+#: renderer still lands on closed frames instead of aliasing past them.
+FLAP_CLOSED_FRACTION = 0.5
 #: Idle motion.
 BOB_PERIOD_S = 3.2
 BOB_PX = 4.0
@@ -390,6 +401,23 @@ def openness_from_dbfs(dbfs: float) -> float:
     return (dbfs - SILENT_DBFS) / (LOUD_DBFS - SILENT_DBFS)
 
 
+def mouth_openness(level: float, t: float) -> float:
+    """How open the mouth is drawn at time ``t`` for speech level ``level``.
+
+    The level says *whether* the voice is loud; the syllable carrier says
+    *where in the flap* we are. Loud, continuous speech therefore cycles
+    open→closed ~FLAP_HZ times a second instead of hanging open, and a dip in
+    the level (a consonant, a breath) still closes the mouth immediately.
+    """
+    level = max(0.0, min(1.0, level))
+    if level <= 0.03:
+        return 0.0
+    carrier = math.sin(2.0 * math.pi * FLAP_HZ * t)
+    if carrier <= 0.0:
+        return 0.0  # the closed half of the cycle
+    return max(0.0, min(1.0, level * carrier))
+
+
 class LevelTimeline:
     """Mouth level scheduled against PLAYOUT time, not push time.
 
@@ -518,10 +546,7 @@ class PuppetRenderer:
             img.alpha_composite(glow)
 
         if self._art is not None:
-            state = expression if expression in self._frames else (
-                "blink" if t % BLINK_EVERY_S < BLINK_LEN_S and "blink" in self._frames else
-                "talk" if level > 0.55 else "talk2" if level > 0.03 else
-                "smile" if 0 <= t - self._last_speech < 0.7 and "smile" in self._frames else "idle")
+            state = self.frame_state(t, level, expression)
             art = self._frames.get(state)
             img.alpha_composite(art if art is not None else self._art, (x0, y0))
             if art is None:
@@ -532,17 +557,42 @@ class PuppetRenderer:
         self._draw_plate(draw, level)
         return img
 
+    def frame_state(self, t: float, level: float, expression: str | None = None) -> str:
+        """Which expression frame to show at ``t`` for speech ``level``.
+
+        Priority: an explicit expression → a blink → the syllable-modulated
+        mouth (``talk`` open, ``talk2`` half, ``idle`` closed between
+        syllables) → a short smile after the last line → idle. Frames the art
+        does not have fall through to the next rung, so a face with only
+        ``idle`` never picks a missing state.
+        """
+        if expression in self._frames:
+            return expression
+        if t % BLINK_EVERY_S < BLINK_LEN_S and "blink" in self._frames:
+            return "blink"
+        openness = mouth_openness(level, t)
+        if openness > 0.5 and "talk" in self._frames:
+            return "talk"
+        if openness > 0.15 and "talk2" in self._frames:
+            return "talk2"
+        if level > 0.03:
+            return "idle"  # closed between syllables, mid-line
+        if 0 <= t - self._last_speech < 0.7 and "smile" in self._frames:
+            return "smile"
+        return "idle"
+
     def _draw_rig(self, draw: ImageDraw.ImageDraw, x0: int, y0: int, t: float, level: float) -> None:
         rig = self.spec.rig
         if rig is None:
             return
         # Mouth cavity grows DOWNWARD from the closed line, like the web shader.
-        if level > 0.03:
+        openness = mouth_openness(level, t)
+        if openness > 0.03:
             m = rig.mouth
             cx = x0 + m.cx * ART_SIZE
             top = y0 + m.cy * ART_SIZE
             rx = m.rx * ART_SIZE
-            depth = rig.open_depth * ART_SIZE * level
+            depth = rig.open_depth * ART_SIZE * openness
             draw.ellipse(
                 [cx - rx, top - m.ry * ART_SIZE * 0.5, cx + rx, top + depth],
                 fill=(14, 10, 16, 235),

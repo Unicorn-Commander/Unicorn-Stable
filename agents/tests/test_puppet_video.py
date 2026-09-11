@@ -400,3 +400,53 @@ class ManifestRigTests(TestCase):
         # Mouth sits above and right of the default: the v5 art's muzzle.
         self.assertLess(rig.mouth.cy, DEFAULT_RIG.mouth.cy)
         self.assertGreater(rig.mouth.cx, DEFAULT_RIG.mouth.cx)
+
+
+class MouthFlapTests(TestCase):
+    """Loud speech must cycle the mouth, not hold it open (Aaron, 2026-09-10)."""
+
+    def _renderer_with_frames(self):
+        from agent_runtime.puppet_video import PuppetRenderer
+
+        spec = _spec()
+        # Same art for every state; only the chosen state name matters here.
+        spec.frames = {s: _art() for s in ("idle", "talk", "talk2", "blink", "smile")}
+        return PuppetRenderer(spec)
+
+    def test_continuous_loud_speech_opens_and_closes_repeatedly(self) -> None:
+        from agent_runtime.puppet_video import FLAP_HZ, BLINK_EVERY_S
+
+        r = self._renderer_with_frames()
+        # One second of frames at 12 fps, well clear of the blink window.
+        t0 = BLINK_EVERY_S + 0.5
+        states = [r.frame_state(t0 + i / 12.0, 0.9) for i in range(12)]
+        self.assertIn("talk", states)
+        self.assertIn("idle", states)  # closes between syllables
+        transitions = sum(1 for a, b in zip(states, states[1:]) if a != b)
+        self.assertGreaterEqual(transitions, int(FLAP_HZ) * 2 - 2)
+
+    def test_silence_rests_closed_then_smiles(self) -> None:
+        r = self._renderer_with_frames()
+        r._last_speech = 10.0
+        self.assertEqual(r.frame_state(10.3, 0.0), "smile")
+        self.assertEqual(r.frame_state(12.0, 0.0), "idle")
+        self.assertNotIn(r.frame_state(20.0, 0.0), ("talk", "talk2"))
+
+    def test_openness_never_exceeds_level_and_is_zero_when_silent(self) -> None:
+        from agent_runtime.puppet_video import mouth_openness
+
+        for t in (0.0, 0.05, 0.11, 0.17, 0.23):
+            self.assertLessEqual(mouth_openness(0.6, t), 0.6 + 1e-9)
+            self.assertGreaterEqual(mouth_openness(0.6, t), 0.0)
+        self.assertEqual(mouth_openness(0.0, 0.3), 0.0)
+        self.assertEqual(mouth_openness(0.02, 0.3), 0.0)
+
+    def test_missing_talk_frames_fall_through_without_keyerror(self) -> None:
+        from agent_runtime.puppet_video import PuppetRenderer
+
+        spec = _spec()
+        spec.frames = {"idle": _art()}
+        r = PuppetRenderer(spec)
+        for i in range(12):
+            self.assertEqual(r.frame_state(5.5 + i / 12.0, 0.9), "idle")
+        r.render(5.6, 0.9)  # synthetic rig path still draws
