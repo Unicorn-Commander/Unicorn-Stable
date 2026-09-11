@@ -230,6 +230,12 @@ class AgentIdForParticipantTests(IsolatedAsyncioTestCase):
 
 
 class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
+    def setUp(self):
+        for name, value in [("find_agent_participant", None), ("_fetch_bridge_crew_agents", [])]:
+            mocked = patch("app.api.brigade." + name, new=AsyncMock(return_value=value))
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def _room(self) -> SimpleNamespace:
         # The "New chat with The Colonel" room at bind time: a bare dm (no
         # dm_pair, creator is the only human, no binding yet). The human-DM
@@ -532,6 +538,11 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
 
 
 class RosterEntitlementAnnotationTests(IsolatedAsyncioTestCase):
+    def setUp(self):
+        mocked = patch("app.api.brigade._fetch_bridge_crew_agents", new=AsyncMock(return_value=[]))
+        mocked.start()
+        self.addCleanup(mocked.stop)
+
     async def test_open_mode_marks_deny_granted_agent_unentitled(self) -> None:
         from app.api import brigade as brigade_api
 

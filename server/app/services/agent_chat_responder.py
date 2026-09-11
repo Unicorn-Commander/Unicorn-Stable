@@ -23,6 +23,7 @@ import structlog
 from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.services.agent_routing import participant_backend, find_agent_participant
 from app.config import Settings
 from app.models.message import ContentType, Message
 from app.models.participant import (
@@ -583,55 +584,11 @@ async def _respond(
         ):
             return
 
-        # Which of the two agent kinds did we just resolve?
-        #
-        # A gateway/bridge agent is an EXTERNAL process that polls the gateway.
-        # Nothing about it runs in here: it has no thinking signal, and this
-        # responder cannot generate on its behalf because Brigade has no
-        # persona under that id. Proceeding would (a) announce "<X> is
-        # thinking…" for a process that is not thinking and was never asked,
-        # and (b) post a "…" placeholder that finalizes to a fabricated
-        # "_(I had trouble reaching Brigade)_" — ATTRIBUTED TO a real person's
-        # Claude Code. Both are lies; the second is the worse one.
-        #
-        # This is the reported bug, in the room it was reported from.
-        # `aaron-shafen-claudes` (a51ac1ce…) has NO `brigade_agent_id` and two
-        # agent members, BOTH pure bridges (Aaron's and Shafen's Claude Code),
-        # each holding an un-revoked key scoped to that room. On "@all" or
-        # "@everyone" the mention router finds no specific name, so
-        # _resolve_agent falls through to the "first agent member" fallback —
-        # and their joined_at values are IDENTICAL, so it picks arbitrarily
-        # between two different people's bridges — then _should_respond says
-        # yes and we announce that whichever one it landed on is thinking.
-        # "@claude-code" reaches the same end by the mention path. Any check
-        # keyed on room metadata answers "not a bridge" here, because there is
-        # no metadata; hence the observable-evidence predicate in agent_status:
-        # an un-revoked gateway key SCOPED TO THIS ROOM. That is deliberately
-        # the structural test, not the liveness one — a bridge that has not
-        # polled in an hour is still a bridge with no Brigade persona behind
-        # it, and gating this on recent activity would quietly re-open the lie
-        # for every dormant bridge. Liveness is required only for the opposite
-        # claim, that a relay is currently outstanding.
-        #
-        # A bridge's honest state is the one the gateway can actually witness:
-        # we leave the relay marker set for this message standing, so the room
-        # reads "Waiting for Stable bridge relay — <that exact agent>" until
-        # the bridge reads or posts, and nothing at all once it has.
-        try:
-            if await agent_status.is_bridge_agent(
-                db=db, room=room, agent_id=brigade_agent_id
-            ):
-                logger.info(
-                    "agent_chat_responder_skipped_bridge_agent",
-                    room_id=str(room.id),
-                    brigade_agent_id=brigade_agent_id,
-                )
-                return
-        except Exception:
-            # A detection failure must not silence a genuine resident agent, so
-            # fall through and answer. is_bridge_agent already swallows its own
-            # errors and returns False; this is belt-and-braces.
-            logger.warning("bridge_agent_check_failed", exc_info=True)
+        # Identity belongs to the participant, even in a newly minted or
+        # misconfigured room. Unknown backend configuration also fails closed.
+        if participant_backend(agent_participant) != "brigade":
+            logger.info("agent_chat_responder_skipped_runner", agent_id=brigade_agent_id)
+            return
 
         # Per-user agent entitlements gate the reply TRIGGER too, not only the
         # invite funnel: an agent already resident in a shared room would
@@ -884,6 +841,7 @@ async def _respond(
             )
             return
 
+        failed = False
         try:
             accumulated, artifact_meta = await _call_brigade(
                 settings=settings,
@@ -897,12 +855,21 @@ async def _respond(
                 stop_state=stop_state,
             )
         except Exception as exc:
-            logger.exception("brigade_chat_call_failed")
-            if not accumulated:
-                accumulated = (
-                    f"_(I had trouble reaching Brigade: {exc.__class__.__name__})_"
-                )
+            failed = True
+            logger.warning("brigade_chat_call_failed", error_type=type(exc).__name__)
         finally:
+            if failed:
+                try:
+                    await _discard_failed_reply(db=db, placeholder=placeholder, room_id=room.id)
+                    await _clear_stop(placeholder.id)
+                finally:
+                    await _send_typing(
+                        livekit=livekit, livekit_room_name=room.livekit_room_name,
+                        room_id=room.id, brigade_agent_id=brigade_agent_id,
+                        typing=False, agent_label=agent_participant.display_name,
+                        participant_id=agent_participant.id,
+                    )
+                return
             stopped = bool(stop_state.get("stopped"))
             if not accumulated.strip():
                 accumulated = "_(stopped)_" if stopped else "_(empty reply)_"
@@ -965,6 +932,18 @@ async def _respond(
             )
 
 
+async def _discard_failed_reply(*, db, placeholder, room_id):
+    placeholder.is_deleted = True
+    placeholder.content = ""
+    await db.commit()
+    await _ws_deliver_to_room(db=db, room_id=room_id, envelope={
+        "type": "message_delete", "payload": {"room_id": str(room_id), "message_id": str(placeholder.id)},
+    })
+    await _ws_deliver_to_room(db=db, room_id=room_id, envelope={
+        "type": "agent_error", "payload": {"room_id": str(room_id)},
+    })
+
+
 async def _resolve_agent(
     *, db: Any, room: Room, content: str = "", room_type: str = "channel"
 ) -> tuple[str | None, Participant | None]:
@@ -1018,12 +997,10 @@ async def _resolve_agent(
 
     if brigade_agent_id:
         pseudo_sub = f"brigade:{brigade_agent_id}"
-        agent_p = (
-            await db.execute(
-                select(Participant).where(Participant.keycloak_sub == pseudo_sub)
-            )
-        ).scalar_one_or_none()
+        agent_p = await find_agent_participant(db, brigade_agent_id)
         if agent_p is not None:
+            if participant_backend(agent_p) != "brigade":
+                return brigade_agent_id, agent_p
             # Ensure room membership for clean broadcast paths.
             existing = (
                 await db.execute(
@@ -1305,17 +1282,8 @@ async def _call_brigade_streaming(
     async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as http:
         async with http.stream("POST", url, headers=headers, json=payload) as resp:
             if resp.status_code >= 300:
-                body = (await resp.aread())[:300].decode("utf-8", "replace")
-                logger.warning(
-                    "brigade_chat_http_error",
-                    status=resp.status_code,
-                    body=body,
-                    url=url,
-                )
-                return (
-                    _brigade_error_reply(resp.status_code, body),
-                    None,
-                )
+                logger.warning("brigade_chat_http_error", status=resp.status_code)
+                raise RuntimeError("Agent upstream request failed")
             async for line in resp.aiter_lines():
                 if should_stop is not None:
                     try:
@@ -1437,16 +1405,8 @@ async def _call_brigade(
     async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as http:
         resp = await http.post(url, headers=headers, json=payload)
         if resp.status_code >= 300:
-            logger.warning(
-                "brigade_chat_http_error",
-                status=resp.status_code,
-                body=resp.text[:300],
-                url=url,
-            )
-            return (
-                _brigade_error_reply(resp.status_code, resp.text),
-                None,
-            )
+            logger.warning("brigade_chat_http_error", status=resp.status_code)
+            raise RuntimeError("Agent upstream request failed")
         try:
             data = resp.json()
         except Exception:

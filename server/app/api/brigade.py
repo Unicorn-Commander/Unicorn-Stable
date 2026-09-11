@@ -19,6 +19,7 @@ from redis.asyncio import Redis
 
 from app.deps import get_current_user, get_db, get_livekit, get_redis, rate_limit
 from app.models.agent_gateway_key import AgentGatewayKey
+from app.services.agent_routing import find_agent_participant, participant_backend
 from app.services.agent_access import ensure_agent_access, entitled_agent_ids
 from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
@@ -30,6 +31,49 @@ from app.services.resident_agents import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+class AgentChatRoute(BaseModel):
+    backend: str
+    room_id: str | None = None
+
+
+@router.get("/brigade/agents/{agent_id}/chat-route", response_model=AgentChatRoute)
+async def agent_chat_route(
+    agent_id: str,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AgentChatRoute:
+    from app.models.room import Room, RoomMember
+
+    await ensure_agent_access(db, participant_id=user["participant_id"], agent_id=agent_id)
+    participant = await find_agent_participant(db, agent_id)
+    backend = participant_backend(participant)
+    if backend == "brigade":
+        return AgentChatRoute(backend=backend)
+    if backend != "runner":
+        raise HTTPException(409, "Agent backend is not configured")
+    slug = (participant.metadata_ or {}).get("canonical_dm_room")
+    if not isinstance(slug, str) or not slug.strip():
+        raise HTTPException(409, "Runner chat is not configured; ask an administrator")
+    room = (await db.execute(select(Room).where(Room.name == slug))).scalar_one_or_none()
+    if room is None or room.is_archived:
+        raise HTTPException(409, "Runner chat is unavailable; ask an administrator")
+    member = (await db.execute(select(RoomMember).where(
+        RoomMember.room_id == room.id,
+        RoomMember.participant_id == user["participant_id"],
+    ))).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(404, "Runner chat is not available to this account")
+    scopes = (await db.execute(select(AgentGatewayKey.allowed_rooms).where(
+        AgentGatewayKey.agent_id == agent_id,
+        AgentGatewayKey.revoked_at.is_(None),
+    ))).scalars().all()
+    if not any(isinstance(scope, list) and any(
+        name in scope for name in ("*", room.name, room.livekit_room_name)
+    ) for scope in scopes):
+        raise HTTPException(409, "Runner room access is not configured; ask an administrator")
+    return AgentChatRoute(backend="runner", room_id=str(room.id))
 
 
 class BrigadeAgent(BaseModel):
@@ -790,6 +834,9 @@ async def invite_brigade_agent(
     `brigade_agent_id` from the room metadata to decide which Brigade agent
     to act as.
     """
+    participant = await find_agent_participant(db, body.brigade_agent_id)
+    if participant_backend(participant) != "brigade":
+        raise HTTPException(409, "Open this runner's canonical chat; new runner rooms require provisioning")
     settings = get_settings()
 
     # Sanity-check the requested agent exists (Brigade roster or the bridge

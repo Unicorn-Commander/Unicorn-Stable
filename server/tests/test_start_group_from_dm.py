@@ -307,6 +307,8 @@ class StartGroupFromDmServiceTests(IsolatedAsyncioTestCase):
                         (MagicMock(), resident),
                     ]
                 ),
+                self._scalar(None),  # new agent backend check
+                self._scalar(None),  # no external gateway registration
                 self._scalars([extra]),  # extras validation
                 self._scalar(None),  # new agent "iris" participant lookup
                 self._scalar(None),  # slug free

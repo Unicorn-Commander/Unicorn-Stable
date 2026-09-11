@@ -120,6 +120,7 @@ export function AgentChatModal({
         );
         roomId = room.id;
       } else {
+        await api.requireBrigadeAgents(ids);
         const names = picked.slice(0, 3).map(label).join(", ");
         const room = await api.createRoom({
           name:

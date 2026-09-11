@@ -219,10 +219,15 @@ async def _resolve_agent_participant(
             display_name=agent_id.replace("-", " ").title(),
             participant_type=ParticipantType.AGENT,
             status=ParticipantStatus.ONLINE,
+            metadata_={"backend": "runner"},
         )
         db.add(agent_p)
         await db.commit()
         await db.refresh(agent_p)
+
+    if (agent_p.metadata_ or {}).get("backend") != "runner":
+        agent_p.metadata_ = {**(agent_p.metadata_ or {}), "backend": "runner"}
+        await db.commit()
 
     member = (
         await db.execute(
