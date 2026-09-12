@@ -54,6 +54,8 @@ import {
   saveDevicePreference,
   setElementSink,
   type StableDeviceKind,
+  PSEUDO_DEFAULT_IDS,
+  isQuietAudioInput,
 } from "@/lib/mediaDevices";
 
 /**
@@ -364,9 +366,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setDevices(next);
     const saved = readDevicePreferences(useAppStore.getState().currentUser?.id);
     setSelectedDevices((current) => ({
-      audioinput: next.audioinput.some((d) => d.deviceId === current.audioinput)
-        ? current.audioinput
-        : pickAudioInputDevice(next.audioinput, saved.audioinput),
+      // Keep the current mic only if it is a real, non-quiet pick. An OS-
+      // default alias or the quiet Driver is re-evaluated every time, so a
+      // "Repair audio" or a device drift can't lock the studio onto silence.
+      audioinput: (() => {
+        const cur = next.audioinput.find((d) => d.deviceId === current.audioinput);
+        const keep =
+          !!cur && !PSEUDO_DEFAULT_IDS.has(cur.deviceId) && !isQuietAudioInput(cur);
+        return keep ? cur.deviceId : pickAudioInputDevice(next.audioinput, saved.audioinput);
+      })(),
       videoinput: next.videoinput.some((d) => d.deviceId === current.videoinput)
         ? current.videoinput
         : next.videoinput.find((d) => d.deviceId === saved.videoinput)
@@ -654,9 +662,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       return;
     repairingAudio.current = true;
     try {
-      await recoverCallAudio(active, Track.Source.Microphone);
+      // Reacquire on the device the studio wants, not blindly on the OS
+      // default — on the Mac that is the quiet Driver (2026-09-12: a repair
+      // pinned the call to "default" and the relay heard silence).
+      const userId = useAppStore.getState().currentUser?.id;
+      const wanted =
+        pickAudioInputDevice(devices.audioinput, readDevicePreferences(userId).audioinput) ||
+        "default";
+      await recoverCallAudio(active, Track.Source.Microphone, wanted);
       if (active.localParticipant.isMicrophoneEnabled) {
-        setSelectedDevices((current) => ({ ...current, audioinput: "default" }));
+        setSelectedDevices((current) => ({ ...current, audioinput: wanted }));
       }
       setVersion((v) => v + 1);
       setAudioBlocked(!active.canPlaybackAudio);
@@ -671,7 +686,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     } finally {
       repairingAudio.current = false;
     }
-  }, []);
+  }, [devices.audioinput]);
 
   useEffect(() => {
     if (!room) return;

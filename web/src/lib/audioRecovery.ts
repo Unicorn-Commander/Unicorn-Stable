@@ -27,14 +27,16 @@ export async function recoverCallAudio(
     startAudio: () => Promise<void>;
   },
   microphoneSource: unknown,
+  deviceId = "default",
 ) {
   // Explicit options discard a stuck capture device. LiveKit stops the old
-  // track and calls getUserMedia again; "default" follows the current OS route.
+  // track and calls getUserMedia again. "default" follows the current OS
+  // route (the phone case); a studio machine passes its preferred input.
   // Never enable an intentionally muted microphone.
   if (room.localParticipant.isMicrophoneEnabled) {
     await room.localParticipant
       .getTrackPublication(microphoneSource)
-      ?.track?.restartTrack({ deviceId: "default" });
+      ?.track?.restartTrack({ deviceId });
   }
   await room.startAudio();
 }

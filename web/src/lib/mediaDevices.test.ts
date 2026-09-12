@@ -26,6 +26,26 @@ describe("pickAudioInputDevice", () => {
   it("falls back to the first device when nothing matches", () => {
     expect(pickAudioInputDevice([driver], undefined)).toBe("driver");
   });
+
+  // 2026-09-12: Aaron's call captured deviceId "default" = macOS default =
+  // the Driver; the relay heard digital silence. Chrome lists that alias as
+  // "Default - ZOOM AMS-44 Driver", which slipped past the label check.
+  const defaultAlias = device("default", `Default - ${QUIET_AUDIO_INPUT_LABEL}`);
+
+  it("sees through the 'Default - …' alias to the quiet Driver", () => {
+    expect(pickAudioInputDevice([defaultAlias, driver, ams], "default")).toBe("ams");
+    expect(pickAudioInputDevice([defaultAlias, driver, ams], undefined)).toBe("ams");
+  });
+
+  it("never keeps a saved OS-default alias when the preferred mic is present", () => {
+    const defaultIsAms = device("default", `Default - ${PREFERRED_AUDIO_INPUT_LABEL}`);
+    expect(pickAudioInputDevice([defaultIsAms, ams, driver], "default")).toBe("ams");
+  });
+
+  it("still honours a saved alias when there is no preferred mic", () => {
+    const defaultHeadset = device("default", "Default - USB Headset");
+    expect(pickAudioInputDevice([defaultHeadset, headset], "default")).toBe("default");
+  });
 });
 
 describe("quietMicWarning", () => {
