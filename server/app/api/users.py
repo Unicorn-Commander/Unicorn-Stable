@@ -28,6 +28,14 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
+class CallPrefs(BaseModel):
+    """How the user enters calls. Voice calls always connect immediately; the
+    only choice is whether VIDEO calls get the pre-join device check (default
+    off). Server-side so a phone never asks what the desk didn't."""
+
+    check_devices_before_video: bool = False
+
+
 class UserPreferences(BaseModel):
     """Per-user preferences that follow the account across devices (stored on
     the Participant's metadata)."""
@@ -35,6 +43,7 @@ class UserPreferences(BaseModel):
     default_agent_id: str | None = None
     favorite_people_ids: list[UUID] = Field(default_factory=list)
     onboarding_checklist: dict[str, bool] = Field(default_factory=dict)
+    call_prefs: CallPrefs = Field(default_factory=CallPrefs)
 
 
 class UserPreferencesUpdate(BaseModel):
@@ -43,6 +52,14 @@ class UserPreferencesUpdate(BaseModel):
     default_agent_id: str | None = None
     favorite_people_ids: list[UUID] | None = None
     onboarding_checklist: dict[str, bool] | None = None
+    call_prefs: CallPrefs | None = None
+
+
+def _call_prefs(meta: dict[str, Any]) -> CallPrefs:
+    raw = meta.get("call_prefs")
+    if not isinstance(raw, dict):
+        return CallPrefs()
+    return CallPrefs(check_devices_before_video=raw.get("check_devices_before_video") is True)
 
 
 def _favorite_people(meta: dict[str, Any]) -> list[UUID]:
@@ -83,6 +100,7 @@ async def get_my_preferences(
         default_agent_id=val if isinstance(val, str) and val else None,
         favorite_people_ids=_favorite_people(meta),
         onboarding_checklist=_onboarding(meta),
+        call_prefs=_call_prefs(meta),
     )
 
 
@@ -122,6 +140,10 @@ async def set_my_preferences(
         meta["onboarding_checklist"] = {
             key: value is True for key, value in body.onboarding_checklist.items()
             if key in {"agent", "channels", "invite"}
+        }
+    if body.call_prefs is not None:
+        meta["call_prefs"] = {
+            "check_devices_before_video": body.call_prefs.check_devices_before_video is True
         }
     p.metadata_ = meta  # reassign (not mutate) so SQLAlchemy tracks the JSONB change
     await db.commit()

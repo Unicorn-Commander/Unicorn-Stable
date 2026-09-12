@@ -40,7 +40,12 @@ import { playCue } from "@/lib/sounds";
 import { HumanTranscriptSession } from "@/lib/humanTranscript";
 import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
 import { DeviceCheckDialog } from "@/components/Call/DeviceCheckDialog";
-import { readCallJoinPrefs } from "@/lib/callJoinPrefs";
+import { readCallJoinPrefs, saveCallJoinPrefs } from "@/lib/callJoinPrefs";
+import {
+  resolveCallEntry,
+  type CallEntryPrefs,
+  type CallKind,
+} from "@/lib/callEntry";
 import { matchDevice } from "@/lib/callDeepLink";
 import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
 import {
@@ -73,11 +78,15 @@ import {
  *      agent's audio is blocked until a user gesture unblocks it (audioBlocked).
  */
 /**
- * How to enter a call. Every field optional — a bare `connect()` is the
- * phone button: device check unless the "join immediately" preference is
- * on. Deep links (`hooks/useCallDeepLink`) fill the rest in.
+ * How to enter a call. Every field optional — a bare `connect()` is a VOICE
+ * call: straight in with the chosen mic, camera off, no dialog. A `kind` of
+ * "video" turns the camera on and (only if the user opted in) shows the
+ * pre-join device check first. The rule lives in `lib/callEntry`; deep links
+ * (`hooks/useCallDeepLink`) fill the rest in.
  */
 export interface ConnectOptions {
+  /** Voice (default) or video call. */
+  kind?: CallKind;
   /** Skip the pre-join dialog regardless of the preference. */
   skipDeviceCheck?: boolean;
   /** Microphone by deviceId or label (see lib/callDeepLink.matchDevice). */
@@ -116,6 +125,10 @@ interface VoiceContextValue {
   version: number;
   /** Resolves true once connected, false when the user backed out of the device check. */
   connect: (opts?: ConnectOptions) => Promise<boolean>;
+  /** Call-entry preferences (server-side, cached per browser). */
+  callPrefs: CallEntryPrefs;
+  /** Persist a call-entry preference: local cache now, server when signed in. */
+  setCallPrefs: (patch: Partial<CallEntryPrefs>) => Promise<CallEntryPrefs>;
   disconnect: () => void;
   startAudio: () => Promise<void>;
   repairAudio: () => Promise<void>;
@@ -241,6 +254,56 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [showDeviceCheck, setShowDeviceCheck] = useState(false);
+  // Which kind of call the open device check belongs to (labels the dialog).
+  const [deviceCheckKind, setDeviceCheckKind] = useState<CallKind>("video");
+  const currentUserId = useAppStore((s) => s.currentUser?.id ?? null);
+  const [callPrefs, setCallPrefsState] = useState<CallEntryPrefs>(() =>
+    readCallJoinPrefs(useAppStore.getState().currentUser?.id),
+  );
+  // The server copy wins once we're signed in: a choice made at the desk
+  // follows the phone. The local cache covers the moments before it arrives.
+  useEffect(() => {
+    setCallPrefsState(readCallJoinPrefs(currentUserId));
+    if (!currentUserId) return;
+    let cancelled = false;
+    void api
+      .getMyPreferences()
+      .then((prefs) => {
+        if (cancelled || !prefs.call_prefs) return;
+        setCallPrefsState(
+          saveCallJoinPrefs(currentUserId, {
+            checkDevicesBeforeVideo:
+              prefs.call_prefs.check_devices_before_video === true,
+          }),
+        );
+      })
+      .catch((e) => console.warn("call prefs: server copy unavailable", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+  const setCallPrefs = useCallback(
+    async (patch: Partial<CallEntryPrefs>): Promise<CallEntryPrefs> => {
+      const userId = useAppStore.getState().currentUser?.id;
+      const next = saveCallJoinPrefs(userId, patch);
+      setCallPrefsState(next);
+      if (userId) {
+        try {
+          await api.setCallPrefs({
+            check_devices_before_video: next.checkDevicesBeforeVideo,
+          });
+        } catch (e) {
+          console.warn("call prefs: server save failed, kept locally", e);
+          useAppStore.getState().pushToast({
+            title: "Saved on this device only",
+            body: "Couldn't sync the call setting to your account. It will still apply here.",
+          });
+        }
+      }
+      return next;
+    },
+    [],
+  );
   const [devices, setDevices] = useState<
     Record<StableDeviceKind, MediaDeviceInfo[]>
   >({ audioinput: [], videoinput: [], audiooutput: [] });
@@ -1182,11 +1245,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       )
         return true;
       await refreshDevices();
-      const overrides = await resolveOverrides(opts);
-      const skip =
-        opts?.skipDeviceCheck ??
-        readCallJoinPrefs(useAppStore.getState().currentUser?.id).skipDeviceCheck;
-      if (skip) return join(overrides);
+      const entry = resolveCallEntry(opts, callPrefs);
+      const overrides = await resolveOverrides({ ...opts, video: entry.video });
+      // Voice calls NEVER stop here; video calls only when the user asked.
+      if (entry.skipDeviceCheck) return join(overrides);
 
       // Pre-join check. The promise settles on Join (→ the join's own
       // outcome) or Cancel (false) — so a caller can ring only once we are
@@ -1194,10 +1256,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       pendingConnectRef.current?.resolve(false);
       return new Promise<boolean>((resolve) => {
         pendingConnectRef.current = { resolve, overrides };
+        setDeviceCheckKind(entry.kind);
         setShowDeviceCheck(true);
       });
     },
-    [refreshDevices, resolveOverrides, join],
+    [refreshDevices, resolveOverrides, join, callPrefs],
   );
 
   // NOTE: the call intentionally PERSISTS across navigation now. We used to
@@ -1229,6 +1292,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         audioBlocked,
         version,
         connect,
+        callPrefs,
+        setCallPrefs,
         disconnect,
         startAudio,
         repairAudio,
@@ -1244,10 +1309,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       {children}
       {showDeviceCheck && (
         <DeviceCheckDialog
+          kind={deviceCheckKind}
           devices={devices}
           selected={selectedDevices}
           onSelect={switchDevice}
           onRefresh={refreshDevices}
+          onJoinAudioOnly={() => {
+            // The camera failed or the user waved it off: still a call.
+            setShowDeviceCheck(false);
+            const pending = pendingConnectRef.current;
+            pendingConnectRef.current = null;
+            void join({ video: false }).then(
+              (joined) => pending?.resolve(joined),
+              () => pending?.resolve(false),
+            );
+          }}
           onCancel={() => {
             setShowDeviceCheck(false);
             const pending = pendingConnectRef.current;

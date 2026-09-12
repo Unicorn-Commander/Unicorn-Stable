@@ -15,6 +15,7 @@ describe("parseCallDeepLink", () => {
 
   it("defaults: audio-only, ring on, no device overrides", () => {
     expect(parseCallDeepLink("?join=1")).toEqual({
+      kind: "voice",
       mic: null,
       cam: null,
       video: false,
@@ -28,11 +29,30 @@ describe("parseCallDeepLink", () => {
         "join=1&mic=AMS%20Microphone&cam=Razer%20Kiyo%20Pro&video=1&ring=0",
       ),
     ).toEqual({
+      kind: "video",
       mic: "AMS Microphone",
       cam: "Razer Kiyo Pro",
       video: true,
       ring: false,
     });
+  });
+
+  it("kind=voice|video picks the call kind; video=1 alone is a video call; kind=video implies the camera", () => {
+    expect(parseCallDeepLink("?join=1&kind=video")).toMatchObject({
+      kind: "video",
+      video: true,
+    });
+    expect(parseCallDeepLink("?join=1&kind=voice")).toMatchObject({
+      kind: "voice",
+      video: false,
+    });
+    expect(parseCallDeepLink("?join=1&video=1")).toMatchObject({ kind: "video" });
+    // An explicit camera flag still wins over the kind's default.
+    expect(parseCallDeepLink("?join=1&kind=video&video=0")).toMatchObject({
+      kind: "video",
+      video: false,
+    });
+    expect(parseCallDeepLink("?join=1&kind=nonsense")).toMatchObject({ kind: "voice" });
   });
 
   it("accepts true/false spellings and ignores garbage flags", () => {

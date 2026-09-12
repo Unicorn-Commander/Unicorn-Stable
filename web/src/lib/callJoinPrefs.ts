@@ -1,39 +1,52 @@
 /**
- * "Join calls immediately" — the per-user, per-browser preference that skips
- * the pre-join "Check your devices" dialog and drops straight into the call.
+ * Call-entry preferences, cached per user in this browser.
  *
- * Stored beside the device preferences (same per-user keying as
- * `mediaDevices.ts`) so a studio machine remembers both "which mic" and
- * "don't ask me" together. Missing/unparseable → defaults (dialog shown).
+ * The SOURCE OF TRUTH is the server (`users/me/preferences.call_prefs`) so a
+ * choice made at the desk follows the phone; this file is the offline cache
+ * and the pre-login fallback, keyed per user like `mediaDevices.ts`.
+ *
+ * History: v1 stored `skipDeviceCheck` (default false = every call asked).
+ * That default is what kept a voice call from ever connecting on a phone, so
+ * the model flipped: voice calls never ask, and the only stored choice is
+ * whether VIDEO calls get the pre-join check (default off). A v1 record is
+ * read as "no check" whatever it said — nobody who set the old toggle wanted
+ * more dialogs.
  */
+import {
+  DEFAULT_CALL_ENTRY_PREFS,
+  type CallEntryPrefs,
+} from "@/lib/callEntry";
 
-export interface CallJoinPrefs {
-  /** Skip the pre-join device check and connect on the first click. */
-  skipDeviceCheck: boolean;
-}
+export type CallJoinPrefs = CallEntryPrefs;
 
-export const DEFAULT_CALL_JOIN_PREFS: CallJoinPrefs = { skipDeviceCheck: false };
+export const DEFAULT_CALL_JOIN_PREFS: CallJoinPrefs = {
+  ...DEFAULT_CALL_ENTRY_PREFS,
+};
 
-const KEY = "stable.call-join.v1";
+const KEY = "stable.call-join.v2";
+const LEGACY_KEY = "stable.call-join.v1";
 
 function userKey(userId?: string | null): string {
   return userId || "anonymous";
 }
 
-export function readCallJoinPrefs(userId?: string | null): CallJoinPrefs {
+function readAll(): Record<string, Partial<CallJoinPrefs>> {
   try {
-    const all = JSON.parse(localStorage.getItem(KEY) || "{}") as Record<
-      string,
-      Partial<CallJoinPrefs>
-    >;
-    const mine = all[userKey(userId)] || {};
-    return {
-      ...DEFAULT_CALL_JOIN_PREFS,
-      skipDeviceCheck: mine.skipDeviceCheck === true,
-    };
+    const parsed = JSON.parse(localStorage.getItem(KEY) || "{}") as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, Partial<CallJoinPrefs>>)
+      : {};
   } catch {
-    return { ...DEFAULT_CALL_JOIN_PREFS };
+    return {};
   }
+}
+
+export function readCallJoinPrefs(userId?: string | null): CallJoinPrefs {
+  const mine = readAll()[userKey(userId)] || {};
+  return {
+    ...DEFAULT_CALL_JOIN_PREFS,
+    checkDevicesBeforeVideo: mine.checkDevicesBeforeVideo === true,
+  };
 }
 
 export function saveCallJoinPrefs(
@@ -42,12 +55,11 @@ export function saveCallJoinPrefs(
 ): CallJoinPrefs {
   const next = { ...readCallJoinPrefs(userId), ...patch };
   try {
-    const all = JSON.parse(localStorage.getItem(KEY) || "{}") as Record<
-      string,
-      Partial<CallJoinPrefs>
-    >;
+    const all = readAll();
     all[userKey(userId)] = next;
     localStorage.setItem(KEY, JSON.stringify(all));
+    // The v1 record has no meaning any more; drop it so it can't be misread.
+    localStorage.removeItem(LEGACY_KEY);
   } catch {
     // Storage unavailable — the in-memory value still applies this session.
   }

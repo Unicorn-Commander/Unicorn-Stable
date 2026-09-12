@@ -21,6 +21,7 @@ import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
 import { useDirectCall } from "@/hooks/useDirectCall";
+import { CALL_KIND_LABEL } from "@/lib/callEntry";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
 import { Avatar } from "@/components/Avatar";
@@ -172,8 +173,13 @@ export function Header({
       // DMs ring the person; channels fall through to a plain join inside
       // startCall. Both used to be `lkConnect()`, which is why a DM call had
       // no way to tell anybody it was happening.
-      void startCall(activeRoomId);
+      void startCall(activeRoomId, { kind: "voice" });
     }
+  }
+
+  function handleVideoCall() {
+    if (lkConnected || lkConnecting || !activeRoomId) return;
+    void startCall(activeRoomId, { kind: "video" });
   }
 
 
@@ -308,23 +314,44 @@ export function Header({
               </span>
             )}
 
-            <button
-              onClick={handleCallToggle}
-              className={clsx(
-                "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                lkConnected
-                  ? "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25"
-                  : "text-emerald-400 hover:bg-emerald-500/15",
-                lkConnecting && "animate-pulse-soft",
-              )}
-              aria-label={lkConnected ? "End call" : "Start call"}
+            {/* Two verbs, no "phone button that might ask": Voice connects
+                straight in (camera off); Video connects camera-on, with the
+                device check only if the user opted in (lib/callEntry). */}
+            {!lkConnected && !lkConnecting && (
+              <Tooltip content={CALL_KIND_LABEL.video} placement="bottom">
+                <button
+                  onClick={handleVideoCall}
+                  className="focus-ring rounded-lg p-2.5 text-emerald-400 transition-colors hover:bg-emerald-500/15 md:p-2"
+                  aria-label={CALL_KIND_LABEL.video}
+                  data-testid="header-video-call"
+                >
+                  <Video className="h-4 w-4" />
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip
+              content={lkConnected ? "End call" : CALL_KIND_LABEL.voice}
+              placement="bottom"
             >
-              {lkConnected ? (
-                <PhoneOff className="h-4 w-4" />
-              ) : (
-                <Phone className="h-4 w-4" />
-              )}
-            </button>
+              <button
+                onClick={handleCallToggle}
+                className={clsx(
+                  "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
+                  lkConnected
+                    ? "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25"
+                    : "text-emerald-400 hover:bg-emerald-500/15",
+                  lkConnecting && "animate-pulse-soft",
+                )}
+                aria-label={lkConnected ? "End call" : CALL_KIND_LABEL.voice}
+                data-testid="header-voice-call"
+              >
+                {lkConnected ? (
+                  <PhoneOff className="h-4 w-4" />
+                ) : (
+                  <Phone className="h-4 w-4" />
+                )}
+              </button>
+            </Tooltip>
 
             {/* Participants toggle is duplicated in the RoomView sub-header;
                 hide this one (and its divider) on phones. */}

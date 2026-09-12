@@ -172,6 +172,8 @@ const voiceValue: VoiceContextValue = {
   audioBlocked: false,
   version: 1,
   connect: async () => true,
+  callPrefs: { checkDevicesBeforeVideo: false },
+  setCallPrefs: async () => ({ checkDevicesBeforeVideo: false }),
   disconnect: () => {},
   startAudio: async () => {},
   repairAudio: async () => {},

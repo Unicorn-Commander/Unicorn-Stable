@@ -1,5 +1,7 @@
+import type { CallKind } from "@/lib/callEntry";
+
 /**
- * Call deep links — `/c/<roomId>?join=1&mic=…&cam=…&video=0|1&ring=0|1`.
+ * Call deep links — `/c/<roomId>?join=1&kind=voice|video&mic=…&cam=…&video=0|1&ring=0|1`.
  *
  * The contract a native control app (and anyone else) programs against is
  * written down in `~/Projects/rook-bin/specs/CALL-DEEPLINK.md`; this module
@@ -8,6 +10,8 @@
  */
 
 export interface CallDeepLink {
+  /** Voice (default) or video call. `video=1` without a kind is a video call. */
+  kind: CallKind;
   /** Requested microphone: a deviceId or a (partial) label. */
   mic: string | null;
   /** Requested camera: a deviceId or a (partial) label. */
@@ -18,7 +22,14 @@ export interface CallDeepLink {
   ring: boolean;
 }
 
-export const CALL_DEEPLINK_PARAMS = ["join", "mic", "cam", "video", "ring"] as const;
+export const CALL_DEEPLINK_PARAMS = ["join", "kind", "mic", "cam", "video", "ring"] as const;
+
+function kind(value: string | null, video: boolean): CallKind {
+  const v = value?.trim().toLowerCase();
+  if (v === "video") return "video";
+  if (v === "voice" || v === "audio") return "voice";
+  return video ? "video" : "voice";
+}
 
 function flag(value: string | null, fallback: boolean): boolean {
   if (value === null) return fallback;
@@ -41,10 +52,13 @@ function text(value: string | null): string | null {
 export function parseCallDeepLink(search: string): CallDeepLink | null {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   if (!flag(params.get("join"), false)) return null;
+  const k = kind(params.get("kind"), flag(params.get("video"), false));
   return {
+    kind: k,
     mic: text(params.get("mic")),
     cam: text(params.get("cam")),
-    video: flag(params.get("video"), false),
+    // `video=` is explicit when present; otherwise the kind decides.
+    video: flag(params.get("video"), k === "video"),
     ring: flag(params.get("ring"), true),
   };
 }

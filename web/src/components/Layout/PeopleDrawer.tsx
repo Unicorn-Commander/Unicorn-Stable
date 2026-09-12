@@ -17,6 +17,7 @@ import {
   Search,
   Star,
   Users,
+  Video,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -27,6 +28,7 @@ import {
 import { Avatar } from "@/components/Avatar";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useDirectCall } from "@/hooks/useDirectCall";
+import type { CallKind } from "@/lib/callEntry";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
@@ -51,7 +53,7 @@ interface PeopleDrawerProps {
   onClose: () => void;
 }
 
-type PersonAction = "message" | "call" | "favorite";
+type PersonAction = "message" | "call" | "video" | "favorite";
 
 const RECENTLY_ACTIVE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -230,10 +232,20 @@ function PersonRow({
             disabled={busy}
             onClick={() => onAction("call")}
             className="focus-ring hidden h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 sm:inline-flex"
-            aria-label={`Call ${person.display_name}`}
-            title="Call"
+            aria-label={`Voice call ${person.display_name}`}
+            title="Voice call"
           >
             <Phone className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onAction("video")}
+            className="focus-ring hidden h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 sm:inline-flex"
+            aria-label={`Video call ${person.display_name}`}
+            title="Video call"
+          >
+            <Video className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
@@ -277,7 +289,8 @@ function PersonRow({
           {(
             [
               ["message", "Message", MessageSquare],
-              ["call", "Call", Phone],
+              ["call", "Voice call", Phone],
+              ["video", "Video call", Video],
               ["favorite", favorite ? "Unfavorite" : "Favorite", Star],
             ] as const
           ).map(([action, label, Icon]) => (
@@ -520,7 +533,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
   );
 
   const openDm = useCallback(
-    async (person: PeopleDirectoryEntry, andCall = false) => {
+    async (person: PeopleDirectoryEntry, call: CallKind | null = null) => {
       if (busyId) return;
       setBusyId(person.id);
       try {
@@ -536,12 +549,12 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
           onClose();
         }
         navigate(`/c/${room.id}`);
-        if (andCall) {
-          await startCall(room.id);
+        if (call) {
+          await startCall(room.id, { kind: call });
         }
       } catch (error) {
         pushToast({
-          title: andCall ? "Couldn't start call" : "Couldn't open chat",
+          title: call ? "Couldn't start call" : "Couldn't open chat",
           body: error instanceof Error ? error.message : "Request failed",
         });
       } finally {
@@ -567,11 +580,11 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
         void toggleFavorite(person.id);
         return;
       }
-      if (action === "call") {
-        void openDm(person, true);
+      if (action === "call" || action === "video") {
+        void openDm(person, action === "call" ? "voice" : "video");
         return;
       }
-      void openDm(person, false);
+      void openDm(person, null);
     },
     [toggleFavorite, openDm],
   );

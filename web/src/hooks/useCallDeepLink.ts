@@ -8,7 +8,7 @@ import {
 } from "@/lib/callDeepLink";
 
 /**
- * `/c/<roomId>?join=1&mic=…&cam=…&video=0|1&ring=0|1` — open a room ALREADY
+ * `/c/<roomId>?join=1&kind=voice|video&mic=…&cam=…&video=0|1&ring=0|1` — open a room ALREADY
  * in its call, devices chosen, no pre-join dialog. The contract is in
  * `~/Projects/rook-bin/specs/CALL-DEEPLINK.md`; a native control app is the
  * first consumer.
@@ -42,6 +42,7 @@ export function useCallDeepLink(routeRoomId: string | undefined): void {
       { replace: true },
     );
     void startCall(routeRoomId, {
+      kind: link.kind,
       skipDeviceCheck: true,
       mic: link.mic,
       cam: link.cam,

@@ -259,10 +259,17 @@ export interface PeopleDirectoryEntry {
   last_seen_at: string | null;
 }
 
+/** Call-entry choices that follow the user across devices (see lib/callEntry). */
+export interface CallPrefs {
+  /** Show the pre-join device check before VIDEO calls. Voice calls never ask. */
+  check_devices_before_video: boolean;
+}
+
 export interface UserPreferences {
   default_agent_id: string | null;
   favorite_people_ids: string[];
   onboarding_checklist?: Record<string, boolean>;
+  call_prefs?: CallPrefs;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1086,6 +1093,11 @@ class StableApiClient {
       "/api/v1/users/me/preferences",
       { favorite_people_ids: participantIds },
     );
+  }
+
+  /** Replace the caller's call-entry preferences (server-side, cross-device). */
+  async setCallPrefs(prefs: CallPrefs): Promise<UserPreferences> {
+    return this.request<UserPreferences>("PUT", "/api/v1/users/me/preferences", { call_prefs: prefs });
   }
 
   async setOnboardingChecklist(checklist: Record<string, boolean>): Promise<UserPreferences> {
