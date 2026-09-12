@@ -49,11 +49,12 @@ export function resolveCallEntry(
   prefs: CallEntryPrefs = DEFAULT_CALL_ENTRY_PREFS,
 ): CallEntry {
   const kind: CallKind = req?.kind ?? (req?.video === true ? "video" : "voice");
-  const video = req?.video ?? kind === "video";
   if (kind === "voice") {
-    // A voice call NEVER asks. Not the preference, not a stale override.
-    return { kind, video, skipDeviceCheck: true };
+    // A voice call NEVER asks and never publishes the camera — not for the
+    // preference, not for a stale override, not for a contradictory flag.
+    return { kind, video: false, skipDeviceCheck: true };
   }
+  const video = req?.video ?? true;
   const skipDeviceCheck =
     req?.skipDeviceCheck ?? !prefs.checkDevicesBeforeVideo;
   return { kind, video, skipDeviceCheck };

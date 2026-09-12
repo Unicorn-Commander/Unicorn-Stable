@@ -53,5 +53,7 @@ describe("resolveCallEntry", () => {
     // `video=1` without a kind is a video call; `video=0` on a video call still joins camera-off.
     expect(resolveCallEntry({ video: true }).kind).toBe("video");
     expect(resolveCallEntry({ kind: "video", video: false }).video).toBe(false);
+    // An explicit voice kind wins over a contradictory camera flag.
+    expect(resolveCallEntry({ kind: "voice", video: true }).video).toBe(false);
   });
 });

@@ -1280,13 +1280,15 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
         {/* One tap per verb, on every screen size: Video call, Voice call —
             both connect immediately (lib/callEntry). Rooms whose call would
             ring people also get "join without ringing" as its own button
-            instead of hiding all three behind a menu. */}
+            instead of hiding all three behind a menu (desktop only — a phone
+            composer has no room for a fourth icon, and a ring there is
+            what the caller wants). */}
         {activeCallRoomId !== roomId && !isConnecting && (
           <>
             {quietJoin && (
               <button
                 onClick={() => void startCall(roomId, { kind: "voice", ring: false })}
-                className="shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring md:p-1.5 md:pb-2.5"
+                className="hidden shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring sm:inline-flex md:p-1.5 md:pb-2.5"
                 aria-label="Join without ringing"
                 title="Join the call without ringing anyone"
                 data-testid="composer-quiet-join"

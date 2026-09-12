@@ -57,8 +57,9 @@ export function parseCallDeepLink(search: string): CallDeepLink | null {
     kind: k,
     mic: text(params.get("mic")),
     cam: text(params.get("cam")),
-    // `video=` is explicit when present; otherwise the kind decides.
-    video: flag(params.get("video"), k === "video"),
+    // `video=` is explicit when present; otherwise the kind decides. An
+    // explicit voice kind is camera-off whatever the flag says.
+    video: k === "voice" ? false : flag(params.get("video"), true),
     ring: flag(params.get("ring"), true),
   };
 }

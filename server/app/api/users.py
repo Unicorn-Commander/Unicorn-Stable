@@ -152,6 +152,7 @@ async def set_my_preferences(
         default_agent_id=val if isinstance(val, str) and val else None,
         favorite_people_ids=_favorite_people(meta),
         onboarding_checklist=_onboarding(meta),
+        call_prefs=_call_prefs(meta),
     )
 
 

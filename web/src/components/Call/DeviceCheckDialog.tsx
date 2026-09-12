@@ -56,32 +56,83 @@ export function DeviceCheckDialog({
   const [sampledMs, setSampledMs] = useState(0);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  // False until the AudioContext is actually running (iOS: after a tap).
+  const [meterLive, setMeterLive] = useState(false);
   const sampleStartRef = useRef(0);
   const wantsCamera = kind === "video";
 
-  // Microphone preview + level meter.
+  // One capture for everything the preview needs. iOS Safari mutes or ends
+  // an earlier capture when a second one starts (single-capture WebKit), so
+  // mic and camera are requested in ONE getUserMedia when a camera is wanted,
+  // falling back to mic-only when the camera is blocked/missing — a blocked
+  // camera must never hide the mic meter. Every await is followed by a
+  // `stopped` check: onRefresh() can change the selected device ids (the
+  // first grant unlocks them), which re-runs this effect, and the superseded
+  // run must not leave a meter loop or an AudioContext behind.
   useEffect(() => {
     let stopped = false;
     let frame = 0;
     let stream: MediaStream | null = null;
     let audio: AudioContext | null = null;
+    const audioConstraint: MediaTrackConstraints | boolean = selected.audioinput
+      ? { deviceId: { exact: selected.audioinput } }
+      : true;
+    const videoConstraint: MediaTrackConstraints | boolean = selected.videoinput
+      ? { deviceId: { exact: selected.videoinput } }
+      : true;
+    const stopStream = (st: MediaStream | null) =>
+      st?.getTracks().forEach((track) => track.stop());
+    // iOS creates the AudioContext suspended when it is not born in a user
+    // gesture (this dialog opens after several awaits). Resume on the first
+    // touch/click; until then the meter reads flat and must not warn.
+    const resumeAudio = () => {
+      if (audio && audio.state !== "running") void audio.resume().catch(() => undefined);
+    };
     void (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: selected.audioinput
-            ? { deviceId: { exact: selected.audioinput } }
-            : true,
-        });
-        if (stopped) return stream.getTracks().forEach((t) => t.stop());
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(
+            wantsCamera
+              ? { audio: audioConstraint, video: videoConstraint }
+              : { audio: audioConstraint },
+          );
+          if (!stopped) setCameraError(null);
+        } catch (error) {
+          if (stopped) return;
+          if (!wantsCamera) throw error;
+          // Camera blocked or missing: keep the call possible, keep the meter.
+          setCameraError(mediaErrorText(error, "Camera"));
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+        }
+        if (stopped) return stopStream(stream);
         setMicError(null);
         await onRefresh(); // permission grants unlock the browser's friendly labels
+        if (stopped) return stopStream(stream);
+
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack && videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoTrack.addEventListener("mute", () =>
+            setCameraError("Camera is not producing video."),
+          );
+          videoTrack.addEventListener("unmute", () => setCameraError(null));
+        }
+
         audio = new AudioContext();
         const analyser = audio.createAnalyser();
         analyser.fftSize = 256;
         audio.createMediaStreamSource(stream).connect(analyser);
+        setMeterLive(audio.state === "running");
+        audio.addEventListener("statechange", () => {
+          if (!stopped) setMeterLive(audio?.state === "running");
+        });
+        resumeAudio();
+        window.addEventListener("pointerdown", resumeAudio, { passive: true });
+        window.addEventListener("keydown", resumeAudio);
         const values = new Uint8Array(analyser.frequencyBinCount);
         sampleStartRef.current = performance.now();
         const sample = () => {
+          if (stopped) return;
           analyser.getByteTimeDomainData(values);
           let sum = 0;
           for (const value of values) sum += ((value - 128) / 128) ** 2;
@@ -97,41 +148,12 @@ export function DeviceCheckDialog({
     return () => {
       stopped = true;
       cancelAnimationFrame(frame);
-      stream?.getTracks().forEach((track) => track.stop());
+      window.removeEventListener("pointerdown", resumeAudio);
+      window.removeEventListener("keydown", resumeAudio);
+      stopStream(stream);
       void audio?.close().catch(() => undefined);
     };
-  }, [selected.audioinput, onRefresh]);
-
-  // Camera preview — separate so a blocked camera never hides the mic meter.
-  useEffect(() => {
-    if (!wantsCamera) return;
-    let stopped = false;
-    let stream: MediaStream | null = null;
-    void (async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: selected.videoinput
-            ? { deviceId: { exact: selected.videoinput } }
-            : true,
-        });
-        if (stopped) return stream.getTracks().forEach((t) => t.stop());
-        setCameraError(null);
-        await onRefresh();
-        if (videoRef.current) videoRef.current.srcObject = stream;
-        stream
-          .getVideoTracks()[0]
-          ?.addEventListener("mute", () =>
-            setCameraError("Camera is not producing video."),
-          );
-      } catch (error) {
-        if (!stopped) setCameraError(mediaErrorText(error, "Camera"));
-      }
-    })();
-    return () => {
-      stopped = true;
-      stream?.getTracks().forEach((track) => track.stop());
-    };
-  }, [wantsCamera, selected.videoinput, onRefresh]);
+  }, [wantsCamera, selected.audioinput, selected.videoinput, onRefresh]);
 
   const picker = (deviceKind: StableDeviceKind, label: string, Icon: typeof Mic) => (
     <label className="block space-y-1.5 text-sm text-slate-300">
@@ -164,16 +186,20 @@ export function DeviceCheckDialog({
       d.label === PREFERRED_AUDIO_INPUT_LABEL ||
       d.label.startsWith(`${PREFERRED_AUDIO_INPUT_LABEL} `),
   );
-  const warning = quietMicWarning({
-    selectedLabel: selectedMic?.label || "",
-    hasPreferredAlternative: !!preferred,
-    level,
-    sampledMs,
-  });
+  // Only judge the mic once the meter is real; a suspended context reads
+  // flat and would call every iPhone "very quiet".
+  const warning = meterLive
+    ? quietMicWarning({
+        selectedLabel: selectedMic?.label || "",
+        hasPreferredAlternative: !!preferred,
+        level,
+        sampledMs,
+      })
+    : null;
 
   return (
     <div
-      className="fixed inset-0 z-[70] overflow-y-auto bg-slate-950/80 backdrop-blur-sm"
+      className="fixed inset-0 z-[70] overflow-y-auto overscroll-contain bg-slate-950/80 backdrop-blur-sm"
       data-testid="device-check-dialog"
     >
       <div className="flex min-h-full items-end justify-center p-3 sm:items-center sm:p-4">
@@ -227,9 +253,11 @@ export function DeviceCheckDialog({
               <span>
                 {micError
                   ? "Unavailable"
-                  : level > 0.02
-                    ? "Receiving audio"
-                    : "No signal"}
+                  : !meterLive
+                    ? "Tap anywhere to start the meter"
+                    : level > 0.02
+                      ? "Receiving audio"
+                      : "No signal"}
               </span>
             </div>
             <div className="h-2 overflow-hidden rounded bg-slate-800">

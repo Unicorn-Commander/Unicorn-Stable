@@ -53,6 +53,10 @@ describe("parseCallDeepLink", () => {
       video: false,
     });
     expect(parseCallDeepLink("?join=1&kind=nonsense")).toMatchObject({ kind: "voice" });
+    expect(parseCallDeepLink("?join=1&kind=voice&video=1")).toMatchObject({
+      kind: "voice",
+      video: false,
+    });
   });
 
   it("accepts true/false spellings and ignores garbage flags", () => {

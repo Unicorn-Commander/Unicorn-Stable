@@ -262,14 +262,19 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   );
   // The server copy wins once we're signed in: a choice made at the desk
   // follows the phone. The local cache covers the moments before it arrives.
+  // A save made while the fetch is in flight must not be clobbered by the
+  // stale response — the sequence counter says which is newer.
+  const callPrefsSaveSeq = useRef(0);
   useEffect(() => {
     setCallPrefsState(readCallJoinPrefs(currentUserId));
     if (!currentUserId) return;
     let cancelled = false;
+    const seqAtFetch = callPrefsSaveSeq.current;
     void api
       .getMyPreferences()
       .then((prefs) => {
         if (cancelled || !prefs.call_prefs) return;
+        if (callPrefsSaveSeq.current !== seqAtFetch) return;
         setCallPrefsState(
           saveCallJoinPrefs(currentUserId, {
             checkDevicesBeforeVideo:
@@ -285,6 +290,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const setCallPrefs = useCallback(
     async (patch: Partial<CallEntryPrefs>): Promise<CallEntryPrefs> => {
       const userId = useAppStore.getState().currentUser?.id;
+      callPrefsSaveSeq.current += 1;
       const next = saveCallJoinPrefs(userId, patch);
       setCallPrefsState(next);
       if (userId) {
@@ -295,8 +301,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           console.warn("call prefs: server save failed, kept locally", e);
           useAppStore.getState().pushToast({
-            title: "Saved on this device only",
-            body: "Couldn't sync the call setting to your account. It will still apply here.",
+            title: "Call setting not synced",
+            body: "Couldn't save it to your account. It applies here until the next sign-in; try again in a moment.",
+            kind: "error",
           });
         }
       }
@@ -1035,9 +1042,20 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       // fire-and-forget shape as the mic — a denied camera must not stall the
       // agent dispatch below.
       if (overrides?.video) {
-        void r.localParticipant
-          .setCameraEnabled(true)
-          .catch((e) => console.error("failed to enable camera on call start", e));
+        void r.localParticipant.setCameraEnabled(true).catch((e) => {
+          // Still a call — say why it's voice-only instead of failing silently.
+          console.error("failed to enable camera on call start", e);
+          const name = e instanceof Error ? e.name : "";
+          useAppStore.getState().pushToast({
+            title: "Camera didn't start",
+            body:
+              name === "NotAllowedError"
+                ? "Camera access is blocked for this site. You're in the call with audio only."
+                : name === "NotFoundError"
+                  ? "No camera was found. You're in the call with audio only."
+                  : "You're in the call with audio only. Try the camera button in the call bar.",
+          });
+        });
       }
 
       // Best-effort unblock of remote-audio playback; if the browser still
