@@ -1,0 +1,10 @@
+import { expect, it } from "vitest";
+import { hasJoinedCast, ringDeadlinePassed, shouldPulseRing } from "./outgoingRing";
+const deadline = "2026-09-12T00:00:45Z", at = Date.parse(deadline);
+it("stops caller ringback once the cast joins", () => expect(shouldPulseRing("ringing", deadline, true, at-1000)).toBe(false));
+it("human-only unanswered calls still ring", () => expect(shouldPulseRing("ringing", deadline, false, at-1000)).toBe(true));
+it("does not replay expired ringback after mobile resume", () => expect(shouldPulseRing("ringing", deadline, false, at+6000)).toBe(false));
+it("terminal calls never ring", () => expect(shouldPulseRing("accepted", deadline, false, at-1000)).toBe(false));
+it("an agent in another room cannot silence the current call", () => expect(hasJoinedCast(true,"room-a","room-b",true)).toBe(false));
+it("matches a joined cast to the actual call room", () => expect(hasJoinedCast(true,"room-a","room-a",true)).toBe(true));
+it("bad deadlines fail silent", () => expect(ringDeadlinePassed("invalid",at)).toBe(true));

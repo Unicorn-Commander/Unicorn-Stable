@@ -1,3 +1,5 @@
+import { useCallUiStore } from "@/stores/callUiStore";
+import { hasJoinedCast, ringDeadlinePassed, shouldPulseRing, RING_BACKSTOP_SLACK_MS } from "@/lib/outgoingRing";
 import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PhoneOutgoing, PhoneOff, PhoneMissed, Check } from "lucide-react";
@@ -27,7 +29,7 @@ import { playCue } from "@/lib/sounds";
 const TERMINAL_LINGER_MS = 4_000;
 const ACCEPTED_LINGER_MS = 2_200;
 /** Slack past the server deadline before the local backstop gives up. */
-const BACKSTOP_SLACK_MS = 6_000;
+const BACKSTOP_SLACK_MS = RING_BACKSTOP_SLACK_MS;
 /** Outgoing ring pulse cadence (softer than incoming banner). */
 const RING_OUT_INTERVAL_MS = 2_400;
 
@@ -69,6 +71,8 @@ export function OutgoingCallStatus() {
   const settle = useOutgoingCallStore((s) => s.settle);
   const clear = useOutgoingCallStore((s) => s.clear);
   const cancelling = useRef(false);
+  const castSeenForCall = useRef<string | null>(null);
+  const activeRoomId = useCallUiStore((s) => s.activeCallRoomId);
   const {
     isConnected,
     remoteParticipants,
@@ -80,6 +84,9 @@ export function OutgoingCallStatus() {
   const expiresAt = call?.expiresAt ?? null;
   const callId = call?.callId ?? null;
   const roomId = call?.roomId ?? null;
+  const callIdentity = call ? `${call.callId ?? "pending"}:${call.roomId}` : null;
+  if (hasJoinedCast(isConnected, activeRoomId, roomId, remoteParticipants.some(isAgentParticipant))) castSeenForCall.current = callIdentity;
+  const agentsJoined = !!callIdentity && castSeenForCall.current === callIdentity;
 
   // Terminal outcomes are read, then they go away on their own.
   // "accepted" clears faster — the call UI itself is now the status surface.
@@ -95,29 +102,37 @@ export function OutgoingCallStatus() {
 
   // Soft outgoing ring while still "Calling…"
   useEffect(() => {
-    if (phase !== "ringing") return;
-    playCue("ring-out");
-    const t = window.setInterval(() => playCue("ring-out"), RING_OUT_INTERVAL_MS);
+    if (!shouldPulseRing(phase, expiresAt, agentsJoined)) return;
+    const pulse = () => {
+      const current = useOutgoingCallStore.getState().call;
+      if (current?.callId !== callId || current?.roomId !== roomId) return;
+      if (shouldPulseRing(current?.phase, current?.expiresAt ?? null, agentsJoined)) playCue("ring-out");
+    };
+    pulse();
+    const t = window.setInterval(pulse, RING_OUT_INTERVAL_MS);
     return () => window.clearInterval(t);
-  }, [key, phase]);
+  }, [key, phase, agentsJoined, expiresAt, callId, roomId]);
 
   // Backstop for a dead socket ONLY — see the header comment.
   useEffect(() => {
     if (phase !== "ringing" || !expiresAt) return;
-    const due = new Date(expiresAt).getTime() + BACKSTOP_SLACK_MS;
-    const ms = Math.max(1_000, due - Date.now());
-    const t = window.setTimeout(() => {
-      useOutgoingCallStore
-        .getState()
-        .settle("no_answer", "They didn't pick up.", { callId });
-    }, ms);
-    return () => window.clearTimeout(t);
-  }, [key, phase, expiresAt, callId]);
+    const settleExpired = () => {
+      if (!ringDeadlinePassed(expiresAt)) return;
+      useOutgoingCallStore.getState().settle("no_answer", "They didn't pick up.", { callId, roomId: roomId ?? undefined });
+    };
+    const due = Date.parse(expiresAt) + BACKSTOP_SLACK_MS;
+    const t = window.setTimeout(settleExpired, Math.max(0, due - Date.now()) || 0);
+    const visible = () => { if (document.visibilityState === "visible") settleExpired(); };
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pageshow", settleExpired);
+    settleExpired();
+    return () => { window.clearTimeout(t); document.removeEventListener("visibilitychange", visible); window.removeEventListener("pageshow", settleExpired); };
+  }, [key, phase, expiresAt, callId, roomId]);
 
   // LiveKit fallback: peer joined the media room while we still show Calling.
   // Ignores agents — human answer is what clears the ring.
   useEffect(() => {
-    if (phase !== "ringing" || !isConnected || !roomId) return;
+    if (phase !== "ringing" || !isConnected || !roomId || activeRoomId !== roomId) return;
     const humans = remoteParticipants.filter((p) => !isAgentParticipant(p));
     if (humans.length === 0) return;
     const name =
@@ -139,6 +154,7 @@ export function OutgoingCallStatus() {
     call?.label,
     settle,
     _voiceVersion,
+    activeRoomId,
   ]);
 
   async function handleCancel() {
@@ -175,16 +191,16 @@ export function OutgoingCallStatus() {
           <div className="glass-heavy overflow-hidden rounded-2xl shadow-pop">
             <div className="flex items-center gap-3 p-3.5">
               <div className="shrink-0 rounded-full bg-white/[0.06] p-2.5">
-                <PhaseIcon phase={call.phase} />
+                <PhaseIcon phase={call.phase === "ringing" && agentsJoined ? "accepted" : call.phase} />
               </div>
               <div className="min-w-0 flex-1">
                 <p
                   className={`truncate text-sm font-semibold ${PHASE_TONE[call.phase]}`}
                 >
-                  {PHASE_HEADLINE[call.phase]}
-                  {call.phase === "ringing" ? ` ${call.label}` : ""}
+                  {call.phase === "ringing" && agentsJoined ? "Agents joined" : PHASE_HEADLINE[call.phase]}
+                  {call.phase === "ringing" && !agentsJoined ? ` ${call.label}` : ""}
                 </p>
-                <p className="truncate text-xs text-slate-400">{call.detail}</p>
+                <p className="text-xs text-slate-400">{call.phase === "ringing" && agentsJoined ? "People haven’t answered yet. Ringback silenced." : call.detail}</p>
               </div>
             </div>
             <div className="px-3.5 pb-3.5">
@@ -194,7 +210,7 @@ export function OutgoingCallStatus() {
                   className="focus-ring flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-rose-500/90 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
                 >
                   <PhoneOff className="h-4 w-4" />
-                  Cancel
+                  {agentsJoined ? "Stop ringing people" : "Cancel"}
                 </button>
               ) : (
                 <button

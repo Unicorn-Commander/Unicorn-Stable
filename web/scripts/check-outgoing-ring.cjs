@@ -1,0 +1,21 @@
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const fs=require("fs"),path=require("path");
+(async()=>{const browser=await chromium.launch({headless:true,args:["--no-sandbox","--autoplay-policy=no-user-gesture-required"]});try{
+ const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];page.on("pageerror",e=>errors.push(e.message));
+ await page.addInitScript(()=>{window.ringTones=0;const original=AudioContext.prototype.createOscillator;AudioContext.prototype.createOscillator=function(...args){window.ringTones++;return original.apply(this,args);};});
+ await page.goto("http://127.0.0.1:5191/fixtures/outgoing-ring.html");
+ await page.getByRole("button",{name:"Begin ring",exact:true}).click();
+ await page.waitForFunction(()=>window.ringTones>0);
+ await page.getByRole("button",{name:"Agent joins",exact:true}).click();
+ await page.getByText("Agents joined",{exact:true}).waitFor();
+ const tones=await page.evaluate(()=>window.ringTones);await page.waitForTimeout(2800);
+ if(await page.evaluate(()=>window.ringTones)!==tones)throw Error("Ringback continued after cast join");
+ await page.getByRole("button",{name:"Agent leaves",exact:true}).click();await page.waitForTimeout(2800);
+ if(await page.evaluate(()=>window.ringTones)!==tones)throw Error("Ringback restarted after cast left");
+ const out=path.resolve("../docs/receipts/voice-polish");fs.mkdirSync(out,{recursive:true});
+ await page.locator("summary").click();await page.getByRole("button",{name:"Join without ringing",exact:true}).waitFor();
+ await page.screenshot({path:path.join(out,"outgoing-ring.png")});
+ await page.getByRole("button",{name:"Join without ringing",exact:true}).click();await page.getByText("Quiet joins: 1; rings: 0",{exact:true}).waitFor();
+ await page.getByRole("button",{name:"Resume past deadline",exact:true}).click();await page.getByText("No answer",{exact:true}).waitFor();
+ if(errors.length)throw Error(errors.join("\n"));console.log("PASS cast join stops scheduled ring tones; quiet menu dispatch; expired resume; zero browser errors");
+ }finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1)});

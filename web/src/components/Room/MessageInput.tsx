@@ -1,3 +1,5 @@
+import { CallStartMenu } from "@/components/Call/CallStartMenu";
+import { residentAgentIds } from "@/services/api";
 import {
   useState,
   useRef,
@@ -372,6 +374,8 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const { isConnected, isConnecting } = useStableRoom();
   // The START-a-call seam: a DM rings the person, a channel just joins.
   const { startCall } = useDirectCall();
+  const callRoom = useAppStore((s) => s.rooms.find((room) => room.id === roomId));
+  const quietJoin = callRoom?.type === "group_dm" || (callRoom?.type === "dm" && residentAgentIds(callRoom).length > 0);
 
   // Brigade roster — all 22 personas. Fetched once, cached in react-query.
   // We let users @mention any agent regardless of room membership; the agent
@@ -1270,7 +1274,8 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             )}
         </div>
 
-        {activeCallRoomId !== roomId && !isConnecting && (
+        {activeCallRoomId !== roomId && !isConnecting && (quietJoin ?
+          <CallStartMenu onRing={handleStartCall} onQuiet={() => void startCall(roomId, { ring: false })} /> :
           <button
             onClick={handleStartCall}
             className="shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring md:p-1.5 md:pb-2.5"
