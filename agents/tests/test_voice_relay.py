@@ -933,3 +933,42 @@ class AudioUngateTests(TestCase):
         b = SimpleNamespace(next_in_chain=a)
         a.next_in_chain = b
         _unblock_audio_output(SimpleNamespace(output=SimpleNamespace(audio=a)))
+
+
+class ChunkSpokenTests(TestCase):
+    """Long replies are spoken sentence by sentence (2026-09-13): one Kokoro
+    stream for an 857-character line died 46 s in and took the last third of
+    the reply — and the face — with it."""
+
+    def test_a_short_line_is_one_chunk(self) -> None:
+        from voice_relay.agent import chunk_spoken
+
+        self.assertEqual(chunk_spoken("The deploy is green."), ["The deploy is green."])
+        self.assertEqual(chunk_spoken("   "), [])
+
+    def test_long_text_splits_on_sentences_under_the_limit(self) -> None:
+        from voice_relay.agent import SPOKEN_CHUNK_CHARS, chunk_spoken
+
+        text = " ".join(f"Sentence number {i} says a few more words than that." for i in range(20))
+        chunks = chunk_spoken(text)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), SPOKEN_CHUNK_CHARS)
+            self.assertTrue(chunk.endswith("."), chunk)
+        self.assertEqual(" ".join(chunks), text)
+
+    def test_a_run_on_sentence_breaks_at_a_comma_or_space_not_mid_word(self) -> None:
+        from voice_relay.agent import chunk_spoken
+
+        text = ", ".join(f"clause {i} with some words" for i in range(30))
+        chunks = chunk_spoken(text, limit=80)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 80)
+        self.assertEqual(" ".join(chunks).replace(",", ""), text.replace(",", ""))
+
+    def test_newlines_are_boundaries(self) -> None:
+        from voice_relay.agent import chunk_spoken
+
+        chunks = chunk_spoken("first line\nsecond line\nthird line", limit=15)
+        self.assertEqual(chunks, ["first line", "second line", "third line"])

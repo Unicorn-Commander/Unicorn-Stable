@@ -167,6 +167,16 @@ MAX_SPOKEN_CHARS = 900
 #: Hard ceiling on waiting for one line's playout, whatever its length.
 PLAYOUT_TIMEOUT_S = 45.0
 
+#: A line longer than this is spoken as a run of sentence-sized chunks, each
+#: its own synthesis request and its own ``say()``. Measured 2026-09-13 in
+#: #persephone: an 857-character reply went to Kokoro as ONE stream, the
+#: server threw a RuntimeException 46 s in, livekit logged "partial audio
+#: already sent, skip retrying" and the last third of the reply — and the
+#: face, whose mouth follows the audio — went dead. A failed chunk costs one
+#: sentence and the next one is a fresh request. Chunk boundaries are also
+#: where a human talking over the relay can take the floor.
+SPOKEN_CHUNK_CHARS = 240
+
 #: Characters of speech per second, measured against Kokoro output. Used to
 #: estimate how long a line takes to say.
 SPEECH_CHARS_PER_SECOND = 13.0
@@ -228,6 +238,44 @@ def speakable(text: str, *, limit: int = MAX_SPOKEN_CHARS) -> str:
         out = (window[: cut + 1] if cut > limit * 0.6 else window).rstrip()
         out += " …the rest is in the chat."
     return out
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
+
+
+def chunk_spoken(text: str, *, limit: int = SPOKEN_CHUNK_CHARS) -> list[str]:
+    """Split a spoken line into sentence-sized chunks of at most ``limit``
+    characters. A line that fits is returned whole; sentences are packed
+    greedily so a chunk ends on a full stop wherever one exists; a single
+    sentence longer than ``limit`` breaks at its last comma or space."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    pieces: list[str] = []
+    for sentence in _SENTENCE_END.split(text):
+        sentence = sentence.strip()
+        while len(sentence) > limit:
+            window = sentence[:limit]
+            cut = max(window.rfind(", "), window.rfind(" "))
+            if cut < limit * 0.4:
+                cut = limit
+            pieces.append(sentence[:cut].rstrip(", ").strip())
+            sentence = sentence[cut:].lstrip(", ").strip()
+        if sentence:
+            pieces.append(sentence)
+    chunks: list[str] = []
+    current = ""
+    for piece in pieces:
+        if current and len(current) + 1 + len(piece) > limit:
+            chunks.append(current)
+            current = piece
+        else:
+            current = f"{current} {piece}".strip()
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def activation_from_metadata(metadata: Any) -> str:
@@ -714,6 +762,13 @@ class VoiceRelayAgent(StableAgent):
         self._join_identity: str = ""
         self._queue: asyncio.Queue[SpokenLine] = asyncio.Queue()
         self._speaker_task: asyncio.Task[None] | None = None
+        #: Barge-in (2026-09-13). True while ``_say`` holds the floor; a human
+        #: line that becomes a chat turn while it is set drops the rest of the
+        #: reply, so the person is not talked over by a sentence they already
+        #: interrupted. ``_speech_handle`` is the chunk playing right now.
+        self._speaking = False
+        self._barge_in = False
+        self._speech_handle: Any = None
         #: Faces + cast (2026-09-02). Both OFF unless the room says otherwise.
         self._video = False
         self._multi = False
@@ -1227,9 +1282,24 @@ class VoiceRelayAgent(StableAgent):
 
             # Chat is a different bar than the transcript, and BOTH ears share
             # one rule for it.
-            self._maybe_persist(speaker, text, ear="stt")
+            if self._maybe_persist(speaker, text, ear="stt") and self._speaking:
+                self._interrupt_speech(speaker=speaker, chars=len(text))
         except Exception:
             logger.warning("voice_relay_own_stt_failed", exc_info=True)
+
+    def _interrupt_speech(self, *, speaker: str, chars: int) -> None:
+        """A human took the floor mid-reply: stop the chunk playing now and
+        let ``_say`` drop the ones after it. The reply text is still in the
+        chat; only the reading-aloud yields."""
+        self._barge_in = True
+        handle = self._speech_handle
+        interrupt = getattr(handle, "interrupt", None)
+        if callable(interrupt):
+            try:
+                interrupt()
+            except Exception:
+                logger.debug("voice_relay_interrupt_failed", exc_info=True)
+        logger.info("voice_relay_interrupted", speaker=speaker, chars=chars)
 
     def _maybe_persist(self, speaker: str, text: str, *, ear: str) -> bool:
         """ONE decision for both ears: does this utterance become a chat message?
@@ -1514,65 +1584,91 @@ class VoiceRelayAgent(StableAgent):
         puppet = getattr(self, "_puppet", None)
         if puppet is not None:
             puppet.begin_playout()
+        # One say() per sentence-sized chunk (see SPOKEN_CHUNK_CHARS): a
+        # synthesis fault costs one chunk, and a human who starts talking gets
+        # the floor at the next boundary instead of after the whole reply.
+        chunks = chunk_spoken(text) or [text]
+        spoken_chunks = 0
+        self._speaking = True
+        self._barge_in = False
+        self._speech_handle = None
         try:
-            if self._uses_session_voice(line.voice):
-                result = session.say(text)
-            else:
-                # livekit-agents 1.6.7: ``say(text, *, audio=AsyncIterable[AudioFrame])``
-                # plays supplied audio instead of running the session's TTS, so
-                # one session speaks in any number of voices without swapping
-                # its plugin under the speak lock.
-                frames = await self._synthesize(line.voice, text)
-                if frames:
-                    result = session.say(text, audio=_replay(frames))
-                    # The tile still says Rook; the caption says whose words
-                    # these were.
-                    if self._captions is not None:
-                        self._captions.publish_agent_final(
-                            text, name=line.name, participant_id=line.sender
-                        )
-                else:
-                    logger.warning(
-                        "voice_relay_voice_fallback",
-                        voice=line.voice,
+            for index, chunk in enumerate(chunks):
+                if self._barge_in:
+                    logger.info(
+                        "voice_relay_reply_cut",
+                        spoken_chunks=spoken_chunks,
+                        dropped_chunks=len(chunks) - index,
                         sender=line.sender,
-                        fallback=self._persona_voice,
                     )
-                    result = session.say(text)
-            # Version-tolerant across livekit-agents 1.x: say() may return a
-            # SpeechHandle, an awaitable, or an awaitable resolving to a handle.
-            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
-                result = await result
-            for waiter_name in ("wait_for_playout", "join"):
-                waiter = getattr(result, waiter_name, None)
-                if callable(waiter):
-                    out = waiter()
-                    if asyncio.iscoroutine(out) or isinstance(out, asyncio.Future):
-                        # BOUNDED. The wait exists to serialise speech, not to
-                        # guarantee it: a playout handle that never resolves would
-                        # hold the queue forever and every later line would be lost
-                        # in silence — a worse failure than one line overlapping.
-                        # Observed 69s for a 67-character line in a synthetic call,
-                        # so the ceiling is generous but real.
-                        budget = playout_budget(text)
-                        try:
-                            await asyncio.wait_for(out, timeout=budget)
-                        except asyncio.TimeoutError:
-                            # Expected on this deployment; the audio was handed to
-                            # the session long ago. Debug, not warning — a line per
-                            # reply at warning level is noise that hides real faults.
-                            logger.debug(
-                                "voice_relay_playout_wait_elapsed",
-                                chars=len(text),
-                                seconds=round(budget, 1),
-                            )
                     break
+                if self._uses_session_voice(line.voice):
+                    result = session.say(chunk)
+                else:
+                    # livekit-agents 1.6.7: ``say(text, *, audio=AsyncIterable[AudioFrame])``
+                    # plays supplied audio instead of running the session's TTS, so
+                    # one session speaks in any number of voices without swapping
+                    # its plugin under the speak lock.
+                    frames = await self._synthesize(line.voice, chunk)
+                    if frames:
+                        result = session.say(chunk, audio=_replay(frames))
+                        # The tile still says Rook; the caption says whose words
+                        # these were.
+                        if self._captions is not None:
+                            self._captions.publish_agent_final(
+                                chunk, name=line.name, participant_id=line.sender
+                            )
+                    else:
+                        logger.warning(
+                            "voice_relay_voice_fallback",
+                            voice=line.voice,
+                            sender=line.sender,
+                            fallback=self._persona_voice,
+                        )
+                        result = session.say(chunk)
+                # Version-tolerant across livekit-agents 1.x: say() may return a
+                # SpeechHandle, an awaitable, or an awaitable resolving to a handle.
+                if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                    result = await result
+                self._speech_handle = result
+                for waiter_name in ("wait_for_playout", "join"):
+                    waiter = getattr(result, waiter_name, None)
+                    if callable(waiter):
+                        out = waiter()
+                        if asyncio.iscoroutine(out) or isinstance(out, asyncio.Future):
+                            # BOUNDED. The wait exists to serialise speech, not to
+                            # guarantee it: a playout handle that never resolves would
+                            # hold the queue forever and every later line would be lost
+                            # in silence — a worse failure than one line overlapping.
+                            # Observed 69s for a 67-character line in a synthetic call,
+                            # so the ceiling is generous but real.
+                            budget = playout_budget(chunk)
+                            try:
+                                await asyncio.wait_for(out, timeout=budget)
+                            except asyncio.TimeoutError:
+                                # Expected on this deployment; the audio was handed to
+                                # the session long ago. Debug, not warning — a line per
+                                # reply at warning level is noise that hides real faults.
+                                logger.debug(
+                                    "voice_relay_playout_wait_elapsed",
+                                    chars=len(chunk),
+                                    seconds=round(budget, 1),
+                                )
+                        break
+                spoken_chunks += 1
         finally:
+            self._speaking = False
+            self._barge_in = False
+            self._speech_handle = None
             if puppet is not None:
                 puppet.end_playout()
         self._touch_window()
         logger.info(
-            "voice_relay_spoke", chars=len(text), sender=line.sender, voice=line.voice
+            "voice_relay_spoke",
+            chars=len(text),
+            chunks=spoken_chunks,
+            sender=line.sender,
+            voice=line.voice,
         )
 
     async def _shutdown_steps(self) -> None:  # pragma: no cover — lifecycle

@@ -458,3 +458,47 @@ class ServedVoiceTests(TestCase):
 
         for persona in ("rook", "majik", "the-general"):
             self.assertIsNotNone(known_kokoro_voice(_resolve_kokoro_voice(persona, None)))
+
+
+class ChunkedSayTests(IsolatedAsyncioTestCase):
+    """A long line becomes several say() calls; a human taking the floor
+    between chunks drops the rest (2026-09-13 barge-in)."""
+
+    async def test_a_long_persona_line_is_said_in_chunks(self) -> None:
+        from voice_relay.agent import SPOKEN_CHUNK_CHARS, chunk_spoken
+
+        agent = _agent(_session=_FakeSession())
+        text = " ".join(f"Sentence {i} carries a handful of words." for i in range(25))
+        await agent._say(SpokenLine("am_echo", text, ROOK, "Rook"))
+        said = [t for t, _ in agent._session.calls]
+        self.assertEqual(said, chunk_spoken(text))
+        self.assertGreater(len(said), 1)
+        self.assertTrue(all(len(t) <= SPOKEN_CHUNK_CHARS for t in said))
+        self.assertFalse(agent._speaking)
+
+    async def test_barge_in_drops_the_remaining_chunks(self) -> None:
+        agent = _agent(_session=_FakeSession())
+        real_say = agent._session.say
+
+        def say_then_interrupt(text, **kw):
+            handle = real_say(text, **kw)
+            # The human speaks during the first chunk.
+            agent._interrupt_speech(speaker="aaron_1", chars=12)
+            return handle
+
+        agent._session.say = say_then_interrupt
+        text = " ".join(f"Sentence {i} carries a handful of words." for i in range(25))
+        await agent._say(SpokenLine("am_echo", text, ROOK, "Rook"))
+        self.assertEqual(len(agent._session.calls), 1)
+        self.assertFalse(agent._speaking)
+        self.assertFalse(agent._barge_in)
+        self.assertIsNone(agent._speech_handle)
+
+    async def test_interrupt_calls_the_live_handle(self) -> None:
+        agent = _agent(_session=_FakeSession())
+        handle = SimpleNamespace(interrupt=lambda: setattr(handle, "hit", True))
+        agent._speech_handle = handle
+        agent._speaking = True
+        agent._interrupt_speech(speaker="aaron_1", chars=5)
+        self.assertTrue(getattr(handle, "hit", False))
+        self.assertTrue(agent._barge_in)
