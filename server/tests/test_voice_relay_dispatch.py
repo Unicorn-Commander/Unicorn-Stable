@@ -327,6 +327,48 @@ class FaceAndCastFlagPassthroughTests(IsolatedAsyncioTestCase):
         )
         self.assertNotIn("voice_relay_video", lk.dispatch_agent.await_args.kwargs["metadata"])
 
+    async def test_face_style_rides_dispatch_and_sync(self) -> None:
+        """A room set to a tall, plateless face (the phone 1:1 shape) must
+        reach the worker; before 2026-09-12 these keys were not in the
+        whitelist and the relay kept publishing the 640x360 show face."""
+        import json as _json
+
+        from app.api.webhooks import _sync_voice_metadata
+
+        lk = _livekit(["aaron_1111"])
+        await _ensure_voice_relay(lk, _room({"voice_relay_source": ROOK}))
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertNotIn("voice_relay_face_shape", meta)
+        self.assertNotIn("voice_relay_face_plate", meta)
+
+        row = {
+            "voice_relay_source": ROOK,
+            "voice_relay_video": True,
+            "voice_relay_face_shape": "tall",
+            "voice_relay_face_plate": "false",
+        }
+        lk = _livekit(["aaron_1111"])
+        await _ensure_voice_relay(lk, _room(row))
+        meta = lk.dispatch_agent.await_args.kwargs["metadata"]
+        self.assertEqual(meta["voice_relay_face_shape"], "tall")
+        self.assertEqual(meta["voice_relay_face_plate"], "false")
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(return_value={})
+        await _sync_voice_metadata(lk, _room({**row, "voice_relay_face_plate": False}))
+        merged = _json.loads(lk.update_room_metadata.await_args.args[1])
+        self.assertEqual(merged["voice_relay_face_shape"], "tall")
+        self.assertEqual(merged["voice_relay_face_plate"], "false")
+
+        # Junk shape is dropped, not forwarded.
+        lk = _livekit(["aaron_1111"])
+        await _ensure_voice_relay(
+            lk, _room({"voice_relay_source": ROOK, "voice_relay_face_shape": "portrait"})
+        )
+        self.assertNotIn(
+            "voice_relay_face_shape", lk.dispatch_agent.await_args.kwargs["metadata"]
+        )
+
     async def test_sync_carries_true_and_false_as_strings(self) -> None:
         import json as _json
 

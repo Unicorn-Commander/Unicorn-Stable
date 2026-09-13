@@ -235,9 +235,31 @@ _VOICE_META_KEYS = (
     # DB, "true"/"false" strings in LiveKit metadata; both default off.
     "voice_relay_video",
     "voice_relay_multi",
+    # Face style (2026-09-12): shape wide|square|tall + name plate on/off.
+    # The worker reads ONLY LiveKit metadata, so a key missing from this
+    # list is a setting that silently never applies — a room set to "tall"
+    # kept publishing a 640x360 face until these two were carried.
+    "voice_relay_face_shape",
+    "voice_relay_face_plate",
 )
 
 _VOICE_FLAG_KEYS = ("voice_relay_video", "voice_relay_multi")
+_FACE_SHAPES = ("wide", "square", "tall")
+
+
+def _face_style_meta(meta: dict[str, Any] | None) -> dict[str, str]:
+    """``voice_relay_face_shape`` / ``voice_relay_face_plate`` as the strings
+    LiveKit metadata carries. Only what the row actually says: an unset key
+    is left out so the worker's own defaults (wide, plate on) apply."""
+    data = meta if isinstance(meta, dict) else {}
+    out: dict[str, str] = {}
+    shape = str(data.get("voice_relay_face_shape") or "").strip().lower()
+    if shape in _FACE_SHAPES:
+        out["voice_relay_face_shape"] = shape
+    plate = data.get("voice_relay_face_plate")
+    if plate is not None and plate != "":
+        out["voice_relay_face_plate"] = "true" if _flag_on(plate) else "false"
+    return out
 
 
 def _flag_on(value: Any) -> bool:
@@ -297,6 +319,11 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
             # the "false" the worker reads rather than a stale "true".
             if v is not None and v != "":
                 wanted[k] = "true" if _flag_on(v) else "false"
+        elif k == "voice_relay_face_shape":
+            # Both face-style keys at once (plate rides with shape).
+            wanted.update(_face_style_meta(meta))
+        elif k == "voice_relay_face_plate":
+            continue
         elif isinstance(v, str) and v.strip():
             wanted[k] = v
         elif isinstance(v, (int, float)) and k == "voice_relay_window_seconds":
@@ -411,6 +438,8 @@ async def _ensure_voice_relay(
                     for k in _VOICE_FLAG_KEYS
                     if _flag_on(room_meta.get(k))
                 },
+                # Face shape + plate, only when the room set them.
+                **_face_style_meta(room_meta),
                 # Join AS the participant we speak for, so the call tile
                 # resolves to that character's name and art. `agent-relay`
                 # names nobody, which is why the tile showed "Stable Relay"
