@@ -108,6 +108,21 @@ class Settings(BaseSettings):
     projectops_mcp_url: str = "https://api.projectops.magicunicorn.dev/api/v1/mcp"
     projectops_dashboard_url: str = "https://projectops.magicunicorn.dev"
 
+    # -- Project-Ops → Stable signed webhook receiver (app/api/project_ops.py) --
+    # Shared HMAC secret for POST /api/v1/webhooks/project-ops. This is the
+    # per-endpoint signing secret Project-Ops shows once when the workspace
+    # subscribes its webhook endpoint (whsec_…). When UNSET the receiver is
+    # inert (returns 503) — flag off = no behaviour change.
+    projectops_webhook_secret: str = ""
+    # Replay window for webhook envelopes: an envelope older than this many
+    # seconds is rejected (and a small future skew is tolerated).
+    projectops_webhook_max_age_seconds: int = 300
+    # Mapping of Project-Ops assignee user id → Stable room name. JSON object:
+    #   {"<project-ops-user-id>": "astra", ...}
+    # Only mapped assignees get a message; unmapped events are acknowledged and
+    # dropped. Empty = receiver accepts but maps nothing (inert).
+    projectops_room_mapping: dict[str, str] = {}
+
     # When True, the backend hooks user messages in agent-attached rooms
     # through Brigade""s chat API and posts the reply back via /internal/agent-messages,
     # bypassing the LiveKit voice pipeline. Lets agents respond in text DMs
@@ -423,6 +438,35 @@ class Settings(BaseSettings):
                     pass
             return [origin.strip() for origin in s.split(",") if origin.strip()]
         return v
+
+    @field_validator("projectops_room_mapping", mode="before")
+    @classmethod
+    def parse_projectops_room_mapping(cls, v: str | dict[str, str]) -> dict[str, str]:
+        # Accept either a Python dict (pydantic-settings already JSON-decoded a
+        # complex field) or a raw JSON-object string from the environment. A
+        # malformed value fails boot loudly rather than silently mapping nobody.
+        if isinstance(v, dict):
+            return {str(k): str(val) for k, val in v.items()}
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return {}
+            import json
+
+            try:
+                parsed = json.loads(s)
+            except ValueError as exc:
+                raise ValueError(
+                    "PROJECTOPS_ROOM_MAPPING must be a JSON object of "
+                    "{project_ops_user_id: room_name}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "PROJECTOPS_ROOM_MAPPING must be a JSON object of "
+                    "{project_ops_user_id: room_name}"
+                )
+            return {str(k): str(val) for k, val in parsed.items()}
+        return {}
 
     @property
     def instance_org_id(self) -> str | None:

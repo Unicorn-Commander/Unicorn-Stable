@@ -28,6 +28,7 @@ from app.api.help import router as help_router
 from app.api.internal_knowledge import router as internal_knowledge_router
 from app.api.knowledge import router as knowledge_router
 from app.api.messages import router as messages_router
+from app.api.project_ops import router as project_ops_router
 from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gateway
 from app.api.broadcast import router as broadcast_router
 from app.api.calls import router as calls_router
@@ -461,6 +462,7 @@ def create_app() -> FastAPI:
     app.include_router(help_router, prefix="/api/v1", tags=["Help"])
     app.include_router(uploads_router, prefix="/api/v1", tags=["Uploads"])
     app.include_router(webhooks_router, prefix="/api/v1", tags=["Webhooks"])
+    app.include_router(project_ops_router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(push_router, prefix="/api/v1", tags=["Push"])
     app.include_router(ws_router, tags=["WebSocket"])
 
