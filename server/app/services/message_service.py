@@ -133,6 +133,7 @@ class MessageService:
         content_type: str = "text",
         metadata: dict | None = None,
         parent_id: uuid.UUID | None = None,
+        message_id: uuid.UUID | None = None,
     ) -> Message:
         """Persist a message and broadcast it via LiveKit data channel."""
         # Verify sender is a member of the room
@@ -179,6 +180,10 @@ class MessageService:
             metadata_=metadata,
             parent_id=parent_id,
         )
+        # Webhook retries share a deterministic ID; the primary key makes their
+        # message and activity side effects atomic even across concurrent requests.
+        if message_id is not None:
+            message.id = message_id
         self._db.add(message)
         # Flush first: activity rows have a real message FK and the mention
         # counters/event index must commit with the message, never after it.

@@ -53,7 +53,7 @@ def verify_signature(
     if not secret:
         return False
     digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"sha256={digest}", signature_header)
+    return hmac.compare_digest(f"sha256={digest}".encode(), signature_header.encode())
 
 
 def parse_envelope(raw_body: bytes) -> dict[str, Any] | None:
@@ -82,7 +82,7 @@ def is_timestamp_fresh(
     except ValueError:
         return False
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        return False
     age = (datetime.now(timezone.utc) - dt).total_seconds()
     if age < -future_skew_seconds:
         return False  # from the future beyond tolerated skew

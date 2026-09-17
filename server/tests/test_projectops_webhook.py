@@ -116,6 +116,11 @@ def test_timestamp_fresh_accepts_naive_and_z_suffix():
     # "Z" suffix is normalized before parsing.
     now_z = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     assert is_timestamp_fresh(now_z, max_age_seconds=300) is True
+    assert is_timestamp_fresh(datetime.now().isoformat(), max_age_seconds=300) is False
+
+
+def test_non_ascii_signature_is_rejected():
+    assert not verify_signature(SECRET, b"{}", "sha256=é")
 
 
 # ── assignee extraction ──────────────────────────────────────────────────────
@@ -187,7 +192,12 @@ def test_build_message_comment_includes_snippet():
 def test_build_message_status():
     msg = build_message(
         "task.status_changed",
-        {"taskId": "t1", "title": "Ship it", "fromStatus": "PENDING", "toStatus": "DONE"},
+        {
+            "taskId": "t1",
+            "title": "Ship it",
+            "fromStatus": "PENDING",
+            "toStatus": "DONE",
+        },
     )
     assert "Status changed" in msg
     assert "PENDING" in msg and "DONE" in msg

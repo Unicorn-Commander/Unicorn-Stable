@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     # subscribes its webhook endpoint (whsec_…). When UNSET the receiver is
     # inert (returns 503) — flag off = no behaviour change.
     projectops_webhook_secret: str = ""
+    # Bind this endpoint's secret and assignee mapping to ONE Project-Ops workspace.
+    # Missing binding leaves the integration disabled; other workspaces get 403.
+    projectops_workspace_id: str = ""
     # Replay window for webhook envelopes: an envelope older than this many
     # seconds is rejected (and a small future skew is tolerated).
     projectops_webhook_max_age_seconds: int = 300
