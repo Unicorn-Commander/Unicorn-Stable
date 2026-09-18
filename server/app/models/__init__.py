@@ -9,6 +9,8 @@ from app.models.artifact import (
     ArtifactSuggestion,
     ArtifactVersion,
 )
+from app.models.broadcast_token import BroadcastToken
+from app.models.guest_access import GuestInvite, GuestSession
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.call_egress import CallEgress
 from app.models.knowledge import (
@@ -55,4 +57,7 @@ __all__ = [
     "AgentAccessGrant",
     "AgentAccessEffect",
     "AgentGatewayKey",
+    "BroadcastToken",
+    "GuestInvite",
+    "GuestSession",
 ]
