@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.models import (  # noqa: F401
     AgentConfig,
     AgentEvent,
+    AgentGatewayKey,
     AgentRun,
     Artifact,
     ArtifactSuggestion,

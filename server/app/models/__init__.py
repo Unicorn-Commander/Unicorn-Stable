@@ -1,5 +1,6 @@
 from app.models.agent import AgentConfig, AgentEvent, AgentRun, AgentRunStatus, AgentType
 from app.models.agent_access import AgentAccessEffect, AgentAccessGrant
+from app.models.agent_gateway_key import AgentGatewayKey
 from app.models.activity import ActivityEvent, ActivityEventType
 from app.models.artifact import (
     Artifact,
@@ -53,4 +54,5 @@ __all__ = [
     "ActivityEventType",
     "AgentAccessGrant",
     "AgentAccessEffect",
+    "AgentGatewayKey",
 ]
