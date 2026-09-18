@@ -135,6 +135,25 @@ jobs:
           alembic upgrade head
           alembic downgrade base
           alembic upgrade head
+          # The flagship scenario, measured 2026-09-18: a database stamped BELOW
+          # 018a that already carries agent_gateway_keys from the out-of-band
+          # server/migrations/agent_gateway_keys.sql. 018a must skip the create,
+          # not raise DuplicateTable, or that database can never upgrade again.
+          alembic downgrade 018_call_egress
+          python - <<'PY'
+          import asyncio, os, pathlib, asyncpg
+          async def main():
+              conn = await asyncpg.connect(
+                  os.environ["ADMIN_DSN"].replace("/postgres", "/stable_migration_test")
+              )
+              try:
+                  await conn.execute(pathlib.Path("migrations/agent_gateway_keys.sql").read_text())
+                  assert await conn.fetchval("select to_regclass('public.agent_gateway_keys') is not null")
+              finally:
+                  await conn.close()
+          asyncio.run(main())
+          PY
+          alembic upgrade head
 
   agents:
     runs-on: ubuntu-latest

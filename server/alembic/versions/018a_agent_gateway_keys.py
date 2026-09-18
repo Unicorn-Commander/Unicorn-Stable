@@ -21,9 +21,13 @@ unchanged. It is inserted MID-chain (between 018 and 019) rather than appended a
 head because 019's upgrade already assumes the table exists; appending a creator
 AFTER 019 would leave the fresh-DB path broken at 019 first.
 
-Existing databases are unaffected: they already carry the table from the
-out-of-band SQL and are stamped at head (020), so ``alembic upgrade head`` is a
-no-op there and this node never executes against a table that already exists.
+Existing databases already carry the table from the out-of-band SQL, and they are
+NOT all stamped at head. Measured 2026-09-18: bigboy's dogfood database is at 020,
+but the FLAGSHIP database is stamped ``017_guest_row_retention`` and has the table.
+Its next ``alembic upgrade head`` walks 018 -> 018a -> 019, so an unconditional
+``create_table`` here would raise ``DuplicateTable`` and block that upgrade. The
+upgrade therefore skips when the table is already present. CI proves both paths:
+fresh-from-empty, and "stamped below 018a with the out-of-band table present".
 """
 from __future__ import annotations
 
@@ -41,6 +45,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Present on every database that predates this migration (created out-of-band by
+    # server/migrations/agent_gateway_keys.sql with the same columns and index names).
+    # Creating it again would raise DuplicateTable and block the upgrade, so skip.
+    if sa.inspect(op.get_bind()).has_table("agent_gateway_keys"):
+        return
     op.create_table(
         "agent_gateway_keys",
         sa.Column(
