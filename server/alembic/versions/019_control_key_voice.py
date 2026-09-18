@@ -1,7 +1,7 @@
 """Gateway keys may be promoted to room voice-settings controllers.
 
 Revision ID: 019_control_key_voice
-Revises: 018_call_egress
+Revises: 018a_agent_gateway_keys
 Create Date: 2026-09-02
 
 The native Talk Controls desk app holds a gateway key (agent_id
@@ -21,7 +21,7 @@ from alembic import op
 
 # NOTE: alembic_version.version_num is varchar(32) — keep ids short.
 revision: str = "019_control_key_voice"
-down_revision: Union[str, None] = "018_call_egress"
+down_revision: Union[str, None] = "018a_agent_gateway_keys"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
