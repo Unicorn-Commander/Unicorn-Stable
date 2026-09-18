@@ -170,4 +170,13 @@ jobs:
       - name: compile-check
         run: python -m compileall -q agent_runtime brigade_backed triage plugins
       - name: tests
-        run: pytest -q
+        # `python -m pytest` (not bare `pytest`) so the checkout's `agents/`
+        # dir is sys.path[0] and `import agent_runtime` resolves to the source
+        # tree, not the non-editable `pip install .` copy in site-packages.
+        # Bare `pytest` imports the installed copy, whose
+        # `puppet_video._ART_DIRS` repo-relative fallback
+        # (`Path(__file__).parents[2]/web/...`) then points into site-packages
+        # and finds no shipped art — so
+        # test_puppet_video::test_shipped_art_is_found_when_the_checkout_has_it
+        # asserted `spec.image is None`. Same invocation the `backend` job uses.
+        run: python -m pytest -q
