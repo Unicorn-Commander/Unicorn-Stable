@@ -81,6 +81,23 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql+asyncpg://stable:stable-test-password@postgres:5432/stable_identity_link_test
         run: python tests/test_identity_link.py
+      - name: signed Project-Ops webhook database proof
+        env:
+          ADMIN_DSN: postgresql://stable:REMOVED@postgres:5432/postgres
+          TEST_DATABASE_URL: postgresql+asyncpg://stable:stable-test-password@postgres:5432/stable_webhook_test
+          PYTHONPATH: .
+        run: |
+          python - <<'PY'
+          import asyncio, os, asyncpg
+          async def main():
+              conn = await asyncpg.connect(os.environ["ADMIN_DSN"])
+              try:
+                  await conn.execute("CREATE DATABASE stable_webhook_test")
+              finally:
+                  await conn.close()
+          asyncio.run(main())
+          PY
+          python tests/projectops_database_proof.py
       - name: guest row-retention database integration test
         # Its own database because both integration tests drop_all/create_all.
         # Created with asyncpg (already a dependency) rather than psql, which
