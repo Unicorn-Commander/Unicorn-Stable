@@ -41,7 +41,18 @@ class RoomCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$")
     display_name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
-    room_type: str = Field("channel", pattern=r"^(channel|group_dm|dm)$")
+    # DEPRECATED for agent chats (the web's ``createAgentDm``: ``dm`` + an
+    # agent bind): still works, but "Talk to <agent>" is ``POST
+    # /agents/{agent_id}/hub`` and new conversations are THREADS under the hub
+    # (``POST /rooms/{hub_id}/threads``). Design §3.
+    room_type: str = Field(
+        "channel",
+        pattern=r"^(channel|group_dm|dm)$",
+        description=(
+            "channel | group_dm | dm. Minting a `dm` per agent conversation is "
+            "deprecated: use POST /agents/{agent_id}/hub and start threads under it."
+        ),
+    )
     max_participants: int = Field(50, ge=2, le=500)
 
 
@@ -138,6 +149,15 @@ class RoomResponse(BaseModel):
     project_number: str | None = None
     # Number of non-archived threads (child rooms) under this room.
     thread_count: int = 0
+    # GET /rooms nests a parent's live threads here (newest activity first,
+    # capped at room_service.NESTED_THREADS_PER_PARENT); ``latest_thread_id``
+    # is the first of them — what a hub opens on. Threads themselves never
+    # appear at the top level. Empty/None on every other RoomResponse path.
+    latest_thread_id: uuid.UUID | None = None
+    threads: list["RoomResponse"] = Field(default_factory=list)
+    # False only for a nested thread the caller has not joined yet (someone
+    # else's thread in a room they share): opening it joins them.
+    is_member: bool = True
     # dm → the other human; agent_hub → the agent. None elsewhere.
     counterpart: RoomCounterpart | None = None
     # Agent members with their per-room mode (empty for rooms with none).
@@ -164,9 +184,59 @@ class ThreadCreate(BaseModel):
     """Body for ``POST /rooms/{room_id}/threads``."""
 
     title: str | None = Field(None, min_length=1, max_length=255)
-    # Optional: the message the thread branches from (recorded in metadata so
-    # the client can link back; the message itself is not moved).
+    # Optional: the message the thread branches from. It is quoted as the
+    # thread's first (system-styled) entry with metadata.seed_message_id
+    # linking back; the original is not moved. With no title, the thread is
+    # titled from the seed's first 60 characters.
     seed_message_id: uuid.UUID | None = None
+
+
+class ProjectChannelBody(BaseModel):
+    """Body for ``POST /rooms/for-project`` — ensure the private channel
+    bound to a Project-Ops project. ``P-00115``, ``p-115`` and ``P00115``
+    all normalise to ``P-00115``."""
+
+    project_number: str = Field(..., min_length=2, max_length=32)
+
+
+class ProjectChannelResponse(RoomResponse):
+    """``created`` is True when this call made the channel."""
+
+    created: bool = False
+
+
+class ProjectTask(BaseModel):
+    """One open task of the bound project (Project-Ops, via the server proxy)."""
+
+    id: str
+    task_number: str | None = None
+    title: str
+    status: str | None = None
+    priority: str | None = None
+    due_date: str | None = None
+    assignee: str | None = None
+    url: str
+
+
+class ProjectTasksResponse(BaseModel):
+    """``GET /rooms/{room_id}/tasks`` — open tasks for the room's project,
+    cached 60 s per project on the server."""
+
+    room_id: uuid.UUID
+    project_number: str
+    tasks: list[ProjectTask] = Field(default_factory=list)
+    cached: bool = False
+    fetched_at: str | None = None
+
+
+class ConvertToChannelBody(BaseModel):
+    """Body for ``POST /rooms/{room_id}/convert-to-channel`` (group → channel).
+    Everything optional: the slug derives from the label, the label stays,
+    and the channel is private unless told otherwise."""
+
+    name: str | None = Field(None, min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    display_name: str | None = Field(None, min_length=1, max_length=255)
+    visibility: Visibility = "private"
 
 
 class MemberSettingsBody(BaseModel):

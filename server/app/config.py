@@ -290,6 +290,15 @@ class Settings(BaseSettings):
     # Ceiling on rows swept per pass, so a large backlog is drained over
     # several passes instead of in one long transaction.
     guest_reaper_batch: int = 200
+    # Thread auto-archive (app/services/room_archive.py, design §3): threads
+    # idle this many days are archived by a periodic sweep; a new message
+    # unarchives immediately (send-path hook) or on the next pass (safety
+    # net). Same worker pattern as the reaper; the UPDATEs are idempotent so
+    # every uvicorn worker may run it.
+    thread_auto_archive_enabled: bool = True
+    thread_auto_archive_interval_seconds: int = 600
+    thread_auto_archive_idle_days: int = 14
+    thread_auto_archive_batch: int = 500
     # Guest PARTICIPANT lifecycle, run by the same loop. A redemption mints an
     # ephemeral Participant row and nothing ever closed it — it sat at
     # `status = 'online'` forever, indistinguishable from a guest who is on a

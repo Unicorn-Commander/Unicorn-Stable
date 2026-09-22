@@ -85,6 +85,15 @@ class MessageListResponse(BaseModel):
     messages: list[MessageResponse]
     cursor: str | None = None
     has_more: bool
+    # --- additive envelope facts (L2, for the runner via GET
+    # /gateway/rooms/{room}/messages): which room this page is, its type
+    # (a thread inherits its parent's), its parent when it is a thread, and
+    # the CALLING SEAT's own agent_mode in it (None when unset or when the
+    # caller is not an agent member). Other producers leave them None.
+    room_id: uuid.UUID | None = None
+    room_type: str | None = None
+    parent_room_id: uuid.UUID | None = None
+    agent_mode: str | None = None
 
 
 class PendingApprovalItem(BaseModel):

@@ -66,6 +66,9 @@ def _room_to_response(
     thread_count: int = 0,
     counterpart: Any = None,
     agents: list[Any] | None = None,
+    latest_thread_id: Any = None,
+    threads: list[RoomResponse] | None = None,
+    is_member: bool = True,
 ) -> RoomResponse:
     last_msg_resp = None
     if last_message is not None:
@@ -100,10 +103,34 @@ def _room_to_response(
         visibility=getattr(room, "visibility", None) or "public",
         project_number=getattr(room, "project_number", None),
         thread_count=thread_count,
+        latest_thread_id=latest_thread_id,
+        threads=threads or [],
+        is_member=is_member,
         counterpart=counterpart,
         agents=agents or [],
         recording_policy=getattr(room, "recording_policy", None) or "off",
         recording_kind=getattr(room, "recording_kind", None) or "audio",
+    )
+
+
+def _room_entry_to_response(entry: dict[str, Any]) -> RoomResponse:
+    """A ``list_rooms_for_user`` entry (room + list extras, optionally with
+    nested ``threads`` entries of the same shape) → RoomResponse."""
+    nested = [_room_entry_to_response(t) for t in entry.get("threads") or []]
+    return _room_to_response(
+        entry["room"],
+        entry.get("member_count", 0),
+        entry.get("online_count", 0),
+        last_message=entry.get("last_message"),
+        unread_count=entry.get("unread_count", 0),
+        mention_count=entry.get("mention_count", 0),
+        has_unread_mention=entry.get("has_unread_mention", False),
+        thread_count=entry.get("thread_count", 0),
+        counterpart=entry.get("counterpart"),
+        agents=entry.get("agents") or [],
+        latest_thread_id=entry.get("latest_thread_id"),
+        threads=nested,
+        is_member=entry.get("is_member", True),
     )
 
 
@@ -448,25 +475,22 @@ async def start_group_from_dm(
                 )
 
     # Tell every added human (peer + extras) about their new room, same event
-    # the invite endpoint emits, so open sidebars pick the group up live.
+    # the invite endpoint emits, so open sidebars pick the group up live. The
+    # creator's OWN other devices get it too (no inviter_name → refetch, no
+    # toast) so a phone never needs a restart to see the group (L2 item 7).
     try:
-        from app.api.messages import _ws_send_participant
+        from app.services.room_push import push_room_to_participants
 
         members = await svc.get_members(room.id, caller_id=user["participant_id"])
-        for m in members:
-            if m.get("is_self") or m.get("participant_type") == "agent":
-                continue
-            await _ws_send_participant(
-                str(m["participant_id"]),
-                {
-                    "type": "room_invited",
-                    "payload": {
-                        "room_id": str(room.id),
-                        "inviter_name": user.get("display_name")
-                        or user.get("username"),
-                    },
-                },
-            )
+        await push_room_to_participants(
+            [m["participant_id"] for m in members if m.get("participant_type") != "agent"],
+            room_id=room.id,
+            kind="group",
+            inviter_name=user.get("display_name") or user.get("username"),
+            self_id=user["participant_id"],
+            display_name=room.display_name,
+            room_type=room.room_type.value,
+        )
     except Exception:
         logger.debug("start_group_ws_notify_failed", exc_info=True)
 
@@ -541,6 +565,15 @@ async def list_rooms(
             "Archived section); the default excludes archived rooms."
         ),
     ),
+    view: Literal["flat", "nested"] = Query(
+        "flat",
+        description=(
+            "flat (default): every room the caller is in as an ordinary row — "
+            "threads included, with parent_room_id set. nested: threads hang "
+            "under their parent row (`threads`, `latest_thread_id`) and are "
+            "excluded from the top level. Design §3."
+        ),
+    ),
 ) -> RoomListResponse:
     """List rooms the current user is a member of."""
     svc = _build_room_service(db, livekit, presence)
@@ -549,22 +582,9 @@ async def list_rooms(
         cursor=cursor,
         limit=limit,
         is_archived=is_archived,
+        nested=(view == "nested"),
     )
-    rooms = [
-        _room_to_response(
-            r["room"],
-            r["member_count"],
-            r["online_count"],
-            last_message=r.get("last_message"),
-            unread_count=r.get("unread_count", 0),
-            mention_count=r.get("mention_count", 0),
-            has_unread_mention=r.get("has_unread_mention", False),
-            thread_count=r.get("thread_count", 0),
-            counterpart=r.get("counterpart"),
-            agents=r.get("agents") or [],
-        )
-        for r in result["rooms"]
-    ]
+    rooms = [_room_entry_to_response(r) for r in result["rooms"]]
     return RoomListResponse(
         rooms=rooms,
         total=result["total"],

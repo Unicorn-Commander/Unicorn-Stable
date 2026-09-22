@@ -766,7 +766,9 @@ class AgentTypingBody(BaseModel):
 
 
 class PromoteToProjectOpsBody(BaseModel):
-    project_number: str = Field(..., min_length=1, max_length=32)
+    # Optional since L2: a message in a PROJECT CHANNEL (rooms.project_number
+    # bound, design §3) pre-fills its project; elsewhere it is still required.
+    project_number: str | None = Field(None, min_length=1, max_length=32)
     title: str | None = Field(None, max_length=255)
     description: str | None = Field(None, max_length=4000)
     priority: str = Field("MEDIUM", pattern=r"^(LOW|MEDIUM|HIGH|URGENT)$")
@@ -787,6 +789,15 @@ class ProjectOpsProject(BaseModel):
 
 
 _PO_PROJECTS_CACHE: dict[str, Any] = {"expires_at": 0.0, "projects": None}
+
+
+def resolve_bound_project_number(room: Any) -> str | None:
+    """The Project-Ops project a room is bound to (``rooms.project_number``,
+    normalised), or None. A thread inherits nothing here on purpose: its
+    ``project_number`` column is what the channel binding copied, if any."""
+    from app.services.project_channels import normalize_project_number
+
+    return normalize_project_number(getattr(room, "project_number", None))
 
 
 def _extract_sse_json(text: str) -> dict[str, Any]:
@@ -1026,11 +1037,21 @@ async def promote_message_to_projectops_task(
     user: Annotated[dict[str, Any], Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProjectOpsTaskResponse:
-    """Promote a visible Stable message into a Project Ops task."""
+    """Promote a visible Stable message into a Project Ops task.
+
+    In a project channel (``rooms.project_number``, design §3) the bound
+    project is pre-filled; the body may still name a different one.
+    """
     msg, room = await _load_visible_message(message_id, user, db)
+    project_number = (body.project_number or "").strip() or resolve_bound_project_number(room)
+    if not project_number:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="project_number is required: this room is not bound to a Project-Ops project",
+        )
     description = _build_projectops_description(msg, room, body)
     task_args = {
-        "projectNumber": body.project_number,
+        "projectNumber": project_number,
         "title": (body.title or _default_task_title(msg.content or "")).strip(),
         "description": description,
         "priority": body.priority,
@@ -1047,7 +1068,7 @@ async def promote_message_to_projectops_task(
     project_number = (
         task.get("projectNumber")
         or task.get("project_number")
-        or body.project_number
+        or project_number
     )
     task_number = task.get("taskNumber") or task.get("task_number") or task.get("number")
     project_id = task.get("projectId") or task.get("project_id")

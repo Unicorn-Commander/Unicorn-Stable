@@ -313,6 +313,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("context_summary_worker_start_failed", exc_info=True)
     app.state.context_summary_task = context_summary_task
 
+    # Thread auto-archive (design §3): threads idle 14 days are archived, a
+    # new message unarchives. Same worker pattern as the reaper/outboxes —
+    # every uvicorn worker may run it; the UPDATEs are idempotent. See
+    # app/services/room_archive.py.
+    thread_archive_task = None
+    try:
+        if settings.thread_auto_archive_enabled:
+            from app.services.room_archive import run_thread_auto_archive
+
+            thread_archive_task = asyncio.create_task(
+                run_thread_auto_archive(session_factory, settings)
+            )
+            logger.info(
+                "thread_auto_archive_started",
+                interval_seconds=settings.thread_auto_archive_interval_seconds,
+                idle_days=settings.thread_auto_archive_idle_days,
+            )
+    except Exception:
+        logger.warning("thread_auto_archive_start_failed", exc_info=True)
+    app.state.thread_archive_task = thread_archive_task
+
     logger.info("application_startup_complete", environment=settings.environment)
 
     yield
@@ -351,6 +372,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         context_summary_task.cancel()
         try:
             await context_summary_task
+        except asyncio.CancelledError:
+            pass
+
+    if thread_archive_task and not thread_archive_task.done():
+        thread_archive_task.cancel()
+        try:
+            await thread_archive_task
         except asyncio.CancelledError:
             pass
 

@@ -47,23 +47,35 @@ from app.deps import (
     rate_limit,
     require_room_member,
 )
+from app.models.agent import AgentEvent
 from app.models.participant import Participant
 from app.models.room import MemberRole, Room, RoomMember, RoomType
 from app.models.room_invite import RoomInvite
 from app.schemas.room import (
     AgentHubResponse,
     ContextResponse,
+    ConvertToChannelBody,
     InvitePreviewResponse,
     MemberSettingsBody,
+    ProjectChannelBody,
+    ProjectChannelResponse,
+    ProjectTasksResponse,
     RoomInviteCreate,
     RoomInviteResponse,
     RoomMemberResponse,
     RoomResponse,
     ThreadCreate,
 )
+from app.services.agent_access import ensure_agent_access
 from app.services.context_builder import DEFAULT_BUDGET_TOKENS, MAX_BUDGET_TOKENS, build_context
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
+from app.services.project_channels import (
+    fetch_open_tasks,
+    fetch_project,
+    normalize_project_number,
+)
+from app.services.room_push import push_room_to_participants
 from app.ws import events as ws_events
 
 logger = structlog.get_logger(__name__)
@@ -100,6 +112,34 @@ async def _room_response(svc, room: Room) -> RoomResponse:
     )
 
 
+async def _fanout_message(db: AsyncSession, message: Any) -> None:
+    """Deliver a server-made message (a thread's system line / seed quote)
+    over the ws plane in the same ``{type: "message"}`` shape the send route
+    uses, so open clients render it live. Best-effort."""
+    if message is None:
+        return
+    try:
+        from app.api.messages import _msg_to_response, _ws_broadcast_room
+
+        await _ws_broadcast_room(
+            db,
+            message.room_id,
+            {
+                "type": "message",
+                "payload": {
+                    "room_id": str(message.room_id),
+                    "message": _msg_to_response(message).model_dump(mode="json"),
+                },
+            },
+        )
+    except Exception:
+        logger.warning("server_message_fanout_failed", exc_info=True)
+
+
+def _actor_name(user: dict[str, Any]) -> str | None:
+    return user.get("display_name") or user.get("username")
+
+
 # ---------------------------------------------------------------------------
 # Agent hubs
 # ---------------------------------------------------------------------------
@@ -125,12 +165,27 @@ async def ensure_agent_hub(
     opens the hub; new conversations are THREADS under it
     (``POST /rooms/{hub_id}/threads``).
     """
+    # ENTITLEMENT: the same funnel every human path that establishes agent
+    # access goes through (agent invite, the deprecated agent-DM bind, voice
+    # dispatch) — a hub is agent access.
+    await ensure_agent_access(db, user, (agent_id or "").strip().lower(), surface="agent_hub")
+
     svc = _build_room_service(db, livekit, presence)
     room, created = await svc.ensure_agent_hub(
         human_id=user["participant_id"],
         agent_id=agent_id,
         org_id=settings.instance_org_id,
     )
+    if created:
+        # The caller's OTHER devices learn about the hub now (L2 item 7).
+        await push_room_to_participants(
+            [user["participant_id"]],
+            room_id=room.id,
+            kind="hub",
+            self_id=user["participant_id"],
+            display_name=room.display_name,
+            room_type=room.room_type.value,
+        )
     base = await _room_response(svc, room)
     return AgentHubResponse(**base.model_dump(by_alias=True), created=created)
 
@@ -154,14 +209,18 @@ async def create_thread(
     presence: Annotated[PresenceService, Depends(get_presence)],
     _rl: Annotated[None, Depends(rate_limit("room_create", "rate_limit_room_create_per_min"))],
 ) -> RoomResponse:
-    """Start a thread (child room) under ``room_id``. Caller must be a member."""
+    """Start a thread (child room) under ``room_id`` — any room type, any
+    member. Fans out ``thread_created`` + the parent's system line to the
+    parent, the seed quote to the thread, and pushes the new room to every
+    seeded member's sockets (``room_invited``, kind=thread)."""
     svc = _build_room_service(db, livekit, presence)
-    thread = await svc.create_thread(
+    made = await svc.create_thread(
         parent_id=room_id,
         creator_id=user["participant_id"],
         title=body.title,
         seed_message_id=body.seed_message_id,
     )
+    thread = made.room
     await _ws_room(
         db,
         room_id,
@@ -171,7 +230,21 @@ async def create_thread(
             "room_id": str(thread.id),
             "display_name": thread.display_name,
             "created_by": str(user["participant_id"]),
+            "seed_message_id": str(body.seed_message_id) if body.seed_message_id else None,
+            "member_ids": [str(pid) for pid in made.member_ids],
         },
+    )
+    await _fanout_message(db, made.system_message)
+    await _fanout_message(db, made.seed_message)
+    await push_room_to_participants(
+        made.member_ids,
+        room_id=thread.id,
+        kind="thread",
+        inviter_name=_actor_name(user),
+        self_id=user["participant_id"],
+        parent_room_id=room_id,
+        display_name=thread.display_name,
+        room_type=thread.room_type.value,
     )
     return await _room_response(svc, thread)
 
@@ -473,8 +546,10 @@ async def accept_invite(
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
+    _rl: Annotated[None, Depends(rate_limit("room_invite", "rate_limit_room_invite_per_min"))] = None,
 ) -> RoomMemberResponse:
-    """Join the room the link points at. Idempotent for existing members."""
+    """Join the room the link points at. Idempotent for existing members.
+    Rate-limited like minting, so a token cannot be guessed at speed."""
     # Lock the row so two concurrent accepts of a max_uses=1 link cannot both
     # win; the usability check re-runs under the lock.
     token = (token or "").strip()
@@ -518,9 +593,167 @@ async def accept_invite(
             use_count=row.use_count,
         )
         await _broadcast_members_changed(db, room.id)
+        # The joiner's OWN sockets (every device) get the room now — the
+        # accept happened on one of them; the others must not need a
+        # restart (L2 item 7). inviter_name = whoever minted the link.
+        inviter_name = None
+        if row.created_by is not None:
+            inviter_name = (
+                await db.execute(select(Participant.display_name).where(Participant.id == row.created_by))
+            ).scalar_one_or_none()
+        await push_room_to_participants(
+            [user["participant_id"]],
+            room_id=room.id,
+            kind="invite",
+            inviter_name=inviter_name if isinstance(inviter_name, str) else None,
+            display_name=room.display_name,
+            room_type=room.room_type.value,
+        )
     else:
         await db.commit()
     return await _member_response_for(svc, room.id, user["participant_id"])
+
+
+# ---------------------------------------------------------------------------
+# Project channels (design §3, L2 item 5)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/rooms/for-project", response_model=ProjectChannelResponse)
+async def ensure_project_channel(
+    body: ProjectChannelBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+    _rl: Annotated[None, Depends(rate_limit("room_create", "rate_limit_room_create_per_min"))] = None,
+) -> ProjectChannelResponse:
+    """Ensure the private channel bound to a Project-Ops project
+    (``p-<number>-<slug>``, display ``P-00115 · <title>``). Idempotent: the
+    creator owns a new one; a later caller joins the existing one. The title
+    comes from Project-Ops through the server's service client (never the
+    browser's credential); 404 for an unknown number, 502 when Project-Ops
+    cannot be reached."""
+    number = normalize_project_number(body.project_number)
+    if number is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="project_number must look like P-00115",
+        )
+    project = await fetch_project(number)
+    svc = _build_room_service(db, livekit, presence)
+    room, created = await svc.ensure_project_channel(
+        creator_id=user["participant_id"],
+        project_number=number,
+        project=project,
+        org_id=settings.instance_org_id,
+    )
+    if created:
+        await push_room_to_participants(
+            [user["participant_id"]],
+            room_id=room.id,
+            kind="project_channel",
+            self_id=user["participant_id"],
+            display_name=room.display_name,
+            room_type=room.room_type.value,
+        )
+    base = await _room_response(svc, room)
+    return ProjectChannelResponse(**base.model_dump(by_alias=True), created=created)
+
+
+@router.get("/rooms/{room_id}/tasks", response_model=ProjectTasksResponse)
+async def list_project_tasks(
+    room_id: uuid.UUID,
+    user: Annotated[dict[str, Any], Depends(require_room_member)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ProjectTasksResponse:
+    """Open tasks of the project this room is bound to (server proxy over
+    the Project-Ops service client, cached 60 s per project). Members only;
+    404 for a room with no binding."""
+    room = await _load_room(db, room_id)
+    number = normalize_project_number(getattr(room, "project_number", None))
+    if number is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This room is not bound to a Project-Ops project",
+        )
+    payload = await fetch_open_tasks(number, dashboard_url=settings.projectops_dashboard_url)
+    return ProjectTasksResponse(room_id=room.id, **payload)
+
+
+# ---------------------------------------------------------------------------
+# Group DM → private channel (design §3, L2 item 6)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/rooms/{room_id}/convert-to-channel", response_model=RoomResponse)
+async def convert_group_to_channel(
+    room_id: uuid.UUID,
+    body: ConvertToChannelBody,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
+    presence: Annotated[PresenceService, Depends(get_presence)],
+) -> RoomResponse:
+    """Explicit, owner-only: turn a group conversation into a (private by
+    default) channel in place — renamed, retyped, members and history kept.
+    Audited as an ``agent_events`` row (the append-only stream every other
+    room-changing decision lands in) and fanned out as ``room_converted``."""
+    svc = _build_room_service(db, livekit, presence)
+    room = await svc.convert_group_to_channel(
+        room_id=room_id,
+        actor_id=user["participant_id"],
+        name=body.name,
+        display_name=body.display_name,
+        visibility=body.visibility,
+    )
+    converted_from = (room.metadata_ or {}).get("converted_from") or {}
+    occurred_at = _now()
+    db.add(
+        AgentEvent(
+            org_id=room.org_id,
+            agent_identity=user.get("username") or user.get("sub") or str(user["participant_id"]),
+            agent_type="human",
+            event_type="room.converted_to_channel",
+            room_ref=str(room.id),
+            correlation_id=str(room.id),
+            event_data={
+                "room_id": str(room.id),
+                "from_room_type": RoomType.GROUP_DM.value,
+                "to_room_type": room.room_type.value,
+                "from_name": converted_from.get("name"),
+                "name": room.name,
+                "display_name": room.display_name,
+                "visibility": room.visibility,
+                "by": str(user["participant_id"]),
+            },
+            occurred_at=occurred_at,
+        )
+    )
+    await db.commit()
+    logger.info(
+        "room_converted_to_channel",
+        room_id=str(room.id),
+        name=room.name,
+        visibility=room.visibility,
+        by=str(user["participant_id"]),
+    )
+    await _ws_room(
+        db,
+        room.id,
+        ws_events.ROOM_CONVERTED,
+        {
+            "room_id": str(room.id),
+            "room_type": room.room_type.value,
+            "visibility": room.visibility,
+            "name": room.name,
+            "display_name": room.display_name,
+            "by": str(user["participant_id"]),
+        },
+    )
+    return await _room_response(svc, room)
 
 
 # ---------------------------------------------------------------------------

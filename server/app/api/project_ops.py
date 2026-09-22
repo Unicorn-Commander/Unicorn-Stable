@@ -35,6 +35,7 @@ from app.models.message import Message
 from app.models.room import MemberRole, Room, RoomMember
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
+from app.services.project_channels import extract_project_number
 from app.services.projectops_webhook import (
     DELIVERY_HEADER,
     HANDLED_EVENTS,
@@ -113,15 +114,24 @@ async def project_ops_webhook(
     delivery_id = request.headers.get(DELIVERY_HEADER)
 
     data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+
+    # Routing (design §3, L2 item 5): a PROJECT CHANNEL bound to the event's
+    # project wins; otherwise today's static assignee → room-name map.
+    project_number = extract_project_number(data)
+    project_room: Room | None = None
+    if project_number:
+        project_room = await _find_project_channel(db, project_number)
+
     assignee_id = extract_assignee_id(data)
     room_name = (
         settings.projectops_room_mapping.get(assignee_id) if assignee_id else None
     )
-    if not room_name:
+    if project_room is None and not room_name:
         logger.info(
             "projectops_webhook_unmapped",
             po_event=event,
             assignee=assignee_id,
+            project_number=project_number,
         )
         return {"status": "ignored", "reason": "unmapped_assignee"}
 
@@ -140,12 +150,16 @@ async def project_ops_webhook(
             window_seconds=60,
         )
 
-    room = (
-        await db.execute(select(Room).where(Room.name == room_name))
-    ).scalar_one_or_none()
-    if room is None:
-        logger.warning("projectops_webhook_room_not_found", room=room_name)
-        return {"status": "ignored", "reason": f"room_not_found:{room_name}"}
+    if project_room is not None:
+        room = project_room
+        room_name = room.name
+    else:
+        room = (
+            await db.execute(select(Room).where(Room.name == room_name))
+        ).scalar_one_or_none()
+        if room is None:
+            logger.warning("projectops_webhook_room_not_found", room=room_name)
+            return {"status": "ignored", "reason": f"room_not_found:{room_name}"}
 
     content = build_message(event, data)
     if not content:
@@ -193,6 +207,26 @@ async def project_ops_webhook(
         message_id=str(msg.id),
     )
     return {"status": "ok", "message_id": str(msg.id)}
+
+
+async def _find_project_channel(db: AsyncSession, project_number: str) -> Room | None:
+    """The live, top-level channel bound to ``project_number`` (design §3),
+    or None → the caller falls back to the assignee map."""
+    from app.models.room import RoomType
+
+    return (
+        await db.execute(
+            select(Room)
+            .where(
+                Room.project_number == project_number,
+                Room.room_type == RoomType.CHANNEL,
+                Room.parent_room_id.is_(None),
+                Room.is_archived == False,  # noqa: E712
+            )
+            .order_by(Room.created_at.asc())
+            .limit(1)
+        )
+    ).scalars().first()
 
 
 async def _get_or_create_sender(db: AsyncSession, room_name: str) -> Participant:
