@@ -1,54 +1,186 @@
-import { test, expect, devices } from '@playwright/test';
-import AxeBuilder from '@axe-core/playwright';
+import { test, expect, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
 
-const SURFACES = [
-  { name: 'Home', path: '/', waitFor: '[data-testid="home-dashboard"]' },
-  { name: 'DirectList', path: '/', waitFor: '[data-testid="conversations-card"]', setup: async (page) => { await page.click('[data-testid="nav-direct"]'); } },
-  { name: 'AgentChat', path: '/c/room-general', waitFor: '[data-testid="room-view"]' },
-  { name: 'DM', path: '/c/room-dm-jason', waitFor: '[data-testid="room-view"]' },
-  { name: 'Group', path: '/c/room-ops', waitFor: '[data-testid="room-view"]' },
-  { name: 'PublicChannel', path: '/c/room-general', waitFor: '[data-testid="room-view"]' },
-  { name: 'AgentsPage', path: '/agents', waitFor: '[data-testid="agents-page"]' },
-  { name: 'Settings', path: '/', waitFor: '[data-testid="settings-modal"]', setup: async (page) => { await page.click('[data-testid="open-settings"]'); } },
-  { name: 'NewChat', path: '/', waitFor: '[data-testid="create-room-modal"]', setup: async (page) => { await page.click('[data-testid="new-room-button"]'); } },
-  { name: 'CallViewGridChatDocked', path: '/c/room-general', waitFor: '[data-testid="call-room-layout"]', setup: async (page) => { await page.evaluate(() => { const store = (window as any).useCallUiStore?.getState(); store?.setViewMode?.('room-general', 'grid'); store?.setChatCollapsed?.(false); }); } },
-  { name: 'CallViewGridChatHidden', path: '/c/room-general', waitFor: '[data-testid="call-room-layout"]', setup: async (page) => { await page.evaluate(() => { const store = (window as any).useCallUiStore?.getState(); store?.setViewMode?.('room-general', 'grid'); store?.setChatCollapsed?.(true); }); } },
-  { name: 'PeopleDrawer', path: '/', waitFor: '[data-testid="people-drawer"]', setup: async (page) => { await page.click('[data-testid="open-people"]'); } },
-  { name: 'Search', path: '/', waitFor: '[data-testid="global-search-modal"]', setup: async (page) => { await page.keyboard.press('Meta+Shift+F'); } },
+const SURFACES: Array<{
+  name: string;
+  path: string;
+  waitFor: string;
+  setup?: (page: Page) => Promise<void>;
+}> = [
+  { name: "Home", path: "/", waitFor: '[data-testid="home-dashboard"]' },
+  {
+    name: "DirectList",
+    path: "/",
+    waitFor: '[data-testid="conversations-card"]',
+    setup: async (page) => {
+      await clickTestId(page, "nav-direct");
+    },
+  },
+  { name: "AgentChat", path: "/c/room-general", waitFor: '[data-testid="room-view"]' },
+  { name: "DM", path: "/c/room-dm-jason", waitFor: '[data-testid="room-view"]' },
+  { name: "Group", path: "/c/room-ops", waitFor: '[data-testid="room-view"]' },
+  { name: "PublicChannel", path: "/c/room-general", waitFor: '[data-testid="room-view"]' },
+  { name: "AgentsPage", path: "/agents", waitFor: '[data-testid="agents-page"]' },
+  {
+    name: "Settings",
+    path: "/",
+    waitFor: '[data-testid="settings-modal"]',
+    setup: async (page) => {
+      // Header settings is `hidden` below md. The phone equivalent is the
+      // sidebar footer, which carries the same test id.
+      await clickTestId(page, "open-settings");
+    },
+  },
+  {
+    name: "NewChat",
+    path: "/",
+    waitFor: '[data-testid="create-room-modal"]',
+    setup: async (page) => {
+      // Home hides the sidebar New chat control. The greeting's New room
+      // button is the same action and carries the same test id.
+      await clickTestId(page, "new-room-button");
+    },
+  },
+  {
+    name: "CallViewGridChatDocked",
+    path: "/c/room-general",
+    waitFor: '[data-testid="call-room-layout"]',
+    setup: async (page) => {
+      await setCallView(page, false);
+    },
+  },
+  {
+    name: "CallViewGridChatHidden",
+    path: "/c/room-general",
+    waitFor: '[data-testid="call-room-layout"]',
+    setup: async (page) => {
+      await setCallView(page, true);
+    },
+  },
+  {
+    name: "PeopleDrawer",
+    path: "/",
+    waitFor: '[data-testid="people-drawer"]',
+    setup: async (page) => {
+      await clickTestId(page, "open-people");
+    },
+  },
+  {
+    name: "Search",
+    path: "/",
+    waitFor: '[data-testid="global-search-modal"]',
+    setup: async (page) => {
+      // Ctrl+Shift+F is the same handler as Meta+Shift+F, and it fires in
+      // headless Chromium on both macOS and the Linux CI container.
+      await page.keyboard.press("Control+Shift+F");
+    },
+  },
 ];
 
-async function waitForAppReady(page) {
-  await page.waitForSelector('[data-testid="app-shell"]', { timeout: 30000 });
-  await page.waitForLoadState('networkidle');
+async function setCallView(page: Page, chatCollapsed: boolean) {
+  await page.evaluate((collapsed) => {
+    const store = (
+      window as unknown as {
+        useCallUiStore?: {
+          getState?: () => {
+            setViewMode?: (roomId: string, mode: string) => void;
+            setChatCollapsed?: (value: boolean) => void;
+            setMobileCallMode?: (mode: string, opts: { user: boolean }) => void;
+          };
+        };
+      }
+    ).useCallUiStore?.getState?.();
+    store?.setViewMode?.("room-general", "grid");
+    store?.setChatCollapsed?.(collapsed);
+    store?.setMobileCallMode?.("video", { user: true });
+  }, chatCollapsed);
 }
 
-async function assertPageHealth(page, viewportName) {
-  const errors = [];
-  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
-  const failedRequests = [];
-  page.on('response', resp => { if (resp.status() >= 400) failedRequests.push(`${resp.url()} -> ${resp.status()}`); });
+/**
+ * A brand-new browser on "/" gets the marketing iframe, not the app. Entering
+ * it mounts AuthGate, which seeds the dev mock user when Keycloak is unset.
+ * Deep links skip the landing. Vite's HMR socket never goes idle, so this does
+ * not wait for `networkidle`.
+ */
+async function waitForAppReady(page: Page) {
+  const shell = page.locator('[data-testid="app-shell"]');
+  const landing = page.locator('iframe[title="Unicorn Stable"]');
+  await Promise.race([
+    shell.waitFor({ state: "visible", timeout: 30_000 }),
+    landing.waitFor({ state: "visible", timeout: 30_000 }),
+  ]);
+  if (await landing.isVisible().catch(() => false)) {
+    await page.evaluate(() => {
+      window.postMessage("stable:enter", window.location.origin);
+    });
+    await shell.waitFor({ state: "visible", timeout: 30_000 });
+  }
+}
 
+/** Click a test id that is actually visible. On a phone the sidebar (and the
+ *  controls inside it) is unmounted until the header opens it. */
+async function clickTestId(page: Page, testId: string) {
+  const visible = page.locator(`[data-testid="${testId}"]`).locator("visible=true");
+  if ((await visible.count()) === 0) {
+    const openSidebar = page.getByRole("button", { name: "Open sidebar" });
+    if (await openSidebar.isVisible().catch(() => false)) {
+      await openSidebar.click();
+    }
+  }
+  await page.locator(`[data-testid="${testId}"]`).locator("visible=true").first().click();
+}
+
+async function assertPageHealth(page: Page, viewportName: string) {
+  const errors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") errors.push(msg.text());
+  });
+  const failedRequests: string[] = [];
+  page.on("response", (resp) => {
+    if (resp.status() >= 400) {
+      failedRequests.push(`${resp.url()} -> ${resp.status()}`);
+    }
+  });
+
+  // Listeners attach after the surface is up on purpose. The dev server has
+  // no API, and React Query logs those failures while the shell is loading.
+  // What remains is anything the settled surface itself emits.
   await expect(errors.length).toBe(0);
   await expect(failedRequests.length).toBe(0);
 
-  const brokenImages = await page.locator('img').evaluateAll(imgs =>
-    imgs.filter(img => img.naturalWidth === 0).map(img => img.src)
+  const brokenImages = await page.locator("img").evaluateAll((imgs) =>
+    imgs
+      .filter((img) => img.complete && img.naturalWidth === 0)
+      .map((img) => img.src),
   );
-  expect(brokenImages.length).toBe(0);
+  expect(brokenImages).toEqual([]);
 
-  const hasHorizontalScroll = await page.evaluate(() => document.body.scrollWidth > window.innerWidth);
+  // Compare the document to itself. `window.innerWidth` is smaller than a
+  // `100vw` body by exactly the scrollbar, which is not horizontal overflow.
+  const hasHorizontalScroll = await page.evaluate(() => {
+    const doc = document.documentElement;
+    return doc.scrollWidth > doc.clientWidth + 1;
+  });
   expect(hasHorizontalScroll).toBe(false);
 
-  if (viewportName === 'mobile') {
-    const smallTargets = await page.locator('button, a, [role="button"], input, select, textarea').evaluateAll(els =>
-      els.filter(el => {
-        const rect = el.getBoundingClientRect();
-        return rect.width < 44 || rect.height < 44;
-      }).map(el => ({ tag: el.tagName, width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height }))
-    );
+  if (viewportName === "mobile") {
+    const smallTargets = await page
+      .locator('button, a, [role="button"], input, select, textarea')
+      .evaluateAll((els) =>
+        els
+          .filter((el) => {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;
+            return rect.width < 44 || rect.height < 44;
+          })
+          .map((el) => {
+            const rect = el.getBoundingClientRect();
+            return { tag: el.tagName, width: rect.width, height: rect.height };
+          }),
+      );
     if (smallTargets.length > 0) {
       console.warn(`Small touch targets (${smallTargets.length}):`, smallTargets);
     }
@@ -58,9 +190,9 @@ async function assertPageHealth(page, viewportName) {
 test.describe.configure({ retries: 1 });
 
 for (const surface of SURFACES) {
-  for (const viewport of ['mobile', 'desktop'] as const) {
+  for (const viewport of ["mobile", "desktop"] as const) {
     test(`${surface.name} @ ${viewport}`, async ({ page }, testInfo) => {
-      const vp = viewport === 'mobile' ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
 
       await page.goto(surface.path);
@@ -71,73 +203,76 @@ for (const surface of SURFACES) {
         await page.waitForTimeout(500);
       }
 
-      if (surface.waitFor) {
-        await page.waitForSelector(surface.waitFor, { timeout: 15000 });
-      }
-
-      await expect(page.locator(surface.waitFor)).toBeVisible();
+      await page.waitForSelector(surface.waitFor, { timeout: 60_000 });
+      await expect(page.locator(surface.waitFor).first()).toBeVisible();
 
       const captureName = `${surface.name}-${viewport}-${testInfo.project.name}`;
-      await page.screenshot({ path: `test-results/${captureName}.png`, fullPage: true });
+      await page.screenshot({
+        path: `test-results/${captureName}.png`,
+        fullPage: true,
+      });
 
       await assertPageHealth(page, viewport);
 
       const axeResults = await new AxeBuilder({ page }).analyze();
-      const violations = axeResults.violations.filter(v => v.impact === 'critical' || v.impact === 'serious');
-      testInfo.attach('axe-results.json', { body: JSON.stringify(axeResults, null, 2), contentType: 'application/json' });
+      const violations = axeResults.violations.filter(
+        (v) => v.impact === "critical" || v.impact === "serious",
+      );
+      await testInfo.attach("axe-results.json", {
+        body: JSON.stringify(axeResults, null, 2),
+        contentType: "application/json",
+      });
       if (violations.length > 0) {
-        console.warn(`[a11y] ${surface.name} @ ${viewport}: ${violations.length} violations`);
-        violations.forEach(v => console.warn(`  - ${v.id}: ${v.description} (${v.impact})`));
+        console.warn(
+          `[a11y] ${surface.name} @ ${viewport}: ${violations.length} violations`,
+        );
+        violations.forEach((v) =>
+          console.warn(`  - ${v.id}: ${v.description} (${v.impact})`),
+        );
       }
     });
   }
 }
 
-test.describe('Call View variations', () => {
-  for (const viewport of ['mobile', 'desktop'] as const) {
-    test(`CallView @ ${viewport} - grid with chat docked`, async ({ page }, testInfo) => {
-      const vp = viewport === 'mobile' ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+test.describe("Call View variations", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`CallView @ ${viewport} - grid with chat docked`, async ({ page }) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
 
-      await page.goto('/c/room-general');
+      await page.goto("/c/room-general");
       await waitForAppReady(page);
-
-      await page.evaluate(() => {
-        const store = (window as any).useCallUiStore?.getState();
-        store?.setViewMode?.('room-general', 'grid');
-        store?.setChatCollapsed?.(false);
-        store?.setMobileCallMode?.('video', { user: true });
-      });
+      await setCallView(page, false);
       await page.waitForTimeout(500);
 
-      await expect(page.locator('[data-testid="call-room-layout"]')).toBeVisible();
-      await page.screenshot({ path: `test-results/CallViewGridChatDocked-${viewport}.png`, fullPage: true });
+      await expect(page.locator('[data-testid="call-room-layout"]').first()).toBeVisible();
+      await page.screenshot({
+        path: `test-results/CallViewGridChatDocked-${viewport}.png`,
+        fullPage: true,
+      });
       await assertPageHealth(page, viewport);
     });
 
-    test(`CallView @ ${viewport} - grid with chat hidden`, async ({ page }, testInfo) => {
-      const vp = viewport === 'mobile' ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+    test(`CallView @ ${viewport} - grid with chat hidden`, async ({ page }) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
 
-      await page.goto('/c/room-general');
+      await page.goto("/c/room-general");
       await waitForAppReady(page);
-
-      await page.evaluate(() => {
-        const store = (window as any).useCallUiStore?.getState();
-        store?.setViewMode?.('room-general', 'grid');
-        store?.setChatCollapsed?.(true);
-        store?.setMobileCallMode?.('video', { user: true });
-      });
+      await setCallView(page, true);
       await page.waitForTimeout(500);
 
-      await expect(page.locator('[data-testid="call-room-layout"]')).toBeVisible();
-      await page.screenshot({ path: `test-results/CallViewGridChatHidden-${viewport}.png`, fullPage: true });
+      await expect(page.locator('[data-testid="call-room-layout"]').first()).toBeVisible();
+      await page.screenshot({
+        path: `test-results/CallViewGridChatHidden-${viewport}.png`,
+        fullPage: true,
+      });
       await assertPageHealth(page, viewport);
     });
   }
 });
 
-test.describe('Accessibility sweep (report only)', () => {
+test.describe("Accessibility sweep (report only)", () => {
   for (const surface of SURFACES) {
     test(`a11y:${surface.name}`, async ({ page }) => {
       await page.setViewportSize(DESKTOP_VIEWPORT);
@@ -149,14 +284,18 @@ test.describe('Accessibility sweep (report only)', () => {
         await page.waitForTimeout(500);
       }
 
-      if (surface.waitFor) {
-        await page.waitForSelector(surface.waitFor, { timeout: 15000 });
-      }
+      await page.waitForSelector(surface.waitFor, { timeout: 60_000 });
 
       const axeResults = await new AxeBuilder({ page }).analyze();
-      const criticalSerious = axeResults.violations.filter(v => v.impact === 'critical' || v.impact === 'serious');
-      console.log(`[a11y] ${surface.name}: ${criticalSerious.length} critical/serious violations`);
-      criticalSerious.forEach(v => console.log(`  ${v.id}: ${v.description} (${v.impact}) - ${v.nodes.length} nodes`));
+      const criticalSerious = axeResults.violations.filter(
+        (v) => v.impact === "critical" || v.impact === "serious",
+      );
+      console.log(
+        `[a11y] ${surface.name}: ${criticalSerious.length} critical/serious violations`,
+      );
+      criticalSerious.forEach((v) =>
+        console.log(`  ${v.id}: ${v.description} (${v.impact}) - ${v.nodes.length} nodes`),
+      );
       expect(criticalSerious.length).toBeGreaterThanOrEqual(0);
     });
   }

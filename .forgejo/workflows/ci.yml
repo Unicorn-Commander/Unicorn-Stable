@@ -33,6 +33,15 @@ jobs:
         # `npm run build` runs `tsc -b && vite build` — this is the type gate.
         run: npm run build
 
+  # legacy1 is Docker-in-Docker: the job container is thrown away, so there is
+  # no actions/cache to share with `web` (that job does not cache either).
+  # Install the same way — checkout, Node 22, `npm ci --no-audit --no-fund` —
+  # then install Chromium *inside* the container. `--with-deps` is the apt
+  # step; the host runner does not have the browser libraries.
+  # `npm run build` is the same typecheck+bundle gate as `web`. The Playwright
+  # run then starts the Vite dev server itself (web/playwright.config.ts
+  # webServer on port 5173). A production preview would not seed the dev mock
+  # user, and every surface would stop at Keycloak.
   web-e2e:
     runs-on: legacy1
     defaults:
@@ -47,7 +56,7 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: install playwright browsers
         run: npx playwright install --with-deps chromium
-      - name: build web
+      - name: typecheck + build
         run: npm run build
       - name: run playwright tests
         run: npx playwright test --reporter=html

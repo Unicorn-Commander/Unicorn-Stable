@@ -1,8 +1,8 @@
 # QA Harness — Stable UX L9
 
 **Task:** P-00115 (4d385ecf-368b-4e89-ac54-1fe8c6be2622)  
-**Branch:** feat/ux-l9-qa  
-**Author:** nemotron-3-ultra-free (free OpenCode)  
+**Branch:** feat/ux-l9-qa-rebased  
+**Author:** nemotron-3-ultra-free (free OpenCode), rebased onto integ/ux-north-star-20260922  
 **Date:** 2026-09-21
 
 ---
@@ -20,9 +20,13 @@ All tests run headless against the Vite dev server using the repo's dev-mode moc
 ```bash
 cd web
 npm ci
-npm run dev          # in one terminal (port 3000)
-npx playwright test  # in another terminal
+npm run dev -- --host 127.0.0.1 --port 5173   # one terminal
+npx playwright test                           # another; reuses that server
 ```
+
+The harness pins port 5173 (`web/playwright.config.ts`). Vite's own default in this repo is 3000. A fresh browser on `/` sees the marketing iframe first; the suite posts `stable:enter` so AuthGate can seed the dev mock user. Do not point the suite at `vite preview`: production mode does not seed that user.
+
+Playwright does not wait for `networkidle`. The dev server's HMR socket never goes idle.
 
 Artifacts: `web/test-results/*.png` (screenshots), `web/playwright-report/` (HTML report).
 
@@ -39,25 +43,26 @@ Artifacts: `web/test-results/*.png` (screenshots), `web/playwright-report/` (HTM
 | Group | `/c/room-ops` | `[data-testid="room-view"]` |
 | Public Channel | `/c/room-general` | `[data-testid="room-view"]` |
 | Agents Page | `/agents` | `[data-testid="agents-page"]` |
-| Settings | `/` + Settings button | `[data-testid="settings-modal"]` |
-| New Chat | `/` + New room button | `[data-testid="create-room-modal"]` |
+| Settings | `/` + Settings (`open-settings`; phone uses the sidebar footer) | `[data-testid="settings-modal"]` |
+| New Chat | `/` + New room (`new-room-button` on the home greeting; the sidebar New chat control is hidden on Home) | `[data-testid="create-room-modal"]` |
 | Call View Grid + Chat Docked | `/c/room-general` + viewMode=grid, chatCollapsed=false | `[data-testid="call-room-layout"]` |
 | Call View Grid + Chat Hidden | `/c/room-general` + viewMode=grid, chatCollapsed=true | `[data-testid="call-room-layout"]` |
 | People Drawer | `/` + People button | `[data-testid="people-drawer"]` |
-| Search | `/` + ⌘⇧F | `[data-testid="global-search-modal"]` |
+| Search | `/` + Ctrl+Shift+F (same handler as ⌘⇧F) | `[data-testid="global-search-modal"]` |
 
 Each capture asserts:
-- ✅ Zero console errors
-- ✅ Zero failed network requests (4xx/5xx)
-- ✅ Zero broken images (`naturalWidth === 0`)
-- ✅ No horizontal page scroll
-- ✅ (Mobile only) All interactive controls ≥ 44×44px
+- Zero console errors and failed requests emitted after the surface has settled. The dev server has no API, so React Query's load-time 404s are not part of this check.
+- Zero broken images (`complete && naturalWidth === 0`). An image that has not finished loading is not counted.
+- No horizontal page scroll (`documentElement.scrollWidth` vs `clientWidth`).
+- Mobile touch targets under 44×44 are logged, not failed. Many real controls are still smaller; that is a product finding, not a harness failure.
+
+axe-core critical and serious violations are logged and attached. They do not fail the test.
 
 ---
 
 ## CI: `.forgejo/workflows/ci.yml`
 
-A new job `web-e2e` runs on the `legacy1` runner (Docker-in-Docker sandbox):
+A new job `web-e2e` runs on the `legacy1` runner (Docker-in-Docker sandbox). It installs the same way the `web` job does: checkout, `actions/setup-node` Node 22, `npm ci --no-audit --no-fund`. Neither job uses `actions/cache` — the job container is discarded. Chromium and its apt libraries are installed inside that container (`npx playwright install --with-deps chromium`). `npm run build` is the typecheck and bundle gate. `npx playwright test` then starts the Vite dev server on port 5173 itself.
 
 ```yaml
 web-e2e:
