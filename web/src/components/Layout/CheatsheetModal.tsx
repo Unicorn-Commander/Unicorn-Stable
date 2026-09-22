@@ -45,6 +45,19 @@ const MENTIONS: Row[] = [
   { combo: "@here", desc: "Notify online members only" },
 ];
 
+const CALL_LAYOUT: Row[] = [
+  { combo: "C", desc: "Show or hide chat. Hidden gives the stage the full width, remembered per room." },
+  { combo: "Alt 1", desc: "Focus — stage only" },
+  { combo: "Alt 2", desc: "Studio — stage, chat, and transcript" },
+  { combo: "Alt 3", desc: "Text — chat main, stage in Picture-in-Picture" },
+  { combo: "Alt 4", desc: "Show — pop every panel into its own window" },
+  { combo: "Alt Shift C", desc: "Pop out chat" },
+  { combo: "Alt Shift T", desc: "Pop out transcript" },
+  { combo: "Alt Shift M", desc: "Pop out members" },
+  { combo: "Alt Shift A", desc: "Pop out canvas" },
+  { combo: "Alt Shift K", desc: "Pop out tasks" },
+];
+
 const MARKDOWN: Row[] = [
   { combo: "**bold**", desc: "Bold" },
   { combo: "*italic* or _italic_", desc: "Italic" },
@@ -129,6 +142,7 @@ export function CheatsheetModal() {
           <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
             <div>
               <Section title="Keyboard" rows={KEYS} />
+              <Section title="Call layout" rows={CALL_LAYOUT} />
               <Section title="Mentions" rows={MENTIONS} />
             </div>
             <div>

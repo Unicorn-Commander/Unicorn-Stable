@@ -4,6 +4,7 @@ import {
   useCallUiStore,
   type MobileCallMode,
 } from "@/stores/callUiStore";
+import { usePanelChromeStore } from "@/stores/panelChromeStore";
 
 interface MobileCallModeSwitcherProps {
   className?: string;
@@ -20,13 +21,13 @@ const MODES: {
   {
     mode: "video",
     label: "Video",
-    hint: "Full-screen video — chat as a sheet",
+    hint: "Full-screen video — new messages as a one-line pill",
     icon: Video,
   },
   {
     mode: "split",
     label: "Split",
-    hint: "Video and chat together",
+    hint: "Stage on top, chat below",
     icon: Columns2,
   },
   {
@@ -61,6 +62,14 @@ export function MobileCallModeSwitcher({
     }
     if (next !== "video") {
       setMobileChatSheet(null);
+    }
+    const roomId = useCallUiStore.getState().activeCallRoomId;
+    if (roomId) {
+      const chrome = usePanelChromeStore.getState();
+      if (next === "video") chrome.setPanelMode(roomId, "chat", "hidden");
+      else if (chrome.getPanel(roomId, "chat").mode === "hidden") {
+        chrome.setPanelMode(roomId, "chat", "docked");
+      }
     }
     setMobileCallMode(next, { user: true });
   }
