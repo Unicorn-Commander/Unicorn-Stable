@@ -401,6 +401,49 @@ describe("resolveIdentity messages and rooms", () => {
     expect(face.origin).toBe("subject");
   });
 
+  it("uses counterpart for an unopened DM instead of a name-only face", () => {
+    const face = resolveIdentity({
+      id: "room-empty",
+      name: "Pat Lee",
+      display_name: "Pat Lee",
+      type: "dm",
+      member_count: 2,
+      members: [],
+      counterpart: {
+        participant_id: "pat",
+        kind: "human",
+        display_name: "Pat Lee",
+        avatar_url: KC,
+      },
+    });
+    expect(face.kind).toBe("human");
+    expect(face.id).toBe("pat");
+    expect(face.name).toBe("Pat Lee");
+    expect(face.src).toBe(KC);
+    expect(face.origin).toBe("subject");
+  });
+
+  it("uses counterpart art for an unopened agent hub", () => {
+    const face = resolveIdentity({
+      id: "hub-custom",
+      name: "Unpainted",
+      type: "agent_hub",
+      member_count: 2,
+      members: [],
+      brigade_agent_id: "no-such-agent-zz",
+      counterpart: {
+        participant_id: "p-agent",
+        kind: "agent",
+        display_name: "Unpainted",
+        agent_id: "no-such-agent-zz",
+        avatar_url: ROSTER,
+      },
+    });
+    expect(face.kind).toBe("agent");
+    expect(face.name).toBe("Unpainted");
+    expect(face.src).toBe(ROSTER);
+  });
+
   it("marks a DM with no member rows as name-only (no invented photo)", () => {
     const face = resolveIdentity({
       id: "room-empty",

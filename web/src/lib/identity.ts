@@ -663,11 +663,34 @@ function resolveAgentRoom(
   );
 }
 
+/**
+ * List rows for a DM or hub often have no member payload. `counterpart` is
+ * the face the server already resolved; use it before falling through to a
+ * name-only human (initials) or an agent with no picture.
+ */
+function counterpartMember(room: Loose): Loose | null {
+  const c = asLoose(room.counterpart);
+  const name = str(c.display_name);
+  const id = str(c.participant_id) || str(c.agent_id);
+  if (!name && !id) return null;
+  const kind = str(c.kind);
+  return {
+    participant_id: str(c.participant_id) || id,
+    display_name: name || id,
+    username: c.username,
+    avatar_url: c.avatar_url,
+    participant_type: kind || (str(c.agent_id) ? "agent" : "human"),
+    user_id: str(c.agent_id) || undefined,
+  };
+}
+
 function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdentity {
   const type = str(room.type);
   const brigade = brigadeIdOf(room);
   const stored = memberList(opts?.members);
-  const members = stored.length > 0 ? stored : memberList(room.members);
+  const listed = stored.length > 0 ? stored : memberList(room.members);
+  const fallback = counterpartMember(room);
+  const members = listed.length > 0 ? listed : fallback ? [fallback] : [];
   const name = str(room.display_name) || str(room.name) || "Conversation";
   const id = str(room.id) || name;
 

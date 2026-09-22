@@ -65,12 +65,36 @@ export interface ActivityEvent {
   metadata?: Record<string, unknown> | null;
 }
 
+export type RoomType = "channel" | "group_dm" | "dm" | "agent_hub";
+
+export type RoomVisibility = "public" | "private";
+
+/** The other side of a 1:1 row, so the sidebar can draw a face before the room is opened. */
+export interface RoomCounterpart {
+  participant_id: string;
+  kind: string;
+  display_name: string;
+  username?: string | null;
+  avatar_url?: string | null;
+  avatar_emoji?: string | null;
+  agent_id?: string | null;
+}
+
+/** An agent member as the room list sends it (mode chip). Distinct from the Brigade roster `Agent`. */
+export interface RoomAgentMember {
+  participant_id: string;
+  agent_id?: string | null;
+  display_name: string;
+  avatar_url?: string | null;
+  agent_mode?: "answers_all" | "when_named" | "listening" | "muted" | null;
+}
+
 export interface Room {
   id: string;
   name: string;
   display_name?: string;
   description: string;
-  type: "channel" | "group_dm" | "dm";
+  type: RoomType;
   created_at: string;
   updated_at: string;
   member_count: number;
@@ -106,6 +130,16 @@ export interface Room {
   is_archived?: boolean;
   /** Raw server room metadata (auto_titled, brigade_agent_id, conference…). */
   metadata_?: Record<string, unknown> | null;
+  /** Child-room parent. Null/absent on a top-level DM, hub, group, or channel. */
+  parent_room_id?: string | null;
+  visibility?: RoomVisibility;
+  project_number?: string | null;
+  /** Non-archived child threads, as the list endpoint counted them. */
+  thread_count?: number;
+  /** dm → the other human; agent_hub → the agent. Absent on groups and channels. */
+  counterpart?: RoomCounterpart | null;
+  /** Agent members with their per-room mode. The roster lives on `agents`. */
+  agent_members?: RoomAgentMember[];
 }
 
 export interface RoomMember {
@@ -144,6 +178,9 @@ export interface RoomMember {
   joined_at: string;
   last_read_at?: string | null;
   status?: string;
+  /** Agents only: how this agent behaves in this room. */
+  agent_mode?: "answers_all" | "when_named" | "listening" | "muted" | null;
+  context_depth?: number | null;
 }
 
 /**
@@ -520,6 +557,42 @@ export interface ProjectOpsProject {
   projectNumber: string;
   title: string;
   status: string | null;
+  /** Present when Project-Ops sent a due date. The chip shows it when set. */
+  dueDate?: string | null;
+}
+
+/** One open task on a project channel (`GET /rooms/{id}/tasks`, L2). */
+export interface RoomTask {
+  id: string;
+  title: string;
+  status: string | null;
+  due_date?: string | null;
+  dueDate?: string | null;
+  project_number?: string | null;
+  url?: string | null;
+  task_url?: string | null;
+  assignee?: {
+    participant_id?: string | null;
+    display_name?: string | null;
+    avatar_url?: string | null;
+    kind?: string | null;
+  } | null;
+}
+
+export interface RoomInvite {
+  id: string;
+  room_id: string;
+  token_prefix: string;
+  role: string;
+  expires_at: string;
+  max_uses?: number | null;
+  use_count?: number;
+  revoked_at?: string | null;
+  created_at: string;
+  created_by?: string | null;
+  /** Present only on the mint response. */
+  token?: string | null;
+  url_path?: string | null;
 }
 
 export interface PromoteToProjectOpsTaskRequest {
@@ -591,7 +664,7 @@ export interface RawRoomListItem {
   name: string;
   display_name: string;
   description: string | null;
-  room_type: "channel" | "group_dm" | "dm";
+  room_type: RoomType;
   created_at: string;
   updated_at: string;
   member_count: number;
@@ -604,6 +677,16 @@ export interface RawRoomListItem {
   // compat: older backends omit them and the store merges a live value.
   last_message?: Message | null;
   unread_count?: number;
+  mention_count?: number;
+  has_unread_mention?: boolean;
+  parent_room_id?: string | null;
+  visibility?: RoomVisibility | null;
+  project_number?: string | null;
+  thread_count?: number;
+  counterpart?: RoomCounterpart | null;
+  agents?: RoomAgentMember[] | null;
+  /** `GET /rooms?view=nested` may inline child rooms. Flat rows omit this. */
+  threads?: RawRoomListItem[] | null;
 }
 
 /**
@@ -660,11 +743,33 @@ export function residentAgentIds(
  * the previous archived mapper stamped `is_archived: true` onto whatever the
  * server returned instead of reading the server's field.
  */
+/**
+ * `view=nested` inlines `threads` under each parent. The sidebar nests by
+ * `parent_room_id`, so flatten first and keep that link on every child.
+ */
+export function flattenRoomListPayload(rows: RawRoomListItem[]): RawRoomListItem[] {
+  const out: RawRoomListItem[] = [];
+  for (const row of rows) {
+    const nested = row.threads;
+    const { threads: _nested, ...parent } = row;
+    out.push(parent);
+    if (!Array.isArray(nested)) continue;
+    for (const child of nested) {
+      out.push({
+        ...child,
+        parent_room_id: child.parent_room_id ?? parent.id,
+      });
+    }
+  }
+  return out;
+}
+
 export function mapRoomListItem(r: RawRoomListItem): Room {
+  const display = (r.display_name || "").trim();
   return {
     id: r.id,
-    name: r.display_name || r.name,
-    display_name: r.display_name,
+    name: display || r.name,
+    display_name: display || undefined,
     description: r.description ?? "",
     type: r.room_type,
     created_at: r.created_at,
@@ -672,19 +777,27 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
     member_count: r.member_count,
     online_count: r.online_count ?? 0,
     unread_count: r.unread_count ?? 0,
+    mention_count: r.mention_count ?? 0,
+    has_unread_mention: r.has_unread_mention === true,
     last_message: r.last_message ?? null,
     members: [],
     agents: [],
     brigade_agent_id:
       typeof r.metadata_?.brigade_agent_id === "string"
         ? (r.metadata_.brigade_agent_id as string)
-        : null,
+        : r.counterpart?.agent_id ?? null,
     brigade_agent_ids: residentAgentIdsFromMetadata(r.metadata_),
     is_conference: r.metadata_?.conference === true,
     is_archived: r.is_archived ?? false,
     // Carried so guards that read persisted room facts (e.g. the auto-title
     // metadata.auto_titled flag) see them without a per-room GET.
     metadata_: r.metadata_ ?? null,
+    parent_room_id: r.parent_room_id ?? null,
+    visibility: r.visibility === "private" ? "private" : "public",
+    project_number: r.project_number ?? null,
+    thread_count: r.thread_count ?? 0,
+    counterpart: r.counterpart ?? null,
+    agent_members: r.agents ?? [],
   };
 }
 
@@ -863,8 +976,10 @@ class StableApiClient {
     // ordered by updated_at DESC (most-recent conversation first — see
     // room_service.list_rooms_for_user). We preserve that order.
     // Map to the client's Room shape (type, name, description, …).
-    const all = await this.fetchAllRoomPages();
-    return all.map(mapRoomListItem);
+    // view=nested asks L2 to inline threads under parents. Unknown today, so
+    // FastAPI ignores it and we still nest from parent_room_id on the flat list.
+    const all = await this.fetchAllRoomPages("&view=nested");
+    return flattenRoomListPayload(all).map(mapRoomListItem);
   }
 
   async createRoom(data: CreateRoomRequest): Promise<Room> {
@@ -994,9 +1109,26 @@ class StableApiClient {
 
   async updateRoom(
     roomId: string,
-    patch: { display_name?: string; description?: string; is_archived?: boolean; metadata?: Record<string, unknown> },
+    patch: {
+      display_name?: string;
+      description?: string;
+      is_archived?: boolean;
+      metadata?: Record<string, unknown>;
+      visibility?: RoomVisibility;
+      project_number?: string | null;
+    },
   ): Promise<Room> {
-    return this.request<Room>("PATCH", `/api/v1/rooms/${roomId}`, patch);
+    const raw = await this.request<RawRoomListItem>(
+      "PATCH",
+      `/api/v1/rooms/${roomId}`,
+      patch,
+    );
+    // Older callers treated the body as an already-mapped Room. A RoomResponse
+    // has room_type, so map it; a body that is already a Room passes through.
+    if (raw && typeof raw === "object" && "room_type" in raw) {
+      return mapRoomListItem(raw);
+    }
+    return raw as unknown as Room;
   }
 
   /** Archive a room (server-side soft-delete via is_archived). Returns the updated room. */
@@ -1019,8 +1151,8 @@ class StableApiClient {
    * the live list, so `is_archived` is the server's word, not a client stamp.
    */
   async getArchivedRooms(): Promise<Room[]> {
-    const all = await this.fetchAllRoomPages("&is_archived=true");
-    return all.map(mapRoomListItem);
+    const all = await this.fetchAllRoomPages("&is_archived=true&view=nested");
+    return flattenRoomListPayload(all).map(mapRoomListItem);
   }
 
   /** Resolve the selected agent's backend before creating any room. */
@@ -1367,45 +1499,94 @@ class StableApiClient {
   }
 
   async getRoom(roomId: string): Promise<Room> {
-    type Raw = {
-      id: string;
-      name: string;
-      display_name: string;
-      description: string | null;
-      room_type: "channel" | "group_dm" | "dm";
-      created_at: string;
-      updated_at: string;
-      member_count: number;
-      // RoomResponse serializes the column as `metadata_` (alias). The
-      // resident Brigade agent's id is persisted here by the invite path
-      // (server: brigade.py writes room.metadata_.brigade_agent_id).
-      metadata_?: Record<string, unknown> | null;
-    };
-    const r = await this.request<Raw>("GET", `/api/v1/rooms/${roomId}`);
-    const brigadeAgentId =
-      typeof r.metadata_?.brigade_agent_id === "string"
-        ? (r.metadata_.brigade_agent_id as string)
-        : null;
-    return {
-      id: r.id,
-      name: r.display_name || r.name,
-      display_name: r.display_name,
-      description: r.description ?? "",
-      type: r.room_type,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-      member_count: r.member_count,
-      unread_count: 0,
-      last_message: null,
-      members: [],
-      agents: [],
-      brigade_agent_id: brigadeAgentId,
-      brigade_agent_ids: residentAgentIdsFromMetadata(r.metadata_),
-      is_conference: r.metadata_?.conference === true,
-      // Carried so callers that need a server-owned room fact (the resident
-      // set included) don't have to re-fetch. The list mapper already does it.
-      metadata_: r.metadata_ ?? null,
-    };
+    const r = await this.request<RawRoomListItem>("GET", `/api/v1/rooms/${roomId}`);
+    return mapRoomListItem(r);
+  }
+
+  /** Find-or-create the caller's hub with this agent. Threads hang off the hub. */
+  async ensureAgentHub(agentId: string): Promise<Room> {
+    const r = await this.request<RawRoomListItem>(
+      "POST",
+      `/api/v1/agents/${encodeURIComponent(agentId)}/hub`,
+    );
+    return mapRoomListItem(r);
+  }
+
+  async createThread(
+    roomId: string,
+    body: { title?: string | null; seed_message_id?: string | null } = {},
+  ): Promise<Room> {
+    const payload: { title?: string; seed_message_id?: string } = {};
+    const title = (body.title || "").trim();
+    if (title) payload.title = title;
+    if (body.seed_message_id) payload.seed_message_id = body.seed_message_id;
+    const r = await this.request<RawRoomListItem>(
+      "POST",
+      `/api/v1/rooms/${roomId}/threads`,
+      payload,
+    );
+    return mapRoomListItem(r);
+  }
+
+  async listThreads(roomId: string, includeArchived = false): Promise<Room[]> {
+    const q = includeArchived ? "?include_archived=true" : "";
+    const rows = await this.request<RawRoomListItem[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/threads${q}`,
+    );
+    return (rows ?? []).map(mapRoomListItem);
+  }
+
+  async setAgentMode(
+    roomId: string,
+    participantId: string,
+    agentMode: RoomAgentMember["agent_mode"],
+  ): Promise<RoomMember> {
+    return this.request<RoomMember>(
+      "PATCH",
+      `/api/v1/rooms/${roomId}/members/${participantId}`,
+      { agent_mode: agentMode },
+    );
+  }
+
+  async listRoomInvites(roomId: string): Promise<RoomInvite[]> {
+    return this.request<RoomInvite[]>("GET", `/api/v1/rooms/${roomId}/invites`);
+  }
+
+  async mintRoomInvite(
+    roomId: string,
+    body: { expires_hours?: number; max_uses?: number | null; role?: "member" | "admin" } = {},
+  ): Promise<RoomInvite> {
+    return this.request<RoomInvite>("POST", `/api/v1/rooms/${roomId}/invites`, {
+      expires_hours: body.expires_hours ?? 24 * 7,
+      max_uses: body.max_uses ?? null,
+      role: body.role ?? "member",
+    });
+  }
+
+  async revokeRoomInvite(roomId: string, inviteId: string): Promise<void> {
+    await this.request<void>("DELETE", `/api/v1/rooms/${roomId}/invites/${inviteId}`);
+  }
+
+  /**
+   * Open tasks for a project channel. L2 owns the route; a 404 means it has
+   * not landed and the panel says so instead of inventing rows.
+   */
+  async getRoomTasks(roomId: string): Promise<RoomTask[]> {
+    const rows = await this.request<RoomTask[]>("GET", `/api/v1/rooms/${roomId}/tasks`);
+    return rows ?? [];
+  }
+
+  /**
+   * Ensure the private channel for a Project-Ops project. L2 owns
+   * `POST /rooms/for-project`; until then this rejects and the New sheet
+   * says the server does not have it yet.
+   */
+  async ensureProjectChannel(projectNumber: string): Promise<Room> {
+    const r = await this.request<RawRoomListItem>("POST", "/api/v1/rooms/for-project", {
+      project_number: projectNumber,
+    });
+    return mapRoomListItem(r);
   }
 
   async getMessages(
