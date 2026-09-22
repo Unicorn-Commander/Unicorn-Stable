@@ -17,6 +17,7 @@ vi.mock("@/services/auth", () => ({
 vi.mock("@/stores/federationStore", () => ({
   useFederationStore: {
     getState: () => ({ accessibleInstances: [], activeInstanceId: null }),
+    subscribe: () => () => {},
   },
 }));
 

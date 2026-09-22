@@ -10,7 +10,7 @@
  * arrives).
  */
 import clsx from "clsx";
-import { identityFor, resolveIdentity } from "@/lib/identity";
+import { identityFor, resolveIdentity, rosterParticipantType } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { isGuestParticipant } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
@@ -66,7 +66,11 @@ export function GuestParticipantRow({ member }: { member: GuestRoomMember }) {
     <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
       <div className="relative">
         <Identity
-          {...resolveIdentity({ ...member, id })}
+          {...resolveIdentity({
+            ...member,
+            id,
+            participant_type: rosterParticipantType(member),
+          })}
           presence={null}
           size={28}
         />
