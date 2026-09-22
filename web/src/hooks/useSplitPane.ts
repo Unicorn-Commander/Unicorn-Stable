@@ -40,6 +40,31 @@ export interface SplitPaneOptions {
   collapsible?: boolean;
   /** Called when a drag, key nudge, or double-click commits a size. */
   onSizeCommit?: (size: number) => void;
+  /**
+   * Previous storage key. If this split has no saved size yet, copy the
+   * legacy size once. A later drag writes the new key and is not overwritten.
+   */
+  legacyKey?: string;
+}
+
+export interface SplitSizeStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/** Copy a pre-per-room split size onto `key` when `key` has none yet. */
+export function adoptLegacySplitSize(
+  storage: SplitSizeStorage,
+  key: string,
+  legacyKey: string | undefined,
+  orientation: SplitOrientation,
+): void {
+  if (!legacyKey || legacyKey === key) return;
+  const nextKey = sizeKey(key, orientation);
+  if (storage.getItem(nextKey) != null) return;
+  const legacy = storage.getItem(sizeKey(legacyKey, orientation));
+  if (legacy == null) return;
+  storage.setItem(nextKey, legacy);
 }
 
 /** How far one arrow-key press moves the divider, in px. */
@@ -59,8 +84,10 @@ function readStoredSize(
   fallback: number,
   min: number,
   max: number,
+  legacyKey?: string,
 ): number {
   try {
+    adoptLegacySplitSize(localStorage, key, legacyKey, orientation);
     const raw = localStorage.getItem(sizeKey(key, orientation));
     if (!raw) return clampSize(fallback, min, max);
     const parsed = Number(raw);
@@ -119,10 +146,11 @@ export function useSplitPane(
     orientation,
     collapsible = false,
     onSizeCommit,
+    legacyKey,
   }: SplitPaneOptions,
 ): SplitPaneResult {
   const [size, setSize] = useState(() =>
-    readStoredSize(key, orientation, defaultSize, min, max),
+    readStoredSize(key, orientation, defaultSize, min, max, legacyKey),
   );
   const [isDragging, setIsDragging] = useState(false);
   const [collapsed, setCollapsedState] = useState(() =>
@@ -146,11 +174,11 @@ export function useSplitPane(
   // restore their own persisted size. Skipped mid-drag so it can't fight a drag.
   useEffect(() => {
     if (dragRef.current) return;
-    setSize(readStoredSize(key, orientation, defaultSize, min, max));
+    setSize(readStoredSize(key, orientation, defaultSize, min, max, legacyKey));
     // defaultSize/min/max are call-site constants; re-reading on key/orientation
     // is the whole point. eslint-disable to keep the dep list to the triggers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, orientation]);
+  }, [key, orientation, legacyKey]);
 
   const persistSize = useCallback(
     (w: number) => {

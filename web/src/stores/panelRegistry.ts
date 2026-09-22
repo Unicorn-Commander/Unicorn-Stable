@@ -309,13 +309,73 @@ function mapModes(
 }
 
 /**
+ * Order a Show gesture tries windows in. Browsers allow about one
+ * `window.open` per click, so only the first panel that is not already
+ * open gets a window. The rest stay hidden until the next gesture.
+ */
+export const POP_GESTURE_ORDER: readonly RoomPanelId[] = [
+  "stage",
+  "chat",
+  "transcript",
+  "canvas",
+  "members",
+  "tasks",
+  "replies",
+  "threads",
+];
+
+export interface PopGesturePlan {
+  /** Preset map after panels that will not open this click are hidden. */
+  panels: PanelMap;
+  /** The one panel to pass to `window.open`, or null when nothing new is popped. */
+  toOpen: RoomPanelId | null;
+  /** Popped panels this click did not open. They are hidden, not docked. */
+  deferred: RoomPanelId[];
+}
+
+/**
+ * One new browser window per user gesture.
+ *
+ * `alreadyOpen` panels keep `popped` and do not spend the gesture. Every
+ * other popped panel past the first becomes `hidden` — never `docked` — so
+ * a blocked or skipped pop cannot leave a Tasks/Threads column or force the
+ * members drawer and canvas open.
+ */
+export function planPopGesture(
+  panels: PanelMap,
+  alreadyOpen: ReadonlySet<RoomPanelId>,
+): PopGesturePlan {
+  let toOpen: RoomPanelId | null = null;
+  const deferred: RoomPanelId[] = [];
+  let next = panels;
+  for (const id of POP_GESTURE_ORDER) {
+    if (panelOf(panels, id).mode !== "popped") continue;
+    if (alreadyOpen.has(id)) continue;
+    if (toOpen === null) {
+      toOpen = id;
+      continue;
+    }
+    deferred.push(id);
+    next = reducePanels(next, { type: "setMode", id, mode: "hidden" });
+  }
+  return { panels: next, toOpen, deferred };
+}
+
+/** A `window.open` that did not open must not be stored as docked. */
+export function hideFailedPop(panels: PanelMap, id: RoomPanelId): PanelMap {
+  if (panelOf(panels, id).mode !== "popped") return panels;
+  return reducePanels(panels, { type: "setMode", id, mode: "hidden" });
+}
+
+/**
  * Built-in call layouts. Each is a full panel map.
  *
  * - Focus: stage only.
  * - Studio: stage + chat (360px, right) + transcript.
  * - Text: chat is the main surface; the stage is a small floating window
  *   the call bar also sends to Picture-in-Picture.
- * - Show: every panel popped into its own window.
+ * - Show: the intent map pops every panel. Applying it
+ *   ({@link planPopGesture}) opens one window and hides the rest.
  */
 export function builtinPreset(id: BuiltinPresetId): PanelMap {
   const base = defaultPanelMap();

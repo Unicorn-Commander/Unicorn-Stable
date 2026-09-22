@@ -52,6 +52,11 @@ export interface SplitPaneProps {
    */
   preferredSize?: number;
   preferredEpoch?: number;
+  /**
+   * Older storage key whose saved width is copied once when this key is empty.
+   * Used so `call-chat` (one width for every room) seeds `call-chat:${roomId}`.
+   */
+  legacyStorageKey?: string;
   className?: string;
 }
 
@@ -71,6 +76,7 @@ export function SplitPane({
   onSizeCommit,
   preferredSize,
   preferredEpoch = 0,
+  legacyStorageKey,
   className,
 }: SplitPaneProps) {
   const split = useSplitPane(storageKey, {
@@ -80,6 +86,7 @@ export function SplitPane({
     orientation,
     collapsible,
     onSizeCommit,
+    legacyKey: legacyStorageKey,
   });
 
   // Support a controlled `collapsed` prop while keeping the persisted internal

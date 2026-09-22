@@ -1,45 +1,37 @@
 /**
  * Call-layout actions shared by the call bar and the keyboard shortcuts.
  *
- * Preset application is a panel-map write plus the call-ui flags the existing
- * stage already reads (show transcript, chat collapsed, mobile intent). Pop-out
- * opens run synchronously so the browser still counts them as the user's gesture.
+ * Preset application writes the panel map, then the call-ui flags the stage
+ * already reads (transcript, mobile intent). A pop-out open runs synchronously
+ * inside the user's gesture. Show opens one window per gesture; the rest are
+ * hidden, not docked, until the next gesture.
  */
 import { pipManager } from "@/components/Room/popout/pipManager";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore, type MobileCallMode } from "@/stores/callUiStore";
 import { useCanvasStore } from "@/stores/canvasStore";
-import {
-  readLiveRoom,
-  usePanelChromeStore,
-} from "@/stores/panelChromeStore";
+import { readLiveRoom, usePanelChromeStore } from "@/stores/panelChromeStore";
 import {
   ROOM_PANEL_IDS,
+  POP_GESTURE_ORDER,
   builtinPreset,
   clonePanelMap,
+  hideFailedPop,
   panelOf,
+  planPopGesture,
   type BuiltinPresetId,
   type PanelMap,
+  type PanelMode,
   type RoomPanelId,
 } from "@/stores/panelRegistry";
 import {
   closePanelWindow,
+  isPanelWindowOpen,
   openPanelWindow,
 } from "@/components/Layout/panelOpeners";
 
 let mirrorsInstalled = false;
 let applyingPreset = false;
-
-const POP_ORDER: readonly RoomPanelId[] = [
-  "stage",
-  "chat",
-  "transcript",
-  "canvas",
-  "members",
-  "tasks",
-  "replies",
-  "threads",
-];
 
 export function isDesktopViewport(): boolean {
   return (
@@ -82,16 +74,36 @@ function liftStage(roomId: string): void {
   if (view === "compact" || view === "sidebar") ui.setViewMode(roomId, "grid");
 }
 
-export function requestStagePip(): boolean {
-  if (typeof document === "undefined") return false;
-  if (!pipManager.isSupported()) return false;
+function stageVideo(): HTMLVideoElement | null {
+  if (typeof document === "undefined") return null;
   const scoped = document.querySelector("[data-stage-root] video");
   const fallback = document.querySelector(
     '[aria-label="Voice and video call"] video',
   );
   const video = scoped ?? fallback;
-  if (!(video instanceof HTMLVideoElement)) return false;
-  void pipManager.requestPip(video, "call-stage").catch(() => {});
+  return video instanceof HTMLVideoElement ? video : null;
+}
+
+/**
+ * Text layout mounts the stage `<video>` when React commits the preset, so a
+ * query during the click itself finds nothing and Picture-in-Picture no-ops.
+ * Run after paint. The gesture's transient activation is still valid then.
+ */
+export function requestStagePip(): boolean {
+  if (typeof window === "undefined") return false;
+  if (!pipManager.isSupported()) return false;
+  const tryOnce = (): boolean => {
+    const video = stageVideo();
+    if (!video) return false;
+    void pipManager.requestPip(video, "call-stage").catch(() => {});
+    return true;
+  };
+  requestAnimationFrame(() => {
+    if (tryOnce()) return;
+    requestAnimationFrame(() => {
+      tryOnce();
+    });
+  });
   return true;
 }
 
@@ -106,6 +118,50 @@ export function chatIsVisible(opts: {
   return opts.mode !== "hidden";
 }
 
+/**
+ * How chat is presented. Phone Video hides the column without writing the
+ * desktop registry. A popped or floating chat stays that mode on the phone
+ * once the user is not in Video.
+ */
+export function presentChat(opts: {
+  callIsHere: boolean;
+  isDesktop: boolean;
+  mobileCallMode: MobileCallMode;
+  chatMode: PanelMode;
+  textLayout: boolean;
+}): PanelMode {
+  if (!opts.callIsHere) return "docked";
+  if (!opts.isDesktop) {
+    if (opts.mobileCallMode === "video" || opts.chatMode === "hidden") {
+      return "hidden";
+    }
+    if (opts.chatMode === "popped" || opts.chatMode === "floating") {
+      return opts.chatMode;
+    }
+    return "docked";
+  }
+  if (
+    opts.textLayout &&
+    opts.chatMode !== "popped" &&
+    opts.chatMode !== "floating" &&
+    opts.chatMode !== "hidden"
+  ) {
+    return "docked";
+  }
+  return opts.chatMode;
+}
+
+/**
+ * Phone Video / Split / Chat. Lives in `mobileCallMode` only — it must not
+ * write the per-room panel registry, or a phone Video tap hides chat on the
+ * same browser once the viewport is desktop width.
+ */
+export function setMobileCallIntent(next: MobileCallMode): void {
+  const ui = useCallUiStore.getState();
+  if (next === "video" || next === "split") ui.toggleVideo(true);
+  ui.setMobileCallMode(next, { user: true });
+}
+
 export function toggleCallChat(roomId: string): void {
   const chrome = usePanelChromeStore.getState();
   const ui = useCallUiStore.getState();
@@ -117,25 +173,19 @@ export function toggleCallChat(roomId: string): void {
       if (mode === "popped") closePanelWindow(roomId, "chat");
       chrome.setPanelMode(roomId, "chat", "docked");
       ui.setMobileCallMode("split", { user: true });
-      ui.setMobileChatSheet(null);
-      ui.setChatCollapsed(false);
     } else {
       if (mode === "popped") closePanelWindow(roomId, "chat");
       chrome.setPanelMode(roomId, "chat", "hidden");
       ui.setMobileCallMode("video", { user: true });
-      ui.setMobileChatSheet(null);
-      ui.setChatCollapsed(true);
     }
     return;
   }
   if (mode === "hidden") {
     chrome.setPanelMode(roomId, "chat", "docked");
-    ui.setChatCollapsed(false);
     return;
   }
   if (mode === "popped") closePanelWindow(roomId, "chat");
   chrome.setPanelMode(roomId, "chat", "hidden");
-  ui.setChatCollapsed(true);
 }
 
 export function popPanel(roomId: string, id: RoomPanelId): boolean {
@@ -144,18 +194,16 @@ export function popPanel(roomId: string, id: RoomPanelId): boolean {
   if (cur === "popped") {
     closePanelWindow(roomId, id);
     chrome.setPanelMode(roomId, id, "docked");
-    if (id === "chat") useCallUiStore.getState().setChatCollapsed(false);
     return true;
   }
   chrome.setPanelMode(roomId, id, "popped");
-  const ok = openPanelWindow(roomId, id);
-  if (!ok) {
+  const opened = openPanelWindow(roomId, id);
+  if (opened !== "opened") {
     chrome.setPanelMode(roomId, id, cur);
     return false;
   }
   if (id === "canvas") useCanvasStore.getState().setPanelOpen(true);
   if (id === "members") useAppStore.getState().setParticipantPanelOpen(true);
-  if (id === "chat") useCallUiStore.getState().setChatCollapsed(true);
   return true;
 }
 
@@ -169,7 +217,6 @@ export function floatPanel(roomId: string, id: RoomPanelId): void {
 function syncCompanionSurfaces(roomId: string, panels: PanelMap): void {
   const ui = useCallUiStore.getState();
   const desktop = isDesktopViewport();
-  ui.setChatCollapsed(panels.chat.mode !== "docked" && panels.chat.mode !== "floating");
   ui.toggleTranscript(panels.transcript.mode !== "hidden");
   if (panels.stage.mode === "floating") {
     liftStage(roomId);
@@ -193,14 +240,57 @@ function syncCompanionSurfaces(roomId: string, panels: PanelMap): void {
   }
 }
 
-function openPopped(roomId: string, panels: PanelMap): void {
-  const chrome = usePanelChromeStore.getState();
-  for (const id of POP_ORDER) {
+export interface OpenPoppedResult {
+  panels: PanelMap;
+  /** Panels left hidden because this click already spent its one window. */
+  deferred: RoomPanelId[];
+  /** The panel whose window opened, if any. */
+  opened: RoomPanelId | null;
+}
+
+function windowsAlreadyOpen(
+  roomId: string,
+  panels: PanelMap,
+): Set<RoomPanelId> {
+  const open = new Set<RoomPanelId>();
+  for (const id of POP_GESTURE_ORDER) {
     if (panelOf(panels, id).mode !== "popped") continue;
-    if (!openPanelWindow(roomId, id)) {
-      chrome.setPanelMode(roomId, id, "docked");
+    if (isPanelWindowOpen(roomId, id)) open.add(id);
+  }
+  return open;
+}
+
+/**
+ * Open at most one new window for panels whose mode is `popped`.
+ * Does not write the store — {@link applyCallPreset} stores the returned map.
+ * A blocked or missing opener becomes `hidden`, never `docked`.
+ */
+export function openPopped(roomId: string, panels: PanelMap): OpenPoppedResult {
+  const plan = planPopGesture(panels, windowsAlreadyOpen(roomId, panels));
+  let next = plan.panels;
+  let opened: RoomPanelId | null = null;
+  if (plan.toOpen) {
+    const result = openPanelWindow(roomId, plan.toOpen);
+    if (result === "opened") {
+      opened = plan.toOpen;
+    } else {
+      next = hideFailedPop(next, plan.toOpen);
+      if (result === "unmounted") {
+        useAppStore.getState().pushToast({
+          title: "Pop-out unavailable",
+          body: "That panel isn't on screen yet, so no window opened. It stayed hidden.",
+          kind: "error",
+        });
+      }
     }
   }
+  if (opened && plan.deferred.length > 0) {
+    useAppStore.getState().pushToast({
+      title: "One window per click",
+      body: "Browsers allow one new window at a time. Apply Show again to pop the next panel.",
+    });
+  }
+  return { panels: next, deferred: plan.deferred, opened };
 }
 
 export function applyCallPreset(
@@ -211,17 +301,20 @@ export function applyCallPreset(
     typeof source === "string" ? builtinPreset(source) : clonePanelMap(source);
   applyingPreset = true;
   try {
-    usePanelChromeStore.getState().replaceRoomPanels(roomId, panels, true);
-    syncCompanionSurfaces(roomId, panels);
-    openPopped(roomId, panels);
-    if (panelOf(panels, "stage").mode === "floating") requestStagePip();
+    const landed = openPopped(roomId, panels);
+    usePanelChromeStore
+      .getState()
+      .replaceRoomPanels(roomId, landed.panels, true);
+    syncCompanionSurfaces(roomId, landed.panels);
+    if (panelOf(landed.panels, "stage").mode === "floating") requestStagePip();
   } finally {
     applyingPreset = false;
   }
 }
 
 export function saveCurrentLayout(roomId: string, name: string): void {
-  const panels = usePanelChromeStore.getState().rooms[roomId] ?? readLiveRoom(roomId);
+  const panels =
+    usePanelChromeStore.getState().rooms[roomId] ?? readLiveRoom(roomId);
   usePanelChromeStore.getState().saveUserPreset(name, panels);
 }
 

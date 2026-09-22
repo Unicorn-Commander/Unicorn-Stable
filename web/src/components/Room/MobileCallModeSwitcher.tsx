@@ -5,7 +5,7 @@ import {
   useCallUiStore,
   type MobileCallMode,
 } from "@/stores/callUiStore";
-import { usePanelChromeStore } from "@/stores/panelChromeStore";
+import { setMobileCallIntent } from "@/lib/callLayoutActions";
 
 interface MobileCallModeSwitcherProps {
   className?: string;
@@ -54,28 +54,11 @@ export function MobileCallModeSwitcher({
   extra,
 }: MobileCallModeSwitcherProps) {
   const mode = useCallUiStore((s) => s.mobileCallMode);
-  const setMobileCallMode = useCallUiStore((s) => s.setMobileCallMode);
-  const setMobileChatSheet = useCallUiStore((s) => s.setMobileChatSheet);
-  const toggleVideo = useCallUiStore((s) => s.toggleVideo);
 
   function select(next: MobileCallMode) {
-    // Intent modes always keep the LiveKit stage available (never hang up).
-    // Video + Split need the stage; Chat keeps a PiP tile of the same surface.
-    if (next === "video" || next === "split") {
-      toggleVideo(true);
-    }
-    if (next !== "video") {
-      setMobileChatSheet(null);
-    }
-    const roomId = useCallUiStore.getState().activeCallRoomId;
-    if (roomId) {
-      const chrome = usePanelChromeStore.getState();
-      if (next === "video") chrome.setPanelMode(roomId, "chat", "hidden");
-      else if (chrome.getPanel(roomId, "chat").mode === "hidden") {
-        chrome.setPanelMode(roomId, "chat", "docked");
-      }
-    }
-    setMobileCallMode(next, { user: true });
+    // Intent stays in mobileCallMode. Writing the panel registry here hid
+    // chat for the same browser the next time it was wide enough for desktop.
+    setMobileCallIntent(next);
   }
 
   return (

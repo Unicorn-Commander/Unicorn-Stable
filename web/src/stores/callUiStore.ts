@@ -14,9 +14,6 @@ import { getSendByDefault } from "@/lib/meetingOpsPrefs";
  */
 export type MobileCallMode = "video" | "split" | "chat";
 
-/** Bottom-sheet snap points for chat while in mobile Video mode. */
-export type MobileChatSheetSnap = "half" | "full";
-
 /**
  * Call-UI store — modular, agent-drivable call surface state.
  *
@@ -172,13 +169,6 @@ interface CallUiState {
   /** Global: transcript panel open. Kept cheap when false (no ingest cost). */
   showTranscript: boolean;
   /**
-   * Global: the chat pane is collapsed while video is the star (the user's
-   * "hide chat → give video the whole screen" toggle). Drives the videoMain
-   * SplitPane's controlled collapse so the in-call button and the divider
-   * chevron stay in sync. `showVideo=false` is the mirror-image "hide video".
-   */
-  chatCollapsed: boolean;
-  /**
    * Mobile intent mode for how video + chat coexist on phones. Independent of
    * desktop `viewModes` (grid/focus/sidebar). Session-scoped.
    *
@@ -197,11 +187,6 @@ interface CallUiState {
    * call ends / {@link resetMobileCallUi}.
    */
   mobileCallModeUserOverride: boolean;
-  /**
-   * Chat bottom-sheet snap while `mobileCallMode === "video"`. `null` = closed
-   * (edge-to-edge video). Half/full overlays chat without leaving Video mode.
-   */
-  mobileChatSheet: MobileChatSheetSnap | null;
   /** Participant identities whose video tile the user hid individually. */
   hiddenTileIds: Set<string>;
   /**
@@ -270,7 +255,6 @@ interface CallUiState {
   setPinnedParticipant: (roomId: string, id: string | null) => void;
   toggleVideo: (on?: boolean) => void;
   toggleTranscript: (on?: boolean) => void;
-  setChatCollapsed: (v?: boolean) => void;
   /**
    * Set the mobile intent mode. Pass `{ user: true }` for explicit UI picks so
    * auto presentation / video defaults won't clobber the choice.
@@ -279,8 +263,7 @@ interface CallUiState {
     mode: MobileCallMode,
     opts?: { user?: boolean },
   ) => void;
-  setMobileChatSheet: (snap: MobileChatSheetSnap | null) => void;
-  /** Clear mobile intent + sheet (call end, room leave, server switch). */
+  /** Clear mobile intent (call end, room leave, server switch). */
   resetMobileCallUi: () => void;
   setTileHidden: (participantId: string, hidden: boolean) => void;
   focusParticipant: (participantId: string | null) => void;
@@ -320,10 +303,8 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   // Default ON: talking to an agent, you want to SEE what it says. The CC
   // button in the call controls still toggles it off per session.
   showTranscript: true,
-  chatCollapsed: false,
   mobileCallMode: "split",
   mobileCallModeUserOverride: false,
-  mobileChatSheet: null,
   hiddenTileIds: new Set(),
   focusedParticipantId: null,
   popout: { open: false, ownerRoomId: null },
@@ -368,28 +349,17 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       showTranscript: on === undefined ? !state.showTranscript : on,
     })),
 
-  setChatCollapsed: (v) =>
-    set((state) => ({
-      chatCollapsed: v === undefined ? !state.chatCollapsed : v,
-    })),
-
   setMobileCallMode: (mode, opts) =>
     set((state) => ({
       mobileCallMode: mode,
       mobileCallModeUserOverride:
         opts?.user === true ? true : state.mobileCallModeUserOverride,
-      // Leaving Video mode closes the overlay sheet; entering Chat is full chat.
-      mobileChatSheet:
-        mode === "video" ? state.mobileChatSheet : null,
     })),
-
-  setMobileChatSheet: (snap) => set({ mobileChatSheet: snap }),
 
   resetMobileCallUi: () =>
     set({
       mobileCallMode: "split",
       mobileCallModeUserOverride: false,
-      mobileChatSheet: null,
     }),
 
   setTileHidden: (participantId, hidden) =>
@@ -621,7 +591,6 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       sendToMeetingOps: getSendByDefault(),
       mobileCallMode: "split",
       mobileCallModeUserOverride: false,
-      mobileChatSheet: null,
     });
   },
 }));

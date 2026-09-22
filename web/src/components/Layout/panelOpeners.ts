@@ -10,7 +10,11 @@ import type { RoomPanelId } from "@/stores/panelRegistry";
 export interface PanelOpener {
   open: () => boolean;
   close: () => void;
+  /** True while this panel's browser window is still open. */
+  isOpen: () => boolean;
 }
+
+export type OpenPanelResult = "opened" | "blocked" | "unmounted";
 
 const openers = new Map<string, PanelOpener>();
 
@@ -30,10 +34,19 @@ export function registerPanelOpener(
   };
 }
 
-export function openPanelWindow(roomId: string, id: RoomPanelId): boolean {
+export function isPanelWindowOpen(roomId: string, id: RoomPanelId): boolean {
   const opener = openers.get(key(roomId, id));
   if (!opener) return false;
-  return opener.open();
+  return opener.isOpen();
+}
+
+export function openPanelWindow(
+  roomId: string,
+  id: RoomPanelId,
+): OpenPanelResult {
+  const opener = openers.get(key(roomId, id));
+  if (!opener) return "unmounted";
+  return opener.open() ? "opened" : "blocked";
 }
 
 export function closePanelWindow(roomId: string, id: RoomPanelId): void {

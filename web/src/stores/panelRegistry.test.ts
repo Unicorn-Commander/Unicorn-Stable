@@ -9,9 +9,11 @@ import {
   applyPreset,
   builtinPreset,
   defaultPanelMap,
+  hideFailedPop,
   loadRoomPanels,
   panelOf,
   parseUserPresets,
+  planPopGesture,
   reducePanels,
   registryStorageKey,
   saveRoomPanels,
@@ -132,11 +134,28 @@ describe("preset application", () => {
     expect(next.transcript.mode).toBe("hidden");
   });
 
-  it("Show pops every panel into its own window", () => {
-    const next = applyPreset(defaultPanelMap(), builtinPreset("show"));
+  it("Show opens one window per gesture and hides the rest", () => {
+    const intent = applyPreset(defaultPanelMap(), builtinPreset("show"));
+    const first = planPopGesture(intent, new Set());
+    expect(first.toOpen).toBe("stage");
+    expect(first.panels.stage.mode).toBe("popped");
+    expect(first.deferred).not.toContain("stage");
     for (const id of ROOM_PANEL_IDS) {
-      expect(panelOf(next, id).mode).toBe("popped");
+      if (id === "stage") continue;
+      expect(panelOf(first.panels, id).mode).toBe("hidden");
     }
+    const blocked = hideFailedPop(first.panels, "stage");
+    expect(blocked.stage.mode).toBe("hidden");
+    for (const id of ROOM_PANEL_IDS) {
+      expect(panelOf(blocked, id).mode).not.toBe("docked");
+    }
+
+    const second = planPopGesture(intent, new Set(["stage"]));
+    expect(second.toOpen).toBe("chat");
+    expect(second.panels.stage.mode).toBe("popped");
+    expect(second.panels.chat.mode).toBe("popped");
+    expect(second.panels.tasks.mode).toBe("hidden");
+    expect(second.panels.threads.mode).toBe("hidden");
     expect(BUILTIN_PRESET_IDS).toEqual(["focus", "studio", "text", "show"]);
   });
 
