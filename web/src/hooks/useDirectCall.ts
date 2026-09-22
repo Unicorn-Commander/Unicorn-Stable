@@ -50,7 +50,13 @@ export function useDirectCall() {
       const result = await runStartCall(
         {
           roomId,
-          roomType: room?.type ?? "channel",
+          // A hub is a 1:1 with an agent: same ring policy as a DM.
+          roomType:
+            room?.type === "group_dm"
+              ? "group_dm"
+              : room?.type === "dm" || room?.type === "agent_hub"
+                ? "dm"
+                : "channel",
           hasAgents: residentAgentIds(room).length > 0,
           label: room?.name || "them",
           ring,

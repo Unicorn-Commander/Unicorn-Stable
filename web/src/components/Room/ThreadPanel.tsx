@@ -148,12 +148,12 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
       className="glass-heavy absolute inset-y-0 right-0 z-40 flex h-full w-[min(90vw,320px)] flex-col shadow-2xl md:static md:z-auto md:w-80 md:shadow-none"
-      aria-label="Thread"
+      aria-label="Replies"
     >
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-line px-3">
         <div className="flex items-center gap-2 text-slate-200">
           <CornerDownRight className="h-4 w-4 text-stable-purple-light/80" />
-          <h3 className="font-display text-sm font-semibold">Thread</h3>
+          <h3 className="font-display text-sm font-semibold">Replies</h3>
           {replies.length > 0 && (
             <span className="text-xs tabular-nums text-slate-500">
               ({replies.length})
@@ -163,7 +163,7 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
         <button
           onClick={onClose}
           className="focus-ring rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
-          aria-label="Close thread"
+          aria-label="Close replies"
         >
           <X className="h-4 w-4" />
         </button>

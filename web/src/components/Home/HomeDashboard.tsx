@@ -43,6 +43,7 @@ import { HomeRow, SenderLine, previewText, rowTime } from "./widgets/HomeRow";
 import { SystemHealthStrip, useHomeHealth } from "./widgets/SystemHealthStrip";
 import { ConversationsCard } from "./widgets/ConversationsCard";
 import { KnowledgeRecents } from "./widgets/KnowledgeRecents";
+import { CrewThreadMenu } from "./CrewThreadMenu";
 import type { ActivityTab } from "@/components/Layout/ActivityCenter";
 
 /** One tile in the command-center stat strip. */
@@ -1155,12 +1156,16 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                   {fleetAgents.map((agent, i) => {
                     const unreachable = agent.availability === "unavailable";
                     return (
-                      <li key={agent.id}>
+                      <li key={agent.id} className="relative">
+                        <CrewThreadMenu
+                          agentId={agent.id}
+                          name={agent.display_name || agent.name}
+                        />
                         <button
                           type="button"
                           onClick={() => navigate("/agents")}
                           className={clsx(
-                            "focus-ring flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.04]",
+                            "focus-ring flex w-full items-center gap-3 px-3.5 py-2.5 pr-12 text-left transition-colors hover:bg-white/[0.04]",
                             i > 0 && "border-t border-line",
                           )}
                         >

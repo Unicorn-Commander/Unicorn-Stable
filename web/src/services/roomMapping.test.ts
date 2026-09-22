@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapRoomListItem, type RawRoomListItem } from "./api";
+import { flattenRoomListPayload, mapRoomListItem, type RawRoomListItem } from "./api";
 
 function raw(over: Partial<RawRoomListItem> = {}): RawRoomListItem {
   return {
@@ -71,6 +71,55 @@ describe("mapRoomListItem", () => {
     expect(mapRoomListItem(raw({ recording_policy: "sometimes" })).recording_policy).toBe(
       "off",
     );
+  });
+
+  it("carries counterpart, visibility, project, and nested threads", () => {
+    const room = mapRoomListItem(
+      raw({
+        room_type: "agent_hub",
+        display_name: "Persephone",
+        visibility: "private",
+        project_number: "P-00115",
+        parent_room_id: null,
+        thread_count: 2,
+        counterpart: {
+          participant_id: "p1",
+          kind: "agent",
+          display_name: "Persephone",
+          avatar_url: "https://cdn.magicunicorn.dev/persephone.png",
+          agent_id: "persephone",
+        },
+        agents: [
+          {
+            participant_id: "p1",
+            agent_id: "persephone",
+            display_name: "Persephone",
+            agent_mode: "answers_all",
+          },
+        ],
+      }),
+    );
+    expect(room.type).toBe("agent_hub");
+    expect(room.counterpart?.display_name).toBe("Persephone");
+    expect(room.brigade_agent_id).toBe("persephone");
+    expect(room.visibility).toBe("private");
+    expect(room.project_number).toBe("P-00115");
+    expect(room.thread_count).toBe(2);
+    expect(room.agent_members?.[0]?.agent_mode).toBe("answers_all");
+  });
+
+  it("flattens a nested list and keeps parent_room_id", () => {
+    const rows = flattenRoomListPayload([
+      raw({
+        id: "hub",
+        threads: [
+          raw({ id: "child", display_name: "Launch", parent_room_id: null }),
+        ],
+      }),
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["hub", "child"]);
+    expect(rows[1]?.parent_room_id).toBe("hub");
+    expect(rows[0]?.threads).toBeUndefined();
   });
 
   it("flags conference rooms from metadata", () => {

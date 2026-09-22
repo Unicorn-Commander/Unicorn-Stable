@@ -79,9 +79,11 @@ import {
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
-import { NewChatButton } from "./NewChatButton";
-import { ViewSwitcher } from "./ViewSwitcher";
 import { resolveDefaultAgent } from "./newChat";
+import { beginThread } from "@/lib/beginThread";
+import { olderArchivedLabel, roomLabel } from "@/lib/conversation";
+import { AgentModeChip } from "@/components/Room/AgentModeChip";
+import { useConversationUi } from "@/stores/conversationUiStore";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { usePresenceStore } from "@/stores/presenceStore";
 import type { PeopleDirectoryEntry } from "@/services/api";
@@ -93,6 +95,28 @@ import { hasDraft, subscribeDrafts } from "@/utils/drafts";
  * so the sidebar re-reads `hasDraft` on every save/clear (typing a message
  * shows the pencil instantly; sending hides it).
  */
+function PendingInvites() {
+  const rows = useConversationUi((s) => s.pendingInvites);
+  const dismiss = useConversationUi((s) => s.dismissInvite);
+  if (rows.length === 0) return null;
+  return (
+    <ul className="border-b border-line px-2 py-2" aria-label="Pending invites">
+      {rows.map((row) => (
+        <li key={row.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300">
+          <span className="min-w-0 flex-1 truncate">{row.label}</span>
+          <button
+            type="button"
+            onClick={() => dismiss(row.id)}
+            className="focus-ring text-[10px] text-slate-500 hover:text-slate-200"
+          >
+            Dismiss
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function useDraftVersion(): number {
   const [version, setVersion] = useState(0);
   useEffect(() => subscribeDrafts(() => setVersion((n) => n + 1)), []);
@@ -179,7 +203,6 @@ export function RoomList() {
       useAppStore.getState().toggleSidebar();
     }
   };
-  const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const [createDmOpen, setCreateDmOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   // Search + per-person expansion live in a store, not here: they change which
@@ -199,13 +222,13 @@ export function RoomList() {
     queryKey: ["my-preferences", scope],
     queryFn: () => api.getMyPreferences(),
     staleTime: 60_000,
-    enabled: navV1 && activeView === "chats",
+    enabled: navV1 && activeView === "direct",
   });
   const { data: peopleDirectory = [] } = useQuery({
     queryKey: ["people-directory", scope, ""],
     queryFn: () => api.getPeopleDirectory(""),
     staleTime: 30_000,
-    enabled: navV1 && activeView === "chats",
+    enabled: navV1 && activeView === "direct",
   });
   const favoritePeople: PeopleDirectoryEntry[] = (() => {
     const ids = myPreferences?.favorite_people_ids ?? [];
@@ -278,7 +301,7 @@ export function RoomList() {
   }
 
   function renderFavoritePeopleStrip() {
-    if (!navV1 || activeView !== "chats") return null;
+    if (!navV1 || activeView !== "direct") return null;
     return (
       <div className="mb-3 px-1">
         <div className="mb-1.5 flex items-center justify-between px-1.5">
@@ -363,29 +386,21 @@ export function RoomList() {
     };
   }, [setDefaultAgentId]);
 
-  // ChatGPT-style "New chat": start a fresh conversation bound to an agent and
-  // jump into it (the per-agent "+" in Direct messages and the empty-state
-  // CTA). The split New-chat button has its own per-agent path.
-  async function startAgentChat(agentId: string, agentName: string) {
+  // The "+" on a row starts a thread under that room. It does not mint a
+  // second conversation with the same agent.
+  async function startThreadOn(roomId: string) {
     if (startingChat) return;
     setStartingChat(true);
     try {
-      const room = await api.createAgentDm(agentId, `Chat with ${agentName}`);
-      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
-      openRoom(room.id);
-    } catch (err) {
-      console.error("new chat failed", err);
-      useAppStore.getState().pushToast({
-        title: "Couldn't start a new chat",
-        body: (err as Error).message,
-        kind: "error",
-      });
+      const thread = await beginThread({ roomId, navigate });
+      if (thread) await queryClient.invalidateQueries({ queryKey: ["rooms"] });
     } finally {
       setStartingChat(false);
     }
   }
-  const startDefaultChat = () =>
-    startAgentChat(defaultAgent.id, defaultAgent.name);
+  const startDefaultChat = () => {
+    useConversationUi.getState().openNewSheet("agent");
+  };
 
   async function handleSeedDefaults() {
     if (seeding) return;
@@ -823,7 +838,12 @@ export function RoomList() {
     );
   }
 
-  function renderChannelRow(room: Room) {
+  function renderChannelRow(
+    room: Room,
+    threads: Room[] = [],
+    expanded = false,
+    archivedCount = 0,
+  ) {
     const isActive = activeRoomId === room.id;
     const unread = unreadFor(room);
     const cat = channelsFiled?.[room.id];
@@ -875,6 +895,11 @@ export function RoomList() {
                   )}
                 >
                   {room.name}
+                  {room.project_number && (
+                    <span className="ml-1 rounded border border-stable-cyan/30 bg-stable-cyan/10 px-1 font-mono text-[9px] font-semibold text-stable-cyan">
+                      {room.project_number}
+                    </span>
+                  )}
                 </span>
                 <LiveCallBadge call={liveCallByRoomId[room.id]} />
                 {muted && (
@@ -905,8 +930,39 @@ export function RoomList() {
               )}
             </div>
           </button>
+          <button
+            type="button"
+            onClick={() => void startThreadOn(room.id)}
+            disabled={startingChat}
+            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 hover:bg-white/[0.06] hover:text-slate-200 md:opacity-0 md:group-hover:opacity-100"
+            aria-label={`New thread in ${room.name}`}
+            title="New thread"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          {threads.length > 0 && (
+            <button
+              type="button"
+              onClick={() => togglePersonExpanded(room.id)}
+              className="focus-ring rounded-md p-1 text-slate-500"
+              aria-expanded={expanded}
+              aria-label={`${expanded ? "Hide" : "Show"} threads in ${room.name}`}
+            >
+              <ChevronDown className={clsx("h-3 w-3", !expanded && "-rotate-90")} />
+            </button>
+          )}
           {renderMenuTrigger(room.id, `Options for ${room.name}`)}
         </div>
+        {!expanded && olderArchivedLabel(threads.length, archivedCount) && (
+          <p className="px-8 pb-1 text-[10px] text-slate-500">
+            {olderArchivedLabel(threads.length, archivedCount)}
+          </p>
+        )}
+        {expanded && threads.length > 0 && (
+          <ul role="list" className="ml-3 border-l border-line pl-1">
+            {threads.map((thread) => renderThreadRow(thread, "#8B7CFF"))}
+          </ul>
+        )}
 
         {menuOpen &&
           renderMenuShell(
@@ -1063,6 +1119,13 @@ export function RoomList() {
           name,
         })
       : humanPresence(others.some((p) => p.is_online));
+    const nested = threads.filter((t) => t.id !== entry.hub.id);
+    const older = expanded
+      ? 0
+      : entry.kind === "agent"
+        ? Math.max(0, nested.length - 1)
+        : nested.length;
+    const threadHint = olderArchivedLabel(older, expanded ? 0 : entry.archivedCount);
     return (
       <li key={entry.key} className="relative">
         <div
@@ -1072,6 +1135,14 @@ export function RoomList() {
               ? "bg-white/[0.06]"
               : "hover:bg-white/[0.04]",
           )}
+          onPointerDown={(e) => {
+            if (e.pointerType === "mouse") return;
+            if ((e.target as HTMLElement).closest("button")) return;
+            const timer = window.setTimeout(() => void startThreadOn(entry.hub.id), 550);
+            const clear = () => window.clearTimeout(timer);
+            e.currentTarget.addEventListener("pointerup", clear, { once: true });
+            e.currentTarget.addEventListener("pointercancel", clear, { once: true });
+          }}
         >
           {hasActive && !expanded && (
             <span
@@ -1111,7 +1182,14 @@ export function RoomList() {
                   size={20}
                 />
               ) : (
-                <MessageSquare className="h-4 w-4 opacity-60" />
+                <Identity
+                  {...resolveIdentity(latest ?? entry.hub, {
+                    selfId: currentUserId,
+                    agents,
+                  })}
+                  presence={null}
+                  size={20}
+                />
               )}
               {badge && (
                 <span
@@ -1126,11 +1204,16 @@ export function RoomList() {
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <span
-                  className="truncate text-sm font-medium"
-                  style={isAgent ? { color: ident.text } : undefined}
-                >
-                  {name}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="truncate text-sm font-medium"
+                    style={isAgent ? { color: ident.text } : undefined}
+                  >
+                    {name}
+                  </span>
+                  {isAgent && entry.kind === "agent" && entry.mode && (
+                    <AgentModeChip mode={entry.mode} compact />
+                  )}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <LiveCallBadge
@@ -1163,19 +1246,20 @@ export function RoomList() {
                   No messages yet
                 </p>
               )}
+              {threadHint && (
+                <p className="truncate text-[10px] text-slate-500">{threadHint}</p>
+              )}
             </div>
           </button>
-          {isAgent && (
-            <button
-              onClick={() => startAgentChat(entry.agentId, name)}
-              disabled={startingChat}
-              className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-              aria-label={`Start a new chat with ${name}`}
-              title={`New chat with ${name}`}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          )}
+          <button
+            onClick={() => void startThreadOn(entry.hub.id)}
+            disabled={startingChat}
+            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+            aria-label={`New thread with ${name}`}
+            title={`New thread with ${name}`}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
           {renderMenuTrigger(entry.key, `Options for ${name}`)}
           {threads.length > 1 && (
             <button
@@ -1230,7 +1314,12 @@ export function RoomList() {
     );
   }
 
-  function renderPrivateGroup(room: Room) {
+  function renderPrivateGroup(
+    room: Room,
+    threads: Room[] = [],
+    expanded = false,
+    archivedCount = 0,
+  ) {
     const isActive = activeRoomId === room.id;
     const unread = unreadFor(room);
     const menuOpen = menuKey === room.id;
@@ -1280,7 +1369,9 @@ export function RoomList() {
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">{room.name}</span>
+                <span className="truncate text-sm font-medium">
+                  {roomLabel(room, participantsByRoom[room.id])}
+                </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <LiveCallBadge call={liveCallByRoomId[room.id]} />
                   {hasDraft(room.id) && <DraftPencil />}
@@ -1311,8 +1402,27 @@ export function RoomList() {
               )}
             </div>
           </button>
+          <button
+            type="button"
+            onClick={() => void startThreadOn(room.id)}
+            disabled={startingChat}
+            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 hover:text-slate-200 md:opacity-0 md:group-hover:opacity-100"
+            aria-label={`New thread in ${roomLabel(room, participantsByRoom[room.id])}`}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
           {renderMenuTrigger(room.id, `Options for ${room.name}`)}
         </div>
+        {!expanded && olderArchivedLabel(threads.length, archivedCount) && (
+          <p className="px-8 pb-1 text-[10px] text-slate-500">
+            {olderArchivedLabel(threads.length, archivedCount)}
+          </p>
+        )}
+        {expanded && threads.length > 0 && (
+          <ul role="list" className="ml-3 border-l border-line pl-1">
+            {threads.map((thread) => renderThreadRow(thread, "#F5C16C"))}
+          </ul>
+        )}
         {menuOpen &&
           renderMenuShell(
             <>
@@ -1337,9 +1447,9 @@ export function RoomList() {
   function renderRow(row: SidebarRow): ReactNode {
     switch (row.kind) {
       case "channel":
-        return renderChannelRow(row.room);
+        return renderChannelRow(row.room, row.threads, row.expanded, row.archivedCount);
       case "group":
-        return renderPrivateGroup(row.room);
+        return renderPrivateGroup(row.room, row.threads, row.expanded, row.archivedCount);
       case "person":
         return renderPersonEntry(row.entry, row.expanded);
     }
@@ -1695,7 +1805,7 @@ export function RoomList() {
           <>
             {renderNewFolderButton("people")}
             <button
-              onClick={() => setCreateDmOpen(true)}
+              onClick={() => useConversationUi.getState().openNewSheet("person")}
               className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
               aria-label="New direct message"
             >
@@ -1870,7 +1980,7 @@ export function RoomList() {
               Browse
             </button>
             <button
-              onClick={() => setCreateRoomModalOpen(true)}
+              onClick={() => useConversationUi.getState().openNewSheet("channel")}
               className="focus-ring rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200 md:p-0.5"
               aria-label="Create a room"
             >
@@ -2016,7 +2126,7 @@ export function RoomList() {
         <button
           type="button"
           onClick={() => {
-            setActiveView("chats");
+            setActiveView("direct");
             closeMobileSidebar();
           }}
           className="focus-ring flex w-full items-center gap-2.5 rounded-lg border border-line px-3 py-2.5 text-left transition-colors hover:border-stable-purple/40 hover:bg-white/[0.04]"
@@ -2089,7 +2199,7 @@ export function RoomList() {
     switch (activeView) {
       case "home":
         return renderHomeBody();
-      case "chats":
+      case "direct":
         return (
           <>
             {renderFavoritePeopleStrip()}
@@ -2105,7 +2215,7 @@ export function RoomList() {
               focusMode !== "focused" && (
               <div className="mx-3 mt-2 rounded-xl border border-line bg-surface-2/40 px-3 py-4 text-center">
                 <p className="text-xs text-slate-400">
-                  No chats yet. Open{" "}
+                  No direct conversations yet. Open{" "}
                   <button
                     type="button"
                     onClick={() => setPeopleDrawerOpen(true)}
@@ -2148,8 +2258,8 @@ export function RoomList() {
         ? "Search channels…"
         : activeView === "meetings"
           ? "Search meetings…"
-          : activeView === "chats"
-            ? "Search chats…"
+          : activeView === "direct"
+            ? "Search direct…"
             : "Search rooms…";
 
   const visibleUnreadTargets = roomsNeedingMarkRead(
@@ -2165,16 +2275,18 @@ export function RoomList() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {navV1 && <ViewSwitcher />}
+      {navV1 && <PendingInvites />}
 
       {showToolbar && (
         <div className="shrink-0 space-y-2 px-3 py-3">
-          {/* New chat is most useful for agents / chats; keep on classic too. */}
-          {(!navV1 ||
-            activeView === "agents" ||
-            activeView === "chats") && (
-            <NewChatButton onStarted={openRoom} />
-          )}
+          <button
+            type="button"
+            onClick={() => useConversationUi.getState().openNewSheet()}
+            className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-xl border border-line bg-white/[0.04] px-3 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-white/[0.07]"
+          >
+            <Plus className="h-4 w-4" />
+            New
+          </button>
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
             <input

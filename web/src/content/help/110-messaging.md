@@ -59,7 +59,7 @@ answer questions about it — see [Knowledge and documents](help:knowledge).
 
 Hover a message (or focus it) for its actions:
 
-- **Reply in thread** — see [Threads](help:threads)
+- **Replies** — see [Threads](help:threads)
 - **Quote reply** — pulls the text into your composer as a quote
 - **Add reaction**
 - **Save** — files it in your personal saved list

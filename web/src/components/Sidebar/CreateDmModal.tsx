@@ -136,7 +136,9 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
 
       if (pickedAgents.length === 1 && pickedUsers.length === 0) {
         const agent = pickedAgents[0]!;
-        const room = await api.createAgentDm(agent.id, `Chat with ${agent.name}`);
+        const { openAgentHub } = await import("@/lib/beginThread");
+        const room = await openAgentHub(agent.id);
+        if (!room) return;
         await qc.invalidateQueries({ queryKey: ["rooms"] });
         onClose();
         navigate(`/c/${room.id}`);

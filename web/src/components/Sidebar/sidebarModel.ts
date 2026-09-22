@@ -1,5 +1,12 @@
 import type { Room } from "@/services/api";
 import {
+  isAgentConversation,
+  isDirectRoom,
+  isPrivateChannel as roomIsPrivate,
+  isThreadRoom,
+  olderArchivedLabel,
+} from "@/lib/conversation";
+import {
   collapseKey,
   foldersFor,
   type FolderDef,
@@ -30,40 +37,51 @@ import type { NavView } from "@/stores/navStore";
  * UI shows a short home rail instead).
  */
 
-/** Which rooms land in which destination. `"all"` = classic single list. */
-export type SidebarView = NavView | "all";
+/**
+ * Which rooms land in which destination. `"all"` = classic single list.
+ * `"chats"` is the pre-Direct alias Home still asks for: human DMs only.
+ */
+export type SidebarView = NavView | "all" | "chats";
+
+function isParentInView(room: Room, view: SidebarView): boolean {
+  switch (view) {
+    case "all":
+      return true;
+    case "home":
+      return false;
+    case "chats":
+      return (
+        (room.type === "dm" || room.type === "group_dm") &&
+        !isAgentConversation(room)
+      );
+    case "direct":
+      return isDirectRoom(room);
+    case "channels":
+      return room.type === "channel" && !room.is_conference;
+    case "agents":
+      return isAgentConversation(room) && room.type !== "channel";
+    case "meetings":
+      return room.is_conference === true;
+    default:
+      return true;
+  }
+}
 
 /**
  * Pre-filter the room list for a sidebar destination. Shared by RoomList and
  * Alt+↑/↓ so keyboard order always matches the visible rows.
+ *
+ * Child threads ride along with their parent so the model can nest them.
+ * A thread whose parent is not in this view stays out.
  */
 export function roomsForView(rooms: Room[], view: SidebarView): Room[] {
-  switch (view) {
-    case "all":
-      return rooms;
-    case "home":
-      // Home does not show the conversation tree.
-      return [];
-    case "chats":
-      // Human 1:1 DMs + private groups — never agents or channels.
-      return rooms.filter(
-        (r) =>
-          (r.type === "dm" || r.type === "group_dm") && !r.brigade_agent_id,
-      );
-    case "channels":
-      // Joined public channels, excluding standing conference rooms.
-      return rooms.filter((r) => r.type === "channel" && !r.is_conference);
-    case "agents":
-      return rooms.filter(
-        (r) =>
-          (r.type === "dm" || r.type === "group_dm") && !!r.brigade_agent_id,
-      );
-    case "meetings":
-      // Standing conference / call rooms when the server tags them.
-      return rooms.filter((r) => r.is_conference === true);
-    default:
-      return rooms;
-  }
+  if (view === "home") return [];
+  const parents = rooms.filter((r) => !isThreadRoom(r) && isParentInView(r, view));
+  const parentIds = new Set(parents.map((r) => r.id));
+  const children = rooms.filter(
+    (r) => !!r.parent_room_id && parentIds.has(r.parent_room_id),
+  );
+  return [...parents, ...children];
 }
 
 /** Section-level collapse keys. Bare on purpose — a section is the same concept
@@ -89,12 +107,22 @@ export type SectionId = keyof typeof SECTION_KEYS;
  * people assignments bucketed per instance instead of globally.
  */
 export function personKeyOf(room: Room): string | null {
-  if (room.type !== "dm" && room.type !== "group_dm") return null;
-  if (room.brigade_agent_id) return `agent:${room.brigade_agent_id}`;
+  if (isThreadRoom(room)) return null;
+  if (room.type === "agent_hub" || room.brigade_agent_id) {
+    const id = room.brigade_agent_id || room.counterpart?.agent_id;
+    if (id && room.type !== "channel") return `agent:${id}`;
+  }
+  if (room.type !== "dm" && room.type !== "group_dm" && room.type !== "agent_hub") {
+    return null;
+  }
   if (room.type === "group_dm") return null;
-  // The /rooms payload carries no member rows, so the counterpart display name
-  // is the only handle we have on "who this is" — and it is exactly what the
-  // row already shows.
+  if (room.type === "agent_hub") {
+    const id = room.counterpart?.agent_id || room.id;
+    return `agent:${id}`;
+  }
+  // Prefer the server counterpart id so two people who share a display name
+  // do not collapse into one row. Fall back to the label the row already shows.
+  if (room.counterpart?.participant_id) return `person:${room.counterpart.participant_id}`;
   return `person:${room.name}`;
 }
 
@@ -106,17 +134,50 @@ export function personKeyOf(room: Room): string | null {
  * sidebar honours it without another change here.
  */
 export function isPrivateChannel(room: Room): boolean {
-  return (room as { is_private?: boolean }).is_private === true;
+  return roomIsPrivate(room) || (room as { is_private?: boolean }).is_private === true;
 }
 
 export type PersonEntry =
-  | { kind: "agent"; key: string; agentId: string; threads: Room[] }
-  | { kind: "person"; key: string; name: string; threads: Room[] };
+  | {
+      kind: "agent";
+      key: string;
+      agentId: string;
+      /** The hub (or the newest legacy DM) the row represents. */
+      hub: Room;
+      /** Child threads, newest first. A hub with none lists just the hub. */
+      threads: Room[];
+      archivedCount: number;
+      mode: string | null;
+    }
+  | {
+      kind: "person";
+      key: string;
+      name: string;
+      hub: Room;
+      threads: Room[];
+      archivedCount: number;
+    };
 
 export type SidebarRow =
-  | { kind: "channel"; id: string; room: Room }
-  | { kind: "group"; id: string; room: Room }
+  | {
+      kind: "channel";
+      id: string;
+      room: Room;
+      threads: Room[];
+      expanded: boolean;
+      archivedCount: number;
+    }
+  | {
+      kind: "group";
+      id: string;
+      room: Room;
+      threads: Room[];
+      expanded: boolean;
+      archivedCount: number;
+    }
   | { kind: "person"; id: string; entry: PersonEntry; expanded: boolean };
+
+export { olderArchivedLabel };
 
 export interface SidebarGroup {
   /** The folder this group is, or null for the ungrouped tail. */
@@ -206,78 +267,149 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
   );
 
   const q = searchQuery.trim().toLowerCase();
-  const filtered = q
-    ? rooms.filter(
-        (r) =>
-          r.name.toLowerCase().includes(q) ||
-          r.description.toLowerCase().includes(q),
-      )
-    : rooms;
+  const selfMatch = (room: Room) =>
+    !q ||
+    room.name.toLowerCase().includes(q) ||
+    (room.description || "").toLowerCase().includes(q) ||
+    (room.project_number || "").toLowerCase().includes(q);
+  const keep = new Set<string>();
+  if (!q) {
+    for (const room of rooms) keep.add(room.id);
+  } else {
+    for (const room of rooms) {
+      if (!selfMatch(room)) continue;
+      keep.add(room.id);
+      if (room.parent_room_id) keep.add(room.parent_room_id);
+    }
+    for (const room of rooms) {
+      if (!room.parent_room_id && selfMatch(room)) {
+        for (const child of rooms) {
+          if (child.parent_room_id === room.id) keep.add(child.id);
+        }
+      }
+    }
+  }
+  const filtered = rooms.filter((room) => keep.has(room.id));
 
-  const channels = filtered.filter((r) => r.type === "channel");
-
-  // "Who you talk to", not "every room you are in". Agent conversations group
-  // under their resident (ChatGPT-style thread history) and human DMs group
-  // under the person, so someone you have several threads with is ONE row you
-  // can expand — and one thing you can file into a folder. Private group rooms
-  // are a different privacy class and get their own section.
-  //
-  // The rooms query is already ordered most-recent-first by the backend
-  // (updated_at DESC), so each group's threads and the mixed ordering stay
-  // newest → oldest for free (a group sits at its newest thread's position).
-  const byKey = new Map<string, PersonEntry>();
-  const peopleEntries: PersonEntry[] = [];
-  const privateGroups: Room[] = [];
+  const childrenOf = new Map<string, Room[]>();
+  const tops: Room[] = [];
   for (const room of filtered) {
-    if (room.type !== "dm" && room.type !== "group_dm") continue;
-    const agentId = room.brigade_agent_id;
-    if (agentId) {
-      const key = personKeyOf(room)!;
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.threads.push(room);
-      } else {
-        const entry: PersonEntry = {
-          kind: "agent",
-          key,
-          agentId,
-          threads: [room],
-        };
-        byKey.set(key, entry);
-        peopleEntries.push(entry);
-      }
-    } else if (room.type === "group_dm") {
-      // A human multi-party room: private, invite-only, and not a "person".
-      privateGroups.push(room);
+    if (room.parent_room_id && keep.has(room.parent_room_id)) {
+      if (room.is_archived) continue;
+      const list = childrenOf.get(room.parent_room_id);
+      if (list) list.push(room);
+      else childrenOf.set(room.parent_room_id, [room]);
+      continue;
+    }
+    if (room.parent_room_id) continue;
+    tops.push(room);
+  }
+
+  function liveChildren(parentId: string): Room[] {
+    return childrenOf.get(parentId) ?? [];
+  }
+
+  function archivedCount(parentId: string): number {
+    let n = 0;
+    for (const room of allRooms) {
+      if (room.parent_room_id === parentId && room.is_archived) n += 1;
+    }
+    return n;
+  }
+
+  function modeOf(room: Room): string | null {
+    const bound = room.brigade_agent_id || room.counterpart?.agent_id || null;
+    const members = room.agent_members ?? [];
+    const hit = bound ? members.find((m) => m.agent_id === bound) : members[0];
+    return hit?.agent_mode ?? members[0]?.agent_mode ?? null;
+  }
+
+  // Parents only. Threads hang under the parent (hub, DM, group, channel).
+  // Legacy agent DMs that predate hubs still collapse to one row per agent.
+  // List order is newest-first, and we preserve it.
+  const agentParents = new Map<string, Room[]>();
+  const humanParents = new Map<string, Room[]>();
+  const channelParents: Room[] = [];
+  const groupParents: Room[] = [];
+  for (const room of tops) {
+    if (room.type === "channel") {
+      channelParents.push(room);
+      continue;
+    }
+    if (room.type === "group_dm") {
+      groupParents.push(room);
+      continue;
+    }
+    const key = personKeyOf(room);
+    if (!key) continue;
+    const bucket = key.startsWith("agent:") ? agentParents : humanParents;
+    const list = bucket.get(key);
+    if (list) list.push(room);
+    else bucket.set(key, [room]);
+  }
+
+  const peopleEntries: PersonEntry[] = [];
+  const seenPeople = new Set<string>();
+  for (const room of tops) {
+    if (room.type === "channel" || room.type === "group_dm") continue;
+    const key = personKeyOf(room);
+    if (!key || seenPeople.has(key)) continue;
+    seenPeople.add(key);
+    if (key.startsWith("agent:")) {
+      const parents = agentParents.get(key) ?? [room];
+      const hub = parents.find((p) => p.type === "agent_hub") ?? parents[0]!;
+      const extras = parents.filter((p) => p.id !== hub.id);
+      const nested = [
+        ...liveChildren(hub.id),
+        ...extras.flatMap((extra) => [extra, ...liveChildren(extra.id)]),
+      ];
+      peopleEntries.push({
+        kind: "agent",
+        key,
+        agentId: hub.brigade_agent_id || hub.counterpart?.agent_id || key.slice("agent:".length),
+        hub,
+        threads: nested.length > 0 ? nested : [hub],
+        archivedCount: archivedCount(hub.id),
+        mode: modeOf(hub),
+      });
     } else {
-      const key = personKeyOf(room)!;
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.threads.push(room);
-      } else {
-        const entry: PersonEntry = {
-          kind: "person",
-          key,
-          name: room.name,
-          threads: [room],
-        };
-        byKey.set(key, entry);
-        peopleEntries.push(entry);
-      }
+      const parents = humanParents.get(key) ?? [room];
+      const hub = parents[0]!;
+      const extras = parents.slice(1);
+      const nested = [
+        ...liveChildren(hub.id),
+        ...extras.flatMap((extra) => [extra, ...liveChildren(extra.id)]),
+      ];
+      peopleEntries.push({
+        kind: "person",
+        key,
+        name: hub.counterpart?.display_name || hub.name,
+        hub,
+        threads: [hub, ...nested],
+        archivedCount: archivedCount(hub.id),
+      });
     }
   }
 
   const filedChannels = (scope ? categories[scope] : undefined) ?? {};
   const filedPeople = (scope ? people[scope] : undefined) ?? {};
 
+  const searching = q.length > 0;
   const channelGroups = groupRows(
-    channels.map((room): SidebarRow => ({ kind: "channel", id: room.id, room })),
+    channelParents.map((room): SidebarRow => ({
+      kind: "channel",
+      id: room.id,
+      room,
+      threads: liveChildren(room.id),
+      expanded: searching || expandedPeople[room.id] === true,
+      archivedCount: archivedCount(room.id),
+    })),
     foldersFor(folders, scope, "channels"),
     (row) => (row.kind === "channel" ? filedChannels[row.room.id] : undefined),
     "channels",
     scope,
     collapsed,
-    q.length > 0,
+    searching,
   );
 
   const peopleGroups = groupRows(
@@ -286,7 +418,7 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
         kind: "person",
         id: entry.key,
         entry,
-        expanded: expandedPeople[entry.key] === true,
+        expanded: searching || expandedPeople[entry.key] === true,
       }),
     ),
     foldersFor(folders, scope, "people"),
@@ -294,13 +426,16 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
     "people",
     scope,
     collapsed,
-    q.length > 0,
+    searching,
   );
 
-  const groupRowsOnly: SidebarRow[] = privateGroups.map((room) => ({
+  const groupRowsOnly: SidebarRow[] = groupParents.map((room) => ({
     kind: "group",
     id: room.id,
     room,
+    threads: liveChildren(room.id),
+    expanded: searching || expandedPeople[room.id] === true,
+    archivedCount: archivedCount(room.id),
   }));
 
   return {
@@ -427,7 +562,13 @@ export function flattenSidebarOrder(model: SidebarModel): string[][] {
             entries.push(ids);
           }
         } else {
-          entries.push([row.id]);
+          const nested = row.threads.map((t) => t.id);
+          if (row.expanded && nested.length > 0) {
+            entries.push([row.id]);
+            for (const id of nested) entries.push([id]);
+          } else {
+            entries.push(nested.length > 0 ? [row.id, ...nested] : [row.id]);
+          }
         }
       }
     }

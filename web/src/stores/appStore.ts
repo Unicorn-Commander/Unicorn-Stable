@@ -127,6 +127,8 @@ interface AppState {
   setCurrentParticipantId: (id: string | null) => void;
   setRooms: (rooms: Room[]) => void;
   setRoomsLoaded: (loaded: boolean) => void;
+  /** Insert or replace one room so a WS thread/room shows up without a refetch. */
+  upsertRoom: (room: Room) => void;
   updateRoom: (roomId: string, updates: Partial<Room>) => void;
   removeRoom: (roomId: string) => void;
   setActiveRoomId: (id: string | null) => void;
@@ -260,6 +262,22 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   setRoomsLoaded: (loaded) => set({ roomsLoaded: loaded }),
+
+  upsertRoom: (room) =>
+    set((state) => {
+      const idx = state.rooms.findIndex((r) => r.id === room.id);
+      const nextUnread = { ...state.unreadCounts };
+      if (!(room.id in nextUnread)) nextUnread[room.id] = room.unread_count ?? 0;
+      const rooms =
+        idx === -1
+          ? [room, ...state.rooms]
+          : state.rooms.map((r) =>
+              r.id === room.id
+                ? { ...r, ...room, last_message: room.last_message ?? r.last_message }
+                : r,
+            );
+      return { rooms, unreadCounts: nextUnread };
+    }),
 
   updateRoom: (roomId, updates) =>
     set((state) => ({

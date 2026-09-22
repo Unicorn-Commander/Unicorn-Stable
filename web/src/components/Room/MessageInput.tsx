@@ -9,11 +9,11 @@ import {
   type ChangeEvent,
   type DragEvent,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Send,
   Paperclip,
   Phone,
-  AtSign,
   MicOff,
   Smile,
   Video,
@@ -30,6 +30,11 @@ import { useCallUiStore } from "@/stores/callUiStore";
 import { useDirectCall } from "@/hooks/useDirectCall";
 import { emojiSuggestions, ensureEmojiIndex, replaceEmojiShortcodes } from "@/utils/emoji";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
+import { parseThreadSlash } from "@/lib/conversation";
+import { beginThread } from "@/lib/beginThread";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
+import { agentModeLabel } from "@/lib/conversation";
 import { FormatToolbar, type FormatKind } from "./FormatToolbar";
 
 /** Rough width of the format bar (6 icon buttons + padding) used to clamp its
@@ -217,6 +222,10 @@ function applySlashCommand(input: string): SlashResult {
       // Defer to the global cheatsheet modal — same content shown via Cmd+/.
       useAppStore.getState().toggleCheatsheet();
       return { text: null };
+    case "thread":
+      // Consumed by the composer before send — see parseThreadSlash. Listed
+      // here so a bare /thread never goes out as a message if that path misses.
+      return { text: null };
     default:
       return { text: input };
   }
@@ -243,6 +252,7 @@ const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: "council", args: "<question>", description: "Several models answer + synthesis" },
   { name: "poll", args: '"Question?" option1 option2 …', description: "Inline poll with vote buttons" },
   { name: "help", args: "", description: "Open the shortcuts cheatsheet" },
+  { name: "thread", args: "[title]", description: "Start a thread in this room" },
 ];
 
 interface PendingAttachment {
@@ -273,6 +283,8 @@ interface MentionSuggestion {
   id: string;
   name: string;
   type: "human" | "agent";
+  avatarUrl?: string | null;
+  agentMode?: string | null;
 }
 
 /** An attach-time upload in flight (or failed). Completed uploads leave this
@@ -286,6 +298,7 @@ interface UploadTask {
 }
 
 export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledReason, placeholder }: MessageInputProps) {
+  const navigate = useNavigate();
   const [content, setContent] = useState(() => getDraft(roomId));
   const [dragOver, setDragOver] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
@@ -396,6 +409,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
         id: p.user_id || p.participant_id || "",
         name: p.display_name,
         type: "human" as const,
+        avatarUrl: p.avatar_url,
       }));
 
     // Brigade ids are slugs (col-finance, sql-analyst). Match q against both
@@ -407,7 +421,16 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
           a.name.toLowerCase().includes(q),
       )
       .slice(0, 8)
-      .map((a) => ({ id: a.id, name: a.id, type: "agent" as const }));
+      .map((a) => ({
+        id: a.id,
+        name: a.name || a.id,
+        type: "agent" as const,
+        agentMode: participants.find(
+          (p) =>
+            p.participant_type === "agent" &&
+            (p.username || "").replace(/^agent-/, "") === a.id,
+        )?.agent_mode,
+      }));
 
     return [...agentSuggestions, ...humanSuggestions];
   }, [mentionQuery, participants, brigadeAgents])();
@@ -817,6 +840,13 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     // a message never goes out silently missing an in-flight file.
     if (uploads.some((t) => t.status === "uploading")) return;
 
+    const threadCmd = parseThreadSlash(trimmed);
+    if (threadCmd) {
+      setContent("");
+      void beginThread({ roomId, title: threadCmd.title, navigate });
+      requestAnimationFrame(() => adjustHeight());
+      return;
+    }
     // Slash command preprocessing — see SLASH_COMMANDS for the catalog.
     const cmd = applySlashCommand(trimmed);
     if (cmd.text === null) {
@@ -1089,24 +1119,20 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
                   : "text-slate-300 hover:bg-white/[0.05]",
               )}
             >
-              <div
-                className={clsx(
-                  "flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold",
-                  suggestion.type === "agent"
-                    ? "bg-stable-cyan/20 text-stable-cyan"
-                    : "bg-stable-purple/20 text-stable-purple-light",
-                )}
-              >
-                {suggestion.type === "agent" ? (
-                  <AtSign className="h-3 w-3" />
-                ) : (
-                  suggestion.name.charAt(0).toUpperCase()
-                )}
-              </div>
+              <Identity
+                {...resolveIdentity({
+                  id: suggestion.id,
+                  display_name: suggestion.name,
+                  avatar_url: suggestion.avatarUrl,
+                  participant_type: suggestion.type,
+                })}
+                presence={null}
+                size={24}
+              />
               <span className="text-sm">{suggestion.name}</span>
               {suggestion.type === "agent" && (
                 <span className="ml-auto rounded-md bg-stable-cyan/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-cyan">
-                  AI
+                  {agentModeLabel(suggestion.agentMode) ?? "AI"}
                 </span>
               )}
             </button>

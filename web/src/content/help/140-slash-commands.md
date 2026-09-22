@@ -24,6 +24,7 @@ This is the **complete** list — if it is not here, it is not implemented.
 | `/council <question>` | Several models answer independently, then a synthesis |
 | `/poll "Question?" a b c` | Posts an inline poll with vote buttons |
 | `/help` | Opens the shortcuts cheatsheet |
+| `/thread [title]` | Starts a new thread in this room. Leave the title blank and it is named after the first exchange. |
 
 `/research`, `/facilitate` and `/council` all go out to real agents and take
 real time. `/council` in particular fans out to several models.

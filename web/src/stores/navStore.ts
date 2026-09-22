@@ -2,17 +2,17 @@ import { create } from "zustand";
 import type { Room } from "@/services/api";
 
 /**
- * View-based sidebar destinations (Slice 2 — human-first nav).
+ * View-based sidebar destinations.
  *
- * People is intentionally NOT a destination here: it lives in the top-bar
- * drawer. These five views replace the single long People/Groups/Channels
- * tree when the nav-v1 flag is on.
+ * Direct is people and agent hubs (threads live under the row). Channels,
+ * Meetings, and Agents stay their own destinations. People-as-a-directory
+ * still lives in the top-bar drawer.
  */
-export type NavView = "home" | "chats" | "channels" | "meetings" | "agents";
+export type NavView = "home" | "direct" | "channels" | "meetings" | "agents";
 
 export const NAV_VIEWS: readonly NavView[] = [
   "home",
-  "chats",
+  "direct",
   "channels",
   "meetings",
   "agents",
@@ -46,13 +46,17 @@ export function isNavV1Enabled(): boolean {
 
 /**
  * Which destination a room belongs to. Used for deep-link view selection and
- * last-room memory. Conference channels map to meetings; agent DMs to agents;
- * human DMs + group DMs to chats; plain channels to channels.
+ * last-room memory. Hubs and DMs land on Direct (the Agents destination is
+ * the same hubs, filtered). Conference rooms map to meetings.
  */
 export function viewForRoom(room: Room): NavView {
   if (room.is_conference) return "meetings";
-  if (room.brigade_agent_id) return "agents";
-  if (room.type === "dm" || room.type === "group_dm") return "chats";
+  if (room.type === "agent_hub" || room.brigade_agent_id) return "direct";
+  if (room.type === "dm" || room.type === "group_dm") return "direct";
+  if (room.parent_room_id) {
+    if (room.type === "channel") return "channels";
+    return "direct";
+  }
   return "channels";
 }
 

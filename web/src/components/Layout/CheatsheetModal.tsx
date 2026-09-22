@@ -17,6 +17,8 @@ const KEYS: Row[] = [
   { combo: `${mod} /`, desc: "This cheatsheet" },
   { combo: "?", desc: "This cheatsheet (outside inputs)" },
   { combo: "Alt ↑ / ↓", desc: "Previous / next room in sidebar order" },
+  { combo: `${mod} N`, desc: "New — person, agent, thread, channel, project, call" },
+  { combo: `${mod} ⇧ N`, desc: "New thread in the room you're in" },
   { combo: `${mod} ↑`, desc: "Edit your last message" },
   { combo: `${mod} B / I / E`, desc: "Bold / italic / code in the composer" },
   { combo: "↑ / ↓", desc: "Navigate mention/emoji suggestions" },
@@ -36,6 +38,7 @@ const SLASH: Row[] = [
   { combo: "/council <question>", desc: "Several models answer + synthesis" },
   { combo: '/poll "Q?" a b c', desc: "Inline poll with vote buttons" },
   { combo: "/help", desc: "Open this cheatsheet" },
+  { combo: "/thread [title]", desc: "Start a thread in this room. Message replies are called Replies." },
 ];
 
 const MENTIONS: Row[] = [
