@@ -2049,10 +2049,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const roomPanels = useRoomPanels(roomId);
   const openStageRef = useRef<() => boolean>(() => false);
   const closeStageRef = useRef<() => void>(() => {});
+  const stageIsOpenRef = useRef(false);
+  stageIsOpenRef.current = popout.isOpen;
   useEffect(() => {
     return registerPanelOpener(roomId, "stage", {
       open: () => openStageRef.current(),
       close: () => closeStageRef.current(),
+      isOpen: () => stageIsOpenRef.current,
     });
   }, [roomId]);
 
@@ -3224,21 +3227,34 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         role="region"
         aria-label="Voice and video call"
       >
-        {slim ? (
-          chipsRow
-        ) : showChips ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-2">
-            <div className="flex min-h-0 flex-1">{chipsRow}</div>
-            {showTranscript && roomPanels.transcript.mode === "docked" && (
-              <div className="h-40 shrink-0 overflow-hidden rounded-xl border border-line">
-                <TranscriptPanel />
-              </div>
+        {showChips ? (
+          <div
+            className={clsx(
+              "flex min-h-0 flex-1",
+              slim ? "items-center" : "flex-col gap-2",
             )}
+          >
+            <div className="flex min-h-0 flex-1">{chipsRow}</div>
+            {/* Stay mounted when captions hide. Unmounting dropped the scroll
+                position; the split's collapsed pane is display:none for the
+                same reason. */}
+            <div
+              className={clsx(
+                showTranscript && roomPanels.transcript.mode === "docked"
+                  ? "h-40 shrink-0 overflow-hidden rounded-xl border border-line"
+                  : "hidden",
+              )}
+              hidden={!(showTranscript && roomPanels.transcript.mode === "docked")}
+            >
+              <TranscriptPanel />
+            </div>
           </div>
         ) : (
           // The split stays in this window so the stage never remounts and
           // never rides into a pop-out. A popped transcript is only the panel
-          // body, portaled by PanelHost below.
+          // body, portaled by PanelHost below. The secondary stays mounted
+          // while collapsed (display:none) so a caption toggle does not
+          // remount TranscriptPanel.
           <SplitPane
             storageKey="call-transcript"
             orientation="vertical"
@@ -3262,13 +3278,9 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               </div>
             }
             secondary={
-              showTranscript && roomPanels.transcript.mode === "docked" ? (
-                <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-                  <TranscriptPanel />
-                </div>
-              ) : (
-                <div />
-              )
+              <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                <TranscriptPanel />
+              </div>
             }
           />
         )}
