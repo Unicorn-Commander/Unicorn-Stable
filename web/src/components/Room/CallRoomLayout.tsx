@@ -23,13 +23,12 @@ import clsx from "clsx";
 import { PanelHost } from "@/components/Layout/PanelHost";
 import {
   installCallLayoutMirrors,
+  presentChat,
   toggleCallChat,
 } from "@/lib/callLayoutActions";
+import { decideIncomingPill } from "@/lib/incomingPill";
 import { useRoomPanelHotkeys } from "./useRoomPanelHotkeys";
-import {
-  CHAT_DOCK_WIDTH,
-  type PanelMode,
-} from "@/stores/panelRegistry";
+import { CHAT_DOCK_WIDTH } from "@/stores/panelRegistry";
 import { usePanelChromeStore } from "@/stores/panelChromeStore";
 
 interface CallRoomLayoutProps {
@@ -74,7 +73,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   const viewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
   const showVideo = useCallUiStore((s) => s.showVideo);
-  const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
   const setViewMode = useCallUiStore((s) => s.setViewMode);
   const toggleVideo = useCallUiStore((s) => s.toggleVideo);
   const mobileCallMode = useCallUiStore((s) => s.mobileCallMode);
@@ -122,13 +120,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
       if (!VIDEO_STAGE_MODES.has(viewMode)) {
         setViewMode(roomId, "grid");
       }
-      if (mobileCallMode === "video" && viewMode === "screen") {
-        setChatCollapsed(true);
-        const mode = usePanelChromeStore.getState().getPanel(roomId, "chat").mode;
-        if (mode === "docked") {
-          usePanelChromeStore.getState().setPanelMode(roomId, "chat", "hidden");
-        }
-      }
     }
   }, [
     callIsHere,
@@ -140,7 +131,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     roomId,
     toggleVideo,
     setViewMode,
-    setChatCollapsed,
   ]);
 
   useEffect(() => {
@@ -243,9 +233,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
           onChatDock={setChatDock}
           onOpenChat={() => toggleCallChat(roomId)}
           onReturnToVideo={() => {
-            usePanelChromeStore.getState().setPanelMode(roomId, "chat", "hidden");
             setMobileCallMode("video", { user: true });
-            setChatCollapsed(true);
           }}
         />
         {chatHost}
@@ -263,6 +251,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <SplitPane
           storageKey={`call-chat:${roomId}`}
+          legacyStorageKey="call-chat"
           orientation="horizontal"
           defaultSize={CHAT_DOCK_WIDTH}
           min={280}
@@ -357,29 +346,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
       {chatHost}
     </div>
   );
-}
-
-function presentChat(opts: {
-  callIsHere: boolean;
-  isDesktop: boolean;
-  mobileCallMode: MobileCallMode;
-  chatMode: PanelMode;
-  textLayout: boolean;
-}): PanelMode {
-  if (!opts.callIsHere) return "docked";
-  if (!opts.isDesktop) {
-    if (opts.mobileCallMode === "video" || opts.chatMode === "hidden") {
-      return "hidden";
-    }
-    if (opts.chatMode === "popped" || opts.chatMode === "floating") {
-      return opts.chatMode;
-    }
-    return "docked";
-  }
-  if (opts.textLayout && opts.chatMode !== "popped" && opts.chatMode !== "floating" && opts.chatMode !== "hidden") {
-    return "docked";
-  }
-  return opts.chatMode;
 }
 
 /* ------------------------------------------------------------------ *
@@ -571,27 +537,40 @@ function IncomingMessagePill({
   const [preview, setPreview] = useState<{ id: string; line: string } | null>(
     null,
   );
-  const lastSeenId = useRef<string | null>(null);
+  // The dismiss timer lives in a ref. Cleaning it up from the messages
+  // effect would cancel it whenever the array identity changes and the
+  // early return below would not arm a new one — the pill would stick.
+  const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const items = messages ?? [];
-    if (items.length === 0) return;
     const last = items[items.length - 1];
-    if (!last) return;
-    if (lastSeenId.current === null) {
-      lastSeenId.current = last.id;
-      return;
-    }
-    if (last.id === lastSeenId.current) return;
-    lastSeenId.current = last.id;
-    if (currentUserId && last.sender_id === currentUserId) return;
-    const text = (last.content || "").replace(/\s+/g, " ").trim();
-    if (!text) return;
-    const name = last.sender_name || "Someone";
-    setPreview({ id: last.id, line: `${name}: ${text}` });
-    const timer = window.setTimeout(() => setPreview(null), 6000);
-    return () => window.clearTimeout(timer);
-  }, [messages, currentUserId]);
+    const decision = decideIncomingPill(
+      roomId,
+      last
+        ? {
+            id: last.id,
+            senderId: last.sender_id ?? null,
+            senderName: last.sender_name,
+            text: last.content || "",
+          }
+        : null,
+      currentUserId ?? null,
+    );
+    if (decision.action !== "show" || !decision.line || !last) return;
+    setPreview({ id: last.id, line: decision.line });
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      setPreview(null);
+    }, 6000);
+  }, [messages, currentUserId, roomId]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
 
   if (!preview) return null;
 
@@ -599,7 +578,7 @@ function IncomingMessagePill({
     <button
       type="button"
       onClick={onOpen}
-      className="focus-ring pointer-events-auto flex h-9 max-w-full items-center gap-2 rounded-full border border-line bg-slate-950/90 px-3 text-left text-xs font-medium text-slate-100 shadow-pop backdrop-blur-md"
+      className="focus-ring pointer-events-auto flex h-11 max-w-full items-center gap-2 rounded-full border border-line bg-slate-950/90 px-3 text-left text-xs font-medium text-slate-100 shadow-pop backdrop-blur-md"
       aria-label={`New message. ${preview.line}. Open chat below the stage.`}
     >
       <MessageSquare className="h-3.5 w-3.5 shrink-0 text-stable-cyan" />
