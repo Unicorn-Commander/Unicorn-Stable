@@ -416,19 +416,33 @@ class RecordingPolicyContract(IsolatedAsyncioTestCase):
             await start_recording(room.id, None, {"participant_id": uuid.uuid4(), "roles": []}, self._db(room))
         self.assertEqual(ctx.exception.status_code, 403)
 
-    async def test_entitled_user_hits_the_not_enabled_stub(self) -> None:
-        from app.api.recording import start_recording, stop_recording
+    async def test_entitled_user_reaches_the_real_start_and_stop(self) -> None:
+        """L8s wired the routes: an entitled member in an `always` room is
+        refused only by the instance master switch (503) when recording is
+        disabled — never by the old 'not enabled yet' 409 stub."""
+        from unittest.mock import AsyncMock, patch
 
-        room = SimpleNamespace(id=uuid.uuid4(), recording_policy="always")
+        from app.api.recording import start_recording, stop_recording
+        from app.config import Settings
+        from app.services import call_recording
+
+        room = SimpleNamespace(id=uuid.uuid4(), recording_policy="always", recording_kind="audio")
         user = {"participant_id": uuid.uuid4(), "roles": ["stable-recorder"]}
-        for fn in (start_recording, stop_recording):
-            with self.subTest(route=fn.__name__):
-                with self.assertRaises(HTTPException) as ctx:
-                    if fn is start_recording:
-                        await fn(room.id, None, user, self._db(room))
-                    else:
-                        await fn(room.id, user, self._db(room))
-                self.assertEqual(ctx.exception.status_code, 409)
+        disabled = Settings(call_recording_enabled=False)
+        with patch.object(call_recording, "active_recording", AsyncMock(return_value=None)):
+            with self.assertRaises(HTTPException) as ctx:
+                await start_recording(room.id, None, user, self._db(room), disabled, None, None)
+            self.assertEqual(ctx.exception.status_code, 503)
+            # An `always` room is the owner's policy: a plain entitled member
+            # may not stop it (403) …
+            with self.assertRaises(HTTPException) as ctx:
+                await stop_recording(room.id, user, self._db(room), disabled, None, None)
+            self.assertEqual(ctx.exception.status_code, 403)
+            # … while in an `on_request` room with nothing recording, stop is 409.
+            room.recording_policy = "on_request"
+            with self.assertRaises(HTTPException) as ctx:
+                await stop_recording(room.id, user, self._db(room), disabled, None, None)
+            self.assertEqual(ctx.exception.status_code, 409)
 
     def test_room_update_rejects_bad_policy_values(self) -> None:
         from pydantic import ValidationError

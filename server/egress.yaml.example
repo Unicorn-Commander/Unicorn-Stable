@@ -9,6 +9,16 @@
 #   sit in the SFU forever with no worker ever picking them up.
 # * The backend requests file outputs under /egress-out (the shared
 #   stable-egress-out volume, mounted at the same path in the backend).
+# * COMPOSITE VIDEO (design §8, deploy/RECORDING.md): the backend passes a
+#   custom_base_url per request — our broadcast page carrying a recorder
+#   token — so nothing about the template lives here. What DOES matter:
+#     - ws_url is what the egress' Chrome connects to; when the worker runs
+#       on another host, use that host's route to the SFU (the public
+#       wss://… works; the container name does not).
+#     - the page origin (CALL_RECORDING_COMPOSITE_BASE_URL on the backend)
+#       must be reachable from this worker, and its TLS must verify.
+#     - keep /egress-out shared with the backend (NFS/bind) or uploads and
+#       the Meeting-Ops attach will report "audio file missing".
 
 api_key: your-livekit-api-key
 api_secret: your-livekit-api-secret
@@ -19,3 +29,11 @@ redis:
   password: your-redis-password
 
 log_level: info
+
+# Composite defaults (LiveKit egress config keys). Uncomment on the host
+# that runs composites; the backend's CALL_RECORDING_COMPOSITE_PRESET picks
+# the encoding preset per request, these bound the worker itself.
+# cpu_cost:
+#   room_composite_cpu_cost: 2.0     # what one composite reserves
+#   audio_room_composite_cpu_cost: 1.0
+# max_concurrent_web: 2              # hard cap on Chrome instances here

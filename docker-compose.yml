@@ -43,13 +43,22 @@ services:
       retries: 5
 
   # ==========================================================================
-  # LiveKit Egress — records call audio (room-composite, audio-only OGG).
-  # Registers against the SAME redis as the SFU (that redis IS the egress
-  # dispatch bus); writes finished files onto the shared egress_out volume,
-  # which the backend mounts read-only at the SAME path so no translation is
-  # needed. The backend starts/stops egresses via the LiveKit server API and
-  # treats this whole service as optional — if it's down, calls still work
-  # and the backend logs call_recording_start_failed loudly.
+  # LiveKit Egress — records calls (room-composite): audio-only OGG, and
+  # COMPOSITE VIDEO MP4s that render our own broadcast page in a headless
+  # Chrome (design §8; deploy/RECORDING.md). Registers against the SAME redis
+  # as the SFU (that redis IS the egress dispatch bus); writes finished files
+  # onto the shared egress_out volume, which the backend mounts at the SAME
+  # path so no translation is needed. The backend starts/stops egresses via
+  # the LiveKit server API and treats this whole service as optional — if
+  # it's down, calls still work and the backend logs
+  # call_recording_start_failed loudly.
+  #
+  # CAPACITY: a composite egress is a full Chrome + x264 encode (~2 cores at
+  # 720p30 by LiveKit's own guidance; MEASURE on the first real call). Two
+  # at once is the cap (RECORDING_MAX_COMPOSITE below). On a busy host run
+  # this service on a machine with CPU headroom — NOT the LiveKit host — by
+  # pointing its egress.yaml at this stack's redis + ws_url over the LAN and
+  # sharing the egress_out path (NFS/bind); see deploy/RECORDING.md.
   # ==========================================================================
   egress:
     image: livekit/egress:v1.14.1
@@ -63,9 +72,12 @@ services:
       - ./server/egress.yaml:/etc/egress.yaml:ro
       - egress_out:/egress-out
     # Chromium inside the egress image needs a real /dev/shm even when a
-    # request ends up on the chromeless audio-only pipeline.
+    # request ends up on the chromeless audio-only pipeline; composites
+    # render at 1280x720 (or 1920x1080) in it.
     shm_size: "1gb"
-    cpus: 2.0
+    # Audio-only fits in 2 cores; each composite wants ~2 more. Raise to
+    # (2 + 2 × RECORDING_MAX_COMPOSITE) on the host that runs composites.
+    cpus: ${EGRESS_CPUS:-2.0}
     depends_on:
       redis:
         condition: service_healthy
@@ -239,6 +251,27 @@ services:
       # USER-scoped MO PAT (the transcript-ingest PAT is scope-locked and
       # cannot drive MO's uploads API).
       - MEETING_OPS_UPLOAD_PAT=${MEETING_OPS_UPLOAD_PAT:-}
+      # Recording policy + composite video + storage + retention (design §8;
+      # deploy/RECORDING.md). CALL_RECORDING_ENABLED above is the master
+      # switch; the ROOM's recording_policy decides. Composites render the
+      # broadcast page at <base>/broadcast/{room}/composite in the egress
+      # worker's Chrome — the base must be reachable FROM THE EGRESS HOST.
+      - CALL_RECORDING_COMPOSITE_BASE_URL=${CALL_RECORDING_COMPOSITE_BASE_URL:-}
+      - CALL_RECORDING_COMPOSITE_PRESET=${CALL_RECORDING_COMPOSITE_PRESET:-H264_720P_30}
+      - RECORDING_MAX_COMPOSITE=${RECORDING_MAX_COMPOSITE:-2}
+      - CALL_RECORDING_MAX_HOURS=${CALL_RECORDING_MAX_HOURS:-6}
+      - CALL_RECORDING_RETENTION_DAYS=${CALL_RECORDING_RETENTION_DAYS:-30}
+      # S3-compatible storage for finished recordings (Garage / Studio
+      # Storage). Empty endpoint = files stay on the egress volume until the
+      # retention sweep. Keys live in .env only — never in this file, never
+      # in logs.
+      - RECORDING_S3_ENDPOINT=${RECORDING_S3_ENDPOINT:-}
+      - RECORDING_S3_BUCKET=${RECORDING_S3_BUCKET:-}
+      - RECORDING_S3_ACCESS_KEY=${RECORDING_S3_ACCESS_KEY:-}
+      - RECORDING_S3_SECRET_KEY=${RECORDING_S3_SECRET_KEY:-}
+      - RECORDING_S3_REGION=${RECORDING_S3_REGION:-garage}
+      - RECORDING_S3_PATH_STYLE=${RECORDING_S3_PATH_STYLE:-true}
+      - RECORDING_S3_PREFIX=${RECORDING_S3_PREFIX:-stable-recordings/}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}

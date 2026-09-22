@@ -104,6 +104,54 @@ class LiveKitService:
         )
         return info
 
+    async def start_room_composite_video_egress(
+        self,
+        room_name: str,
+        filepath: str,
+        *,
+        custom_base_url: str,
+        preset: str = "H264_720P_30",
+        layout: str = "grid",
+    ) -> Any:
+        """Start a composite VIDEO egress that renders our own web template.
+
+        ``custom_base_url`` is the broadcast page carrying a recorder token
+        (design §8: "the recording looks exactly like the show feed"); the
+        egress worker's headless Chrome loads it and LiveKit appends its own
+        ``url``/``token``/``layout`` query parameters. Writes an MP4 to the
+        shared egress volume. Same fail-open contract as the audio variant.
+
+        The URL carries a credential, so it is never logged here — only the
+        room and the returned egress id are.
+        """
+        from livekit.protocol import egress as proto_egress
+
+        try:
+            preset_value = proto_egress.EncodingOptionsPreset.Value(preset)
+        except ValueError:
+            preset_value = proto_egress.EncodingOptionsPreset.Value("H264_720P_30")
+
+        request = proto_egress.RoomCompositeEgressRequest(
+            room_name=room_name,
+            layout=layout,
+            custom_base_url=custom_base_url,
+            preset=preset_value,
+            file_outputs=[
+                proto_egress.EncodedFileOutput(
+                    file_type=proto_egress.EncodedFileType.MP4,
+                    filepath=filepath,
+                )
+            ],
+        )
+        info = await self._api.egress.start_room_composite_egress(request)
+        logger.info(
+            "livekit_composite_egress_started",
+            room_name=room_name,
+            egress_id=getattr(info, "egress_id", None),
+            preset=preset,
+        )
+        return info
+
     async def stop_egress(self, egress_id: str) -> Any:
         """Stop a running egress. LiveKit errors if it already ended."""
         from livekit.protocol import egress as proto_egress

@@ -84,9 +84,155 @@ MAX_TTL_HOURS = 24
 # or revocation would leave a live feed running until the LiveKit TTL expired.
 LIVEKIT_TOKEN_MAX_TTL_S = 3600
 
+# ---------------------------------------------------------------------------
+# RECORDER TOKENS — the composite-recording variant (design §8)
+# ---------------------------------------------------------------------------
+# A composite recording is a LiveKit room-composite egress whose headless
+# Chrome renders OUR broadcast page, so the MP4 looks like the show feed. The
+# page authenticates the only way it knows how — a broadcast token exchanged
+# at /broadcast/join — so the egress gets a token of its own: same table, same
+# hashing, same one-endpoint exposure, same subscribe-only + hidden grant, but
+#   * ``participant_identity`` is ``*`` (the composite layout renders everyone),
+#   * ``allow_audio`` is True (a recording without audio is not a recording),
+#   * the TTL is bounded to the egress' maximum duration and the token is
+#     revoked the moment the egress ends, and
+#   * it is NOT a broadcast: it is left out of ``GET /broadcast/active`` —
+#     the recording has its own, louder consent surface (``recording_state``
+#     + the system message + the REC pill).
+# The table has no ``kind`` column and this lane adds no migration; the kind is
+# the (``created_by``, ``participant_identity``) pair below, which no
+# user-facing mint can produce (``participant_identity="*"`` is refused).
+RECORDER_IDENTITY = "*"
+RECORDER_CREATED_BY = "system:recorder"
+RECORDER_LABEL_PREFIX = "recorder:"
+#: Query parameter carrying the recorder token on the composite template URL.
+#: Deliberately NOT ``token``: the egress worker appends its own ``token``
+#: (LiveKit JWT) to the URL and would clobber ours.
+RECORDER_QUERY_PARAM = "rt"
+#: Path segment the composite template lives at: /broadcast/{room}/composite.
+RECORDER_PATH_SEGMENT = "composite"
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def is_recorder_token(row: Any) -> bool:
+    return (
+        getattr(row, "created_by", None) == RECORDER_CREATED_BY
+        and getattr(row, "participant_identity", None) == RECORDER_IDENTITY
+    )
+
+
+def recorder_label(egress_row_id: Any) -> str:
+    return f"{RECORDER_LABEL_PREFIX}{egress_row_id}"
+
+
+def recorder_grants(room_name: str) -> VideoGrants:
+    """The egress viewer's grant: subscribe-only, hidden, publishes nothing."""
+    return VideoGrants(
+        room_join=True,
+        room=room_name,
+        can_publish=False,
+        can_publish_data=False,
+        can_subscribe=True,
+        hidden=True,
+    )
+
+
+def composite_template_url(settings: Settings, room_id: Any, raw_token: str) -> str:
+    """The ``custom_base_url`` handed to LiveKit for a composite egress.
+
+    Carries a credential: never log it, never store it on a row. LiveKit
+    appends ``url``, ``token`` and ``layout`` query params of its own.
+    """
+    base = (
+        (settings.call_recording_composite_base_url or settings.public_base_url or "")
+        .strip()
+        .rstrip("/")
+    )
+    return (
+        f"{base}/broadcast/{room_id}/{RECORDER_PATH_SEGMENT}"
+        f"?{urlencode({RECORDER_QUERY_PARAM: raw_token})}"
+    )
+
+
+async def mint_recorder_token(
+    db: AsyncSession,
+    room: Room,
+    *,
+    egress_row_id: Any,
+    ttl_seconds: int,
+) -> tuple[str, BroadcastToken]:
+    """Mint the egress' own broadcast token. Returns (raw, row); raw is
+    returned ONCE, to be placed in the template URL, and never logged."""
+    raw = f"sbt-{secrets.token_urlsafe(32)}"
+    row = BroadcastToken(
+        token_hash=hash_key(raw),
+        token_prefix=raw[:12],
+        room_id=room.id,
+        participant_identity=RECORDER_IDENTITY,
+        participant_label="recorder",
+        allow_audio=True,
+        label=recorder_label(egress_row_id),
+        created_by=RECORDER_CREATED_BY,
+        expires_at=_now() + timedelta(seconds=max(60, int(ttl_seconds))),
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    logger.info(
+        "recorder_token_minted",
+        room=room.livekit_room_name,
+        egress_row_id=str(egress_row_id),
+        token_prefix=row.token_prefix,
+        ttl_seconds=int(ttl_seconds),
+    )
+    return raw, row
+
+
+async def revoke_recorder_tokens(
+    db: AsyncSession,
+    livekit: Any,
+    *,
+    egress_row_id: Any,
+    room_name: str | None = None,
+) -> int:
+    """Revoke every recorder token minted for one egress row and evict its
+    viewer. Idempotent; never raises (called from fail-open paths)."""
+    revoked = 0
+    try:
+        rows = (
+            await db.execute(
+                select(BroadcastToken).where(
+                    BroadcastToken.label == recorder_label(egress_row_id),
+                    BroadcastToken.created_by == RECORDER_CREATED_BY,
+                    BroadcastToken.revoked_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            row.revoked_at = _now()
+            revoked += 1
+            if livekit is not None and room_name:
+                try:
+                    await livekit.remove_participant(
+                        room_name=room_name, identity=_viewer_identity(row.id)
+                    )
+                except Exception:
+                    logger.debug("recorder_viewer_evict_failed", exc_info=True)
+        if rows:
+            await db.commit()
+            logger.info(
+                "recorder_tokens_revoked",
+                egress_row_id=str(egress_row_id),
+                count=revoked,
+            )
+    except Exception:
+        logger.warning(
+            "recorder_token_revoke_failed", egress_row_id=str(egress_row_id), exc_info=True
+        )
+    return revoked
 
 
 class MintBroadcastBody(BaseModel):
@@ -111,6 +257,9 @@ class BroadcastTokenInfo(BaseModel):
     revoked_at: datetime | None
     last_used_at: datetime | None
     active: bool
+    # broadcast (OBS feed of one participant) | recorder (a composite egress'
+    # own token — see RECORDER_* above).
+    kind: str = "broadcast"
 
 
 class MintBroadcastResponse(BroadcastTokenInfo):
@@ -127,6 +276,9 @@ class BroadcastJoinResponse(BaseModel):
     participant_label: str | None
     allow_audio: bool
     expires_at: datetime
+    # participant — render the one named participant (OBS feed).
+    # composite   — render every publisher in the room (recorder token).
+    mode: str = "participant"
 
 
 async def _resolve_room(db: AsyncSession, ref: str) -> Room:
@@ -188,6 +340,7 @@ def _to_info(row: BroadcastToken) -> dict[str, Any]:
         "revoked_at": row.revoked_at,
         "last_used_at": row.last_used_at,
         "active": row.revoked_at is None and expires is not None and expires > now,
+        "kind": "recorder" if is_recorder_token(row) else "broadcast",
     }
 
 
@@ -203,6 +356,13 @@ async def mint_broadcast_token(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Any:
     """Mint a broadcast feed URL for one participant. Room OWNER only."""
+    if body.participant_identity.strip() == RECORDER_IDENTITY:
+        # Reserved for the composite egress' own token (see RECORDER_*). A
+        # user-minted "*" would masquerade as a recorder and drop out of the
+        # ● Broadcasting consent surface.
+        raise HTTPException(
+            status_code=400, detail="participant_identity '*' is reserved"
+        )
     room = await _resolve_room(db, body.room)
     await _require_room_owner(db, room, user)
 
@@ -338,6 +498,9 @@ async def list_active_broadcasts(
                 "expires_at": r.expires_at.isoformat() if r.expires_at else None,
             }
             for r in rows
+            # A recorder token is a RECORDING, not a broadcast; it announces
+            # itself through recording_state (contract: this shape unchanged).
+            if not is_recorder_token(r)
         ],
     }
 
@@ -429,15 +592,10 @@ async def broadcast_join(
         raise HTTPException(status_code=404, detail="Room not found")
 
     # Subscribe-only + hidden: publishes nothing and never appears as a
-    # participant to the humans in the call.
-    grants = VideoGrants(
-        room_join=True,
-        room=room.livekit_room_name,
-        can_publish=False,
-        can_publish_data=False,
-        can_subscribe=True,
-        hidden=True,
-    )
+    # participant to the humans in the call. The recorder variant gets the
+    # SAME grant — the egress' Chrome is a viewer like any OBS source.
+    recorder = is_recorder_token(row)
+    grants = recorder_grants(room.livekit_room_name)
     # Never outlive the authorizing token.
     remaining = int((expires - _now()).total_seconds())
     ttl = max(60, min(LIVEKIT_TOKEN_MAX_TTL_S, remaining))
@@ -445,7 +603,7 @@ async def broadcast_join(
     lk_token = livekit.generate_token(
         room_name=room.livekit_room_name,
         identity=_viewer_identity(row.id),
-        name=f"broadcast:{row.participant_identity}",
+        name="recorder" if recorder else f"broadcast:{row.participant_identity}",
         grants=grants,
         ttl=ttl,
         api_key=settings.livekit_api_key,
@@ -461,6 +619,7 @@ async def broadcast_join(
         participant=row.participant_identity,
         token_prefix=row.token_prefix,
         ttl=ttl,
+        mode="composite" if recorder else "participant",
     )
     return {
         # Match tokens.py: the browser needs the PUBLIC ws url, not the
@@ -472,7 +631,19 @@ async def broadcast_join(
         "participant_label": row.participant_label,
         "allow_audio": row.allow_audio,
         "expires_at": expires,
+        "mode": "composite" if recorder else "participant",
     }
 
 
-__all__ = ["router"]
+__all__ = [
+    "router",
+    "RECORDER_IDENTITY",
+    "RECORDER_CREATED_BY",
+    "RECORDER_QUERY_PARAM",
+    "RECORDER_PATH_SEGMENT",
+    "is_recorder_token",
+    "recorder_grants",
+    "composite_template_url",
+    "mint_recorder_token",
+    "revoke_recorder_tokens",
+]
