@@ -23,6 +23,8 @@ import type {
 } from "@/lib/guestInvite";
 import { useFederationStore } from "@/stores/federationStore";
 import type { VoiceActivationMode } from "@/lib/roomDataProtocol";
+import type { RecordingPolicy, RecordingStartKind } from "@/lib/recording";
+import { isRecordingKind, isRecordingPolicy } from "@/lib/recording";
 
 /**
  * The API origin of the ACTIVE federated instance. Falls back to the build-time
@@ -106,6 +108,13 @@ export interface Room {
   is_archived?: boolean;
   /** Raw server room metadata (auto_titled, brigade_agent_id, conference…). */
   metadata_?: Record<string, unknown> | null;
+  /**
+   * off | on_request (Ask) | always. Absent on a row from a server that
+   * predates the recording contract — treat that as off.
+   */
+  recording_policy?: RecordingPolicy;
+  /** audio | composite | track. The room's default capture kind. */
+  recording_kind?: "audio" | "composite" | "track";
 }
 
 export interface RoomMember {
@@ -604,6 +613,35 @@ export interface RawRoomListItem {
   // compat: older backends omit them and the store merges a live value.
   last_message?: Message | null;
   unread_count?: number;
+  recording_policy?: string;
+  recording_kind?: string;
+}
+
+function readRoomPolicy(value: unknown): RecordingPolicy {
+  return isRecordingPolicy(value) ? value : "off";
+}
+
+function readRoomKind(value: unknown): "audio" | "composite" | "track" {
+  return isRecordingKind(value) ? value : "audio";
+}
+
+/** One `call_egresses` row, as GET /rooms/{id}/recordings returns it. */
+export interface RecordingListItem {
+  id: string;
+  room_id?: string | null;
+  kind: string;
+  status: string;
+  started_by?: string | null;
+  started_by_name?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
+  storage_url?: string | null;
+  mo_session_id?: string | null;
+  /** Present when L8s (or a proxy) knows the Meeting-Ops session URL. */
+  session_url?: string | null;
+  retention_until?: string | null;
+  legal_hold?: boolean;
 }
 
 /**
@@ -685,6 +723,8 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
     // Carried so guards that read persisted room facts (e.g. the auto-title
     // metadata.auto_titled flag) see them without a per-room GET.
     metadata_: r.metadata_ ?? null,
+    recording_policy: readRoomPolicy(r.recording_policy),
+    recording_kind: readRoomKind(r.recording_kind),
   };
 }
 
@@ -997,6 +1037,37 @@ class StableApiClient {
     patch: { display_name?: string; description?: string; is_archived?: boolean; metadata?: Record<string, unknown> },
   ): Promise<Room> {
     return this.request<Room>("PATCH", `/api/v1/rooms/${roomId}`, patch);
+  }
+
+  /**
+   * Owner/admin. `recording_policy` is off | on_request | always.
+   * The server returns the room; callers read `recording_policy` back.
+   */
+  async updateRecordingPolicy(
+    roomId: string,
+    recording_policy: RecordingPolicy,
+  ): Promise<{ recording_policy: RecordingPolicy }> {
+    return this.request("PATCH", `/api/v1/rooms/${roomId}`, { recording_policy });
+  }
+
+  /** Entitled + policy allows. 403 when the room is off or the role is missing; 409 until L8s wires egress. */
+  async startRecording(
+    roomId: string,
+    kind: RecordingStartKind,
+  ): Promise<{ active?: boolean; kind?: string }> {
+    return this.request("POST", `/api/v1/rooms/${roomId}/recording/start`, { kind });
+  }
+
+  async stopRecording(roomId: string): Promise<{ active?: boolean }> {
+    return this.request("POST", `/api/v1/rooms/${roomId}/recording/stop`);
+  }
+
+  async listRecordings(roomId: string): Promise<RecordingListItem[]> {
+    const rows = await this.request<RecordingListItem[]>(
+      "GET",
+      `/api/v1/rooms/${roomId}/recordings`,
+    );
+    return Array.isArray(rows) ? rows : [];
   }
 
   /** Archive a room (server-side soft-delete via is_archived). Returns the updated room. */
@@ -1380,6 +1451,8 @@ class StableApiClient {
       // resident Brigade agent's id is persisted here by the invite path
       // (server: brigade.py writes room.metadata_.brigade_agent_id).
       metadata_?: Record<string, unknown> | null;
+      recording_policy?: string;
+      recording_kind?: string;
     };
     const r = await this.request<Raw>("GET", `/api/v1/rooms/${roomId}`);
     const brigadeAgentId =
@@ -1405,6 +1478,8 @@ class StableApiClient {
       // Carried so callers that need a server-owned room fact (the resident
       // set included) don't have to re-fetch. The list mapper already does it.
       metadata_: r.metadata_ ?? null,
+      recording_policy: readRoomPolicy(r.recording_policy),
+      recording_kind: readRoomKind(r.recording_kind),
     };
   }
 
