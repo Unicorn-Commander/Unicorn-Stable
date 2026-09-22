@@ -47,10 +47,10 @@ const MENTIONS: Row[] = [
 
 const CALL_LAYOUT: Row[] = [
   { combo: "C", desc: "Show or hide chat. Hidden gives the stage the full width, remembered per room." },
-  { combo: "Alt 1", desc: "Focus — stage only" },
-  { combo: "Alt 2", desc: "Studio — stage, chat, and transcript" },
-  { combo: "Alt 3", desc: "Text — chat main, stage in Picture-in-Picture" },
-  { combo: "Alt 4", desc: "Show — pop every panel into its own window" },
+  { combo: "Alt Shift 1", desc: "Focus — stage only" },
+  { combo: "Alt Shift 2", desc: "Studio — stage, chat, and transcript" },
+  { combo: "Alt Shift 3", desc: "Text — chat main, stage in Picture-in-Picture" },
+  { combo: "Alt Shift 4", desc: "Show — one panel window per click; apply again for the next" },
   { combo: "Alt Shift C", desc: "Pop out chat" },
   { combo: "Alt Shift T", desc: "Pop out transcript" },
   { combo: "Alt Shift M", desc: "Pop out members" },
