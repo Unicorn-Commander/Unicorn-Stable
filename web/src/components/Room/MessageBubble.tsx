@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo, createElement } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   RotateCw,
@@ -38,6 +39,7 @@ import { identityFor, resolveIdentity } from "@/lib/identity";
 import { isGuestSender } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import { isRoomApprover } from "@/lib/approvals";
+import { beginThread } from "@/lib/beginThread";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
@@ -1077,7 +1079,8 @@ function PromoteToProjectOpsModal({
       .then((rows) => {
         if (!active) return;
         setProjects(rows);
-        setProjectNumber((current) => current || rows[0]?.projectNumber || "");
+        const bound = useAppStore.getState().rooms.find((r) => r.id === message.room_id)?.project_number;
+        setProjectNumber((current) => current || bound || rows[0]?.projectNumber || "");
       })
       .catch((err) => {
         if (active) setError(errorMessage(err));
@@ -1245,6 +1248,7 @@ export function MessageBubble({
   forceEditTick,
   overrideModelLabel,
 }: MessageBubbleProps) {
+  const navigate = useNavigate();
   const [hovered, setHovered] = useState(false);
   // Mobile has no hover — tap the bubble (or long-press via context menu) to
   // pin the action toolbar open until the next outside tap.
@@ -2516,9 +2520,25 @@ export function MessageBubble({
               onReply(message.id);
             }}
             className="inline-flex min-h-9 min-w-9 max-md:min-h-11 max-md:min-w-11 items-center justify-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
-            aria-label="Reply in thread"
+            aria-label="Replies"
           >
             <MessageSquare className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void beginThread({
+                roomId: message.room_id,
+                seedMessageId: message.id,
+                navigate,
+              });
+            }}
+            className="inline-flex min-h-9 max-md:min-h-11 items-center justify-center rounded-md px-1.5 text-[11px] text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring touch-manipulation"
+            aria-label="Start a thread from here"
+            title="Start a thread from here"
+          >
+            Thread
           </button>
           <button
             type="button"
@@ -2797,7 +2817,22 @@ export function MessageBubble({
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
             >
-              ↪ Reply / quote
+              ↪ Replies
+            </button>
+          </li>
+          <li>
+            <button
+              onClick={() => {
+                void beginThread({
+                  roomId: message.room_id,
+                  seedMessageId: message.id,
+                  navigate,
+                });
+                setCtxMenu(null);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+            >
+              Start a thread from here
             </button>
           </li>
           {canReadAloud && (

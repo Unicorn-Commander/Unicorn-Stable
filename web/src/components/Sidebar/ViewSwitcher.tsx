@@ -16,7 +16,8 @@ import {
   useNavStore,
 } from "@/stores/navStore";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
-import { sumBadgeCounts } from "@/utils/unreadModel";
+import { countNeedsYou } from "@/lib/conversation";
+import { getNotifyLevel } from "@/utils/mute";
 
 const DESTINATIONS: {
   id: NavView;
@@ -25,7 +26,7 @@ const DESTINATIONS: {
   Icon: LucideIcon;
 }[] = [
   { id: "home", label: "Home", short: "Home", Icon: Home },
-  { id: "chats", label: "Chats", short: "Chats", Icon: MessageSquare },
+  { id: "direct", label: "Direct", short: "Direct", Icon: MessageSquare },
   { id: "channels", label: "Channels", short: "Channels", Icon: Hash },
   { id: "meetings", label: "Meetings", short: "Meet", Icon: Video },
   { id: "agents", label: "Agents", short: "Agents", Icon: Bot },
@@ -43,18 +44,24 @@ export function ViewSwitcher() {
   const serverId = useFederationStore((s) => s.activeInstanceId);
   const rooms = useAppStore((s) => s.rooms);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
+  const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
 
   const badges = useMemo(() => {
     const out: Partial<Record<NavView, number>> = {};
-    for (const id of ["chats", "channels", "meetings", "agents"] as NavView[]) {
-      const list = roomsForView(rooms, id);
-      const n = sumBadgeCounts(list, unreadCounts);
+    for (const id of ["direct", "channels", "meetings", "agents"] as NavView[]) {
+      const list = roomsForView(rooms, id).filter((room) => !room.parent_room_id);
+      const n = countNeedsYou(
+        list,
+        unreadCounts,
+        mentionUnreads,
+        (roomId) => getNotifyLevel(roomId) === "muted",
+      );
       if (n > 0) out[id] = n;
     }
     return out;
-  }, [rooms, unreadCounts]);
+  }, [rooms, unreadCounts, mentionUnreads]);
 
   function selectView(view: NavView) {
     setActiveView(view);
@@ -84,7 +91,7 @@ export function ViewSwitcher() {
           const badge = badges[id] ?? 0;
           const badgeLabel =
             badge > 0
-              ? `${label}, ${badge > 99 ? "99+" : badge} unread`
+              ? `${label}, ${badge > 99 ? "99+" : badge} need you`
               : label;
           return (
             <li key={id}>

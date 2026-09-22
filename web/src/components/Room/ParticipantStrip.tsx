@@ -24,6 +24,7 @@ import {
 import { Identity } from "@/components/ui/Identity";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
+import { AgentModeChip } from "./AgentModeChip";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
 import { livekitIdentityForMember } from "@/lib/broadcast";
@@ -692,6 +693,33 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                       {m.display_name}
                     </p>
                     <p className="truncate text-[10px] text-slate-500">
+                      <AgentModeChip
+                        mode={m.agent_mode}
+                        canEdit={myRole === "owner" || myRole === "admin"}
+                        compact
+                        onChange={(mode) => {
+                          const pid = m.participant_id || m.user_id;
+                          if (!pid) return;
+                          void api.setAgentMode(roomId, pid, mode).then((updated) => {
+                            const roster = useAppStore.getState().participants[roomId] ?? [];
+                            useAppStore.getState().setParticipants(
+                              roomId,
+                              roster.map((p) =>
+                                (p.participant_id || p.user_id) === pid
+                                  ? { ...p, agent_mode: updated.agent_mode ?? mode }
+                                  : p,
+                              ),
+                            );
+                          }).catch((err) => {
+                            useAppStore.getState().pushToast({
+                              title: "Couldn't change how this agent answers",
+                              body: (err as { detail?: string }).detail || (err as Error).message,
+                              kind: "error",
+                            });
+                          });
+                        }}
+                      />
+                      {" "}
                       @{(m.username ?? "").replace(/^agent-/, "")}
                       {badge.kind !== "connected" && (
                         <>

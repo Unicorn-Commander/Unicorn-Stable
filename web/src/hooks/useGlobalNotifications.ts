@@ -28,6 +28,9 @@ import { playCue } from "@/lib/sounds";
 import { ensurePushSubscription } from "@/lib/webpush";
 import { resolveIdentity } from "@/lib/identity";
 import { useGlobalPresence } from "@/hooks/useGlobalPresence";
+import { api } from "@/services/api";
+import { noteThreadOnParent, threadStubFromEvent, type ThreadCreatedEvent } from "@/lib/conversation";
+import { useConversationUi } from "@/stores/conversationUiStore";
 
 /**
  * Hard ceilings for a server-asserted agent state held locally.
@@ -511,8 +514,74 @@ export function useGlobalNotifications() {
       });
     });
 
+    const unsubThread = ws.on("thread_created", (data: WsEventPayload) => {
+      const event = data as unknown as ThreadCreatedEvent;
+      if (!event?.room_id || !event.parent_room_id) return;
+      const state = useAppStore.getState();
+      const parent = state.rooms.find((r) => r.id === event.parent_room_id);
+      const stub = threadStubFromEvent(event, parent);
+      state.setRooms(noteThreadOnParent(state.rooms, event.parent_room_id, stub));
+      void api.getRoom(event.room_id).then((room) => {
+        useAppStore.getState().upsertRoom({
+          ...room,
+          parent_room_id: room.parent_room_id ?? event.parent_room_id,
+          display_name: room.display_name || event.display_name || room.name,
+        });
+      }).catch(() => {
+        /* The stub already put the row on screen. */
+      });
+    });
+
+    const unsubVisibility = ws.on("room_visibility", (data: WsEventPayload) => {
+      const event = data as unknown as { room_id?: string; visibility?: "public" | "private" };
+      if (!event?.room_id || !event.visibility) return;
+      useAppStore.getState().updateRoom(event.room_id, { visibility: event.visibility });
+    });
+
+    const unsubInvite = ws.on("invite_created", (data: WsEventPayload) => {
+      const event = data as unknown as { room_id?: string; token_prefix?: string; role?: string };
+      if (!event?.room_id) return;
+      const id = `${event.room_id}:${event.token_prefix ?? "invite"}`;
+      useConversationUi.getState().noteInvite({
+        id,
+        roomId: event.room_id,
+        label: `Pending invite · ${event.token_prefix ?? event.role ?? "link"}`,
+        at: Date.now(),
+      });
+      if (loadPrefs().inAppToasts) {
+        pushToast({
+          title: "Invite link is live",
+          body: "It is waiting in the sidebar until you dismiss it.",
+          roomId: event.room_id,
+        });
+      }
+    });
+
+    const unsubMode = ws.on("member_mode", (data: WsEventPayload) => {
+      const event = data as unknown as {
+        room_id?: string;
+        participant_id?: string;
+        agent_mode?: string | null;
+      };
+      if (!event?.room_id || !event.participant_id) return;
+      const roster = useAppStore.getState().participants[event.room_id];
+      if (!roster) return;
+      useAppStore.getState().setParticipants(
+        event.room_id,
+        roster.map((member) =>
+          (member.participant_id || member.user_id) === event.participant_id
+            ? { ...member, agent_mode: event.agent_mode as typeof member.agent_mode }
+            : member,
+        ),
+      );
+    });
+
     return () => {
       unsubMessage();
+      unsubThread();
+      unsubVisibility();
+      unsubInvite();
+      unsubMode();
       unsubInvited();
       unsubCallStarted();
       unsubRingState();

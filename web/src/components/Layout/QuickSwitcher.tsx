@@ -157,7 +157,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       };
       actionItems.unshift(
         { kind: "action", id: "view-home", label: "Go to Home", sub: "Dashboard", icon: Home, run: () => goView("home") },
-        { kind: "action", id: "view-chats", label: "Go to Chats", sub: "People and private groups", icon: MessageSquare, run: () => goView("chats") },
+        { kind: "action", id: "view-direct", label: "Go to Direct", sub: "People, agents, and groups", icon: MessageSquare, run: () => goView("direct") },
         { kind: "action", id: "view-channels", label: "Go to Channels", sub: "Joined channels", icon: Hash, run: () => goView("channels") },
         { kind: "action", id: "view-meetings", label: "Go to Meetings", sub: "Conference rooms", icon: Video, run: () => goView("meetings") },
         { kind: "action", id: "view-agents", label: "Go to Agents", sub: "Agent conversations", icon: Bot, run: () => goView("agents") },
@@ -226,12 +226,16 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       void switchInstance(it.id);
       return;
     }
-    // Agent → same "new chat" path the sidebar uses: a fresh DM bound to the
-    // persona, then jump into it.
+    // Agent → the one hub with that agent. New conversations are threads.
     if (busyId) return;
     setBusyId(it.id);
     try {
-      const room = await api.createAgentDm(it.id, `Chat with ${it.label}`);
+      const { openAgentHub } = await import("@/lib/beginThread");
+      const room = await openAgentHub(it.id);
+      if (!room) {
+        setBusyId(null);
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: ["rooms"] });
       navigate(`/c/${room.id}`);
       onClose();

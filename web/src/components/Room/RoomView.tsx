@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, Link2, LogOut, Mic, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, Link2, ListTree, Lock, LogOut, Mic, MoreVertical, PanelLeftOpen, Pencil, Phone, Pin, Plus, Search, UserPlus, UserRound, Users, Video } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
@@ -42,6 +42,12 @@ import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
 import { canEditVoiceSettings, voiceRelaySource } from "@/lib/voiceSettings";
+import { beginThread } from "@/lib/beginThread";
+import { roomLabel } from "@/lib/conversation";
+import { useConversationUi } from "@/stores/conversationUiStore";
+import { InviteSheet } from "./InviteSheet";
+import { useDirectCall } from "@/hooks/useDirectCall";
+import { ProjectNumber } from "@/components/Sidebar/NewSheet";
 
 // Lazy: the Knowledge panel (collection mgmt + file upload + doc lists) is a
 // distinct surface most sessions never open, so split it out of the main chunk.
@@ -331,13 +337,23 @@ export function RoomView({ roomId }: RoomViewProps) {
   useEffect(() => {
     setNameDraft(roomDetail?.display_name || roomDetail?.name || "");
   }, [roomDetail?.display_name, roomDetail?.name]);
+  useEffect(() => {
+    if (useConversationUi.getState().takeTitleFocus(roomId)) setEditingName(true);
+  }, [roomId, roomDetail?.id]);
 
   // ── Type-aware identity block (Fable gap 12) ────────────────────────────
   // A 1:1 DM is a private conversation, not a channel: its header names a
   // PERSON, so it gets the person's avatar + presence instead of a #, and it
   // drops the channel furniture (topic edit, rename, Invite) that implies
   // the room is a public space.
-  const isDm = roomDetail?.type === "dm";
+  const isDm = roomDetail?.type === "dm" || roomDetail?.type === "agent_hub";
+  const parentRoom = useAppStore((s) =>
+    roomDetail?.parent_room_id
+      ? s.rooms.find((r) => r.id === roomDetail.parent_room_id) ?? null
+      : null,
+  );
+  const { startCall } = useDirectCall();
+  const [callMenuOpen, setCallMenuOpen] = useState(false);
   const dmAgentId = roomDetail?.brigade_agent_id ?? null;
   const dmAgent = dmAgentId
     ? rosterAgents.find((a) => a.id === dmAgentId)
@@ -561,12 +577,20 @@ export function RoomView({ roomId }: RoomViewProps) {
                 )}
               </span>
               <span className="truncate font-display text-sm font-semibold text-slate-50">
-                {dmAgentId ? dmAgentName : dmPeerName}
+                {parentRoom
+                  ? `${roomLabel(parentRoom)} › ${displayName}`
+                  : dmAgentId
+                    ? dmAgentName
+                    : dmPeerName}
               </span>
             </div>
           ) : (
             <>
-          <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />
+          {roomDetail?.visibility === "private" || roomDetail?.project_number ? (
+            <Lock className="h-4 w-4 shrink-0 text-amber-300/80" aria-label="Private channel" />
+          ) : (
+            <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" aria-label="Public channel" />
+          )}
           {editingName ? (
             <input
               autoFocus
@@ -595,8 +619,12 @@ export function RoomView({ roomId }: RoomViewProps) {
               className="truncate font-display text-sm font-semibold text-slate-50 transition-colors hover:text-stable-purple-light focus-ring"
               title="Click to rename"
             >
+              {parentRoom ? `${roomLabel(parentRoom)} › ` : ""}
               {displayName}
             </button>
+          )}
+          {roomDetail?.project_number && (
+            <ProjectNumber number={roomDetail.project_number} />
           )}
           {/* Topic + its separator are secondary — hide on phones so a long
               topic can't squeeze the room name down to a couple letters. The
@@ -644,6 +672,88 @@ export function RoomView({ roomId }: RoomViewProps) {
           <span className="hidden md:contents">
             <ModelSwitcher roomId={roomId} />
           </span>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setCallMenuOpen((v) => !v)}
+              className="focus-ring inline-flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs text-slate-200 hover:bg-white/[0.06]"
+              aria-haspopup="menu"
+              aria-expanded={callMenuOpen}
+            >
+              <Phone className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Call</span>
+              <ChevronDown className="h-3 w-3 text-slate-500" />
+            </button>
+            {callMenuOpen && (
+              <div role="menu" className="glass-heavy absolute right-0 top-full z-50 mt-1 w-36 rounded-xl p-1 shadow-pop">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
+                  onClick={() => {
+                    setCallMenuOpen(false);
+                    void startCall(roomId, { video: false });
+                  }}
+                >
+                  <Phone className="h-3.5 w-3.5" /> Voice
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
+                  onClick={() => {
+                    setCallMenuOpen(false);
+                    void startCall(roomId, { video: true });
+                  }}
+                >
+                  <Video className="h-3.5 w-3.5" /> Video
+                </button>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              usePanelChromeStore.getState().setPanelMode(
+                roomId,
+                "threads",
+                roomPanels.threads.mode === "hidden" ? "docked" : "hidden",
+              )
+            }
+            className={clsx(
+              "focus-ring rounded-md p-2 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
+              roomPanels.threads.mode !== "hidden" && "bg-white/[0.08] text-slate-100",
+            )}
+            aria-label="Threads"
+            title="Threads"
+          >
+            <ListTree className="h-4 w-4" />
+          </button>
+          {roomDetail?.project_number && (
+            <button
+              type="button"
+              onClick={() =>
+                usePanelChromeStore.getState().setPanelMode(
+                  roomId,
+                  "tasks",
+                  roomPanels.tasks.mode === "hidden" ? "docked" : "hidden",
+                )
+              }
+              className="focus-ring rounded-md px-2 py-1 text-xs text-slate-300 hover:bg-white/[0.06]"
+              aria-label="Tasks"
+            >
+              Tasks
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void beginThread({ roomId: roomDetail?.parent_room_id || roomId, navigate })}
+            className="focus-ring inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-stable-cyan hover:bg-white/[0.06]"
+            aria-label="New thread"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">New thread</span>
+          </button>
           {roomDetail?.brigade_agent_id &&
             (() => {
               const agentId = roomDetail.brigade_agent_id!;
@@ -775,7 +885,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </span>
           {!isDm && (
           <button
-            onClick={() => setInviteOpen(true)}
+            onClick={() => useConversationUi.getState().openInviteSheet(roomId)}
             className="max-md:min-h-11 max-md:min-w-11 flex items-center gap-1 rounded-lg border border-stable-purple/30 bg-stable-purple/15 p-2.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 focus-ring md:px-2.5 md:py-1"
             aria-label="Invite members"
           >
@@ -1004,6 +1114,34 @@ export function RoomView({ roomId }: RoomViewProps) {
         )}
       </AnimatePresence>
 
+      <InviteSheet
+        roomId={roomId}
+        onOpenGuestAccess={
+          isRoomOwner
+            ? () => {
+                useConversationUi.getState().closeInviteSheet();
+                setGuestAccessOpen(true);
+              }
+            : undefined
+        }
+      />
+      {(roomDetail?.type === "agent_hub" ||
+        roomDetail?.type === "channel" ||
+        !!roomDetail?.parent_room_id) && (
+        <button
+          type="button"
+          onClick={() =>
+            void beginThread({
+              roomId: roomDetail?.parent_room_id || roomId,
+              navigate,
+            })
+          }
+          className="focus-ring fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
+          aria-label="New thread"
+        >
+          <Plus className="h-6 w-6" />
+        </button>
+      )}
       <AnimatePresence>
         {inviteOpen && (
           <InviteMembersModal

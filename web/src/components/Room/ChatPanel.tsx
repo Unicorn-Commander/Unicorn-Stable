@@ -1141,9 +1141,21 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
   const others = participants.filter(
     (p) => (p.participant_id || p.user_id) !== currentUserId,
   );
-  const onlyAgent = others.length === 1 && others[0]?.participant_type === "agent"
-    ? others[0]
-    : null;
+  const room = useAppStore((s) => s.rooms.find((r) => r.id === roomId));
+  const counterpart = room?.counterpart;
+  const onlyAgent =
+    others.length === 1 && others[0]?.participant_type === "agent"
+      ? others[0]
+      : others.length === 0 &&
+          counterpart &&
+          (room?.type === "agent_hub" || counterpart.kind === "agent" || room?.brigade_agent_id)
+        ? {
+            participant_id: counterpart.participant_id,
+            display_name: counterpart.display_name,
+            participant_type: "agent",
+            avatar_url: counterpart.avatar_url,
+          }
+        : null;
 
   if (onlyAgent) {
     const ident = identityFor(

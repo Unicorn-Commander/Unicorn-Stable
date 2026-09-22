@@ -46,12 +46,14 @@ export function NewChatButton({
     };
   }, [open]);
 
-  async function startChatWith(agentId: string, name: string) {
+  async function startChatWith(agentId: string, _name: string) {
     if (starting) return;
     setStarting(true);
     setOpen(false);
     try {
-      const room = await api.createAgentDm(agentId, `Chat with ${name}`);
+      const { openAgentHub } = await import("@/lib/beginThread");
+      const room = await openAgentHub(agentId);
+      if (!room) return;
       await queryClient.invalidateQueries({ queryKey: ["rooms"] });
       if (onStarted) onStarted(room.id);
       else navigate(`/c/${room.id}`);

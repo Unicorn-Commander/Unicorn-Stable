@@ -7,8 +7,8 @@ summary: Keep a side conversation out of the main channel. Note that agents do n
 keywords: thread, reply, side conversation, replies, parent
 ---
 
-**Reply in thread** on any message opens a thread panel on the right. Replies
-live in the thread rather than in the main flow, and the parent message shows
+**Replies** on any message opens the replies panel on the right. Those replies
+live beside the main flow, and the parent message shows
 how many replies it has.
 
 Close the panel to go back to the main conversation. The thread is not deleted;

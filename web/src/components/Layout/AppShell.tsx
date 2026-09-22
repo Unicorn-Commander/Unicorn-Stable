@@ -59,6 +59,9 @@ import { AddServerModal } from "./AddServerModal";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RoomList } from "@/components/Sidebar/RoomList";
 import { CreateRoomModal } from "@/components/Sidebar/CreateRoomModal";
+import { NewSheet } from "@/components/Sidebar/NewSheet";
+import { useConversationUi } from "@/stores/conversationUiStore";
+import { Plus } from "lucide-react";
 import { IncomingCallBanner } from "@/components/Call/IncomingCallBanner";
 import { OutgoingCallStatus } from "@/components/Call/OutgoingCallStatus";
 
@@ -225,6 +228,7 @@ export function AppShell() {
     is_self: !!currentUser,
   });
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const quickSwitcherNonce = useConversationUi((s) => s.quickSwitcherNonce);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<ActivityTab>("approvals");
@@ -416,6 +420,27 @@ export function AppShell() {
         setGlobalSearchOpen(true);
         return;
       }
+      // ⌘N opens the New sheet. ⌘⇧N starts a thread in the room you're in.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "n") {
+        const roomId = useAppStore.getState().activeRoomId;
+        if (!roomId) return;
+        e.preventDefault();
+        void import("@/lib/beginThread").then(({ beginThread }) =>
+          beginThread({ roomId, navigate }),
+        );
+        return;
+      }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "n" &&
+        !isEditableTarget(e.target)
+      ) {
+        e.preventDefault();
+        useConversationUi.getState().openNewSheet();
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setSwitcherOpen(true);
@@ -454,6 +479,10 @@ export function AppShell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [navigate]);
+
+  useEffect(() => {
+    if (quickSwitcherNonce > 0) setSwitcherOpen(true);
+  }, [quickSwitcherNonce]);
 
   const { data: rooms } = useQuery({
     queryKey: ["rooms", activeInstanceId],
@@ -800,6 +829,17 @@ export function AppShell() {
       <AnimatePresence>
         {createRoomModalOpen && <CreateRoomModal />}
       </AnimatePresence>
+      <NewSheet />
+      {!activeRoomId && (
+        <button
+          type="button"
+          onClick={() => useConversationUi.getState().openNewSheet()}
+          className="focus-ring fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
+          aria-label="New"
+        >
+          <Plus className="h-6 w-6" />
+        </button>
+      )}
 
       <CheatsheetModal />
 
