@@ -406,6 +406,45 @@ class Settings(BaseSettings):
     # its own credential.
     meeting_ops_upload_pat: str = ""
 
+    # -- Recording policy, composite video, storage, retention (design §8) --
+    # CALL_RECORDING_ENABLED above is the instance-wide master kill-switch;
+    # the ROOM's recording_policy (off | on_request | always) is the decision.
+    #
+    # Composite (video) recordings are LiveKit room-composite egresses that
+    # render OUR broadcast page (web/src/components/Broadcast) through a
+    # recorder token, so the file looks exactly like the show feed. The egress
+    # worker's headless Chrome loads
+    #   {call_recording_composite_base_url or public_base_url}/broadcast/{room}/composite?rt=<recorder token>
+    # and LiveKit appends its own url/token/layout query params to it.
+    call_recording_composite_base_url: str = ""
+    # LiveKit EncodingOptionsPreset name for composites (H264_720P_30,
+    # H264_1080P_30, ...). 720p30 until CPU per stream is measured live.
+    call_recording_composite_preset: str = "H264_720P_30"
+    # Concurrent composite egresses allowed across the whole instance (a
+    # Redis semaphore; starting one more answers 429).
+    recording_max_composite: int = 2
+    # Longest a single recording may run. Bounds the recorder token's TTL,
+    # the composite capacity slot, and the stale-egress sweep.
+    call_recording_max_hours: int = 6
+    # Days a finished recording stays before the sweep deletes its storage
+    # object and any local file. legal_hold on the row blocks deletion.
+    call_recording_retention_days: int = 30
+    # S3-compatible storage for finished recordings (Garage / Studio Storage).
+    # Empty endpoint = no upload; files stay on the egress volume until the
+    # retention sweep removes them. Values are secrets: never logged.
+    recording_s3_endpoint: str = ""
+    recording_s3_bucket: str = ""
+    recording_s3_access_key: str = ""
+    recording_s3_secret_key: str = ""
+    recording_s3_region: str = "garage"
+    # Path-style addressing (https://endpoint/bucket/key) is what Garage
+    # serves by default; virtual-host style needs wildcard DNS + certs.
+    recording_s3_path_style: bool = True
+    # Key prefix inside the bucket, e.g. "stable/". Trailing slash optional.
+    recording_s3_prefix: str = "stable-recordings/"
+    # Presigned download links (GET /rooms/{id}/recordings/{id}/download).
+    recording_download_link_seconds: int = 900
+
     # -- STT proxy (app/api/stt.py) --
     # OpenAI-compatible transcription base (must include the /v1 suffix).
     # Deployed default = Parakeet OpenAI shim on midboy1 (was Amanuensis on

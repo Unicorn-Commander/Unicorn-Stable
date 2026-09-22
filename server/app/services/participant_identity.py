@@ -135,7 +135,41 @@ def _sync_mutable_fields(
         changed = True
     if _stamp_email(participant, email):
         changed = True
+    if _mirror_recorder_entitlement(participant, identity):
+        changed = True
     return changed
+
+
+def _mirror_recorder_entitlement(
+    participant: Participant, identity: dict[str, Any]
+) -> bool:
+    """Mirror the ``stable-recorder`` realm role onto the row (design §8).
+
+    The recording policy engine must answer "may this person's call be
+    recorded" from the LiveKit ``participant_joined`` webhook, which carries no
+    JWT — so the role is stamped here at sign-in, and cleared the moment a
+    token stops carrying it. Only written when the value actually changes, so
+    a steady-state sign-in stays a read. Returns True if changed.
+    """
+    from app.services.recording_policy import RECORDER_ENTITLED_KEY, RECORDER_ROLE
+
+    roles = identity.get("roles") or []
+    try:
+        entitled = RECORDER_ROLE in set(roles)
+    except TypeError:
+        entitled = False
+    meta = participant.metadata_ if isinstance(participant.metadata_, dict) else {}
+    current = bool(meta.get(RECORDER_ENTITLED_KEY, False))
+    if current == entitled:
+        return False
+    new_meta = dict(meta)
+    if entitled:
+        new_meta[RECORDER_ENTITLED_KEY] = True
+    else:
+        new_meta.pop(RECORDER_ENTITLED_KEY, None)
+    # Reassign, never mutate: JSONB in-place edits are invisible to SQLAlchemy.
+    participant.metadata_ = new_meta
+    return True
 
 
 async def _email_match_candidates(
