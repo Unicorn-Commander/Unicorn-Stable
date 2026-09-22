@@ -241,11 +241,34 @@ class MessageService:
         from app.models.room import Room
 
         room_result = await self._db.execute(
-            select(Room.livekit_room_name, Room.room_type).where(Room.id == room_id)
+            select(
+                Room.livekit_room_name, Room.room_type, Room.is_archived, Room.parent_room_id
+            ).where(Room.id == room_id)
         )
         room_row = room_result.one_or_none()
         lk_room_name = room_row[0] if room_row else None
         room_type_str = room_row[1].value if room_row and room_row[1] else "channel"
+
+        # Design §3: any new message unarchives a thread. Decided off the row
+        # already fetched above (no extra query on the common path); the one
+        # UPDATE runs only for an archived thread. Best-effort — the message is
+        # already committed and a failed flip must not fail the send.
+        try:
+            is_archived_thread = bool(
+                room_row is not None
+                and len(room_row) >= 4
+                and room_row[2] is True
+                and room_row[3] is not None
+            )
+        except TypeError:
+            is_archived_thread = False
+        if is_archived_thread:
+            try:
+                from app.services.room_archive import unarchive_thread_on_message
+
+                await unarchive_thread_on_message(self._db, room_id)
+            except Exception:
+                logger.warning("thread_unarchive_on_message_failed", room_id=str(room_id), exc_info=True)
 
         if lk_room_name:
             broad_mention = parsed_mentions.broad_kind
