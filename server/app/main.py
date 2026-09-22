@@ -32,6 +32,7 @@ from app.api.project_ops import router as project_ops_router
 from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gateway
 from app.api.broadcast import router as broadcast_router
 from app.api.calls import router as calls_router
+from app.api.context import router as context_router
 from app.api.conversation import router as conversation_router
 from app.api.recording import router as recording_router
 from app.api.guests import router as guests_router
@@ -293,6 +294,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("guest_reaper_start_failed", exc_info=True)
     app.state.guest_reaper_task = guest_reaper_task
 
+    # Rolling room summaries (design §4). Same discipline as the outboxes:
+    # an in-process task, never on a message-send path, safe in every
+    # worker (a per-room Redis lease de-duplicates). Exits at once when
+    # CONTEXT_SUMMARY_ENABLED is off or the gateway settings are missing.
+    context_summary_task = None
+    try:
+        from app.services.context_summary import run_context_summary_worker
+
+        context_summary_task = asyncio.create_task(
+            run_context_summary_worker(session_factory, settings, redis)
+        )
+        logger.info(
+            "context_summary_worker_scheduled",
+            enabled=settings.context_summary_enabled,
+        )
+    except Exception:
+        logger.warning("context_summary_worker_start_failed", exc_info=True)
+    app.state.context_summary_task = context_summary_task
+
     logger.info("application_startup_complete", environment=settings.environment)
 
     yield
@@ -324,6 +344,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         guest_reaper_task.cancel()
         try:
             await guest_reaper_task
+        except asyncio.CancelledError:
+            pass
+
+    if context_summary_task and not context_summary_task.done():
+        context_summary_task.cancel()
+        try:
+            await context_summary_task
         except asyncio.CancelledError:
             pass
 
@@ -406,6 +433,7 @@ def create_app() -> FastAPI:
     # Conversation model (hubs, threads, member modes, invite links, context)
     # and recording policy — design docs/design/stable-ux-north-star-2026-09-21.md.
     app.include_router(conversation_router, prefix="/api/v1", tags=["Conversation"])
+    app.include_router(context_router, prefix="/api/v1", tags=["Context"])
     app.include_router(recording_router, prefix="/api/v1", tags=["Recording"])
     app.include_router(messages_router, prefix="/api/v1", tags=["Messages"])
     app.include_router(gateway_router, prefix="/api/v1", tags=["Gateway"])  # ORCH-1
