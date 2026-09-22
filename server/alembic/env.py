@@ -26,6 +26,7 @@ from app.models import (  # noqa: F401
     Message,
     Participant,
     Room,
+    RoomInvite,
     RoomKnowledge,
     RoomMember,
     TranscriptExport,

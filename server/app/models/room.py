@@ -24,6 +24,9 @@ class RoomType(str, enum.Enum):
     CHANNEL = "channel"
     GROUP_DM = "group_dm"
     DM = "dm"
+    # The one canonical room per (human, agent) pair; its threads (child
+    # rooms with parent_room_id) are the conversations. Design §3.
+    AGENT_HUB = "agent_hub"
 
 
 class MemberRole(str, enum.Enum):
@@ -31,6 +34,24 @@ class MemberRole(str, enum.Enum):
     ADMIN = "admin"
     MEMBER = "member"
     GUEST = "guest"
+
+
+#: Channel discoverability. Meaningful for CHANNEL rooms only; DM / group /
+#: hub rooms are private by membership regardless of this value.
+ROOM_VISIBILITIES = ("public", "private")
+
+#: How an AGENT member behaves in one room (text AND voice share it):
+#:   answers_all — replies to every message (co-host in a call)
+#:   when_named  — replies only when @-mentioned / addressed by name
+#:   listening   — reads (context, memory), never replies unless named — never
+#:   muted       — ignores the room
+#: NULL keeps the pre-contract rule (dm = always, channel = when mentioned).
+AGENT_MODES = ("answers_all", "when_named", "listening", "muted")
+
+#: rooms.recording_policy — off | on_request | always. Design §8.
+RECORDING_POLICIES = ("off", "on_request", "always")
+#: rooms.recording_kind / call_egresses.kind — audio | composite | track.
+RECORDING_KINDS = ("audio", "composite", "track")
 
 
 class Room(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -77,6 +98,30 @@ class Room(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUID(as_uuid=True),
         ForeignKey("participants.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # --- conversation model (migration 021) ---
+    # A thread is a child room: it inherits the parent's room_type and keeps
+    # every message/call/voice path. NULL = a top-level room.
+    parent_room_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rooms.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # public | private (channels only — see ROOM_VISIBILITIES).
+    visibility: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'public'"), default="public"
+    )
+    # Project-Ops binding for a project channel (e.g. "P-00115").
+    project_number: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    # --- recording policy (migration 023) ---
+    recording_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'off'"), default="off"
+    )
+    recording_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'audio'"), default="audio"
     )
 
     # Relationships
@@ -138,6 +183,12 @@ class RoomMember(Base, UUIDPrimaryKeyMixin):
     has_unread_mention: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # AGENT members only (see AGENT_MODES); NULL for humans and for agents
+    # that still follow the pre-contract rule.
+    agent_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Per-room override of how much history the context builder hands this
+    # member (messages). NULL = the builder's default token budget.
+    context_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Relationships
     room: Mapped[Room] = relationship("Room", back_populates="members", lazy="selectin")
@@ -207,4 +258,14 @@ class TranscriptExport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 from app.models.message import Message  # noqa: E402
 from app.models.participant import Participant  # noqa: E402
 
-__all__ = ["Room", "RoomMember", "RoomType", "MemberRole", "TranscriptExport"]
+__all__ = [
+    "Room",
+    "RoomMember",
+    "RoomType",
+    "MemberRole",
+    "TranscriptExport",
+    "ROOM_VISIBILITIES",
+    "AGENT_MODES",
+    "RECORDING_POLICIES",
+    "RECORDING_KINDS",
+]

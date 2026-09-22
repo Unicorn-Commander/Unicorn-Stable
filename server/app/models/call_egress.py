@@ -23,6 +23,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -105,3 +106,23 @@ class CallEgress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # upload job id that carried it.
     mo_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mo_upload_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # -- recording policy contract (migration 023, design §8) --
+    # audio | composite | track — what this egress captured.
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'audio'"), default="audio"
+    )
+    # Who pressed Record; NULL for a policy-driven ("always") start.
+    started_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("participants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Where the finished file lives after upload (Studio Storage / Garage).
+    storage_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retention_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    legal_hold: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )

@@ -22,8 +22,10 @@ from app.models.message import ContentType, Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.push_subscription import PushSubscription
 from app.models.room import MemberRole, Room, RoomMember, RoomType, TranscriptExport
+from app.models.room_invite import RoomInvite
 
 __all__ = [
+    "RoomInvite",
     "Base",
     "UUIDPrimaryKeyMixin",
     "TimestampMixin",
