@@ -202,6 +202,46 @@ async def _enforce_scope(
         )
 
 
+#: room_members.agent_mode values under which a seat never SPEAKS in the room
+#: (design §3): listening reads (context builder) but never posts; muted
+#: ignores the room. Neither may trigger a text run, so the messages poll —
+#: the thing a bridge reacts to — hands them an empty page.
+SILENT_AGENT_MODES: frozenset[str] = frozenset({"listening", "muted"})
+
+
+async def _seat_agent_mode(db: AsyncSession, room: Room, agent_id: str) -> str | None:
+    """The caller seat's ``agent_mode`` in ``room`` (None when unset or when
+    the seat is not a member)."""
+    row = (
+        await db.execute(
+            select(RoomMember.agent_mode)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id == room.id,
+                Participant.keycloak_sub == f"brigade:{agent_id}",
+            )
+        )
+    ).scalar_one_or_none()
+    return row if isinstance(row, str) and row else None
+
+
+def seat_is_silent(agent_mode: str | None) -> bool:
+    return agent_mode in SILENT_AGENT_MODES
+
+
+def _room_envelope_facts(room: Room, seat_mode: str | None) -> dict[str, Any]:
+    """Additive facts on the messages-page envelope (L2/L4 contract): the
+    room, its type (a thread inherits its parent's), its parent when it is
+    a thread, and the calling seat's own agent_mode."""
+    room_type = getattr(room, "room_type", None)
+    return {
+        "room_id": getattr(room, "id", None),
+        "room_type": getattr(room_type, "value", room_type) if room_type is not None else None,
+        "parent_room_id": getattr(room, "parent_room_id", None),
+        "agent_mode": seat_mode,
+    }
+
+
 async def _resolve_agent_participant(
     db: AsyncSession, agent_id: str, room: Room
 ) -> Participant:
@@ -301,6 +341,13 @@ async def gateway_post_message(
     room = await _resolve_room(db, body.room)
     await _enforce_scope(db, principal, room)
     agent_p = await _resolve_agent_participant(db, principal.agent_id, room)
+    # agent_mode (design §3): a listening or muted seat never speaks here.
+    seat_mode = await _seat_agent_mode(db, room, principal.agent_id)
+    if seat_is_silent(seat_mode):
+        raise HTTPException(
+            status_code=403,
+            detail=f"This agent is {seat_mode} in this room and does not post",
+        )
 
     fake_user = {
         "participant_id": agent_p.id,
@@ -358,6 +405,19 @@ async def gateway_get_messages(
     await _gateway_rate_limit(principal, redis, bucket="gw_msg_read", fail_open=True)
     room_obj = await _resolve_room(db, room)
     await _enforce_scope(db, principal, room_obj)
+    # agent_mode (design §3): the poll is what triggers a bridge's text run,
+    # so a listening/muted seat gets an empty page here. Listening still
+    # READS the room through GET /gateway/rooms/{room}/context.
+    seat_mode = await _seat_agent_mode(db, room_obj, principal.agent_id)
+    envelope = _room_envelope_facts(room_obj, seat_mode)
+    if seat_is_silent(seat_mode):
+        logger.info(
+            "gateway_messages_silenced_by_agent_mode",
+            room_id=str(room_obj.id),
+            agent_id=principal.agent_id,
+            agent_mode=seat_mode,
+        )
+        return MessageListResponse(messages=[], cursor=None, has_more=False, **envelope)
     # Reading IS collection: once the bridge has pulled the room's messages it
     # is no longer "waiting to relay", so drop the marker here as well as on
     # post. Two independent clearing paths plus a TTL means the indicator
@@ -378,7 +438,7 @@ async def gateway_get_messages(
         for item in result["messages"]
     ]
     return MessageListResponse(
-        messages=messages, cursor=result["cursor"], has_more=result["has_more"]
+        messages=messages, cursor=result["cursor"], has_more=result["has_more"], **envelope
     )
 
 
