@@ -166,7 +166,6 @@ function isEditableTarget(t: EventTarget | null): boolean {
 }
 
 export function AppShell() {
-  const isNavV1 = isNavV1Enabled();
   useGlobalNotifications();
   useRecordingReceipts();
   // Keep the app pinned to the visible viewport (collapsing toolbar + keyboard).
@@ -661,19 +660,19 @@ export function AppShell() {
               <ServerRail mobile />
               <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
                 <h1 className="flex min-w-0 items-center">
-<button
-            type="button"
-            onClick={() => {
-              if (isNavV1) {
-                useNavStore.getState().setActiveView("home");
-              }
-              navigate("/");
-            }}
-            className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
-            title="Home — Unicorn Stable"
-            aria-label="Go to Home"
-            data-testid="nav-home"
-          >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isNavV1Enabled()) {
+                        useNavStore.getState().setActiveView("home");
+                      }
+                      navigate("/");
+                    }}
+                    className="focus-ring flex items-center gap-2.5 rounded-lg py-1 pr-1 transition-opacity hover:opacity-80"
+                    title="Home — Unicorn Stable"
+                    aria-label="Go to Home"
+                    data-testid="nav-home"
+                  >
                     <StableMark className="h-7 w-7 shrink-0" />
                     <span className="gradient-text font-display text-lg font-bold tracking-tight">
                       Stable
@@ -757,6 +756,7 @@ export function AppShell() {
                     toggleSidebar();
                   }}
                   className="focus-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 transition-colors hover:bg-white/[0.04] hover:text-slate-100"
+                  data-testid="open-settings"
                 >
                   <Settings className="h-4 w-4 text-slate-400" />
                   Settings

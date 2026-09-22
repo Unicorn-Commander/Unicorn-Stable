@@ -11,10 +11,7 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
-import {
-  type NavView,
-  useNavStore,
-} from "@/stores/navStore";
+import { type NavView, useNavStore } from "@/stores/navStore";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
 import { countNeedsYou } from "@/lib/conversation";
 import { getNotifyLevel } from "@/utils/mute";
