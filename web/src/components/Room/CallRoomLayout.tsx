@@ -17,6 +17,7 @@ import { StageView } from "./StageView";
 import { VoiceVideoBar } from "./VoiceVideoBar";
 import { SplitPane } from "./SplitPane";
 import { MobileCallModeSwitcher } from "./MobileCallModeSwitcher";
+import { RecPillForRoom } from "@/components/Call/RecPillForRoom";
 import type { CallViewMode } from "@/lib/roomDataProtocol";
 import { MessageSquare } from "lucide-react";
 import clsx from "clsx";
@@ -450,7 +451,9 @@ function MobileCallLayout({
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-      {mode !== "video" && <MobileCallModeSwitcher />}
+      {mode !== "video" && (
+        <MobileCallModeSwitcher extra={<RecPillForRoom roomId={roomId} />} />
+      )}
 
       <div
         className={clsx(
@@ -461,9 +464,12 @@ function MobileCallLayout({
         )}
       >
         {mode === "video" && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-[max(0.25rem,env(safe-area-inset-top))]">
-            <div className="pointer-events-auto">
-              <MobileCallModeSwitcher overlay />
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-2 pt-[max(0.25rem,env(safe-area-inset-top))]">
+            <div className="pointer-events-auto w-full">
+              <MobileCallModeSwitcher
+                overlay
+                extra={<RecPillForRoom roomId={roomId} />}
+              />
             </div>
           </div>
         )}

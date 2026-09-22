@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Camera, Mic, Volume2, ShieldCheck } from "lucide-react";
+import { Camera, Circle, Mic, Volume2, ShieldCheck } from "lucide-react";
 import { useVoice } from "@/contexts/VoiceProvider";
 import type { StableDeviceKind } from "@/lib/mediaDevices";
+import { loadRecordMyCalls, saveRecordMyCalls } from "@/lib/recordMyCalls";
 
 export function AudioVideoSection() {
   const {
@@ -14,6 +15,7 @@ export function AudioVideoSection() {
     setCallPrefs,
   } = useVoice();
   const [saving, setSaving] = useState(false);
+  const [recordMine, setRecordMine] = useState(() => loadRecordMyCalls());
   function toggleVideoCheck(next: boolean) {
     setSaving(true);
     void setCallPrefs({ checkDevicesBeforeVideo: next }).finally(() =>
@@ -82,6 +84,30 @@ export function AudioVideoSection() {
             Preview your camera and mic before a video call connects. Voice
             calls never ask. This setting follows your account on every
             device.
+          </span>
+        </span>
+      </label>
+      <label className="mb-3 flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-surface-2/40 p-3">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 accent-stable-purple"
+          checked={recordMine}
+          onChange={(event) => {
+            const next = event.target.checked;
+            setRecordMine(next);
+            saveRecordMyCalls(next);
+          }}
+          data-testid="record-my-calls"
+        />
+        <span className="min-w-0">
+          <span className="flex items-center gap-2 text-sm font-medium text-slate-200">
+            <Circle className="h-4 w-4 fill-rose-500 text-rose-500" />
+            Record calls I start
+          </span>
+          <span className="mt-0.5 block text-xs text-slate-400">
+            When you start a call in a room set to Ask, and you have the
+            recorder role, the call is recorded. Off rooms never record.
+            Always rooms record every call. This choice stays on this device.
           </span>
         </span>
       </label>

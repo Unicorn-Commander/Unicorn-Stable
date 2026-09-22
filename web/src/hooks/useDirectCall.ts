@@ -5,6 +5,12 @@ import { useAppStore } from "@/stores/appStore";
 import { useVoice, type ConnectOptions } from "@/contexts/VoiceProvider";
 import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
 import { runStartCall } from "@/lib/directCall";
+import {
+  autoStartKind,
+  shouldAutoStartRecording,
+  userMayRecord,
+} from "@/lib/recording";
+import { loadRecordMyCalls } from "@/lib/recordMyCalls";
 
 /**
  * The single seam for STARTING a call.
@@ -41,7 +47,7 @@ export function useDirectCall() {
       const room = state.rooms.find((r) => r.id === roomId);
       const out = useOutgoingCallStore.getState();
       const { ring, ...connectOpts } = opts ?? {};
-      return runStartCall(
+      const result = await runStartCall(
         {
           roomId,
           roomType: room?.type ?? "channel",
@@ -57,6 +63,21 @@ export function useDirectCall() {
           disconnect,
         },
       );
+      if (
+        shouldAutoStartRecording({
+          recordMyCalls: loadRecordMyCalls(),
+          entitled: userMayRecord(useAppStore.getState().currentUser?.roles),
+          policy: room?.recording_policy,
+          callResult: result,
+        })
+      ) {
+        // Ask + "record calls I start". A 409 (L8s not wired, or already
+        // recording) stays quiet — the pill arrives on recording_state.
+        void api
+          .startRecording(roomId, autoStartKind(room?.recording_kind))
+          .catch(() => {});
+      }
+      return result;
     },
     [connect, disconnect],
   );

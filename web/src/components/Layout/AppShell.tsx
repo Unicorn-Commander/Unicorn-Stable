@@ -38,6 +38,7 @@ import { StableMark } from "@/components/StableMark";
 import { getNotifyLevel } from "@/utils/mute";
 import { prepareRoomsForSidebar } from "@/utils/unreadModel";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
+import { useRecordingReceipts } from "@/hooks/useRecordingReceipts";
 import { useCallDeepLink } from "@/hooks/useCallDeepLink";
 import { useAppHeight } from "@/hooks/useAppHeight";
 import {
@@ -163,6 +164,7 @@ function isEditableTarget(t: EventTarget | null): boolean {
 
 export function AppShell() {
   useGlobalNotifications();
+  useRecordingReceipts();
   // Keep the app pinned to the visible viewport (collapsing toolbar + keyboard).
   useAppHeight();
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);

@@ -9,6 +9,8 @@
  *   notify      single soft "pop"      (triangle 880Hz, fast decay)
  *   ring        phone-like dual-tone     (sine 440+480Hz) — incoming banner
  *   ring-out    soft outgoing pulse       — caller status while still ringing
+ *   rec-start   short rising chime        — a recording turned on
+ *   rec-stop    short falling chime       — a recording turned off
  *
  * Callers stay dumb: playCue() itself checks the `soundCues` preference in
  * the shared "stable.notification.prefs.v1" localStorage blob (missing key ==
@@ -22,7 +24,9 @@ export type CueName =
   | "call-leave"
   | "notify"
   | "ring"
-  | "ring-out";
+  | "ring-out"
+  | "rec-start"
+  | "rec-stop";
 
 // Same key SettingsModal owns; read defensively rather than importing so this
 // module stays dependency-free (usable from non-React code paths).
@@ -145,7 +149,18 @@ export function playCue(name: CueName): void {
     // ("call cues only make sense with the tab in use") is right for
     // join/leave chimes and exactly backwards for a ring: a call arriving
     // while you are in another tab is precisely the one you need to hear.
-    if (name !== "notify" && name !== "ring" && name !== "ring-out" && document.hidden) return;
+    // A recording chime is a consent cue: it still plays if the tab is in
+    // the background, the same way a ring does. soundCues (above) is the pref.
+    if (
+      name !== "notify" &&
+      name !== "ring" &&
+      name !== "ring-out" &&
+      name !== "rec-start" &&
+      name !== "rec-stop" &&
+      document.hidden
+    ) {
+      return;
+    }
     const ctx = getContext();
     if (!ctx) return;
 
@@ -178,6 +193,14 @@ export function playCue(name: CueName): void {
         // called. Repeated by OutgoingCallStatus while phase === ringing.
         tone(ctx, { type: "sine", freq: 520, at: 0, dur: 0.12, peak: 0.07, attack: 0.01 });
         tone(ctx, { type: "sine", freq: 620, at: 0.14, dur: 0.16, peak: 0.07, attack: 0.01 });
+        break;
+      case "rec-start":
+        tone(ctx, { type: "sine", freq: 660, at: 0, dur: 0.14, peak: 0.09, attack: 0.012 });
+        tone(ctx, { type: "sine", freq: 880, at: 0.1, dur: 0.16, peak: 0.09, attack: 0.012 });
+        break;
+      case "rec-stop":
+        tone(ctx, { type: "sine", freq: 880, at: 0, dur: 0.12, peak: 0.08, attack: 0.012 });
+        tone(ctx, { type: "sine", freq: 520, at: 0.1, dur: 0.16, peak: 0.08, attack: 0.012 });
         break;
     }
   } catch {

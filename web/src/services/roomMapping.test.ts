@@ -60,6 +60,19 @@ describe("mapRoomListItem", () => {
     expect(mapRoomListItem(raw({ display_name: "" })).name).toBe("dm-a-b");
   });
 
+  it("reads the recording policy and defaults a missing one to off", () => {
+    expect(mapRoomListItem(raw({ recording_policy: "always" })).recording_policy).toBe(
+      "always",
+    );
+    expect(mapRoomListItem(raw({ recording_kind: "composite" })).recording_kind).toBe(
+      "composite",
+    );
+    expect(mapRoomListItem(raw()).recording_policy).toBe("off");
+    expect(mapRoomListItem(raw({ recording_policy: "sometimes" })).recording_policy).toBe(
+      "off",
+    );
+  });
+
   it("flags conference rooms from metadata", () => {
     expect(
       mapRoomListItem(raw({ metadata_: { conference: true } })).is_conference,

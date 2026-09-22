@@ -95,6 +95,8 @@ import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { ChatToggleButton } from "@/components/Call/ChatToggleButton";
 import { LayoutPresetMenu } from "@/components/Call/LayoutPresetMenu";
+import { RecPillForRoom } from "@/components/Call/RecPillForRoom";
+import { RecordMenu } from "@/components/Call/RecordMenu";
 import { PanelHost } from "@/components/Layout/PanelHost";
 import { registerPanelOpener } from "@/components/Layout/panelOpeners";
 import { popPanel } from "@/lib/callLayoutActions";
@@ -2721,6 +2723,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       />
       <ChatToggleButton roomId={roomId} size="lg" />
       <LayoutPresetMenu roomId={roomId} />
+      <RecordMenu roomId={roomId} size="lg" />
       <button
         onClick={disconnect}
         className="focus-ring flex h-11 w-11 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
@@ -2902,6 +2905,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           puts it below the stage — this never opens a sheet over the picture. */}
       {!mobileVideoChrome && <ChatToggleButton roomId={roomId} />}
       {!mobileVideoChrome && <LayoutPresetMenu roomId={roomId} />}
+      {!mobileVideoChrome && <RecordMenu roomId={roomId} />}
 
       {/* Pop the video stage out into a REAL separate OS window you can drag to
           another monitor (desktop only — `popoutSupported` already folds in
@@ -3293,6 +3297,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               screenShareActive={screenShares.length > 0}
             />
           )}
+          {isDesktop && <RecPillForRoom roomId={roomId} />}
           {mobileVideoChrome ? (
             // Extended chrome only while visible; safe strip is always below.
             <div
