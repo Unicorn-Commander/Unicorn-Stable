@@ -15,6 +15,14 @@ import {
   priorityModel,
   rankedFleet,
   serviceEntries,
+  isCrewWorking,
+  mergeLiveCalls,
+  moveSection,
+  normalizeSectionOrder,
+  partitionNeedsYou,
+  recentConversations,
+  reorderSections,
+  todaySectionHidden,
   unreadCountFor,
 } from "./homeModel";
 
@@ -625,5 +633,112 @@ describe("agentsSegment wording", () => {
         { availability: "available" },
       ]),
     ).toEqual({ tone: "ok", label: "2 registered" });
+  });
+});
+
+describe("dashboard v3", () => {
+  it("keeps the five sections and drops unknown ids", () => {
+    expect(normalizeSectionOrder(["today", "nope", "crew"])).toEqual([
+      "today",
+      "crew",
+      "needs_you",
+      "live_now",
+      "recent",
+    ]);
+  });
+
+  it("moves a section one step and reorders on drop", () => {
+    const order = normalizeSectionOrder(null);
+    expect(moveSection(order, "needs_you", -1)).toEqual(order);
+    expect(moveSection(order, "live_now", -1)[0]).toBe("live_now");
+    expect(reorderSections(order, "today", "needs_you")[0]).toBe("today");
+  });
+
+  it("folds stale needs-you rows out of the fresh list", () => {
+    const parts = partitionNeedsYou([
+      { id: "a", stale: false },
+      { id: "b", stale: true },
+    ]);
+    expect(parts.fresh.map((row) => row.id)).toEqual(["a"]);
+    expect(parts.stale.map((row) => row.id)).toEqual(["b"]);
+  });
+
+  it("lists human conversations before other rooms, capped at 12", () => {
+    const rooms = [
+      activeRoom(1, { id: "chan", type: "channel" }),
+      activeRoom(2, { id: "dm", type: "dm" }),
+      activeRoom(3, { id: "agent", type: "dm", brigade_agent_id: "majik" }),
+      ...Array.from({ length: 14 }, (_, i) =>
+        activeRoom(10 + i, { id: `h${i}`, type: "dm" as const }),
+      ),
+    ];
+    const recent = recentConversations(rooms);
+    expect(recent).toHaveLength(12);
+    expect(recent.every((room) => room.type === "dm" && !room.brigade_agent_id)).toBe(
+      true,
+    );
+    expect(recent[0]?.id).toBe("dm");
+  });
+
+  it("treats a fresh task or heartbeat as working and an offline card as not", () => {
+    expect(
+      isCrewWorking(
+        { current_task: "draft", since: new Date(NOW).toISOString(), status: "offline" },
+        NOW,
+      ),
+    ).toBe(true);
+    expect(
+      isCrewWorking(
+        { current_task: null, since: new Date(NOW - 30_000).toISOString(), status: "online" },
+        NOW,
+      ),
+    ).toBe(true);
+    expect(
+      isCrewWorking(
+        { current_task: null, since: new Date(NOW - 30_000).toISOString(), status: "offline" },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("hides Today only when every federated block is null and nothing local stands in", () => {
+    expect(todaySectionHidden(null, 0)).toBe(true);
+    expect(todaySectionHidden(null, 2)).toBe(false);
+    expect(todaySectionHidden({ po_tasks: [], meetings: null }, 0)).toBe(false);
+    expect(todaySectionHidden({ po_tasks: null, meetings: null }, 0)).toBe(true);
+  });
+
+  it("lays v3 recording and floor onto the shared live-call list", () => {
+    const merged = mergeLiveCalls(
+      [
+        {
+          room_id: "r1",
+          display_name: "Hall",
+          room_type: "channel",
+          participant_count: 3,
+          has_agent: true,
+        },
+      ],
+      [
+        {
+          room_id: "r1",
+          display_name: "Hall",
+          room_type: "channel",
+          participant_count: 1,
+          has_agent: true,
+          recording: true,
+          floor_holder: {
+            participant_id: "agent-majik",
+            kind: "agent",
+            display_name: "Majik",
+            avatar_url: null,
+            agent_id: "majik",
+          },
+        },
+      ],
+    );
+    expect(merged[0]?.participant_count).toBe(3);
+    expect(merged[0]?.recording).toBe(true);
+    expect(merged[0]?.floor_holder?.display_name).toBe("Majik");
   });
 });

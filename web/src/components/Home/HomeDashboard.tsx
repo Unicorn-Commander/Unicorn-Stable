@@ -1,117 +1,65 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AtSign,
-  Bot,
-  Hash,
-  Inbox,
-  MessageSquare,
+  ChevronDown,
+  ChevronUp,
+  MoreHorizontal,
+  Pencil,
   Phone,
-  Plus,
-  ShieldCheck,
   Sparkles,
-  UserRound,
-  Users,
-  Video,
-  type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
-import { api, type PeopleDirectoryEntry } from "@/services/api";
+import { api, type Agent, type Room } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
-import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { resolveIdentity } from "@/lib/identity";
+import { resolveDefaultAgent } from "@/components/Sidebar/newChat";
 import { useAppStore } from "@/stores/appStore";
-import { useCallUiStore } from "@/stores/callUiStore";
 import { useFederationStore } from "@/stores/federationStore";
-import { useKnowledgeStore } from "@/stores/knowledgeStore";
-import { usePresenceStore } from "@/stores/presenceStore";
-import { useVoice } from "@/contexts/VoiceProvider";
-import {
-  homeSummaryQueryKey,
-  LIVE_CALLS_POLL_MS,
-} from "@/hooks/useLiveCalls";
-import {
-  agentFeed,
-  agentSubtitle,
-  rankedFleet,
-  type ConversationsTab,
-  priorityModel,
-  sortByRecency,
-} from "./homeModel";
-import { HomeRow, SenderLine, previewText, rowTime } from "./widgets/HomeRow";
-import { SystemHealthStrip, useHomeHealth } from "./widgets/SystemHealthStrip";
-import { ConversationsCard } from "./widgets/ConversationsCard";
-import { KnowledgeRecents } from "./widgets/KnowledgeRecents";
-import { CrewThreadMenu } from "./CrewThreadMenu";
+import { LIVE_CALLS_POLL_MS, useLiveCalls } from "@/hooks/useLiveCalls";
+import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import type { ActivityTab } from "@/components/Layout/ActivityCenter";
+import { previewText, rowTime } from "./widgets/HomeRow";
+import {
+  isCrewWorking,
+  mergeLiveCalls,
+  modeLabel,
+  moveSection,
+  normalizeSectionOrder,
+  partitionNeedsYou,
+  recentConversations,
+  reorderSections,
+  todaySectionHidden,
+  type HomeSectionId,
+} from "./homeModel";
+import {
+  fetchHomeSummaryV3,
+  fetchSectionPrefs,
+  homeRequest,
+  saveSectionPrefs,
+  type CrewCard,
+  type HomeActor,
+  type HomeSectionPrefs,
+  type HomeSummaryV3,
+  type NeedsYouRow,
+  type PoTaskRow,
+  type TodayMeeting,
+} from "./homeClient";
 
-/** One tile in the command-center stat strip. */
-type HomeStat = {
-  key: string;
-  label: string;
-  value: string;
-  icon: LucideIcon;
-  /** Icon text-color class. */
-  tone: string;
-  /** Ring the tile when it demands attention (mentions/approvals > 0). */
-  attention?: boolean;
-  onClick?: () => void;
+const SECTION_LABEL: Record<HomeSectionId, string> = {
+  needs_you: "Needs you",
+  live_now: "Live now",
+  crew: "Your crew",
+  recent: "Recent",
+  today: "Today",
 };
 
-function StatTile({ stat }: { stat: HomeStat }) {
-  const Icon = stat.icon;
-  // A zero is a real answer, but it is not NEWS. Rendering six zeros in the
-  // same white bold as the one number that matters makes the eye search for
-  // the signal instead of landing on it — the strip reads as a wall of
-  // digits. Zeros keep their tile (the set is stable, and the count is still
-  // there when you look for it) and lose their emphasis.
-  const isZero = stat.value === "0";
-  const inner = (
-    <>
-      <span
-        className={clsx(
-          "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04]",
-          isZero ? "text-slate-600" : stat.tone,
-        )}
-      >
-        <Icon className="h-4 w-4" />
-      </span>
-      <span className="min-w-0">
-        <span
-          className={clsx(
-            "block truncate font-display text-lg font-bold leading-none tabular-nums",
-            isZero ? "text-slate-600" : "text-slate-50",
-          )}
-        >
-          {stat.value}
-        </span>
-        <span
-          className={clsx(
-            "mt-1 block truncate text-[11px] font-medium",
-            isZero ? "text-slate-600" : "text-slate-500",
-          )}
-        >
-          {stat.label}
-        </span>
-      </span>
-    </>
-  );
-  const cls = clsx(
-    "card flex w-full items-center gap-3 px-3.5 py-3",
-    stat.attention && "border-stable-purple/30",
-    stat.onClick &&
-      "card-hover focus-ring text-left transition active:scale-[0.98]",
-  );
-  if (stat.onClick) {
-    return (
-      <button type="button" onClick={stat.onClick} className={cls}>
-        {inner}
-      </button>
-    );
-  }
-  return <div className={cls}>{inner}</div>;
-}
+const AGENT_MODES = [
+  ["answers_all", "Answers all"],
+  ["when_named", "When named"],
+  ["listening", "Listening"],
+  ["muted", "Muted"],
+] as const;
 
 function greetingFor(hour: number): string {
   if (hour < 5) return "Good evening";
@@ -120,52 +68,197 @@ function greetingFor(hour: number): string {
   return "Good evening";
 }
 
-/** Section ids the stat tiles scroll to. A tile is a COUNT; clicking it must
- * show the SET being counted, not teleport into whichever member happens to
- * sort first (UX audit gap #15 — "you click a number and get one room"). */
-const SECTION_PRIORITY = "home-priority";
-const SECTION_LIVE_NOW = "home-live-now";
-const SECTION_AGENT_FEED = "home-agent-feed";
-const SECTION_HEALTH = "home-health-strip";
-const SECTION_CONVERSATIONS = "home-conversations";
+function ActorFace({ actor, size = 32 }: { actor: HomeActor; size?: number }) {
+  return (
+    <Identity
+      {...resolveIdentity({
+        participant_id: actor.participant_id,
+        participant_type: actor.kind === "agent" || actor.kind === "guest" ? actor.kind : "human",
+        display_name: actor.display_name,
+        avatar_url: actor.avatar_url,
+        id: actor.agent_id || actor.participant_id,
+        username: actor.agent_id,
+      })}
+      size={size}
+    />
+  );
+}
+
+function RoomFace({
+  room,
+  selfId,
+  agents,
+  size = 32,
+}: {
+  room: Room;
+  selfId: string | null;
+  agents: Agent[];
+  size?: number;
+}) {
+  return <Identity {...resolveIdentity(room, { selfId, agents })} size={size} />;
+}
+
+function AppFace({ id, name }: { id: string; name: string }) {
+  return (
+    <Identity
+      {...resolveIdentity({ id, display_name: name, name })}
+      size={32}
+    />
+  );
+}
+
+function Count({ n }: { n: number }) {
+  return (
+    <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300">
+      {n}
+    </span>
+  );
+}
+
+function Pill({ children, tone }: { children: string; tone: "live" | "rec" }) {
+  return (
+    <span
+      className={clsx(
+        "rounded-full px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
+        tone === "rec" ? "bg-rose-500/15 text-rose-300" : "bg-stable-mint/15 text-stable-mint",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function EmptyLine({ children }: { children: string }) {
+  return (
+    <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
+      {children}
+    </p>
+  );
+}
+
+function Skeleton() {
+  return (
+    <div className="flex-1 overflow-y-auto" data-testid="home-skeleton" aria-busy="true">
+      <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-6 sm:px-6">
+        <div className="card h-24 animate-pulse-soft" />
+        {Array.from({ length: 4 }, (_, index) => (
+          <div key={index} className="card space-y-3 p-4">
+            <div className="h-3 w-28 rounded bg-white/[0.06]" />
+            <div className="h-10 rounded-lg bg-white/[0.04]" />
+            <div className="h-10 w-4/5 rounded-lg bg-white/[0.04]" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /**
- * Command-center landing surface for `/` when no room is selected.
- *
- * Answers four questions in one glance: what needs me (priority inbox), what
- * is happening live (Live now + occupancy), what did my agents do (activity
- * feed), and is the system healthy (health strip). Derivations live in
- * ./homeModel.ts; repeated row markup lives in ./widgets/HomeRow.tsx.
+ * Dashboard v3 — an inbox. Counts live in the section headers. People and
+ * the fleet directory are not on this page.
  */
-export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: ActivityTab) => void }) {
+export function HomeDashboard({
+  onOpenActivity,
+}: {
+  onOpenActivity?: (tab: ActivityTab) => void;
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const rooms = useAppStore((s) => s.rooms);
   const roomsLoaded = useAppStore((s) => s.roomsLoaded);
-  const unreadCounts = useAppStore((s) => s.unreadCounts);
-  const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const currentUser = useAppStore((s) => s.currentUser);
   const currentParticipantId = useAppStore((s) => s.currentParticipantId);
-  const participantsByRoom = useAppStore((s) => s.participants);
   const rosterAgents = useAppStore((s) => s.agents);
   const clearUnread = useAppStore((s) => s.clearUnread);
-  const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const pushToast = useAppStore((s) => s.pushToast);
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
-  // Key comes from the shared helper so this query and useLiveCalls (sidebar
-  // badges / in-room banner / call toast) are ONE cache entry + ONE poll by
-  // construction — call_occupancy WS nudges patch it for all of them at once.
-  const { data: homeSummary } = useQuery({
-    queryKey: homeSummaryQueryKey(activeInstanceId),
-    queryFn: () => api.getHomeSummary(),
+
+  const summaryQuery = useQuery({
+    queryKey: ["home-summary-v3", activeInstanceId],
+    queryFn: fetchHomeSummaryV3,
     refetchInterval: LIVE_CALLS_POLL_MS,
   });
+  const prefsQuery = useQuery({
+    queryKey: ["home-section-prefs", activeInstanceId],
+    queryFn: fetchSectionPrefs,
+  });
+  const preferencesQuery = useQuery({
+    queryKey: ["my-preferences", activeInstanceId],
+    queryFn: () => api.getMyPreferences(),
+    staleTime: 60_000,
+  });
+  const rosterQuery = useQuery({
+    queryKey: ["brigade-roster", activeInstanceId],
+    queryFn: () => api.getAgents(),
+    staleTime: 60_000,
+  });
+  const catalogQuery = useQuery({
+    queryKey: ["conference-catalog", activeInstanceId],
+    queryFn: () => api.getConferenceCatalog(),
+    staleTime: 300_000,
+  });
 
-  const { isConnected } = useVoice();
-  const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
+  // Shared with the sidebar badges. v3 (above) adds recording, floor, and the inbox.
+  const live = useLiveCalls();
 
-  const [openingPersonId, setOpeningPersonId] = useState<string | null>(null);
+  const [draftTick, setDraftTick] = useState(0);
+  useEffect(() => subscribeDrafts(() => setDraftTick((n) => n + 1)), []);
+  const [staleOpen, setStaleOpen] = useState(false);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<HomeSectionId | null>(null);
+
+  const summary: HomeSummaryV3 | undefined = summaryQuery.data;
+  const order = useMemo(
+    () => normalizeSectionOrder(prefsQuery.data?.order),
+    [prefsQuery.data?.order],
+  );
+  const collapsed = prefsQuery.data?.collapsed ?? {};
+
+  const savePrefs = useMutation({
+    mutationFn: (prefs: HomeSectionPrefs) => saveSectionPrefs(prefs),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(["home-section-prefs", activeInstanceId], saved);
+    },
+  });
+
+  const persist = useCallback(
+    (next: HomeSectionPrefs) => {
+      queryClient.setQueryData(["home-section-prefs", activeInstanceId], next);
+      savePrefs.mutate(next);
+    },
+    [activeInstanceId, queryClient, savePrefs],
+  );
+
+  const toggleCollapsed = useCallback(
+    (id: HomeSectionId) => {
+      persist({
+        order,
+        collapsed: { ...collapsed, [id]: !collapsed[id] },
+      });
+    },
+    [collapsed, order, persist],
+  );
+
+  const shift = useCallback(
+    (id: HomeSectionId, dir: -1 | 1) => {
+      persist({ order: moveSection(order, id, dir), collapsed: { ...collapsed } });
+    },
+    [collapsed, order, persist],
+  );
+
+  const dropOn = useCallback(
+    (target: HomeSectionId) => {
+      if (!dragId) return;
+      persist({
+        order: reorderSections(order, dragId, target),
+        collapsed: { ...collapsed },
+      });
+      setDragId(null);
+    },
+    [collapsed, dragId, order, persist],
+  );
 
   const openRoom = useCallback(
     (id: string) => {
@@ -175,1073 +268,746 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
     [clearUnread, navigate],
   );
 
-  // ── Scroll-to + focus-flash for stat tiles ─────────────────────────────
-  // Tiles used to openRoom(first item) — a "3" that opened one of the three.
-  // Now they scroll to the section listing the whole set and flash it so the
-  // eye lands somewhere specific. Smooth scrolling is motion, so it honors
-  // prefers-reduced-motion; the flash itself is a static ring that appears
-  // and fades via a box-shadow transition (highlight, not movement), which is
-  // reduced-motion safe by construction.
-  const [flashId, setFlashId] = useState<string | null>(null);
-  const flashTimer = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
+  const fail = useCallback(
+    (title: string, error: unknown) => {
+      pushToast({
+        title,
+        body: error instanceof Error ? error.message : "Request failed",
+        kind: "error",
+      });
     },
-    [],
-  );
-  const scrollToSection = useCallback((id: string) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const reduceMotion = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
-    el.scrollIntoView({
-      behavior: reduceMotion ? "auto" : "smooth",
-      block: "start",
-    });
-    // Move keyboard/AT focus with the viewport (sections carry tabIndex=-1).
-    el.focus({ preventScroll: true });
-    setFlashId(id);
-    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
-    flashTimer.current = window.setTimeout(() => setFlashId(null), 1600);
-  }, []);
-  const flashClass = useCallback(
-    (id: string) =>
-      clsx(
-        "scroll-mt-4 rounded-2xl outline-none transition-shadow duration-500",
-        flashId === id && "ring-2 ring-stable-purple/50",
-      ),
-    [flashId],
+    [pushToast],
   );
 
-  // ── Directory + favorites (shared react-query keys) ────────────────────
-  const { data: directory = [] } = useQuery({
-    queryKey: ["people-directory", activeInstanceId, ""],
-    queryFn: () => api.getPeopleDirectory(),
-    refetchInterval: 30_000,
-    staleTime: 15_000,
-  });
-
-  useEffect(() => {
-    if (directory.length === 0) return;
-    usePresenceStore.getState().setFromDirectory(directory);
-  }, [directory]);
-
-  const presenceById = usePresenceStore((s) => s.byId);
-
-  const { data: preferences } = useQuery({
-    queryKey: ["my-preferences", activeInstanceId],
-    queryFn: () => api.getMyPreferences(),
-    staleTime: 60_000,
-  });
-
-  // Memoized (not `?? []` inline) so downstream useMemos don't recompute on
-  // every render from a fresh empty-array identity.
-  const favoriteIds = useMemo(
-    () => preferences?.favorite_people_ids ?? [],
-    [preferences?.favorite_people_ids],
-  );
-
-  // ── Pending approvals (same key as Header / ActivityCenter) ────────────
-  const { data: pendingApprovals } = useQuery({
-    queryKey: ["approvals", "pending", activeInstanceId],
-    queryFn: () => api.getPendingApprovals(),
-    refetchInterval: 15_000,
-  });
-  const approvalItems = useMemo(
-    () => pendingApprovals?.items ?? [],
-    [pendingApprovals?.items],
-  );
-  const approvalCount = approvalItems.length;
-  const approvalLabel = pendingApprovals?.has_more
-    ? `${approvalCount}+`
-    : String(approvalCount);
-
-  // ── Derived models (pure — see homeModel.ts) ───────────────────────────
-  const activeCallRoom = useMemo(
-    () =>
-      activeCallRoomId
-        ? (rooms.find((r) => r.id === activeCallRoomId) ?? null)
-        : null,
-    [rooms, activeCallRoomId],
-  );
-  const hasActiveCall = Boolean(isConnected && activeCallRoomId);
-
-  const summaryLiveCalls = homeSummary?.live_calls ?? [];
-  const showMeetingEmpty = !hasActiveCall && summaryLiveCalls.length === 0;
-
-  const priority = useMemo(
-    () =>
-      priorityModel({
-        rooms,
-        unreadCounts,
-        mentionUnreads,
-        approvals: approvalItems,
-        now: Date.now(),
-      }),
-    [rooms, unreadCounts, mentionUnreads, approvalItems],
-  );
-
-  const feed = useMemo(
-    () => agentFeed(rooms, unreadCounts, { now: Date.now() }),
-    [rooms, unreadCounts],
-  );
-
-  const favoritePeopleOnline = useMemo(() => {
-    if (favoriteIds.length === 0 || directory.length === 0) return [];
-    const byId = new Map(directory.map((p) => [p.id, p]));
-    const online: PeopleDirectoryEntry[] = [];
-    for (const id of favoriteIds) {
-      const person = byId.get(id);
-      if (!person) continue;
-      const live = presenceById[id];
-      const isOnline = live ? live.isOnline : person.is_online;
-      if (isOnline) online.push(person);
-    }
-    return online.sort((a, b) => a.display_name.localeCompare(b.display_name));
-  }, [favoriteIds, directory, presenceById]);
-
-  // Agent fleet snapshot for the command grid — same roster the Agents page
-  // uses (shared query key), so this costs nothing extra when both are warm.
-  const { data: agentRoster = [] } = useQuery({
-    queryKey: ["brigade-roster", activeInstanceId],
-    queryFn: () => api.getAgents(),
-    staleTime: 60_000,
-    refetchInterval: 120_000,
-  });
-  const fleetAgents = useMemo(
-    () => rankedFleet(agentRoster, rooms),
-    [agentRoster, rooms],
-  );
-  const fleetActiveCount = useMemo(
-    () =>
-      agentRoster.filter((a) => a.status === "working" || a.status === "active")
-        .length,
-    [agentRoster],
-  );
-
-  // Everyone online (favorites first) — the People column should carry the
-  // whole roster's presence, not go dark for users who never starred anyone.
-  const peopleOnline = useMemo(() => {
-    if (directory.length === 0) return [];
-    const favs = new Set(favoriteIds);
-    return directory
-      .filter((p) => {
-        if (p.id === currentUser?.id) return false;
-        const live = presenceById[p.id];
-        return live ? live.isOnline : p.is_online;
-      })
-      .sort(
-        (a, b) =>
-          Number(favs.has(b.id)) - Number(favs.has(a.id)) ||
-          a.display_name.localeCompare(b.display_name),
-      )
-      .slice(0, 10);
-  }, [directory, presenceById, favoriteIds, currentUser?.id]);
-
-  // ── W7 health (one hook — the strip and the Workspace tile share it) ───
-  const health = useHomeHealth(homeSummary?.counts.worker_last_seen_at);
-  // Lifted out of ConversationsCard so the priority tail can drive it.
-  const [conversationsTab, setConversationsTab] =
-    useState<ConversationsTab | null>(null);
-  // Stale-unread tail of "Needs you" — collapsed by default, per session.
-  const [showStalePriority, setShowStalePriority] = useState(false);
-
-  const openPersonDm = useCallback(
-    async (person: PeopleDirectoryEntry) => {
-      if (openingPersonId) return;
-      setOpeningPersonId(person.id);
+  const decide = useCallback(
+    async (row: NeedsYouRow, decision: "approved" | "rejected") => {
+      if (!row.message_id || busy) return;
+      setBusy(row.message_id + decision);
       try {
-        const room = await ensureHumanDm(person);
-        await queryClient.invalidateQueries({ queryKey: ["rooms"] });
+        await api.decideAction(row.message_id, decision);
+        await queryClient.invalidateQueries({ queryKey: ["home-summary-v3"] });
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "pending"] });
+      } catch (error) {
+        fail(decision === "approved" ? "Couldn't approve" : "Couldn't decline", error);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, fail, queryClient],
+  );
+
+  const hubFor = useCallback(async (card: CrewCard) => {
+    if (card.hub_room_id) return card.hub_room_id;
+    const hub = await homeRequest<{ id: string }>(
+      "POST",
+      `/api/v1/agents/${encodeURIComponent(card.agent_id)}/hub`,
+    );
+    return hub.id;
+  }, []);
+
+  const openHub = useCallback(
+    async (card: CrewCard) => {
+      if (busy) return;
+      setBusy(card.agent_id);
+      try {
+        const id = await hubFor(card);
+        openRoom(id);
+      } catch (error) {
+        fail("Couldn't open the hub", error);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, fail, hubFor, openRoom],
+  );
+
+  const newThread = useCallback(
+    async (card: CrewCard) => {
+      if (busy) return;
+      setBusy(`thread:${card.agent_id}`);
+      try {
+        const hub = await hubFor(card);
+        const thread = await homeRequest<{ id: string }>(
+          "POST",
+          `/api/v1/rooms/${hub}/threads`,
+          {},
+        );
+        setMenuFor(null);
+        openRoom(thread.id);
+      } catch (error) {
+        fail("Couldn't start a thread", error);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, fail, hubFor, openRoom],
+  );
+
+  const changeMode = useCallback(
+    async (card: CrewCard, mode: string) => {
+      if (busy) return;
+      setBusy(`mode:${card.agent_id}`);
+      try {
+        const hub = await hubFor(card);
+        await homeRequest(
+          "PATCH",
+          `/api/v1/rooms/${hub}/members/${card.participant_id}`,
+          { agent_mode: mode },
+        );
+        setMenuFor(null);
+        await queryClient.invalidateQueries({ queryKey: ["home-summary-v3"] });
+      } catch (error) {
+        fail("Couldn't change mode", error);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, fail, hubFor, queryClient],
+  );
+
+  const joinStanding = useCallback(
+    async (meeting: TodayMeeting) => {
+      if (meeting.room_id) {
+        openRoom(meeting.room_id);
+        return;
+      }
+      if (!meeting.slug || busy) return;
+      setBusy(meeting.slug);
+      try {
+        const room = await api.enterConferenceRoom(meeting.slug);
         const state = useAppStore.getState();
-        if (!state.rooms.some((r) => r.id === room.id)) {
+        if (!state.rooms.some((item) => item.id === room.id)) {
           state.setRooms([room, ...state.rooms]);
         }
         openRoom(room.id);
       } catch (error) {
-        pushToast({
-          title: "Couldn't open chat",
-          body: error instanceof Error ? error.message : "Request failed",
-        });
+        fail("Couldn't join", error);
       } finally {
-        setOpeningPersonId(null);
+        setBusy(null);
       }
     },
-    [openingPersonId, queryClient, openRoom, pushToast],
+    [busy, fail, openRoom],
   );
 
-  // The knowledge UI is RoomView's right drawer — its only mount point — so
-  // opening it from home needs a host room. The most recently active room is
-  // the least surprising anchor: the panel's collection list is global, the
-  // room only decides where the drawer renders. Opening the collection BEFORE
-  // navigating is safe: knowledgeStore.setRoom() clears attachment/search
-  // state on the room switch but deliberately keeps the open collection.
-  const openKnowledge = useCallback(
-    (collectionId?: string) => {
-      const host = [...rooms].sort(sortByRecency)[0];
-      if (!host) {
-        pushToast({
-          title: "Couldn't open Knowledge",
-          body: "Join or create a room first — knowledge bases open in a room's side panel.",
-        });
-        return;
-      }
-      const kb = useKnowledgeStore.getState();
-      kb.setPanelOpen(true);
-      if (collectionId) void kb.openCollectionById(collectionId);
-      navigate(`/c/${host.id}`);
-    },
-    [rooms, navigate, pushToast],
+  const defaultAgent = useMemo(
+    () => resolveDefaultAgent(rosterQuery.data ?? rosterAgents, preferencesQuery.data?.default_agent_id ?? null),
+    [preferencesQuery.data?.default_agent_id, rosterAgents, rosterQuery.data],
   );
 
-  const hour = new Date().getHours();
-  const firstName = currentUser?.displayName?.trim().split(/\s+/)[0] ?? "there";
-
-  const channelUnreadTotal =
-    priority.channelUnreadRooms.length + priority.moreChannelCount;
-  const statusBits: string[] = [];
-  if (hasActiveCall) {
-    statusBits.push("You're in a call");
-  }
-  if (priority.items.length > 0) {
-    const n =
-      priority.mentionRooms.length +
-      priority.dmUnreadRooms.length +
-      channelUnreadTotal +
-      (approvalCount > 0 ? 1 : 0);
-    statusBits.push(
-      n === 1 ? "1 item needs attention" : `${n} items need attention`,
-    );
-  } else if (!hasActiveCall) {
-    statusBits.push("You're all caught up");
-  }
-  if (favoritePeopleOnline.length > 0) {
-    statusBits.push(
-      favoritePeopleOnline.length === 1
-        ? "1 favorite online"
-        : `${favoritePeopleOnline.length} favorites online`,
-    );
-  }
-
-  const liveMeetingCount = summaryLiveCalls.length;
-
-  // Rooms the priority inbox is already rendering: Conversations must not
-  // repeat them verbatim a few hundred pixels lower.
-  const priorityRoomIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const item of priority.items) {
-      if (item.kind !== "approval") ids.add(item.room.id);
+  const meetAgent = useCallback(async () => {
+    if (busy) return;
+    setBusy("meet");
+    try {
+      const hub = await homeRequest<{ id: string }>(
+        "POST",
+        `/api/v1/agents/${encodeURIComponent(defaultAgent.id)}/hub`,
+      );
+      await api.setOnboardingChecklist({
+        ...(preferencesQuery.data?.onboarding_checklist ?? {}),
+        agent: true,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
+      openRoom(hub.id);
+    } catch (error) {
+      fail("Couldn't open that conversation", error);
+    } finally {
+      setBusy(null);
     }
-    return ids;
-  }, [priority.items]);
-  // Every tile is always clickable now: its target section always renders
-  // (showing an honest empty state at zero), so there is no "count without a
-  // set" dead end and no undefined-onClick dance per tile.
-  const stats: HomeStat[] = [
-    {
-      key: "mentions",
-      label: "Mentions",
-      value: String(
-        homeSummary?.counts.mention_rooms ?? priority.mentionRooms.length,
-      ),
-      icon: AtSign,
-      tone: "text-stable-purple-light",
-      attention: priority.mentionRooms.length > 0,
-      // Open the message-level Mentions inbox; the ?? form double-fired
-      // (void ?? scroll) and scrolled the page under the panel.
-      onClick: () =>
-        onOpenActivity
-          ? onOpenActivity("mentions")
-          : scrollToSection(SECTION_PRIORITY),
-    },
-    {
-      key: "dms",
-      label: "Unread DMs",
-      value: String(priority.dmUnreadRooms.length),
-      icon: MessageSquare,
-      tone: "text-stable-cyan",
-      attention: priority.dmUnreadRooms.length > 0,
-      // No message-level DM feed exists (the inbox tabs are mention/thread/
-      // reaction events) — the honest target is the Needs-you list, which is
-      // exactly the set this number counts. "threads" was a wrong-tab map.
-      onClick: () => scrollToSection(SECTION_PRIORITY),
-    },
-    {
-      key: "approvals",
-      label: "Approvals",
-      value: homeSummary
-        ? String(homeSummary.counts.approvals_pending)
-        : approvalLabel,
-      icon: ShieldCheck,
-      tone: "text-rose-300",
-      attention: approvalCount > 0,
-      onClick: () =>
-        onOpenActivity
-          ? onOpenActivity("approvals")
-          : scrollToSection(SECTION_PRIORITY),
-    },
-    {
-      key: "meetings",
-      label: "Live meetings",
-      value: String(liveMeetingCount),
-      icon: Video,
-      tone: "text-stable-mint",
-      onClick: () => scrollToSection(SECTION_LIVE_NOW),
-    },
-    {
-      key: "agents",
-      label: "Agents waiting",
-      // The full waiting count, not the visible slice — the number must
-      // describe the set even when the feed caps its rows.
-      value: String(feed.waitingTotal),
-      icon: Bot,
-      tone: "text-stable-purple-light",
-      attention: feed.waitingTotal > 0,
-      onClick: () => scrollToSection(SECTION_AGENT_FEED),
-    },
-    {
-      key: "people",
-      label: "People online",
-      value: String(homeSummary?.counts.people_online ?? peopleOnline.length),
-      icon: UserRound,
-      tone: "text-stable-mint",
-      onClick: () => setPeopleDrawerOpen(true),
-    },
-    // NO "Workspace" tile. It sat directly on top of the health strip, which
-    // names all four services and the deployed sha — two health surfaces
-    // stacked, the upper one saying only "OK". The strip is strictly more
-    // informative, so the tile was pure redundancy in the most valuable
-    // pixels on the page.
-  ];
+  }, [busy, defaultAgent.id, fail, openRoom, preferencesQuery.data?.onboarding_checklist, queryClient]);
 
-  return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="animate-fade-in mx-auto w-full max-w-[1720px] px-4 py-6 sm:px-6 lg:px-8">
-        {/* ── Greeting + quick actions ─────────────────────────────────── */}
-        <header className="card relative mb-4 overflow-hidden px-5 py-5 sm:px-6">
-          <div
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(110%_150%_at_100%_0%,rgba(139,92,246,0.14),transparent_55%)]"
-            aria-hidden="true"
-          />
-          <div
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_120%_at_82%_100%,rgba(34,211,238,0.10),transparent_60%)]"
-            aria-hidden="true"
-          />
-          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <div className="mb-2 flex items-center gap-2.5">
-                <span className="gradient-bg glow-iris flex h-7 w-7 items-center justify-center rounded-lg">
-                  <Sparkles className="h-4 w-4 text-white" />
-                </span>
-                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                  Unicorn Stable
-                </span>
-              </div>
-              <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
-                <span className="text-slate-50">{greetingFor(hour)}, </span>
-                <span className="gradient-text-aurora">{firstName}</span>
-              </h1>
-              <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-400">
-                {statusBits.map((bit, i) => (
-                  <span key={bit} className="flex items-center gap-2">
-                    {i > 0 && (
-                      <span className="text-slate-600" aria-hidden="true">
-                        ·
-                      </span>
-                    )}
-                    {bit === "You're in a call" ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="animate-live h-1.5 w-1.5 rounded-full bg-stable-mint" />
-                        {bit}
-                      </span>
-                    ) : (
-                      bit
-                    )}
-                  </span>
-                ))}
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPeopleDrawerOpen(true)}
-                className="focus-ring flex items-center gap-1.5 rounded-lg border border-line bg-white/[0.03] px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-line-strong hover:bg-white/[0.06]"
-              >
-                <UserRound className="h-3.5 w-3.5 text-stable-mint" />
-                Message someone
-              </button>
-              <button
-                type="button"
-                onClick={() => setCreateRoomModalOpen(true)}
-                className="gradient-bg glow-iris focus-ring flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white transition hover:opacity-95 active:scale-[0.98]"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                New room
-              </button>
-            </div>
-          </div>
-        </header>
+  const seedChannels = useCallback(async () => {
+    if (busy) return;
+    setBusy("seed");
+    try {
+      const created = await api.bootstrapDefaultRooms();
+      await api.setOnboardingChecklist({
+        ...(preferencesQuery.data?.onboarding_checklist ?? {}),
+        channels: true,
+      });
+      const state = useAppStore.getState();
+      if (created.length > 0) state.setRooms(created);
+      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
+    } catch (error) {
+      fail("Couldn't seed channels", error);
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, fail, preferencesQuery.data?.onboarding_checklist, queryClient]);
 
-        {roomsLoaded && rooms.length === 0 && (
-          <section className="mb-6 rounded-2xl border border-stable-purple/30 bg-stable-purple/10 p-5" aria-label="Get started">
+  const cold = !roomsLoaded || summaryQuery.isPending;
+  if (cold) return <Skeleton />;
+
+  if (summaryQuery.isError || !summary) {
+    return (
+      <div className="flex-1 overflow-y-auto" data-testid="home-error">
+        <div className="mx-auto max-w-lg px-4 py-16 text-center">
+          <p className="font-display text-lg text-slate-100">Home didn't load</p>
+          <p className="mt-2 text-sm text-slate-400">
+            The summary request failed. Nothing below is filled in.
+          </p>
+          <button
+            type="button"
+            onClick={() => void summaryQuery.refetch()}
+            className="focus-ring gradient-bg mt-4 rounded-lg px-3 py-2 text-xs font-semibold text-white"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (rooms.length === 0) {
+    const agentIdentity = resolveIdentity({
+      id: defaultAgent.id,
+      display_name: defaultAgent.name,
+      name: defaultAgent.name,
+      participant_type: "agent",
+    });
+    return (
+      <div className="flex-1 overflow-y-auto" data-testid="home-first-run">
+        <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+          <section className="card px-5 py-6 sm:px-8" aria-label="Get started">
             <div className="flex items-center gap-4">
-              <Identity
-                {...resolveIdentity({
-                  id: agentRoster[0]?.id,
-                  name: agentRoster[0]?.name ?? "Majik",
-                  display_name: agentRoster[0]?.name ?? "Majik",
-                  participant_type: "agent",
-                })}
-                size={56}
-              />
-              <div><p className="font-display text-lg font-semibold text-slate-100">Meet {agentRoster[0]?.name ?? "Majik"}</p><p className="mt-1 text-sm text-slate-300">Your workspace starts with one useful conversation.</p></div>
+              <Identity {...agentIdentity} size={56} />
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  First run
+                </p>
+                <h1 className="font-display text-2xl font-bold text-slate-50">
+                  Meet {defaultAgent.name}
+                </h1>
+                <p className="mt-1 text-sm text-slate-400">
+                  Your workspace starts with one useful conversation.
+                </p>
+              </div>
             </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-3">
-              <button type="button" onClick={() => agentRoster[0] && void api.createAgentDm(agentRoster[0].id, agentRoster[0].name).then(async (room) => { await api.setOnboardingChecklist({ ...preferences?.onboarding_checklist, agent: true }); useAppStore.getState().setRooms([room]); navigate(`/c/${room.id}`); })} className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100">{preferences?.onboarding_checklist?.agent ? "✓ " : "1. "}Say hi to an agent</button>
-              <button type="button" onClick={() => void api.bootstrapDefaultRooms().then(async (newRooms) => { await api.setOnboardingChecklist({ ...preferences?.onboarding_checklist, channels: true }); useAppStore.getState().setRooms(newRooms); })} className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100">{preferences?.onboarding_checklist?.channels ? "✓ " : "2. "}Seed your channels</button>
-              <button type="button" onClick={() => { void api.setOnboardingChecklist({ ...preferences?.onboarding_checklist, invite: true }); setPeopleDrawerOpen(true); }} className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100">{preferences?.onboarding_checklist?.invite ? "✓ " : "3. "}Invite a teammate</button>
+            <div className="mt-5 grid gap-2 sm:grid-cols-3">
+              <button
+                type="button"
+                onClick={() => void meetAgent()}
+                disabled={busy === "meet"}
+                className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100"
+              >
+                Meet {defaultAgent.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => void seedChannels()}
+                disabled={busy === "seed"}
+                className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100"
+              >
+                Seed channels
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void api.setOnboardingChecklist({
+                    ...(preferencesQuery.data?.onboarding_checklist ?? {}),
+                    invite: true,
+                  });
+                  setPeopleDrawerOpen(true);
+                }}
+                className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100"
+              >
+                Invite a teammate
+              </button>
             </div>
           </section>
-        )}
+        </div>
+      </div>
+    );
+  }
 
-        {/* ── Stat strip — the pulse of the whole workspace ────────────── */}
-        <div
-          className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6"
-          role="group"
-          aria-label="Workspace overview"
-        >
-          {roomsLoaded ? (
-            stats.map((stat) => (
-              <StatTile key={stat.key} stat={stat} />
-            ))
-          ) : (
-            // Pre-load: the tiles would read as six zeros before the rooms
-            // payload lands. Shimmer keeps the grid geometry stable.
-            Array.from({ length: 6 }, (_, i) => (
-              <div
-                key={i}
-                className="card flex animate-pulse-soft items-center gap-3 px-3.5 py-3"
-                aria-hidden="true"
-              >
-                <div className="h-8 w-8 shrink-0 rounded-lg bg-white/[0.05]" />
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  <div
-                    className="h-4 rounded bg-white/[0.06]"
-                    style={{ width: `${[40, 55, 30, 45, 35, 50][i]}%` }}
-                  />
-                  <div className="h-2.5 w-2/3 rounded bg-white/[0.04]" />
+  const home = summary;
+  const needs = partitionNeedsYou(home.needs_you);
+  const recent = recentConversations(rooms);
+  const working = home.crew.filter((card) => isCrewWorking(card, Date.now()));
+  const liveCalls = mergeLiveCalls(live.list, home.live_calls);
+  const catalog = catalogQuery.data ?? [];
+  const serverMeetings = home.today?.meetings ?? null;
+  const standing: TodayMeeting[] =
+    serverMeetings != null
+      ? serverMeetings.filter((meeting) => meeting.kind === "standing")
+      : catalog.map((room) => ({
+          kind: "standing" as const,
+          id: room.slug,
+          title: room.display_name,
+          at: null,
+          room_id: null,
+          slug: room.slug,
+          summary: null,
+        }));
+  const recaps: TodayMeeting[] | null =
+    serverMeetings == null ? null : serverMeetings.filter((meeting) => meeting.kind === "recap");
+  const standingFallback =
+    serverMeetings != null ? standing.length : catalogQuery.isPending ? 1 : catalog.length;
+  const hideToday = todaySectionHidden(home.today, standingFallback);
+  const selfId = currentParticipantId ?? currentUser?.id ?? null;
+  const hour = new Date().getHours();
+  const firstName = currentUser?.displayName?.trim().split(/\s+/)[0] ?? "there";
+  const you = resolveIdentity({
+    participant_id: currentParticipantId,
+    id: currentUser?.id,
+    display_name: currentUser?.displayName ?? firstName,
+    avatar_url: currentUser?.avatarUrl,
+    participant_type: "human",
+    is_self: true,
+  });
+
+  const roomById = new Map(rooms.map((room) => [room.id, room]));
+
+  function renderNeeds(rows: NeedsYouRow[]) {
+    return (
+      <ul className="card overflow-hidden">
+        {rows.map((row) => (
+          <li key={`${row.kind}:${row.room.id}:${row.message_id ?? row.created_at}`} className="border-t border-white/[0.04] first:border-t-0">
+            <div className="flex items-start gap-3 px-3 py-2.5">
+              <ActorFace actor={row.actor} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="truncate text-sm font-medium text-slate-100">{row.actor.display_name}</p>
+                  <span className="shrink-0 text-[11px] text-slate-500">{rowTime(row.created_at)}</span>
+                </div>
+                <p className="truncate text-xs text-slate-400">
+                  {previewText(row.preview) || "—"}
+                  <span className="text-slate-600"> · </span>
+                  {row.room.display_name}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {row.kind === "approval" && row.message_id && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void decide(row, "approved")}
+                        className="focus-ring rounded-md bg-stable-mint/15 px-2 py-1 text-[11px] font-semibold text-stable-mint"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void decide(row, "rejected")}
+                        className="focus-ring rounded-md bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-300"
+                      >
+                        Decline
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openRoom(row.room.id)}
+                    className="focus-ring rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-slate-200"
+                  >
+                    {row.action === "join" ? "Join" : row.action === "reply" ? "Reply" : row.action === "approve" ? "Open" : "Open"}
+                  </button>
                 </div>
               </div>
-            ))
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderLive() {
+    if (liveCalls.length === 0 && working.length === 0) {
+      return <EmptyLine>Nothing live right now.</EmptyLine>;
+    }
+    return (
+      <ul className="card overflow-hidden">
+        {liveCalls.map((call) => {
+          const room = roomById.get(call.room_id);
+          return (
+            <li key={call.room_id} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
+              {room ? (
+                <RoomFace room={room} selfId={selfId} agents={rosterAgents} />
+              ) : (
+                <Identity
+                  {...resolveIdentity({
+                    type: "channel",
+                    id: call.room_id,
+                    display_name: call.display_name,
+                    name: call.display_name,
+                    member_count: call.participant_count,
+                  })}
+                  size={32}
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <p className="truncate text-sm font-medium text-slate-100">{call.display_name}</p>
+                  <Pill tone="live">LIVE</Pill>
+                  {call.recording && <Pill tone="rec">REC</Pill>}
+                </div>
+                <p className="truncate text-xs text-slate-400">
+                  {call.participant_count} here
+                  {call.floor_holder ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-slate-600"> · </span>
+                      <ActorFace actor={call.floor_holder} size={16} />
+                      <span>{call.floor_holder.display_name} has the floor</span>
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => openRoom(call.room_id)}
+                className="focus-ring shrink-0 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-100"
+              >
+                Join
+              </button>
+            </li>
+          );
+        })}
+        {working.map((card) => (
+          <li key={`work:${card.agent_id}`} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5">
+            <ActorFace
+              actor={{
+                participant_id: card.participant_id,
+                kind: "agent",
+                display_name: card.display_name,
+                avatar_url: card.avatar_url,
+                agent_id: card.agent_id,
+              }}
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-slate-100">{card.display_name}</p>
+              <p className="truncate text-xs text-slate-400">
+                {card.current_task || "Working"}
+                {card.since ? ` · ${rowTime(card.since)}` : ""}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderCrew() {
+    if (home.crew.length === 0) {
+      return <EmptyLine>No agents in your rooms yet.</EmptyLine>;
+    }
+    return (
+      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {home.crew.map((card) => (
+          <li key={card.agent_id} className="card relative">
+            <button
+              type="button"
+              onClick={() => void openHub(card)}
+              className="focus-ring flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left"
+            >
+              <ActorFace
+                actor={{
+                  participant_id: card.participant_id,
+                  kind: "agent",
+                  display_name: card.display_name,
+                  avatar_url: card.avatar_url,
+                  agent_id: card.agent_id,
+                }}
+                size={40}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-slate-100">{card.display_name}</span>
+                <span className="mt-1 flex flex-wrap items-center gap-1">
+                  <span className="rounded-full bg-stable-purple/15 px-1.5 py-0.5 text-[10px] font-semibold text-stable-purple-light">
+                    {modeLabel(card.agent_mode)}
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500">{card.status}</span>
+                </span>
+                <span className="mt-1 block truncate text-xs text-slate-400">
+                  {card.last_line || "No recent line"}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Actions for ${card.display_name}`}
+              aria-expanded={menuFor === card.agent_id}
+              onClick={() => setMenuFor((current) => (current === card.agent_id ? null : card.agent_id))}
+              className="focus-ring absolute right-2 top-2 rounded-md p-1 text-slate-400 hover:bg-white/[0.06]"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+            {menuFor === card.agent_id && (
+              <div className="absolute right-2 top-9 z-10 w-44 rounded-xl border border-line bg-slate-950 p-1 shadow-xl">
+                <button type="button" onClick={() => void newThread(card)} className="focus-ring block w-full rounded-lg px-2 py-1.5 text-left text-xs text-slate-100 hover:bg-white/[0.06]">
+                  New thread
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void openHub(card)}
+                  className="focus-ring flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left text-xs text-slate-100 hover:bg-white/[0.06]"
+                >
+                  <Phone className="h-3 w-3" /> Call
+                </button>
+                <p className="px-2 pt-1 text-[10px] uppercase tracking-wide text-slate-500">Change mode</p>
+                {AGENT_MODES.map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => void changeMode(card, mode)}
+                    className="focus-ring block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-300 hover:bg-white/[0.06]"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderRecent() {
+    if (recent.length === 0) return <EmptyLine>No conversations yet.</EmptyLine>;
+    return (
+      <ul className="card overflow-hidden">
+        {recent.map((room) => (
+          <li key={room.id}>
+            <button
+              type="button"
+              onClick={() => openRoom(room.id)}
+              className="focus-ring flex w-full items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 text-left first:border-t-0"
+            >
+              <RoomFace room={room} selfId={selfId} agents={rosterAgents} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-slate-100">
+                    {room.display_name || room.name}
+                  </span>
+                  {draftTick >= 0 && hasDraft(room.id) && (
+                    <Pencil className="h-3 w-3 shrink-0 text-slate-400" aria-label="Draft" />
+                  )}
+                </span>
+                <span className="block truncate text-xs text-slate-500">
+                  {room.last_message ? previewText(room.last_message.content) : "No messages yet"}
+                </span>
+              </span>
+              <span className="shrink-0 text-[11px] text-slate-500">
+                {rowTime(room.last_message?.created_at ?? room.updated_at)}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderTask(task: PoTaskRow) {
+    const body = (
+      <>
+        <AppFace id="project-ops" name="Project-Ops" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-slate-100">{task.title}</span>
+          <span className="block truncate text-xs text-slate-500">
+            {task.project_number ? `${task.project_number} · ` : ""}
+            {task.due_date ? `Due ${task.due_date}` : "Due"}
+            {task.status ? ` · ${task.status}` : ""}
+          </span>
+        </span>
+      </>
+    );
+    if (task.url) {
+      return (
+        <a
+          key={task.id}
+          href={task.url}
+          className="focus-ring flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0"
+        >
+          {body}
+        </a>
+      );
+    }
+    return (
+      <div key={task.id} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
+        {body}
+      </div>
+    );
+  }
+
+  function renderToday() {
+    const tasks = home.today?.po_tasks ?? null;
+    const taskCount = tasks?.length ?? 0;
+    const meetingCount = standing.length + (recaps?.length ?? 0);
+    return (
+      <div className="space-y-3">
+        {tasks == null ? null : tasks.length === 0 ? (
+          <EmptyLine>No tasks due through tomorrow.</EmptyLine>
+        ) : (
+          <div className="card overflow-hidden">{tasks.map(renderTask)}</div>
+        )}
+        {standing.length > 0 && (
+          <ul className="card overflow-hidden">
+            {standing.map((meeting) => (
+              <li key={meeting.id} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
+                <Identity
+                  {...resolveIdentity({
+                    type: "channel",
+                    id: meeting.slug || meeting.id,
+                    display_name: meeting.title,
+                    name: meeting.title,
+                    member_count: 1,
+                  })}
+                  size={32}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
+                  <p className="text-xs text-slate-500">Standing room</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void joinStanding(meeting)}
+                  className="focus-ring shrink-0 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-100"
+                >
+                  Join
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {recaps == null ? null : recaps.length === 0 ? (
+          <EmptyLine>No Meeting-Ops recaps in the last day.</EmptyLine>
+        ) : (
+          <ul className="card overflow-hidden">
+            {recaps.map((meeting) => (
+              <li key={meeting.id} className="flex items-start gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
+                <AppFace id="meeting-ops" name="Meeting-Ops" />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
+                  <p className="truncate text-xs text-slate-400">
+                    {meeting.summary || "Recap"}
+                    {meeting.at ? ` · ${rowTime(meeting.at)}` : ""}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <span className="sr-only">
+          {taskCount + meetingCount} today
+        </span>
+      </div>
+    );
+  }
+
+  const sections: Record<HomeSectionId, { count: number; body: ReactNode; hidden?: boolean }> = {
+    needs_you: {
+      count: needs.fresh.length,
+      body: (
+        <div className="space-y-2">
+          {needs.fresh.length === 0 && needs.stale.length === 0 ? (
+            <EmptyLine>You're clear.</EmptyLine>
+          ) : (
+            <>
+              {needs.fresh.length > 0 && renderNeeds(needs.fresh)}
+              {needs.stale.length > 0 && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setStaleOpen((open) => !open)}
+                    className="focus-ring text-xs font-medium text-slate-500"
+                    aria-expanded={staleOpen}
+                  >
+                    Stale ({needs.stale.length})
+                  </button>
+                  {staleOpen && <div className="mt-2">{renderNeeds(needs.stale)}</div>}
+                </div>
+              )}
+            </>
+          )}
+          {onOpenActivity && (
+            <button
+              type="button"
+              onClick={() => onOpenActivity("approvals")}
+              className="focus-ring text-xs font-medium text-slate-400"
+            >
+              Open activity
+            </button>
           )}
         </div>
+      ),
+    },
+    live_now: { count: liveCalls.length + working.length, body: renderLive() },
+    crew: { count: home.crew.length, body: renderCrew() },
+    recent: { count: recent.length, body: renderRecent() },
+    today: {
+      count:
+        (home.today?.po_tasks?.length ?? 0) +
+        standing.length +
+        (recaps?.length ?? 0),
+      hidden: hideToday,
+      body: renderToday(),
+    },
+  };
 
-        {/* ── W7: ambient health strip (always renders — see the widget) ─ */}
-        <div
-          id={SECTION_HEALTH}
-          tabIndex={-1}
-          className={clsx("mb-6", flashClass(SECTION_HEALTH))}
-        >
-          <SystemHealthStrip health={health} />
-        </div>
-
-        {/* ── Command grid: attention | realtime | ambient ──────────────
-            Column wrappers dissolve at <lg (`max-lg:contents`) so the
-            sections become direct grid children and `max-lg:order-*` can
-            impose the mobile triage order (needs-me → live-now → agent work
-            → browsing), which no fixed column nesting can produce. At lg+
-            the wrappers re-materialize as masonry-ish stacks — that is also
-            why spacing is `lg:space-y-6` (at <lg the grid's own gap spaces
-            the sections; a plain space-y would double up with it). */}
-        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2 2xl:grid-cols-4">
-          <div className="min-w-0 max-lg:contents lg:space-y-6 2xl:col-span-2">
-            {/* Column A: what needs the human, then the human's threads. */}
-
-            {/* ── W2: Mentions & priority ──────────────────────────────── */}
-            <section
-              id={SECTION_PRIORITY}
-              tabIndex={-1}
-              aria-labelledby="home-priority-heading"
-              className={clsx(
-                "min-w-0 max-lg:order-1",
-                flashClass(SECTION_PRIORITY),
-              )}
-            >
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Inbox className="h-4 w-4 text-stable-purple-light" />
-                  <h2
-                    id="home-priority-heading"
-                    className="font-display text-sm font-semibold text-slate-200"
-                  >
-                    Needs you
-                  </h2>
-                </div>
-                {approvalCount > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-rose-300">
-                    <ShieldCheck className="h-3 w-3" />
-                    {approvalLabel} approval{approvalCount === 1 ? "" : "s"}
-                  </span>
-                )}
-              </div>
-
-              {priority.items.length === 0 &&
-              priority.staleItems.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-                  No mentions, DM unreads, approvals, or unread channels
-                </p>
-              ) : (
-                <ul className="card overflow-hidden">
-                  {priority.items.map((item, i) => {
-                    if (item.kind === "approval") {
-                      const { approval } = item;
-                      return (
-                        <li key={`approval-${approval.message.id}`}>
-                          <HomeRow
-                            leading={
-                              <Identity
-                                {...resolveIdentity(approval.message)}
-                                size={36}
-                                className="mt-0.5"
-                              />
-                            }
-                            title="Approval needed"
-                            at={approval.message.created_at}
-                            tint="bg-rose-500/[0.05]"
-                            divider={i > 0}
-                            onClick={() => openRoom(approval.room_id)}
-                            line={
-                              <p className="mt-0.5 truncate text-xs text-slate-400">
-                                <span className="font-medium text-slate-300">
-                                  {approval.message.sender_name}
-                                </span>
-                                {" · "}
-                                {approval.room_name}
-                                {" — "}
-                                {previewText(approval.message.content)}
-                              </p>
-                            }
-                          />
-                        </li>
-                      );
-                    }
-
-                    const { room, unread, kind } = item;
-                    const roomFace =
-                      room.type === "channel"
-                        ? null
-                        : resolveIdentity(room, {
-                            selfId: currentParticipantId ?? currentUser?.id,
-                            members: participantsByRoom[room.id],
-                            agents: rosterAgents,
-                          });
-                    return (
-                      <li key={`${kind}-${room.id}`}>
-                        <HomeRow
-                          leading={
-                            room.type === "channel" ? (
-                              kind === "mention" ? (
-                                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
-                                  <AtSign className="h-4 w-4" />
-                                </span>
-                              ) : (
-                                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-item-channel/15 text-item-channel">
-                                  <Hash className="h-4 w-4" />
-                                </span>
-                              )
-                            ) : roomFace?.origin === "name-only" &&
-                              room.type === "group_dm" ? (
-                              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-item-group">
-                                <Users className="h-4 w-4" />
-                              </span>
-                            ) : roomFace ? (
-                              <Identity
-                                {...roomFace}
-                                size={36}
-                                className="mt-0.5"
-                              />
-                            ) : null
-                          }
-                          title={room.display_name || room.name}
-                          at={room.last_message?.created_at ?? null}
-                          unread={unread}
-                          tint="bg-stable-purple/[0.06]"
-                          divider={i > 0}
-                          onClick={() => openRoom(room.id)}
-                          line={
-                            room.last_message ? (
-                              <SenderLine message={room.last_message} />
-                            ) : (
-                              <p className="mt-0.5 text-xs italic text-slate-600">
-                                {kind === "mention"
-                                  ? "You were mentioned"
-                                  : "Unread messages"}
-                              </p>
-                            )
-                          }
-                        />
-                      </li>
-                    );
-                  })}
-                  {priority.moreChannelCount > 0 && (
-                    <li className="border-t border-line">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setConversationsTab("channels");
-                          scrollToSection(SECTION_CONVERSATIONS);
-                        }}
-                        className="focus-ring w-full px-3.5 py-2 text-left text-[11px] tabular-nums text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
-                      >
-                        +{priority.moreChannelCount} more unread channel
-                        {priority.moreChannelCount === 1 ? "" : "s"} — show all
-                      </button>
-                    </li>
-                  )}
-                  {/* Stale tail: unread that has sat idle 2+ weeks is history
-                      impersonating a to-do — collapsed behind a count so the
-                      list above stays believable. */}
-                  {priority.staleItems.length > 0 && (
-                    <li
-                      className={
-                        priority.items.length > 0 ? "border-t border-line" : ""
-                      }
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setShowStalePriority((v) => !v)}
-                        aria-expanded={showStalePriority}
-                        className="focus-ring w-full px-3.5 py-2 text-left text-[11px] tabular-nums text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
-                      >
-                        {priority.staleItems.length} older unread — quiet for
-                        2+ weeks {showStalePriority ? "· hide" : "· show"}
-                      </button>
-                    </li>
-                  )}
-                  {showStalePriority &&
-                    priority.staleItems.map((item) => {
-                      if (item.kind === "approval") return null;
-                      const { room, kind } = item;
-                      return (
-                        <li
-                          key={`stale-${kind}-${room.id}`}
-                          className="border-t border-line/50"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => openRoom(room.id)}
-                            className="focus-ring flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
-                          >
-                            <span className="truncate">
-                              {room.display_name || room.name}
-                            </span>
-                            {room.last_message && (
-                              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-slate-600">
-                                {rowTime(room.last_message.created_at)} ago
-                              </span>
-                            )}
-                          </button>
-                        </li>
-                      );
-                    })}
-                </ul>
-              )}
-            </section>
-
-            {/* ── W3: Conversations (Chats | Channels) ─────────────────── */}
-            <div
-              id={SECTION_CONVERSATIONS}
-              tabIndex={-1}
-              className={clsx(
-                "min-w-0 max-lg:order-4",
-                flashClass(SECTION_CONVERSATIONS),
-              )}
-            >
-              <ConversationsCard
-                rooms={rooms}
-                unreadCounts={unreadCounts}
-                onOpenRoom={openRoom}
-                onFindPeople={() => setPeopleDrawerOpen(true)}
-                excludeRoomIds={priorityRoomIds}
-                chosenTab={conversationsTab}
-                onChooseTab={setConversationsTab}
-              />
-            </div>
+  return (
+    <div className="flex-1 overflow-y-auto" data-testid="home-loaded">
+      <div className="animate-fade-in mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+        <header className="card mb-4 flex items-center gap-3 px-4 py-4 sm:px-5">
+          <Identity {...you} size={40} />
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              <Sparkles className="mr-1 inline h-3 w-3" aria-hidden="true" />
+              Unicorn Stable
+            </p>
+            <h1 className="font-display text-xl font-bold text-slate-50 sm:text-2xl">
+              {greetingFor(hour)}, {firstName}
+            </h1>
           </div>
-
-          <div className="min-w-0 max-lg:contents lg:space-y-6">
-            {/* Column B: realtime surfaces — meetings, then agent work. */}
-
-            {/* ── W4: Live now ─────────────────────────────────────────── */}
-            <section
-              id={SECTION_LIVE_NOW}
-              tabIndex={-1}
-              aria-labelledby="home-live-now-heading"
-              className={clsx(
-                "min-w-0 max-lg:order-2",
-                flashClass(SECTION_LIVE_NOW),
-              )}
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <Video className="h-4 w-4 text-stable-cyan" />
-                <h2
-                  id="home-live-now-heading"
-                  className="font-display text-sm font-semibold text-slate-200"
-                >
-                  Live now
-                </h2>
-              </div>
-
-              {hasActiveCall && activeCallRoomId && (
-                <button
-                  type="button"
-                  onClick={() => openRoom(activeCallRoomId)}
-                  className="card card-hover focus-ring group relative mb-3 flex w-full items-center gap-3 overflow-hidden border-stable-mint/40 px-4 py-4 text-left hover:glow-mint active:scale-[0.99]"
-                >
-                  <span
-                    className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(52,211,153,0.14),transparent_70%)]"
-                    aria-hidden="true"
-                  />
-                  <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-stable-mint/15 text-stable-mint">
-                    <Phone className="h-5 w-5" />
-                  </span>
-                  <span className="relative min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="truncate text-sm font-semibold text-slate-50">
-                        Return to call
-                      </span>
-                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-stable-mint/30 bg-stable-mint/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-mint">
-                        <span className="animate-live h-1 w-1 rounded-full bg-stable-mint" />
-                        live
-                      </span>
-                    </span>
-                    <span className="mt-0.5 block truncate text-xs text-slate-400">
-                      {activeCallRoom?.display_name ||
-                        activeCallRoom?.name ||
-                        "Your active call"}
-                    </span>
-                  </span>
-                  <span className="relative shrink-0 rounded-lg border border-stable-mint/30 bg-stable-mint/10 px-3 py-1.5 text-xs font-semibold text-stable-mint transition-colors group-hover:bg-stable-mint/20">
-                    Rejoin
-                  </span>
-                </button>
-              )}
-
-              {summaryLiveCalls.length > 0 && (
-                <ul className="grid grid-cols-1 gap-3">
-                  {summaryLiveCalls.map((room) => (
-                    <li key={room.room_id}>
-                      <button
-                        type="button"
-                        onClick={() => openRoom(room.room_id)}
-                        className="card card-hover focus-ring group relative flex w-full items-center gap-3 overflow-hidden px-4 py-3.5 text-left text-slate-200 hover:glow-aqua active:scale-[0.98]"
-                      >
-                        <span
-                          className="pointer-events-none absolute inset-0 bg-[radial-gradient(85%_120%_at_100%_0%,rgba(34,211,238,0.08),transparent_70%)]"
-                          aria-hidden="true"
-                        />
-                        <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-cyan/15 text-stable-cyan">
-                          <Video className="h-5 w-5" />
-                        </span>
-                        <span className="relative min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold">
-                            {room.display_name}
-                          </span>
-                          <span className="mt-0.5 block truncate text-xs text-slate-400">
-                            {room.participant_count} participant
-                            {room.participant_count === 1 ? "" : "s"}
-                            {room.has_agent ? " · agent present" : ""}
-                          </span>
-                        </span>
-                        <span className="relative shrink-0 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors group-hover:border-line-strong group-hover:bg-surface-3">
-                          Open
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {showMeetingEmpty && (
-                <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-                  No live meetings
-                </p>
-              )}
-            </section>
-
-            {/* ── W5: Agent activity (absorbs "Needs your attention") ──── */}
-            <div
-              id={SECTION_AGENT_FEED}
-              tabIndex={-1}
-              className={clsx(
-                "min-w-0 max-lg:order-3",
-                flashClass(SECTION_AGENT_FEED),
-              )}
-            >
-              <section aria-labelledby="home-agent-feed-heading">
-                <div className="mb-2 flex items-center gap-2">
-                  <Bot className="h-4 w-4 text-item-agent" />
-                  <h2
-                    id="home-agent-feed-heading"
-                    className="font-display text-sm font-semibold text-slate-200"
+        </header>
+        <div className="space-y-4">
+          {order.map((id) => {
+            const section = sections[id];
+            if (section.hidden) return null;
+            const isCollapsed = collapsed[id] === true;
+            return (
+              <section
+                key={id}
+                aria-labelledby={`home-${id}-heading`}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => dropOn(id)}
+              >
+                <div className="mb-2 flex items-center gap-1">
+                  <button
+                    type="button"
+                    id={`home-${id}-heading`}
+                    draggable
+                    onDragStart={() => setDragId(id)}
+                    onClick={() => toggleCollapsed(id)}
+                    aria-expanded={!isCollapsed}
+                    className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 text-left"
                   >
-                    Agent activity
-                  </h2>
+                    <ChevronDown
+                      className={clsx("h-4 w-4 shrink-0 text-slate-500 transition", isCollapsed && "-rotate-90")}
+                    />
+                    <span className="font-display text-sm font-semibold text-slate-200">
+                      {SECTION_LABEL[id]}
+                    </span>
+                    <Count n={section.count} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Move ${SECTION_LABEL[id]} up`}
+                    onClick={() => shift(id, -1)}
+                    className="focus-ring rounded-md p-1 text-slate-500 hover:bg-white/[0.05]"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Move ${SECTION_LABEL[id]} down`}
+                    onClick={() => shift(id, 1)}
+                    className="focus-ring rounded-md p-1 text-slate-500 hover:bg-white/[0.05]"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
                 </div>
-                {(homeSummary?.agent_activity.length ?? 0) === 0 ? (
-                  <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-                    No agent activity yet
-                  </p>
-                ) : (
-                  <ul className="card overflow-hidden">
-                    {homeSummary!.agent_activity.map((item, i) => (
-                      <li key={item.message_id}>
-                        <HomeRow
-                          leading={<Bot className="h-4 w-4 text-item-agent" />}
-                          title={item.sender_name}
-                          at={item.created_at}
-                          divider={i > 0}
-                          onClick={() => openRoom(item.room_id)}
-                          line={
-                            <span className="mt-0.5 block truncate text-xs text-slate-400">
-                              {/* Server previews are raw message text — flatten
-                                  markdown exactly like the client-derived rows. */}
-                              {item.room_name} · {previewText(item.preview)}
-                            </span>
-                          }
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {!isCollapsed && section.body}
               </section>
-            </div>
-          </div>
-
-          <div className="min-w-0 max-lg:contents lg:col-start-2 lg:space-y-6 2xl:col-start-auto">
-            {/* Column C: who's around right now, then ambient resources. */}
-
-            {/* ── People online ────────────────────────────────────────── */}
-            <section
-              aria-labelledby="home-people-heading"
-              className="min-w-0 max-lg:order-5"
-            >
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <UserRound className="h-4 w-4 text-stable-mint" />
-                  <h2
-                    id="home-people-heading"
-                    className="font-display text-sm font-semibold text-slate-200"
-                  >
-                    People online
-                  </h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setPeopleDrawerOpen(true)}
-                  className="focus-ring rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
-                >
-                  Open People
-                </button>
-              </div>
-
-              {peopleOnline.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-                  {favoriteIds.length === 0
-                    ? "No one is online right now. Star people in the People drawer to keep them at the top here."
-                    : "No one is online right now."}
-                </p>
-              ) : (
-                <ul className="grid grid-cols-1 gap-2">
-                  {peopleOnline.map((person) => {
-                    const label =
-                      person.display_name?.trim() ||
-                      person.username?.trim() ||
-                      "Person";
-                    const busy = openingPersonId === person.id;
-                    const starred = favoriteIds.includes(person.id);
-                    return (
-                      <li key={person.id}>
-                        <button
-                          type="button"
-                          onClick={() => void openPersonDm(person)}
-                          disabled={!!openingPersonId}
-                          className="card card-hover focus-ring flex w-full items-center gap-3 px-3.5 py-3 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <span className="relative shrink-0">
-                            <Identity
-                              {...resolveIdentity({
-                                ...person,
-                                display_name: label,
-                                participant_type: "human",
-                                is_online: true,
-                              })}
-                              presence={null}
-                              size={36}
-                            />
-                            <span
-                              className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live"
-                              aria-label="Online"
-                            />
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex items-center gap-1.5">
-                              <span className="truncate text-sm font-medium text-slate-100">
-                                {label}
-                              </span>
-                              {starred && (
-                                <Sparkles
-                                  className="h-3 w-3 shrink-0 text-stable-purple-light"
-                                  aria-label="Favorite"
-                                />
-                              )}
-                            </span>
-                            <span className="block truncate text-xs text-slate-500">
-                              {busy ? "Opening…" : "Message"}
-                            </span>
-                          </span>
-                          <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-
-            {/* ── Agent fleet ──────────────────────────────────────────── */}
-            <section
-              aria-labelledby="home-fleet-heading"
-              className="min-w-0 max-lg:order-6"
-            >
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Bot className="h-4 w-4 text-stable-purple-light" />
-                  <h2
-                    id="home-fleet-heading"
-                    className="font-display text-sm font-semibold text-slate-200"
-                  >
-                    Agents
-                  </h2>
-                  {agentRoster.length > 0 && (
-                    <span className="text-[11px] tabular-nums text-slate-500">
-                      {/* "54/54 active" is a ratio that carries no information
-                          and reads as a fabricated stat — Brigade reports
-                          nearly everything `active` because that is
-                          REGISTRATION, not liveness. State the count plainly
-                          unless the split is real. */}
-                      {fleetActiveCount === agentRoster.length
-                        ? `${agentRoster.length} registered`
-                        : `${fleetActiveCount}/${agentRoster.length} active`}
-                    </span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => navigate("/agents")}
-                  className="focus-ring rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
-                >
-                  Browse all
-                </button>
-              </div>
-
-              {fleetAgents.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-                  No agents registered on this instance yet.
-                </p>
-              ) : (
-                <ul className="card overflow-hidden">
-                  {fleetAgents.map((agent, i) => {
-                    const unreachable = agent.availability === "unavailable";
-                    return (
-                      <li key={agent.id} className="relative">
-                        <CrewThreadMenu
-                          agentId={agent.id}
-                          name={agent.display_name || agent.name}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => navigate("/agents")}
-                          className={clsx(
-                            "focus-ring flex w-full items-center gap-3 px-3.5 py-2.5 pr-12 text-left transition-colors hover:bg-white/[0.04]",
-                            i > 0 && "border-t border-line",
-                          )}
-                        >
-                          <span className="relative shrink-0">
-                            <Identity
-                              {...resolveIdentity({
-                                ...agent,
-                                participant_type: "agent",
-                              })}
-                              presence={null}
-                              size={32}
-                              dimmed={unreachable || agent.status === "offline"}
-                            />
-                            {agent.emoji && (
-                              <span
-                                className="absolute -bottom-1 -right-1 text-[10px]"
-                                aria-hidden="true"
-                              >
-                                {agent.emoji}
-                              </span>
-                            )}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium text-slate-100">
-                              {agent.display_name || agent.name}
-                            </span>
-                            <span className="block truncate text-xs text-slate-500">
-                              {agentSubtitle([agent.rank, agent.title]) ||
-                                agent.model}
-                            </span>
-                          </span>
-                          <span
-                            className={clsx(
-                              "flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                              unreachable
-                                ? "border-rose-500/25 bg-rose-500/10 text-rose-300"
-                                : agent.status === "working"
-                                  ? "border-stable-mint/25 bg-stable-mint/10 text-stable-mint"
-                                  : agent.status === "active"
-                                    ? "border-stable-cyan/25 bg-stable-cyan/10 text-stable-cyan"
-                                    : "border-line bg-white/[0.03] text-slate-400",
-                            )}
-                          >
-                            <span
-                              className={clsx(
-                                "h-1.5 w-1.5 rounded-full",
-                                unreachable
-                                  ? "bg-rose-400"
-                                  : agent.status === "working"
-                                    ? "animate-live bg-stable-mint"
-                                    : agent.status === "active"
-                                      ? "bg-stable-cyan"
-                                      : agent.status === "idle"
-                                        ? "bg-slate-400"
-                                        : "bg-slate-600",
-                              )}
-                            />
-                            {unreachable ? "unreachable" : agent.status}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-
-            {/* ── W6: Knowledge rail ───────────────────────────────────── */}
-            <div className="min-w-0 max-lg:order-7">
-              <KnowledgeRecents
-                onOpenKnowledge={openKnowledge}
-                artifacts={homeSummary?.recent_artifacts}
-                transcripts={homeSummary?.recent_transcripts}
-              />
-            </div>
-          </div>
+            );
+          })}
         </div>
       </div>
     </div>
