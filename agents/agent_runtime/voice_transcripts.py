@@ -70,7 +70,11 @@ logger = structlog.get_logger(__name__)
 # Wire contract mirror of web/src/lib/roomDataProtocol.ts TranscriptMessage.
 # Sources that may DRIVE a reply. ``None`` (field absent) is accepted for
 # older web bundles that predate the ``source`` field.
-_REPLY_SOURCES: frozenset[str | None] = frozenset({None, "", "local_mic"})
+# ``captioner`` is the elected multi-track STT. It is reply input for every
+# worker except the captioner itself (that worker already dispatched the
+# line). ``agent_stt`` stays excluded: that is a linked-participant re-publish
+# and answering it doubles the same words.
+_REPLY_SOURCES: frozenset[str | None] = frozenset({None, "", "local_mic", "captioner"})
 
 # Placeholder identities the agent-STT publisher uses when it refuses to guess
 # the speaker in a multi-human room. Never conversation input.
@@ -110,6 +114,8 @@ class Utterance:
     segment_ids: tuple[str, ...]
     first_ts_ms: int
     last_ts_ms: int
+    source: str | None = None
+    speaker_hint: str | None = None
 
 
 @dataclass
@@ -120,6 +126,8 @@ class _Pending:
     first_ts_ms: int = 0
     last_ts_ms: int = 0
     deadline: float = 0.0  # monotonic seconds
+    source: str | None = None
+    speaker_hint: str | None = None
 
 
 def classify_transcript(
@@ -176,12 +184,15 @@ def classify_transcript(
     )
     segment_id = str(msg.get("segmentId") or "") or f"{participant_id}:{ts_ms}:{len(text)}"
 
+    hint = msg.get("speaker_hint")
     return "final", {
         "participant_id": participant_id,
         "name": name or participant_id,
         "text": text,
         "segment_id": segment_id,
         "ts_ms": ts_ms,
+        "source": source if isinstance(source, str) else None,
+        "speaker_hint": hint.strip() if isinstance(hint, str) and hint.strip() else None,
     }
 
 
@@ -221,7 +232,12 @@ class TranscriptAggregator:
         pid = norm["participant_id"]
         pending = self._pending.get(pid)
         if pending is None:
-            pending = _Pending(name=norm["name"], first_ts_ms=norm["ts_ms"])
+            pending = _Pending(
+                name=norm["name"],
+                first_ts_ms=norm["ts_ms"],
+                source=norm.get("source"),
+                speaker_hint=norm.get("speaker_hint"),
+            )
             self._pending[pid] = pending
         pending.parts.append(norm["text"])
         pending.segment_ids.append(segment_id)
@@ -255,6 +271,8 @@ class TranscriptAggregator:
             segment_ids=tuple(pending.segment_ids),
             first_ts_ms=pending.first_ts_ms,
             last_ts_ms=pending.last_ts_ms,
+            source=pending.source,
+            speaker_hint=pending.speaker_hint,
         )
 
 
@@ -317,39 +335,93 @@ def other_agents_present(room: Any, self_identity: str) -> bool:
     return False
 
 
+_COHOST_UNSET_LOGGED: set[str] = set()
+
+
 def primary_agent_id(room: Any) -> str | None:
     """The room's designated voice co-host, or None.
 
-    ``voice_primary_agent_id`` is the deliberate setting. It falls back to
-    ``brigade_agent_id`` so a room that has never been configured still has a
-    co-host — but that scalar is LAST-INVITED-WINS (registry, same file that
-    warns it is "shared mutable state that the next dispatch overwrites"), so
-    the fallback quietly follows whoever was invited most recently. Set the
-    explicit key on any room where it matters.
+    ``voice_primary_agent_id`` is the only source. The old fallback to
+    ``brigade_agent_id`` followed whoever was invited last and moved the
+    co-host mid-show. Unset means nobody is co-host; that is logged once
+    per room. ``nobody`` / ``none`` / ``off`` is the same outcome, written
+    on purpose, and is not logged as a missing setting.
     """
     raw = getattr(room, "metadata", "") or ""
-    if not raw:
-        return None
-    try:
-        meta = json.loads(raw)
-    except Exception:
-        return None
+    meta: Any = None
+    if raw:
+        try:
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            meta = None
+    if isinstance(raw, dict):
+        meta = raw
     if not isinstance(meta, dict):
+        _log_cohost_unset(room)
         return None
     explicit = meta.get("voice_primary_agent_id")
     if isinstance(explicit, str) and explicit.strip():
         value = explicit.strip().lower()
-        # An explicit "nobody" beats the fallback: it is how a show room says
-        # "no co-host at all — every agent waits to be named". Without it the
-        # scalar fallback below hands the co-host to the last-invited agent,
-        # and there is no way to opt OUT of having one.
         if value in ("nobody", "none", "off"):
             return None
         return explicit.strip()
-    fallback = meta.get("brigade_agent_id")
-    if isinstance(fallback, str) and fallback.strip():
-        return fallback.strip()
+    _log_cohost_unset(room)
     return None
+
+
+def _log_cohost_unset(room: Any) -> None:
+    key = str(getattr(room, "name", "") or "") or str(id(room))
+    if key in _COHOST_UNSET_LOGGED:
+        return
+    if len(_COHOST_UNSET_LOGGED) > 5000:
+        _COHOST_UNSET_LOGGED.clear()
+    _COHOST_UNSET_LOGGED.add(key)
+    logger.info(
+        "voice_cohost_unset",
+        room=getattr(room, "name", "") or "",
+        reason="voice_primary_agent_id unset",
+    )
+
+
+def participant_metadata(participant: Any) -> dict[str, Any]:
+    """A LiveKit participant's metadata, whether it arrived as JSON or a dict."""
+    raw = getattr(participant, "metadata", None)
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def participant_shared_mic(participant: Any) -> bool:
+    """True when this device has flipped "we're sharing this mic"."""
+    value = participant_metadata(participant).get("shared_mic")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def any_shared_mic(room: Any) -> bool:
+    """True when any remote human in the call is on a shared mic."""
+    try:
+        remotes = list(getattr(room, "remote_participants", {}).values())
+    except Exception:
+        return False
+    for participant in remotes:
+        identity = str(getattr(participant, "identity", "") or "")
+        if not identity or is_agent_identity(identity):
+            continue
+        if identity.startswith(("broadcast-", "EG_")):
+            continue
+        if participant_shared_mic(participant):
+            return True
+    return False
 
 
 def elected_user_captioner(room: Any, self_identity: str) -> bool:
@@ -391,6 +463,7 @@ def call_roster(room: Any, self_identity: str) -> tuple[dict[str, set[str]], int
     """
     others: dict[str, set[str]] = {}
     humans = 0
+    shared = False
     try:
         remotes = list(getattr(room, "remote_participants", {}).values())
     except Exception:
@@ -416,6 +489,12 @@ def call_roster(room: Any, self_identity: str) -> tuple[dict[str, set[str]], int
             others[agent_id] = needles
         else:
             humans += 1
+            if participant_shared_mic(participant):
+                # One device, more than one person. The solo-human exception
+                # must not treat them as a DM.
+                shared = True
+    if shared and humans < 2:
+        humans = 2
     return others, humans
 
 
@@ -447,6 +526,8 @@ class VoiceTranscriptResponder:
         restart_session: Callable[[], Awaitable[Any | None]] | None = None,
         direct_reply: Callable[[str, Callable[[], None]], Awaitable[bool]] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        linked_participant_getter: Callable[[], Any | None] | None = None,
+        on_human_final: Callable[[str], None] | None = None,
     ) -> None:
         self._session = session
         self._room = room
@@ -471,6 +552,8 @@ class VoiceTranscriptResponder:
         self._restart_session = restart_session
         self._direct_reply = direct_reply
         self._clock = clock
+        self._linked_participant_getter = linked_participant_getter
+        self._on_human_final = on_human_final
         self._last_stt_activity: float | None = None
         self._drain_task: asyncio.Task[None] | None = None
         self._reply_lock = asyncio.Lock()
@@ -564,14 +647,47 @@ class VoiceTranscriptResponder:
             return False
         return (self._clock() - self._last_stt_activity) <= self._stt_alive_window
 
+    def _linked_identity(self) -> str:
+        getter = self._linked_participant_getter
+        if getter is None:
+            return ""
+        try:
+            linked = getter()
+        except Exception:
+            return ""
+        return str(getattr(linked, "identity", "") or "")
+
     async def _handle_utterance(self, utterance: Utterance) -> None:
         """Guards, then the shared reply pipeline. Mirrors the text policy."""
         if not utterance.text:
             return
 
-        # STT-alive arbitration: our own ears heard something recently → the
-        # AgentSession replies by itself; the fallback must not double-fire.
-        if self._stt_configured and self._stt_recently_alive():
+        source = getattr(utterance, "source", None)
+        # The captioner already ran decide() for this line in its multi-track
+        # callback. Swallowing the echo here is what keeps that from doubling.
+        if source == "captioner" and elected_user_captioner(
+            self._room, self._agent_identity
+        ):
+            return
+
+        if self._on_human_final is not None:
+            try:
+                self._on_human_final(utterance.text)
+            except Exception:
+                logger.debug("voice_transcript_barge_failed", exc_info=True)
+
+        # STT-alive arbitration. Stand down only for the human our own session
+        # is linked to — that session will answer. A captioner line from a
+        # different device is a person this session cannot hear, and standing
+        # down would drop them.
+        linked_id = self._linked_identity()
+        hears_this = bool(linked_id) and utterance.participant_id == linked_id
+        session_will_answer = self._stt_configured and self._stt_recently_alive() and (
+            hears_this or (not linked_id and source != "captioner")
+        )
+        if source == "captioner" and hears_this and self._stt_recently_alive():
+            session_will_answer = True
+        if session_will_answer:
             logger.info(
                 "voice_transcript_stood_down_stt_alive",
                 speaker=utterance.participant_id,
@@ -587,6 +703,7 @@ class VoiceTranscriptResponder:
         decision = None
         if voice_dispatch.dispatch_enabled():
             others, humans = call_roster(self._room, self._agent_identity)
+            shared = any_shared_mic(self._room)
             decision = voice_dispatch.decide(
                 state=self._floor,
                 me=self._brigade_agent_id,
@@ -598,6 +715,9 @@ class VoiceTranscriptResponder:
                 human_count=humans,
                 primary_agent=primary_agent_id(self._room),
                 now=self._clock(),
+                shared_mic=shared,
+                room=self._room_key,
+                agent_identity=self._agent_identity,
             )
             # EVERY decision is logged with the rule that produced it — the
             # spec requires it, and a future classifier's eval set is real

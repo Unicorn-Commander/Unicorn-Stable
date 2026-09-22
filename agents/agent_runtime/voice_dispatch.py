@@ -47,24 +47,19 @@ The moment a SECOND HUMAN joins, addressing is required from everyone,
 co-host included: two people talking to each other is the nobody class, and
 that is the whole point of it.
 
-WHO THE CO-HOST IS. ``voice_primary_agent_id`` in the room metadata, set
-deliberately. It falls back to the room's ``brigade_agent_id`` scalar, which
-works with no configuration — but that scalar is LAST-INVITED-WINS (see
-registry._resolve_brigade_agent_id: "shared mutable state that the next
-dispatch overwrites"), so relying on the fallback means inviting another agent
-silently moves the co-host mid-show. Set the explicit key for anything that
-matters.
+WHO THE CO-HOST IS. ``voice_primary_agent_id`` in the room metadata, and
+nothing else. When that key is unset, nobody is the co-host — the old
+fallback to ``brigade_agent_id`` followed whoever was invited last, and a
+show cannot change co-host by inviting a specialist. An explicit
+``nobody`` / ``none`` / ``off`` is the same outcome, written on purpose.
+The sole-agent exception (one human, one agent, a DM) still answers
+unaddressed speech; that is not a co-host.
 
-PLACEMENT, HONESTLY. The spec says the dispatcher belongs in the server,
-"single authority". This module is a single authority for every worker in the
-agents runtime process, which is where all of a room's workers actually run
-today (one `stable-agents` container, registry.py runs each agent as a job in
-it). That is genuinely one decision-maker per room right now — but it is
-process-local, so a SECOND agents container would split the authority and the
-floor mutex would stop being a mutex. `RoomFloor` is deliberately the only
-stateful piece and its whole surface is four methods, so backing it with Redis
-(or moving it behind a backend endpoint, as the spec prefers) is a contained
-change. Do that before running a second agents replica.
+PLACEMENT. The spec wants one authority. ``RoomFloor`` is the in-memory
+shape; ``agent_runtime.floor_store`` is the shared one (InMemory for tests,
+Redis when ``VOICE_FLOOR_BACKEND=redis`` or ``VOICE_FLOOR_REDIS_URL`` is
+set) so every agents container and the relay hold one lease. The kill
+switch is unchanged.
 
 EVERY DECISION IS LOGGED by the caller with the rule that produced it — the
 spec requires it, and the eval set for any future classifier is real logged
@@ -73,21 +68,31 @@ decisions, never synthetic holdout.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 __all__ = [
     "Decision",
     "RoomFloor",
     "dispatch_enabled",
     "decide",
+    "decision_record",
+    "set_decision_recorder",
     "STICKY_WINDOW_S",
+    "FLOOR_LEASE_S",
     "spoken_name_match",
     "fuzzy_spoken_name_match",
     "log_name_near_miss",
+    "floor_for",
+    "forget_room",
 ]
 
 #: How long a speaker's claim on an agent survives without re-addressing.
@@ -349,26 +354,97 @@ class RoomFloor:
             self._floor = None
 
 
-_ROOMS: dict[str, RoomFloor] = {}
+def floor_for(room_key: str) -> Any:
+    """The shared dispatch state for a room (created on first use).
 
+    Backed by the process ``FloorStore`` — in-memory unless Redis was
+    configured — so two workers in two containers take one lease.
+    """
+    from agent_runtime.floor_store import bind_room
 
-def floor_for(room_key: str) -> RoomFloor:
-    """The shared dispatch state for a room (created on first use)."""
-    state = _ROOMS.get(room_key)
-    if state is None:
-        state = RoomFloor()
-        _ROOMS[room_key] = state
-    return state
+    return bind_room(room_key)
 
 
 def forget_room(room_key: str) -> None:
     """Drop a room's state when its call ends, so this never grows unbounded."""
-    _ROOMS.pop(room_key, None)
+    from agent_runtime.floor_store import forget_room as _forget
+
+    _forget(room_key)
+
+
+_recorder: Callable[[dict[str, Any]], None] | None = None
+
+
+def set_decision_recorder(fn: Callable[[dict[str, Any]], None] | None) -> None:
+    """Where every ``decide()`` writes its record. ``None`` keeps tests quiet.
+
+    Production installs a poster that appends an ``agent_events`` row of type
+    ``voice_dispatch`` and asks the server to fan the same decision out as a
+    room-scoped WebSocket event. The recorder must not raise into the voice
+    loop; ``decide`` swallows a failure.
+    """
+    global _recorder
+    _recorder = fn
+
+
+def text_hash(text: str) -> str:
+    """Short hash of the utterance. The eval log stores this, not the words."""
+    raw = (text or "").strip().lower().encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def decision_record(
+    decision: Decision,
+    *,
+    me: str,
+    state: Any,
+    now: float,
+    room: str,
+    speaker: str,
+    text: str,
+    human_count: int,
+    shared_mic: bool,
+    agent_identity: str = "",
+) -> dict[str, Any]:
+    """The ``voice_dispatch`` event body. No utterance text."""
+    winner: str | None
+    if decision.respond:
+        winner = me or None
+    elif decision.rule in ("addressed_other_agent", "sticky_other_agent"):
+        winner = decision.addressed
+    elif decision.rule == "floor_busy":
+        try:
+            winner = state.floor_holder(now=now)
+        except Exception:
+            winner = None
+    else:
+        winner = None
+    return {
+        "room": room or "",
+        "speaker": speaker or "",
+        "text_hash": text_hash(text),
+        "rule": decision.rule,
+        "winner": winner,
+        "human_count": int(human_count),
+        "shared_mic": bool(shared_mic),
+        "agent_identity": agent_identity or "voice-dispatch",
+        "agent_type": "voice",
+    }
+
+
+def _emit(record: dict[str, Any]) -> None:
+    fn = _recorder
+    if fn is None:
+        return
+    try:
+        fn(record)
+    except Exception:
+        logger.debug("voice_dispatch_record_failed", exc_info=True)
 
 
 def decide(
     *,
-    state: RoomFloor,
+    state: Any = None,
     me: str,
     my_names: set[str] | frozenset[str],
     speaker: str,
@@ -378,6 +454,11 @@ def decide(
     human_count: int,
     primary_agent: str | None = None,
     now: float | None = None,
+    shared_mic: bool = False,
+    room: str = "",
+    store: Any = None,
+    room_key: str = "",
+    agent_identity: str = "",
 ) -> Decision:
     """Should *this* agent answer *this* utterance?
 
@@ -385,21 +466,51 @@ def decide(
     ``other_agent_names`` maps every OTHER resident agent id to its spoken
     forms — needed so "General, thoughts?" is recognised as *addressed
     elsewhere* rather than merely *not addressed to me*.
-    ``human_count`` is the number of humans in the call (drives the solo rule).
+    ``human_count`` is the number of humans the caller counted. ``shared_mic``
+    floors that at 2 for the solo rule: two people on one device must not
+    look like a DM. The logged ``human_count`` stays the caller's number.
     ``primary_agent`` is the room's designated co-host, if any — the only
     agent that answers unaddressed speech when one human is present.
+    Pass ``state`` (a ``RoomFloor`` or a bound store) or ``store`` plus
+    ``room_key`` when two clients must share one floor.
 
-    Pure apart from ``state``: no I/O, no clock unless one is omitted.
+    Every return is recorded. The recorder is a no-op until one is installed.
     """
     now = time.monotonic() if now is None else now
+    if state is None:
+        if store is None:
+            raise TypeError("decide() requires state or store")
+        from agent_runtime.floor_store import BoundFloor
+
+        state = BoundFloor(store, (room_key or room or "room"))
+    ruled_humans = int(human_count)
+    if shared_mic and ruled_humans < 2:
+        ruled_humans = 2
+
+    def finish(decision: Decision) -> Decision:
+        _emit(
+            decision_record(
+                decision,
+                me=me,
+                state=state,
+                now=now,
+                room=room or room_key,
+                speaker=speaker,
+                text=text,
+                human_count=int(human_count),
+                shared_mic=shared_mic,
+                agent_identity=agent_identity,
+            )
+        )
+        return decision
 
     # 0. Agents ignore agents (spec §2). Without this, one agent's TTS is
     #    another's prompt and the room never stops talking.
     if speaker_is_agent:
-        return Decision(False, "agent_speech_ignored")
+        return finish(Decision(False, "agent_speech_ignored"))
 
     if not (text or "").strip():
-        return Decision(False, "empty_utterance")
+        return finish(Decision(False, "empty_utterance"))
 
     addressed_me = spoken_name_match(text, my_names)
     addressed_other = next(
@@ -416,41 +527,43 @@ def decide(
         # An explicit address re-points stickiness even mid-conversation.
         state.claim(speaker, me, now=now)
         if not state.take_floor(me, now=now):
-            return Decision(False, "floor_busy", addressed=me)
-        return Decision(True, "addressed_by_name", addressed=me)
+            return finish(Decision(False, "floor_busy", addressed=me))
+        return finish(Decision(True, "addressed_by_name", addressed=me))
 
     if addressed_other is not None:
         # Someone else was named. Their claim, not ours — and this speaker's
         # sticky claim on us is over.
         state.claim(speaker, addressed_other, now=now)
-        return Decision(False, "addressed_other_agent", addressed=addressed_other)
+        return finish(Decision(False, "addressed_other_agent", addressed=addressed_other))
 
     # 2. STICKY TURN-TAKING — the speaker's own unnamed follow-up.
     held = state.sticky_agent(speaker, now=now)
     if held == me:
         if not state.take_floor(me, now=now):
-            return Decision(False, "floor_busy", addressed=me)
-        return Decision(True, "sticky_follow_up", addressed=me)
+            return finish(Decision(False, "floor_busy", addressed=me))
+        return finish(Decision(True, "sticky_follow_up", addressed=me))
     if held is not None:
-        return Decision(False, "sticky_other_agent", addressed=held)
+        return finish(Decision(False, "sticky_other_agent", addressed=held))
 
     # 3. SOLO-HUMAN EXCEPTION — the co-host answers when nobody was named.
-    if human_count <= 1:
+    #    A shared mic counts as at least two humans, so this cannot fire
+    #    while two people are talking through one device.
+    if ruled_humans <= 1:
         sole_agent = not other_agent_names
         am_cohost = primary_agent is not None and primary_agent == me
         if sole_agent or am_cohost:
             if not state.take_floor(me, now=now):
-                return Decision(False, "floor_busy", addressed=me)
+                return finish(Decision(False, "floor_busy", addressed=me))
             rule = "solo_human_sole_agent" if sole_agent else "solo_human_cohost"
-            return Decision(True, rule, addressed=me)
+            return finish(Decision(True, rule, addressed=me))
         # Several agents and I am not the co-host: wait to be named. Falls
         # through to the nobody class below so the log names the real reason.
 
     # 4. THE NOBODY CLASS. Humans talking to each other, or to no one.
-    return Decision(False, "addressed_to_nobody")
+    return finish(Decision(False, "addressed_to_nobody"))
 
 
-def observe_reply_finished(state: RoomFloor, me: str) -> None:
+def observe_reply_finished(state: Any, me: str) -> None:
     """Release the floor after a reply completes (success or failure)."""
     state.release_floor(me)
 

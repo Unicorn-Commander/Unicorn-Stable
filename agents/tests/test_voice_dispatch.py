@@ -415,14 +415,19 @@ class PrimaryAgentResolutionTests(TestCase):
         )
         self.assertEqual(primary_agent_id(room), "majik")
 
-    def test_falls_back_to_the_scalar(self) -> None:
+    def test_the_last_invited_scalar_is_not_a_cohost(self) -> None:
+        """brigade_agent_id is last-invited-wins. It must not appoint a co-host."""
         from types import SimpleNamespace
 
         from agent_runtime.voice_transcripts import primary_agent_id
 
-        self.assertEqual(
-            primary_agent_id(SimpleNamespace(metadata='{"brigade_agent_id": "majik"}')),
-            "majik",
+        self.assertIsNone(
+            primary_agent_id(
+                SimpleNamespace(
+                    name="show",
+                    metadata='{"brigade_agent_id": "majik"}',
+                )
+            )
         )
 
     def test_missing_or_malformed_metadata_is_no_cohost_not_a_crash(self) -> None:

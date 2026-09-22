@@ -230,13 +230,16 @@ def speakable(text: str, *, limit: int = MAX_SPOKEN_CHARS) -> str:
     out = _BULLET.sub("", out)
     out = _EMPHASIS.sub("", out)
     out = _WS.sub(" ", out).strip()
-    if len(out) > limit:
-        # Cut at a sentence boundary when one is near the limit, so the relay
-        # stops on a full thought instead of mid-word.
-        window = out[:limit]
-        cut = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
-        out = (window[: cut + 1] if cut > limit * 0.6 else window).rstrip()
-        out += " …the rest is in the chat."
+    # 0 (and anything negative) is unlimited: hub and DM. No "rest is in the
+    # chat" suffix, because nothing was cut.
+    if limit <= 0 or len(out) <= limit:
+        return out
+    # Cut at a sentence boundary when one is near the limit, so the relay
+    # stops on a full thought instead of mid-word.
+    window = out[:limit]
+    cut = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+    out = (window[: cut + 1] if cut > limit * 0.6 else window).rstrip()
+    out += " …the rest is in the chat."
     return out
 
 
@@ -530,7 +533,29 @@ def _fresh_message(payload: Any) -> tuple[str, dict[str, Any]] | None:
     return (sender.get("username") or "").strip(), message
 
 
-def should_speak(payload: Any, source_username: str) -> str | None:
+def max_spoken_chars_from_metadata(*metadatas: Any) -> int:
+    """Per-room spoken cap. Missing key keeps the historical 900.
+
+    ``0`` is unlimited (hub / DM). A positive value truncates. The first
+    metadata that actually carries the key wins, so a dispatch can override
+    the room and the room still applies when the dispatch is silent.
+    """
+    for metadata in metadatas:
+        data = _metadata_dict(metadata)
+        if "voice_relay_max_spoken_chars" not in data:
+            continue
+        raw = data.get("voice_relay_max_spoken_chars")
+        if raw is None or raw == "":
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        return 0 if n <= 0 else n
+    return MAX_SPOKEN_CHARS
+
+
+def should_speak(payload: Any, source_username: str, *, limit: int = MAX_SPOKEN_CHARS) -> str | None:
     """The text to speak from one data packet, or None.
 
     Returns None for everything that is not a fresh, visible, non-empty
@@ -546,11 +571,17 @@ def should_speak(payload: Any, source_username: str) -> str | None:
     content = message.get("content")
     if not isinstance(content, str):
         return None
-    spoken = speakable(content)
+    from agent_runtime.spoken_text import is_unvoiced_ack
+
+    if is_unvoiced_ack(content):
+        return None
+    spoken = speakable(content, limit=limit)
     return spoken or None
 
 
-def should_speak_as(payload: Any, voices: dict[str, str]) -> SpokenLine | None:
+def should_speak_as(
+    payload: Any, voices: dict[str, str], *, limit: int = MAX_SPOKEN_CHARS
+) -> SpokenLine | None:
     """The (voice, text, sender, name) to say for one packet, or None.
 
     Multi-sender form of ``should_speak``: any sender in ``voices`` is spoken,
@@ -566,7 +597,11 @@ def should_speak_as(payload: Any, voices: dict[str, str]) -> SpokenLine | None:
     content = message.get("content")
     if not isinstance(content, str):
         return None
-    spoken = speakable(content)
+    from agent_runtime.spoken_text import is_unvoiced_ack
+
+    if is_unvoiced_ack(content):
+        return None
+    spoken = speakable(content, limit=limit)
     if not spoken:
         return None
     sender = message.get("sender") if isinstance(message.get("sender"), dict) else {}
@@ -829,6 +864,7 @@ class VoiceRelayAgent(StableAgent):
         self._video, self._multi = flags["video"], flags["multi"]
         style = face_style_from_metadata(job_meta if _metadata_dict(job_meta).get(FACE_SHAPE_KEY) else room_meta)
         self._face_shape, self._face_plate = style["shape"], style["plate"]
+        self._max_spoken_chars = max_spoken_chars_from_metadata(job_meta, room_meta)
 
         tts_plugin = get_tts_plugin(personality=self._relay_persona)
         agent_kwargs: dict[str, Any] = {"instructions": "", "tts": tts_plugin}
@@ -928,6 +964,7 @@ class VoiceRelayAgent(StableAgent):
             session.on("user_input_transcribed", self._on_own_stt)
         except Exception:
             logger.warning("relay_stt_listener_failed", exc_info=True)
+        self._attach_multi_track()
         # Faces and cast members, off the critical path: a slow puppet join
         # must never delay the first spoken line.
         self._schedule_visuals()
@@ -1135,8 +1172,18 @@ class VoiceRelayAgent(StableAgent):
                         window_seconds=self._window_seconds,
                         by=str(payload.get("by") or "")[:40],
                     )
-                elif not any(k in payload for k in ("voices", "video", "multi")):
+                elif not any(
+                    k in payload
+                    for k in ("voices", "video", "multi", "max_spoken_chars")
+                ):
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
+                if "max_spoken_chars" in payload:
+                    try:
+                        self._max_spoken_chars = max(
+                            0, int(payload.get("max_spoken_chars"))
+                        )
+                    except (TypeError, ValueError):
+                        logger.warning("voice_relay_max_spoken_invalid")
                 return
             if isinstance(payload, dict) and payload.get("type") == "voice_relay_control":
                 # A moderator's "mute mic" server-mutes this relay's track (see
@@ -1179,7 +1226,11 @@ class VoiceRelayAgent(StableAgent):
             if isinstance(payload, dict) and payload.get("type") == "transcript":
                 self._on_transcript(payload)
                 return
-            line = should_speak_as(payload, self._speaking_for())
+            line = should_speak_as(
+                payload,
+                self._speaking_for(),
+                limit=getattr(self, "_max_spoken_chars", MAX_SPOKEN_CHARS),
+            )
             if line is None:
                 return
             message_id = str((payload.get("message") or {}).get("id") or "")
@@ -1286,6 +1337,60 @@ class VoiceRelayAgent(StableAgent):
                 self._interrupt_speech(speaker=speaker, chars=len(text))
         except Exception:
             logger.warning("voice_relay_own_stt_failed", exc_info=True)
+
+    def _attach_multi_track(self) -> None:
+        """If this relay is the elected captioner, hear every human mic."""
+        try:
+            from agent_runtime.diarization import speaker_hint
+            from agent_runtime.multi_track_stt import attach_multi_track_stt
+            from agent_runtime.voice_transcripts import participant_shared_mic
+
+            def _on_final(track: Any, text: str) -> None:
+                content = (text or "").strip()
+                if not content:
+                    return
+                hint = None
+                participant = None
+                try:
+                    remotes = getattr(self._lk_room, "remote_participants", {}) or {}
+                    for candidate in remotes.values():
+                        if str(getattr(candidate, "identity", "") or "") == track.participant_identity:
+                            participant = candidate
+                            break
+                    if participant is not None and participant_shared_mic(participant):
+                        hint = speaker_hint(
+                            track.participant_name,
+                            participant_identity=track.participant_identity,
+                            text=content,
+                        )
+                except Exception:
+                    logger.debug("voice_relay_speaker_hint_failed", exc_info=True)
+                if self._captions is not None:
+                    self._captions.publish_user_line(
+                        participant_id=track.participant_identity,
+                        name=track.participant_name,
+                        text=content,
+                        source="captioner",
+                        speaker_hint=hint,
+                    )
+                key = f"stt:{content.lower()}"
+                if key in self._heard_segments:
+                    return
+                self._heard_segments.add(key)
+                if self._maybe_persist(track.participant_identity, content, ear="multi_track") and self._speaking:
+                    self._interrupt_speech(speaker=track.participant_identity, chars=len(content))
+                elif self._speaking and content:
+                    # Barge even when the line is not one we persist: a human
+                    # talking over the relay takes the floor.
+                    self._interrupt_speech(speaker=track.participant_identity, chars=len(content))
+
+            attach_multi_track_stt(
+                self._lk_room,
+                self._join_identity or self._identity,
+                _on_final,
+            )
+        except Exception:
+            logger.warning("voice_relay_multi_track_failed", exc_info=True)
 
     def _interrupt_speech(self, *, speaker: str, chars: int) -> None:
         """A human took the floor mid-reply: stop the chunk playing now and

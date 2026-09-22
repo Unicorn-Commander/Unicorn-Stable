@@ -135,6 +135,29 @@ def resolve_human(
     return "human", "Unidentified speaker"
 
 
+def _shared_mic_hint(room: Any, participant_id: str, name: str, text: str) -> str | None:
+    """``speaker_hint`` for a shared-mic line, else None."""
+    try:
+        from agent_runtime.diarization import speaker_hint
+        from agent_runtime.voice_transcripts import participant_shared_mic
+
+        remotes = getattr(room, "remote_participants", {}) or {}
+        participant = None
+        for candidate in remotes.values():
+            if str(getattr(candidate, "identity", "") or "") == participant_id:
+                participant = candidate
+                break
+        if participant is None or not participant_shared_mic(participant):
+            return None
+        return speaker_hint(
+            name,
+            participant_identity=participant_id,
+            text=text,
+        )
+    except Exception:
+        return None
+
+
 def _now_ms() -> int:
     """Epoch milliseconds — the frontend uses ``ts`` for ordering + autoscroll."""
     return int(time.time() * 1000)
@@ -266,6 +289,7 @@ class TranscriptPublisher:
             segment_id = (
                 f"{participant_id}-{_now_ms()}" if is_final else None
             )
+            hint = _shared_mic_hint(self._room, participant_id, name, text)
             self._publish(
                 participant_id=participant_id,
                 name=name,
@@ -273,6 +297,7 @@ class TranscriptPublisher:
                 is_final=is_final,
                 segment_id=segment_id,
                 source="agent_stt",
+                speaker_hint=hint,
             )
         except Exception:
             # NEVER let a captioning error bubble into the voice loop.
@@ -384,6 +409,29 @@ class TranscriptPublisher:
                 logger.debug("linked_participant_resolve_failed", exc_info=True)
         return resolve_human(self._room, speaker_id, linked)
 
+    def publish_user_line(
+        self,
+        *,
+        participant_id: str,
+        name: str,
+        text: str,
+        source: str = "captioner",
+        speaker_hint: str | None = None,
+    ) -> None:
+        """A final human line attributed by track, not by the linked participant."""
+        content = (text or "").strip()
+        if not content or not participant_id:
+            return
+        self._publish(
+            participant_id=participant_id,
+            name=name or participant_id,
+            text=content,
+            is_final=True,
+            segment_id=f"{participant_id}-{_now_ms()}",
+            source=source,
+            speaker_hint=speaker_hint,
+        )
+
     def _publish(
         self,
         *,
@@ -393,6 +441,7 @@ class TranscriptPublisher:
         is_final: bool,
         segment_id: str | None,
         source: str,
+        speaker_hint: str | None = None,
     ) -> None:
         """Build the transcript envelope and fire-and-forget publish it."""
         msg: dict[str, Any] = {
@@ -406,6 +455,8 @@ class TranscriptPublisher:
         }
         if segment_id:
             msg["segmentId"] = segment_id
+        if speaker_hint:
+            msg["speaker_hint"] = speaker_hint
 
         try:
             payload = json.dumps(msg).encode("utf-8")
