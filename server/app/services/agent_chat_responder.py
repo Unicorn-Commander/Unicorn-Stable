@@ -40,7 +40,6 @@ from app.services.message_service import MessageService
 logger = structlog.get_logger(__name__)
 
 
-_HISTORY_LIMIT = 10
 _BRIGADE_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
 
 
@@ -614,6 +613,8 @@ async def _respond(
             db=db,
             room_id=room.id,
             agent_participant_id=agent_participant.id,
+            trigger_message_id=msg.id,
+            budget_tokens=getattr(settings, "context_budget_tokens", None),
         )
 
         # Retrieval: gather the excerpts this answer will actually be grounded
@@ -1121,37 +1122,88 @@ def _should_respond(
     return _is_mentioned(content, brigade_agent_id)
 
 
-async def _build_history(
-    *, db: Any, room_id: uuid.UUID, agent_participant_id: uuid.UUID
+def history_from_context(
+    context: dict[str, Any],
+    *,
+    agent_participant_id: uuid.UUID | None,
+    trigger_message_id: uuid.UUID | None = None,
 ) -> list[dict[str, str]]:
-    """Build OpenAI-shaped chat history (oldest first) from recent messages."""
-    rows = (
-        await db.execute(
-            select(Message)
-            .where(
-                Message.room_id == room_id,
-                Message.is_deleted == False,  # noqa: E712
-                Message.parent_id == None,  # noqa: E711
-            )
-            .order_by(Message.created_at.desc())
-            .limit(_HISTORY_LIMIT)
-        )
-    ).scalars().all()
-    rows = list(reversed(rows))
+    """Map a context-builder payload to OpenAI-shaped history (oldest first).
+
+    Role: ``assistant`` iff the entry's sender IS this agent, ``user`` for
+    everyone else (humans, guests, other agents, system lines). Attribution:
+    in a window where more than one other party spoke, user lines carry a
+    ``Name: `` prefix so a channel reads as a channel; a 1:1 window stays
+    bare, exactly as before. Voice lines are marked either way. The trigger
+    message is always verbatim — ``_call_brigade`` sends the trailing user
+    turn as ``message`` and that wire field must not grow a prefix. The
+    rolling summary, when the builder applied one, leads as a system turn.
+    """
+    entries = list(context.get("entries") or [])
+    others = {
+        str(e["sender"].get("id"))
+        for e in entries
+        if e.get("sender")
+        and e["sender"].get("id") is not None
+        and e["sender"].get("id") != agent_participant_id
+    }
+    multi_party = len(others) > 1
 
     messages: list[dict[str, str]] = []
-    for h in rows:
-        text = (h.content or "").strip()
-        if not text or text == "…":
+    summary = context.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        messages.append(
+            {"role": "system", "content": f"Earlier in this room (rolling summary):\n{summary.strip()}"}
+        )
+    for e in entries:
+        text = (e.get("text") or "").strip()
+        if not text:
             continue
-        # A user-stopped reply was abandoned on purpose — don't replay its
-        # partial text (or the "⏹ Stopped" UI marker) to the agent as if it
-        # were real assistant context on the next turn.
-        if isinstance(h.metadata_, dict) and h.metadata_.get("stopped"):
+        sender = e.get("sender") or {}
+        if agent_participant_id is not None and sender.get("id") == agent_participant_id:
+            messages.append({"role": "assistant", "content": text})
             continue
-        role = "assistant" if h.sender_id == agent_participant_id else "user"
-        messages.append({"role": role, "content": text})
+        kind = e.get("kind")
+        name = sender.get("name") or "someone"
+        if trigger_message_id is not None and e.get("id") == trigger_message_id:
+            content = text
+        elif kind == "system":
+            content = f"[system] {text}"
+        elif kind == "voice":
+            content = f"{name} (voice): {text}" if multi_party else f"(voice) {text}"
+        elif multi_party:
+            content = f"{name}: {text}"
+        else:
+            content = text
+        messages.append({"role": "user", "content": content})
     return messages
+
+
+async def _build_history(
+    *,
+    db: Any,
+    room_id: uuid.UUID,
+    agent_participant_id: uuid.UUID,
+    trigger_message_id: uuid.UUID | None = None,
+    budget_tokens: int | None = None,
+) -> list[dict[str, str]]:
+    """OpenAI-shaped chat history (oldest first) from the context builder:
+    the whole room within a token budget — replies, voice lines and system
+    lines included, never filtered by join or mention time (design §4).
+    Replaces the pre-L4 "last 10 top-level messages" window."""
+    from app.services.context_builder import DEFAULT_BUDGET_TOKENS, build_context
+
+    context = await build_context(
+        db,
+        room_id=room_id,
+        budget_tokens=budget_tokens or DEFAULT_BUDGET_TOKENS,
+        for_participant_id=agent_participant_id,
+    )
+    return history_from_context(
+        context,
+        agent_participant_id=agent_participant_id,
+        trigger_message_id=trigger_message_id,
+    )
 
 
 _CANVAS_TOOL_NAMES = {"canvas_create", "canvas_rewrite", "canvas_edit"}

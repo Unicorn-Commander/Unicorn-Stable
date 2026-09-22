@@ -406,6 +406,16 @@ async def gateway_get_context(
             select(Participant).where(Participant.keycloak_sub == f"brigade:{principal.agent_id}")
         )
     ).scalar_one_or_none()
+    membership = None
+    if seat is not None:
+        membership = (
+            await db.execute(
+                select(RoomMember).where(
+                    RoomMember.room_id == room_obj.id,
+                    RoomMember.participant_id == seat.id,
+                )
+            )
+        ).scalar_one_or_none()
     payload = await build_context(
         db,
         room_id=room_obj.id,
@@ -416,7 +426,18 @@ async def gateway_get_context(
     # Plain JSON (uuids/datetimes stringified) — the runner reads it as data.
     from app.schemas.room import ContextResponse
 
-    return ContextResponse(**payload).model_dump(mode="json")
+    out = ContextResponse(**payload).model_dump(mode="json")
+    # L4: the seat's own standing in this room, so a runner learns its mode
+    # (listening / muted / when_named / answers_all — design §3) and can tell
+    # its own lines apart (entry.sender.id == seat_participant_id) from the
+    # one call it already makes. Additive; the member endpoint's contract
+    # (ContextResponse) is unchanged.
+    out["seat_participant_id"] = str(seat.id) if seat is not None else None
+    out["agent_mode"] = getattr(membership, "agent_mode", None) if membership is not None else None
+    out["context_depth"] = (
+        getattr(membership, "context_depth", None) if membership is not None else None
+    )
+    return out
 
 
 # ---------------------------------------------------------------------------

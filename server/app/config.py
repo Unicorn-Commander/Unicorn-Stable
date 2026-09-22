@@ -377,6 +377,27 @@ class Settings(BaseSettings):
     meeting_ops_outbox_payload_retention_hours: int = 168
     meeting_ops_outbox_legal_hold: bool = False
 
+    # -- Agent context (app/services/context_builder.py; design §4) --
+    # Token budget the Brigade responder asks the context builder for.
+    context_budget_tokens: int = 6000
+
+    # -- Rolling room summary (app/services/context_summary.py; design §4) --
+    # Every N new messages per room (or on demand by an owner/admin) the
+    # delta since the previous summary is folded into a new one through the
+    # LiteLLM gateway (OpenAI-compatible chat completions). The default lane
+    # is qwen3.6-35b-long-batch on bigboy's 3090: room content, customer
+    # names included, never leaves our hardware. Base URL and key are read
+    # here and never logged or returned. Master switch default OFF.
+    context_summary_enabled: bool = False
+    context_summary_base_url: str = ""
+    context_summary_api_key: str = ""
+    context_summary_model: str = "qwen3.6-35b-long-batch"
+    context_summary_every_messages: int = 50
+    context_summary_poll_seconds: float = 60.0
+    context_summary_lookback_days: int = 30
+    context_summary_timeout_seconds: float = 180.0
+    context_summary_max_chars: int = 2400
+
     # -- Automatic call-audio recording (LiveKit egress) --
     # Master switch for recording call audio via the stack's LiveKit egress
     # service and attaching it to the call's Meeting-Ops session. Default OFF
