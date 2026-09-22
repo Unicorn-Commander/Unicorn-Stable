@@ -6,6 +6,7 @@ import manifest from "../../public/agent-puppets/manifest.json";
 import { brandAvatarFor } from "@/lib/brandAvatars";
 import {
   EXTERNAL_VENDOR_AGENT_IDS,
+  invalidateResolvedIdentityCache,
   resolveIdentity,
   type ResolvedIdentity,
 } from "@/lib/identity";
@@ -84,6 +85,20 @@ describe("resolveIdentity humans", () => {
     expect(human({ avatar_url: "//evil.example/a.png" }).src).toBeNull();
     expect(human({ avatar_url: "http://cdn.magicunicorn.dev/a.png" }).src).toBeNull();
   });
+
+  it("does not treat a human member with status and a picture as an agent", () => {
+    const face = resolveIdentity({
+      participant_id: "p-aaron",
+      username: "aaron",
+      display_name: "Aaron Stransky",
+      avatar_url: KC,
+      status: "online",
+      role: "member",
+      joined_at: "2026-09-01T00:00:00Z",
+    });
+    expect(face.kind).toBe("human");
+    expect(face.src).toBe(KC);
+  });
 });
 
 describe("resolveIdentity agents", () => {
@@ -112,6 +127,57 @@ describe("resolveIdentity agents", () => {
     expect(face.src).toBe(ROSTER);
     expect(face.fallbacks).toEqual([]);
     expect(face.ring).toBe("amber");
+  });
+
+  it("treats a bare Agent record as an agent without participant_type", () => {
+    const face = resolveIdentity({
+      id: "majik",
+      name: "majik",
+      display_name: "Majik",
+      avatar_url: null,
+      status: "active",
+    });
+    expect(face.kind).toBe("agent");
+    expect(face.src).toBe("/agent-puppets/majik.webp");
+    expect(face.ring).toBe("amber");
+  });
+
+  it("keeps a bare Agent that also carries a username", () => {
+    const face = resolveIdentity({
+      id: "majik",
+      name: "majik",
+      display_name: "Majik",
+      username: "majik",
+      avatar_url: ROSTER,
+      status: "idle",
+    });
+    expect(face.kind).toBe("agent");
+    expect(face.src).toBe("/agent-puppets/majik.webp");
+  });
+
+  it("does not draw initials for an agent member that omitted participant_type", () => {
+    const byUsername = resolveIdentity({
+      participant_id: "8f1c0a2e-1111-2222-3333-444444444444",
+      username: "agent-majik",
+      display_name: "Majik",
+      avatar_url: null,
+      role: "member",
+      joined_at: "2026-09-01T00:00:00Z",
+    });
+    expect(byUsername.kind).toBe("agent");
+    expect(byUsername.src).toBe("/agent-puppets/majik.webp");
+
+    const byAvailability = resolveIdentity({
+      participant_id: "8f1c0a2e-aaaa-bbbb-cccc-dddddddddddd",
+      username: "unpainted-seat",
+      display_name: "Unpainted",
+      avatar_url: ROSTER,
+      availability: "available",
+      role: "member",
+      joined_at: "2026-09-01T00:00:00Z",
+    });
+    expect(byAvailability.kind).toBe("agent");
+    expect(byAvailability.src).toBe(ROSTER);
   });
 
   it("drops an unsafe roster URL and does not invent initials (src null → unicorn)", () => {
@@ -257,6 +323,23 @@ describe("resolveIdentity apps and guests", () => {
     });
     expect(pictured.src).toBe(KC);
     expect(pictured.ring).toBe("dashed");
+  });
+});
+
+describe("resolveIdentity cache", () => {
+  it("returns the same face for the same input until invalidated", () => {
+    const input = {
+      id: "majik",
+      display_name: "Majik",
+      participant_type: "agent" as const,
+    };
+    const first = resolveIdentity(input);
+    const second = resolveIdentity({ ...input });
+    expect(second).toBe(first);
+    invalidateResolvedIdentityCache();
+    const third = resolveIdentity({ ...input });
+    expect(third).not.toBe(first);
+    expect(third).toEqual(first);
   });
 });
 

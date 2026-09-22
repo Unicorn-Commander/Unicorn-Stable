@@ -90,9 +90,15 @@ function AuthGate({ children }: { children: ReactNode }) {
             // Header/roster parity: the claim is minted at login, so reconcile
             // against the server's effective picture in the background (an
             // override uploaded here, or a photo added in Ops-Center since the
-            // token was minted). Never blocks the shell; see lib/avatar.ts.
+            // token was minted). The photo nudge stays hidden until this
+            // settles, so a Stable-only override does not flash the chip.
+            // Never blocks the shell; see lib/avatar.ts.
+            useAppStore.getState().beginAvatarSync();
+            let effective: string | null = null;
             void syncMyAvatar((url) => {
-              if (mounted) setCurrentUser({ ...profile, avatarUrl: url });
+              effective = url;
+            }).finally(() => {
+              if (mounted) useAppStore.getState().settleAvatarSync(effective);
             });
           }
           ws.connect();
@@ -141,6 +147,8 @@ function AuthGate({ children }: { children: ReactNode }) {
         avatarUrl: null,
         roles: ["admin"],
       });
+      // No server to reconcile against in the dev seed.
+      useAppStore.getState().settleAvatarSync(null);
 
       const store = useAppStore.getState();
 

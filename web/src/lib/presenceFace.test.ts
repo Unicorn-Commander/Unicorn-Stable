@@ -10,7 +10,6 @@ import {
   puppetAvailableFor,
   resolveCallTilePersona,
   isTypeShapedAgentSlug,
-  selectFallbackRung,
   selectPresenceRung,
   unicornStateFor,
   withinAgentFaceBudget,
@@ -707,13 +706,6 @@ describe("isTypeShapedAgentSlug", () => {
     expect(isTypeShapedAgentSlug("majik")).toBe(false);
     expect(isTypeShapedAgentSlug("the-general")).toBe(false);
     expect(isTypeShapedAgentSlug("corporal-qwen")).toBe(false);
-  });
-});
-
-describe("selectFallbackRung", () => {
-  it("prefers a portrait and otherwise draws the unicorn", () => {
-    expect(selectFallbackRung("/agent-avatars/iris.png")).toBe("portrait");
-    expect(selectFallbackRung(null)).toBe("unicorn");
   });
 });
 

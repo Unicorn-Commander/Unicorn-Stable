@@ -24,9 +24,9 @@ import { useDirectCall } from "@/hooks/useDirectCall";
 import { CALL_KIND_LABEL } from "@/lib/callEntry";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
-import { Identity, PhotoNudge } from "@/components/ui/Identity";
+import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { Tooltip } from "@/components/ui";
-import { identityFor, resolveIdentity } from "@/lib/identity";
+import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { api } from "@/services/api";
 import { useFederationStore } from "@/stores/federationStore";
@@ -67,14 +67,8 @@ export function Header({
   const { startCall } = useDirectCall();
   // Identity hue for the signed-in resident — rings the avatar + menu header.
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
-  const selfFace = resolveIdentity({
-    id: currentUser?.id,
-    display_name: currentUser?.displayName || "You",
-    username: currentUser?.username,
-    avatar_url: currentUser?.avatarUrl,
-    participant_type: "human",
-    is_self: !!currentUser,
-  });
+  const selfFace = useSelfFace();
+  const showPhotoNudge = useShowPhotoNudge();
   const activeInstanceId = useFederationStore((state) => state.activeInstanceId);
   const { data: pendingApprovals } = useQuery({
     queryKey: ["approvals", "pending", activeInstanceId],
@@ -432,7 +426,7 @@ export function Header({
         {/* Account menu — desktop only; on phones account lives in the sidebar
             drawer's footer (see AppShell). */}
         <div className="relative hidden items-center gap-2 md:flex" ref={menuRef}>
-          {selfFace.needsPhoto && (
+          {showPhotoNudge && (
             <PhotoNudge onAdd={() => openSettings("appearance")} />
           )}
           <button

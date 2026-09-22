@@ -328,6 +328,16 @@ const SUPERSEDED_TEXTURES: Record<string, string> = {
   "/agent-puppets/rook-v2.png": T("rook"),
 };
 
+/** texture path → spec, built once. `puppetForTexture` used to walk every puppet. */
+const PUPPET_BY_TEXTURE = new Map<string, PuppetSpec>();
+for (const spec of Object.values(PUPPETS)) {
+  PUPPET_BY_TEXTURE.set(spec.texture, spec);
+}
+for (const [from, canonical] of Object.entries(SUPERSEDED_TEXTURES)) {
+  const spec = PUPPET_BY_TEXTURE.get(canonical);
+  if (spec) PUPPET_BY_TEXTURE.set(from, spec);
+}
+
 /**
  * The puppet whose artwork IS this URL, or null.
  *
@@ -352,13 +362,10 @@ export function puppetForTexture(url: string | null | undefined): PuppetSpec | n
   const raw = (url ?? "").trim();
   if (!raw) return null;
   // Tolerate a cache-buster or fragment; anything else must match verbatim.
-  const path = raw.split(/[?#]/)[0]!;
+  const path = raw.split(/[?#]/)[0];
   if (!path) return null;
-  const canonical = SUPERSEDED_TEXTURES[path] ?? path;
-  for (const spec of Object.values(PUPPETS)) {
-    if (spec.texture === canonical) return spec;
-  }
-  return null;
+  // The value returned is our constant spec, never the caller's string.
+  return PUPPET_BY_TEXTURE.get(path) ?? null;
 }
 
 /** Does this agent have a puppetable face? */

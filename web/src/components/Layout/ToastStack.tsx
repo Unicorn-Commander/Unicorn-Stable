@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bell, X } from "lucide-react";
+import { safeAvatarSrc, type SafeAvatarSrc } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 
 const AUTO_DISMISS_MS = 6000;
@@ -41,6 +42,37 @@ function toneFor(kind: ToastKind): { bar: string; chip: string; icon: string } {
     };
   }
   return { bar: "bg-sky-400", chip: "bg-sky-500/15", icon: "text-sky-400" };
+}
+
+function ToastIcon({
+  icon,
+  chip,
+  iconClass,
+}: {
+  icon?: SafeAvatarSrc | null;
+  chip: string;
+  iconClass: string;
+}) {
+  const allowed = safeAvatarSrc(icon);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  if (!allowed || failedSrc === allowed) {
+    return (
+      <div className={`mt-0.5 rounded-md p-1.5 ${chip}`}>
+        <Bell className={`h-3.5 w-3.5 ${iconClass}`} />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={allowed}
+      alt=""
+      width={28}
+      height={28}
+      referrerPolicy="no-referrer"
+      onError={() => setFailedSrc(allowed)}
+      className="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover"
+    />
+  );
 }
 
 export function ToastStack() {
@@ -98,19 +130,7 @@ export function ToastStack() {
                 }}
                 className="flex w-full items-start gap-2.5 p-3 pl-4 pr-9 text-left transition-colors hover:bg-white/[0.04]"
               >
-                {t.icon ? (
-                  <img
-                    src={t.icon}
-                    alt=""
-                    width={28}
-                    height={28}
-                    className="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className={`mt-0.5 rounded-md p-1.5 ${tone.chip}`}>
-                    <Bell className={`h-3.5 w-3.5 ${tone.icon}`} />
-                  </div>
-                )}
+                <ToastIcon icon={t.icon} chip={tone.chip} iconClass={tone.icon} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">
                     {t.title}

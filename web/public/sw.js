@@ -157,7 +157,7 @@ self.addEventListener("push", (event) => {
     tag: payload.tag, // undefined is fine → no coalescing
     icon: notificationIcon(payload.icon),
     badge: "/icon-192.png",
-    data: { url: payload.url || "/" },
+    data: { url: notificationPath(payload.url) },
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
@@ -166,9 +166,21 @@ self.addEventListener("push", (event) => {
 // --- notificationclick ---------------------------------------------------
 // Close the toast, then focus an existing tab for the target URL if one is
 // open, otherwise open a new window.
+// A push payload is attacker-influenced. client.navigate / openWindow accept
+// an absolute URL, which would leave this origin. Same-origin paths only.
+function notificationPath(url) {
+  if (typeof url !== "string") return "/";
+  const raw = url.trim();
+  if (!raw || raw.charAt(0) !== "/" || raw.charAt(1) === "/" || raw.indexOf("\\") !== -1) {
+    return "/";
+  }
+  if (/[\u0000-\u001f\s]/.test(raw)) return "/";
+  return raw;
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || "/";
+  const url = notificationPath(event.notification.data && event.notification.data.url);
 
   event.waitUntil(
     (async () => {

@@ -32,8 +32,8 @@ import {
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useFacePrefStore } from "@/stores/facePrefStore";
-import { Identity, PhotoNudge } from "@/components/ui/Identity";
-import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
+import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
 import { getNotifyLevel } from "@/utils/mute";
 import { prepareRoomsForSidebar } from "@/utils/unreadModel";
@@ -221,14 +221,8 @@ export function AppShell() {
   }, [currentUser?.id, scopePalette, scopeFacePref]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
-  const selfFace = resolveIdentity({
-    id: currentUser?.id,
-    display_name: currentUser?.displayName || "You",
-    username: currentUser?.username,
-    avatar_url: currentUser?.avatarUrl,
-    participant_type: "human",
-    is_self: !!currentUser,
-  });
+  const selfFace = useSelfFace();
+  const showPhotoNudge = useShowPhotoNudge();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const quickSwitcherNonce = useConversationUi((s) => s.quickSwitcherNonce);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -699,7 +693,7 @@ export function AppShell() {
                   avatar menu) is hidden while a room is open, so account actions
                   live at the foot of the drawer. Desktop keeps the Header menu. */}
               <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:hidden">
-                {selfFace.needsPhoto && (
+                {showPhotoNudge && (
                   <div className="mb-1 px-1">
                     <PhotoNudge
                       onAdd={() => {

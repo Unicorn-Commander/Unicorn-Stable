@@ -22,7 +22,7 @@ import {
   type UserPreferences,
 } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
-import { identityFor, resolveIdentity } from "@/lib/identity";
+import { identityFor, resolveIdentity, rosterParticipantType } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
 import { AgentModeChip } from "./AgentModeChip";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -295,7 +295,14 @@ function HumanMemberRow({
       )}
     >
       <div className={clsx("relative shrink-0", !online && "opacity-60")}>
-        <Identity {...resolveIdentity(member)} presence={null} size={28} />
+        <Identity
+          {...resolveIdentity({
+            ...member,
+            participant_type: rosterParticipantType(member),
+          })}
+          presence={null}
+          size={28}
+        />
         <OnlineIndicator online={online} />
       </div>
       <span className="min-w-0 flex-1 truncate text-xs font-medium">
@@ -446,10 +453,10 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   // Split members by participant_type. Agents come from the same /members
   // endpoint as humans now (they're auto-joined on /invite-brigade-agent).
   const humanParticipants = participants.filter(
-    (p) => (p.participant_type ?? "human") !== "agent",
+    (p) => rosterParticipantType(p) !== "agent",
   );
   const agentMembers = participants.filter(
-    (p) => p.participant_type === "agent",
+    (p) => rosterParticipantType(p) === "agent",
   );
 
   // `is_online` is the single presence reader: server-derived from Redis on
@@ -635,7 +642,10 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
             {presentMembers.slice(0, 5).map((m) => (
               <Identity
                 key={m.participant_id || m.user_id || m.id || m.username}
-                {...resolveIdentity(m)}
+                {...resolveIdentity({
+                  ...m,
+                  participant_type: rosterParticipantType(m),
+                })}
                 presence={null}
                 size={20}
                 className="ring-2 ring-slate-900"
@@ -673,7 +683,14 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                   className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 transition-colors hover:bg-white/[0.04]"
                 >
                   <div className="relative shrink-0">
-                    <Identity {...resolveIdentity(m)} presence={null} size={28} />
+                    <Identity
+                      {...resolveIdentity({
+                        ...m,
+                        participant_type: "agent",
+                      })}
+                      presence={null}
+                      size={28}
+                    />
                     {/* Was hardcoded mint+pulse for every agent — the same
                         "always online" claim this change removes. */}
                     <span

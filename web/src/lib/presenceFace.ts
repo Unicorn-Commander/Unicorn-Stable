@@ -473,17 +473,6 @@ export function selectPresenceRung(input: PresenceRungInput): PresenceRung {
   return "unicorn";
 }
 
-/**
- * The 2D-only ladder, for when the face rung is unavailable or has failed.
- * Split out so a caller that already knows it is not rendering WebGL (chip,
- * filmstrip) does not have to construct the full input.
- */
-export function selectFallbackRung(
-  portraitSrc: string | null,
-): Exclude<PresenceRung, "face"> {
-  return portraitSrc ? "portrait" : "unicorn";
-}
-
 /** LiveKit's `lk.agent.state` (plus local hints) → our expression vocabulary. */
 export function mapAgentState(
   agentState: string | null | undefined,

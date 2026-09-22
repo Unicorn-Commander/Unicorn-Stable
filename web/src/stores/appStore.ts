@@ -1,5 +1,10 @@
 import { create } from "zustand";
 import type { Room, Message, Agent, RoomMember } from "@/services/api";
+import {
+  dismissPhotoNudge as persistPhotoNudgeDismissal,
+  isPhotoNudgeDismissed,
+  type SafeAvatarSrc,
+} from "@/lib/identity";
 
 export interface TypingUser {
   user_id: string;
@@ -78,8 +83,8 @@ export interface Toast {
   kind?: "success" | "error" | "info";
   /** Never auto-dismiss (user must close). For failures that need action. */
   sticky?: boolean;
-  /** Resolved face URL. Absent → the bell chip. */
-  icon?: string | null;
+  /** Allowlisted face URL. Absent, rejected, or broken → the bell chip. */
+  icon?: SafeAvatarSrc | null;
 }
 
 interface AppState {
@@ -122,6 +127,16 @@ interface AppState {
   toasts: Toast[];
   ui: UIState;
   voiceActive: boolean;
+  /**
+   * Avatar sync. `idle`/`pending` means the Keycloak claim is all we have;
+   * the photo nudge stays hidden until `settled`. `resolvedAvatarUrl` is the
+   * picture to render once settled (the server effective URL, or the claim
+   * when the server had nothing newer).
+   */
+  avatarSync: "idle" | "pending" | "settled";
+  resolvedAvatarUrl: string | null;
+  /** Shared across Header, the phone drawer, and Settings. */
+  photoNudgeDismissed: boolean;
 
   setCurrentUser: (user: CurrentUser | null) => void;
   setCurrentParticipantId: (id: string | null) => void;
@@ -182,6 +197,10 @@ interface AppState {
   setModelOverride: (roomId: string, modelId: string | null) => void;
   pushToast: (toast: Omit<Toast, "id" | "createdAt">) => void;
   dismissToast: (id: string) => void;
+  beginAvatarSync: () => void;
+  /** `url` is the server effective picture. Null keeps the claim. */
+  settleAvatarSync: (url: string | null) => void;
+  dismissPhotoNudge: () => void;
 
   // Transient: when set, the active room's MessageInput will prepend this
   // text into its draft and clear the slot. Used by Quote-reply.
@@ -208,6 +227,9 @@ export const useAppStore = create<AppState>((set) => ({
   readReceipts: {},
   modelOverrides: {},
   toasts: [],
+  avatarSync: "idle",
+  resolvedAvatarUrl: null,
+  photoNudgeDismissed: isPhotoNudgeDismissed(),
   pendingInsert: null,
   ui: {
     // On phones (<768px) the sidebar is an off-canvas overlay drawer; default
@@ -752,6 +774,23 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+  beginAvatarSync: () => set({ avatarSync: "pending" }),
+  settleAvatarSync: (url) =>
+    set((state) => {
+      const resolved = url ?? state.currentUser?.avatarUrl ?? null;
+      return {
+        avatarSync: "settled",
+        resolvedAvatarUrl: resolved,
+        currentUser:
+          url && state.currentUser
+            ? { ...state.currentUser, avatarUrl: url }
+            : state.currentUser,
+      };
+    }),
+  dismissPhotoNudge: () => {
+    persistPhotoNudgeDismissal();
+    set({ photoNudgeDismissed: true });
+  },
 
   requestInsert: (roomId, text) =>
     set({ pendingInsert: { roomId, text } }),

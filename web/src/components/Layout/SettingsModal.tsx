@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Identity, PhotoNudge } from "@/components/ui/Identity";
+import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import {
   Bell,
@@ -348,7 +348,7 @@ function AgentsPane() {
               () => void choose(agent.id),
               <>
                 <Identity
-                  {...resolveIdentity(agent)}
+                  {...resolveIdentity({ ...agent, participant_type: "agent" })}
                   presence={null}
                   size={32}
                 />
@@ -561,16 +561,8 @@ function AccountPane({
 }) {
   const currentUser = useAppStore((s) => s.currentUser);
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
-  const selfFace = currentUser
-    ? resolveIdentity({
-        id: currentUser.id,
-        display_name: currentUser.displayName,
-        username: currentUser.username,
-        avatar_url: currentUser.avatarUrl,
-        participant_type: "human",
-        is_self: true,
-      })
-    : null;
+  const selfFace = useSelfFace();
+  const showPhotoNudge = useShowPhotoNudge();
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-5">
@@ -580,7 +572,7 @@ function AccountPane({
             className="inline-flex shrink-0 rounded-full"
             style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
           >
-            {selfFace && <Identity {...selfFace} presence={null} size={40} />}
+            <Identity {...selfFace} presence={null} size={40} />
           </span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-slate-100">
@@ -594,7 +586,7 @@ function AccountPane({
                 Appearance → Your picture uploads a Stable-only override. A
                 user who read this pane concluded the feature did not exist.
                 Name and email really are Ops-Center's; the picture is both. */}
-            {selfFace?.needsPhoto && (
+            {showPhotoNudge && (
               <div className="mt-2">
                 <PhotoNudge onAdd={onGoToAppearance} />
               </div>

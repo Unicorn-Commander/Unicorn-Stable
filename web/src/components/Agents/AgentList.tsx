@@ -67,9 +67,11 @@ export function AgentList({
               <div className="flex items-start gap-3">
                 <span className="relative flex h-11 w-11 shrink-0 shadow-soft">
                   <Identity
-                    {...resolveIdentity(agent)}
+                    {...resolveIdentity({ ...agent, participant_type: "agent" })}
                     presence={null}
                     size={44}
+                    shape="rounded"
+                    emoji={agent.emoji}
                     dimmed={agent.status === "offline"}
                   />
                   <StatusDot

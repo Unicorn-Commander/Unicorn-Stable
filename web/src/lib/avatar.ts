@@ -44,6 +44,7 @@ import { useFederationStore } from "@/stores/federationStore";
 import {
   identityFor,
   initialsFor,
+  invalidateResolvedIdentityCache,
   registerAvatarSrc,
   type Identity,
 } from "@/lib/identity";
@@ -124,6 +125,18 @@ export function toAvatarSrc(url: string | null | undefined): string | null {
 // import this module (guest pages import identity.ts and must not pull
 // Keycloak), so the signed-in app registers the resolver at load.
 registerAvatarSrc(toAvatarSrc);
+
+// Face cache keys include the rewritten URL. Drop them when the active
+// instance's API origin changes; unread ticks and other store writes do not.
+let avatarBaseSeen = avatarApiBase();
+if (typeof useFederationStore.subscribe === "function") {
+  useFederationStore.subscribe(() => {
+    const next = avatarApiBase();
+    if (next === avatarBaseSeen) return;
+    avatarBaseSeen = next;
+    invalidateResolvedIdentityCache();
+  });
+}
 
 export { initialsFor } from "@/lib/identity";
 

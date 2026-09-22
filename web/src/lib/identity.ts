@@ -27,6 +27,7 @@
 
 import { brandAvatarFor } from "@/lib/brandAvatars";
 import { normalizeAgentKey, puppetForTexture } from "@/lib/puppetRig";
+import puppetManifest from "../../public/agent-puppets/manifest.json";
 
 export interface Identity {
   /** Hue family name, e.g. "iris" — handy for debugging/keys. */
@@ -172,16 +173,14 @@ export function identityWheel(): Identity[] {
 /**
  * Vendor logo tiles. `kind: "external"` in
  * `web/public/agent-puppets/manifest.json` — grey ring, not the amber frame
- * the crew puppets wear. The unit test locks this list to that file.
+ * the crew puppets wear. Derived from that file so the two cannot drift.
  */
-export const EXTERNAL_VENDOR_AGENT_IDS = [
-  "codex",
-  "chatgpt",
-  "grok",
-  "gemini",
-  "deepseek",
-  "qwen",
-] as const;
+export const EXTERNAL_VENDOR_AGENT_IDS: readonly string[] = Object.entries(
+  puppetManifest as Record<string, { kind?: string }>,
+)
+  .filter(([, row]) => row.kind === "external")
+  .map(([id]) => id)
+  .sort();
 
 const EXTERNAL_VENDOR_AGENTS = new Set<string>(EXTERNAL_VENDOR_AGENT_IDS);
 
@@ -202,6 +201,14 @@ const ALLOWED_AVATAR_HOST_SUFFIXES = [
   "unicorncommander.ai",
 ];
 
+declare const safeAvatarBrand: unique symbol;
+
+/**
+ * A picture URL that has passed `safeAvatarSrc`. A bare string is not
+ * assignable, so a toast or a face cannot point an `<img>` at an arbitrary host.
+ */
+export type SafeAvatarSrc = string & { readonly [safeAvatarBrand]: true };
+
 export type IdentityKind = "human" | "agent" | "app" | "guest";
 export type IdentityRing = "amber" | "grey" | "dashed" | "none";
 /**
@@ -217,13 +224,14 @@ export interface ResolvedIdentity {
   kind: IdentityKind;
   id: string;
   name: string;
-  /** Winning picture. Null → initials (human/guest) or the procedural unicorn (agent). */
-  src: string | null;
+  /** Winning picture. Null → initials (human/guest) or the procedural unicorn (agent).
+   *  Always an allowlisted src — callers cannot assign an arbitrary URL here. */
+  src: SafeAvatarSrc | null;
   ring: IdentityRing;
   presence: IdentityPresence;
   subtitle: string | null;
   /** Further image URLs, in ladder order, for `<img onError>`. */
-  fallbacks: string[];
+  fallbacks: SafeAvatarSrc[];
   /** Group rooms: up to three member faces. Absent otherwise. */
   faces?: ResolvedIdentity[];
   /** Signed-in human with no photo on any rung. */
@@ -279,13 +287,13 @@ export function initialsFor(name?: string | null): string {
  * (bundle art and, before `registerAvatarSrc`, API paths). Protocol-relative
  * URLs, `javascript:`, and `http:` are dropped.
  */
-export function safeAvatarSrc(url: string | null | undefined): string | null {
+export function safeAvatarSrc(url: string | null | undefined): SafeAvatarSrc | null {
   if (!url) return null;
   const raw = url.trim();
   if (!raw || raw.startsWith("//")) return null;
   if (raw.startsWith("/")) {
     if (raw.includes("\\") || /[\s]/.test(raw)) return null;
-    return raw;
+    return raw as SafeAvatarSrc;
   }
   let parsed: URL;
   try {
@@ -296,32 +304,34 @@ export function safeAvatarSrc(url: string | null | undefined): string | null {
   if (parsed.protocol !== "https:") return null;
   const host = parsed.hostname.toLowerCase();
   if (typeof window !== "undefined" && host === window.location.hostname) {
-    return raw;
+    return raw as SafeAvatarSrc;
   }
   const ok = ALLOWED_AVATAR_HOST_SUFFIXES.some(
     (suffix) => host === suffix || host.endsWith("." + suffix),
   );
-  return ok ? raw : null;
+  return ok ? (raw as SafeAvatarSrc) : null;
 }
 
-let srcFn: (url: string | null | undefined) => string | null = safeAvatarSrc;
+let srcFn: (url: string | null | undefined) => SafeAvatarSrc | null = safeAvatarSrc;
 
 /**
  * The signed-in avatar module registers `toAvatarSrc` so a relative Brigade
  * path is prefixed with the active instance. Guest pages never do this, and
- * this module does not import that module.
+ * this module does not import that module. The result is run through the
+ * allowlist again so a registered function cannot widen it.
  */
 export function registerAvatarSrc(
   fn: (url: string | null | undefined) => string | null,
 ): void {
-  srcFn = fn;
+  srcFn = (url) => safeAvatarSrc(fn(url));
+  invalidateResolvedIdentityCache();
 }
 
-function picture(url: string | null | undefined): string | null {
+function picture(url: string | null | undefined): SafeAvatarSrc | null {
   return srcFn(url);
 }
 
-function pushUnique(out: string[], url: string | null): void {
+function pushUnique(out: SafeAvatarSrc[], url: SafeAvatarSrc | null): void {
   if (url && !out.includes(url)) out.push(url);
 }
 
@@ -371,25 +381,25 @@ function agentSources(
   avatarUrl: string | null,
   artUrl: string | null,
   username: string | null,
-): string[] {
-  const out: string[] = [];
+): SafeAvatarSrc[] {
+  const out: SafeAvatarSrc[] = [];
   // A member row that names a puppet we ship outranks the slug. The value
   // returned is our constant, never the caller's string (see puppetForTexture).
-  pushUnique(out, puppetForTexture(artUrl)?.texture ?? null);
-  pushUnique(out, puppetForTexture(avatarUrl)?.texture ?? null);
+  pushUnique(out, safeAvatarSrc(puppetForTexture(artUrl)?.texture ?? null));
+  pushUnique(out, safeAvatarSrc(puppetForTexture(avatarUrl)?.texture ?? null));
   // Bundled art before any roster URL: Brigade bindings 404 in bulk, and a
   // dangling-but-allowlisted URL must not win and then die as initials.
   // Username is included because a member row's id is a participant UUID,
   // which never matches a Brigade slug — `agent-majik` does.
-  pushUnique(out, brandAvatarFor(name));
-  pushUnique(out, brandAvatarFor(username));
-  pushUnique(out, brandAvatarFor(id));
+  pushUnique(out, safeAvatarSrc(brandAvatarFor(name)));
+  pushUnique(out, safeAvatarSrc(brandAvatarFor(username)));
+  pushUnique(out, safeAvatarSrc(brandAvatarFor(id)));
   pushUnique(out, picture(avatarUrl));
   return out;
 }
 
-function humanSources(x: Loose): string[] {
-  const out: string[] = [];
+function humanSources(x: Loose): SafeAvatarSrc[] {
+  const out: SafeAvatarSrc[] = [];
   pushUnique(out, picture(strOrNull(x.override_url) ?? strOrNull(x.overrideUrl)));
   pushUnique(
     out,
@@ -422,21 +432,87 @@ function isAvatarState(x: Loose): boolean {
   return "effective_url" in x && "override_url" in x && "keycloak_url" in x && !isMessage(x);
 }
 
-function isAgentRosterShape(x: Loose): boolean {
-  if (isMessage(x) || isRoom(x)) return false;
-  if (
-    typeof x.username === "string" &&
-    !("model" in x) &&
-    !("capabilities" in x)
-  ) {
-    return false;
+/**
+ * Declared kind, when the caller passed one. `kind` is only honoured for the
+ * four face kinds — a room's `type` and an activity `kind` must not leak in.
+ */
+function declaredParticipantType(x: Loose): string {
+  const direct = str(x.participant_type) || str(x.sender_type);
+  if (direct) return direct;
+  const kind = str(x.kind);
+  if (kind === "human" || kind === "agent" || kind === "guest" || kind === "app") {
+    return kind;
   }
+  return "";
+}
+
+/**
+ * Positive agent evidence on a record that forgot `participant_type`.
+ *
+ * A room member and a thin roster row share `username` + `status` + `avatar_url`.
+ * The old sniff treated every username without `model`/`capabilities` as a
+ * human, so an agent member with no type drew initials. Humans stay humans:
+ * a member row (`role` + `joined_at`) needs one of the signals below.
+ */
+function isAgentRosterShape(x: Loose): boolean {
+  if (isMessage(x) || isRoom(x) || isAvatarState(x)) return false;
+  const declared = declaredParticipantType(x);
+  if (declared === "human" || declared === "guest") return false;
+  if (declared === "agent") return true;
+  if ("model" in x || "capabilities" in x || "reports_to" in x) return true;
+  const availability = str(x.availability);
+  if (
+    availability === "available" ||
+    availability === "unavailable" ||
+    availability === "unknown"
+  ) {
+    return true;
+  }
+  const username = str(x.username);
+  if (username.startsWith("agent-") || username.startsWith("agent_")) return true;
+  // Member rows carry role + joined_at. Without a signal above they are people.
+  if ("role" in x && "joined_at" in x) return false;
   return (
-    "model" in x ||
-    "capabilities" in x ||
-    "reports_to" in x ||
-    ("status" in x && "avatar_url" in x && !("email" in x) && !("roles" in x))
+    "status" in x &&
+    "avatar_url" in x &&
+    !("email" in x) &&
+    !("roles" in x)
   );
+}
+
+/**
+ * The kind to pass into `resolveIdentity` at a roster call site. Explicit
+ * server type wins; otherwise the same signals as `isAgentRosterShape`.
+ */
+export function rosterParticipantType(row: {
+  participant_type?: string | null;
+  kind?: string | null;
+  username?: string | null;
+  availability?: string | null;
+  model?: unknown;
+  capabilities?: unknown;
+  reports_to?: unknown;
+}): "human" | "agent" | "guest" {
+  const declared = (row.participant_type ?? "").trim();
+  if (declared === "agent" || declared === "human" || declared === "guest") {
+    return declared;
+  }
+  const kind = (row.kind ?? "").trim();
+  if (kind === "agent" || kind === "human" || kind === "guest") return kind;
+  if (row.model != null || row.capabilities != null || row.reports_to != null) {
+    return "agent";
+  }
+  const availability = row.availability ?? "";
+  if (
+    availability === "available" ||
+    availability === "unavailable" ||
+    availability === "unknown"
+  ) {
+    return "agent";
+  }
+  const username = (row.username ?? "").trim();
+  if (username.startsWith("agent-") || username.startsWith("agent_")) return "agent";
+  return "human";
 }
 
 function personId(x: Loose): string {
@@ -492,7 +568,7 @@ function avatarStateAsPerson(x: Loose): Loose {
 
 function withSources(
   base: Omit<ResolvedIdentity, "src" | "fallbacks">,
-  sources: string[],
+  sources: SafeAvatarSrc[],
 ): ResolvedIdentity {
   return {
     ...base,
@@ -517,7 +593,7 @@ function resolveAgent(x: Loose, id: string, name: string): ResolvedIdentity {
       kind: "app",
       id: app.id,
       name: app.name,
-      src: app.src,
+      src: safeAvatarSrc(app.src) ?? (app.src as SafeAvatarSrc),
       fallbacks: [],
       ring: "none",
       presence: null,
@@ -561,7 +637,7 @@ function resolveHuman(x: Loose, id: string, name: string, guest: boolean): Resol
 function resolveSubject(x: Loose): ResolvedIdentity {
   const id = personId(x);
   const name = personName(x);
-  const typed = str(x.participant_type) || str(x.sender_type);
+  const typed = declaredParticipantType(x);
   const agent = typed === "agent" || isAgentRosterShape(x);
   const guest = typed === "guest" || str(x.role) === "guest";
   if (agent) return resolveAgent(x, id, name);
@@ -571,7 +647,7 @@ function resolveSubject(x: Loose): ResolvedIdentity {
       kind: "app",
       id: app.id,
       name: app.name,
-      src: app.src,
+      src: safeAvatarSrc(app.src) ?? (app.src as SafeAvatarSrc),
       fallbacks: [],
       ring: "none",
       presence: null,
@@ -744,8 +820,113 @@ function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdenti
  * Resolve one face. Accepts a room member, a roster agent, a room, a message,
  * the signed-in user (`displayName` / `avatarUrl`), or the avatar API state
  * (`override_url` + `keycloak_url`). Never throws.
+ *
+ * Cached by the fields the resolver reads. Relative portrait URLs depend on
+ * the active instance, and this module must not import the federation store
+ * (guest pages pull it in). `avatar.ts` calls `invalidateResolvedIdentityCache`
+ * when that base changes.
  */
-export function resolveIdentity(
+const RESOLVE_CACHE = new Map<string, ResolvedIdentity>();
+const RESOLVE_CACHE_MAX = 400;
+
+const RESOLVE_FIELDS = [
+  "participant_id",
+  "user_id",
+  "id",
+  "username",
+  "keycloak_sub",
+  "display_name",
+  "displayName",
+  "sender_name",
+  "name",
+  "sender_id",
+  "sender_type",
+  "sender_avatar",
+  "participant_type",
+  "kind",
+  "type",
+  "role",
+  "avatar_url",
+  "avatarUrl",
+  "art_url",
+  "override_url",
+  "overrideUrl",
+  "keycloak_url",
+  "keycloakUrl",
+  "effective_url",
+  "is_self",
+  "is_online",
+  "availability",
+  "title",
+  "rank",
+  "status",
+  "email",
+  "model",
+  "reports_to",
+  "brigade_agent_id",
+  "room_id",
+] as const;
+
+export function invalidateResolvedIdentityCache(): void {
+  RESOLVE_CACHE.clear();
+}
+
+function scalarField(x: Loose, key: string): string {
+  if (!(key in x)) return "";
+  const value = x[key];
+  if (value == null) return `${key}:`;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return `${key}=${value}`;
+  }
+  return `${key}~`;
+}
+
+function listField(x: Loose, key: string): string {
+  if (!(key in x)) return "";
+  const value = x[key];
+  if (!Array.isArray(value)) return scalarField(x, key);
+  return `${key}=${value.map((item) => (typeof item === "string" ? item : "~")).join(",")}`;
+}
+
+function subjectKey(x: Loose): string {
+  let out = "";
+  for (const key of RESOLVE_FIELDS) out += scalarField(x, key) + "\u001f";
+  out += listField(x, "capabilities") + "\u001f" + listField(x, "roles") + "\u001f";
+  if ("metadata_" in x || "metadata" in x) {
+    out += `mb=${str(asLoose(x.metadata_ ?? x.metadata).brigade_agent_id)}`;
+  }
+  if (Array.isArray(x.members)) {
+    out += "\u001em";
+    for (const member of x.members) out += subjectKey(asLoose(member)) + "\u001e";
+  }
+  // L3's room.counterpart (the other human / the hub's agent) changes the
+  // resolved face, so it must be part of the key or two rooms that differ
+  // only there would share a cache entry.
+  if (x.counterpart && typeof x.counterpart === "object") {
+    out += "\u001ec" + subjectKey(asLoose(x.counterpart)) + "\u001e";
+  }
+  return out;
+}
+
+function resolveCacheKey(input: unknown, opts?: ResolveIdentityOptions): string {
+  let key = subjectKey(asLoose(input));
+  key += `\u001fself=${opts?.selfId ?? ""}`;
+  if (opts?.members) {
+    key += "\u001eom";
+    for (const member of opts.members) key += subjectKey(asLoose(member)) + "\u001e";
+  }
+  if (opts?.agents) {
+    key += "\u001eoa";
+    for (const agent of opts.agents) key += subjectKey(asLoose(agent)) + "\u001e";
+  }
+  return key;
+}
+
+function resolveIdentityUncached(
   input: unknown,
   opts?: ResolveIdentityOptions,
 ): ResolvedIdentity {
@@ -754,6 +935,22 @@ export function resolveIdentity(
   if (isMessage(x)) return resolveSubject(messageAsPerson(x));
   if (isAvatarState(x)) return resolveSubject(avatarStateAsPerson(x));
   return resolveSubject(x);
+}
+
+export function resolveIdentity(
+  input: unknown,
+  opts?: ResolveIdentityOptions,
+): ResolvedIdentity {
+  const key = resolveCacheKey(input, opts);
+  const hit = RESOLVE_CACHE.get(key);
+  if (hit) return hit;
+  const face = resolveIdentityUncached(input, opts);
+  if (RESOLVE_CACHE.size >= RESOLVE_CACHE_MAX) {
+    const oldest = RESOLVE_CACHE.keys().next().value;
+    if (oldest !== undefined) RESOLVE_CACHE.delete(oldest);
+  }
+  RESOLVE_CACHE.set(key, face);
+  return face;
 }
 
 export const PHOTO_NUDGE_STORAGE_KEY = "stable.identity.photo-nudge.dismissed";

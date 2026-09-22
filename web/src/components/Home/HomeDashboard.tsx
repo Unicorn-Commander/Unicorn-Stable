@@ -729,6 +729,14 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                     }
 
                     const { room, unread, kind } = item;
+                    const roomFace =
+                      room.type === "channel"
+                        ? null
+                        : resolveIdentity(room, {
+                            selfId: currentParticipantId ?? currentUser?.id,
+                            members: participantsByRoom[room.id],
+                            agents: rosterAgents,
+                          });
                     return (
                       <li key={`${kind}-${room.id}`}>
                         <HomeRow
@@ -743,26 +751,18 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                                   <Hash className="h-4 w-4" />
                                 </span>
                               )
-                            ) : room.type === "group_dm" &&
-                              resolveIdentity(room, {
-                                selfId: currentParticipantId ?? currentUser?.id,
-                                members: participantsByRoom[room.id],
-                                agents: rosterAgents,
-                              }).origin === "name-only" ? (
+                            ) : roomFace?.origin === "name-only" &&
+                              room.type === "group_dm" ? (
                               <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-item-group">
                                 <Users className="h-4 w-4" />
                               </span>
-                            ) : (
+                            ) : roomFace ? (
                               <Identity
-                                {...resolveIdentity(room, {
-                                  selfId: currentParticipantId ?? currentUser?.id,
-                                  members: participantsByRoom[room.id],
-                                  agents: rosterAgents,
-                                })}
+                                {...roomFace}
                                 size={36}
                                 className="mt-0.5"
                               />
-                            )
+                            ) : null
                           }
                           title={room.display_name || room.name}
                           at={room.last_message?.created_at ?? null}
@@ -1171,7 +1171,10 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                         >
                           <span className="relative shrink-0">
                             <Identity
-                              {...resolveIdentity(agent)}
+                              {...resolveIdentity({
+                                ...agent,
+                                participant_type: "agent",
+                              })}
                               presence={null}
                               size={32}
                               dimmed={unreachable || agent.status === "offline"}

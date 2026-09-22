@@ -134,6 +134,8 @@ export function StageView({ agentId, roomId }: StageViewProps) {
               participant_type: "agent",
             })}
             size={64}
+            emoji={stageEmoji}
+            alt=""
           />
           <p className="font-display text-sm font-semibold text-slate-100">
             {displayName}

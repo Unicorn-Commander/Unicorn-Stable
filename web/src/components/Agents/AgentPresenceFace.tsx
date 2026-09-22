@@ -100,11 +100,13 @@ export function AgentPresenceFace({
   avatarUrl,
   artUrl,
   vrmUrl,
+  emoji,
   size,
   surface,
   expression = "idle",
   isSpeaking = false,
   className,
+  alt = "",
 }: AgentPresenceFaceProps) {
   const slug = agentSlugFromIdentity(id || participantId);
   const flagEnabled = isTalkingFaceEnabled();
@@ -241,6 +243,9 @@ export function AgentPresenceFace({
         art_url: artUrl,
         participant_type: "agent",
       })}
+      emoji={emoji}
+      expression={expression}
+      alt={alt}
       size={size}
       className={clsx(isSpeaking && "animate-pulse-soft")}
     />
