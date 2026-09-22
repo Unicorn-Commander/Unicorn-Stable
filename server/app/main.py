@@ -45,6 +45,7 @@ from app.api.stt import router as stt_router
 from app.api.uploads import router as uploads_router
 from app.api.users import router as users_router
 from app.api.push import router as push_router
+from app.api.voice import router as voice_router
 from app.api.webhooks import router as webhooks_router
 from app.auth.keycloak import fetch_jwks, start_jwks_refresh_task
 from app.config import get_settings
@@ -523,6 +524,7 @@ def create_app() -> FastAPI:
     app.include_router(participants_router, prefix="/api/v1", tags=["Avatars"])
     app.include_router(help_router, prefix="/api/v1", tags=["Help"])
     app.include_router(uploads_router, prefix="/api/v1", tags=["Uploads"])
+    app.include_router(voice_router, prefix="/api/v1", tags=["Voice"])
     app.include_router(webhooks_router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(project_ops_router, prefix="/api/v1", tags=["Webhooks"])
     app.include_router(push_router, prefix="/api/v1", tags=["Push"])

@@ -104,6 +104,17 @@ async def _entrypoint(ctx: JobContext) -> None:
         job_id=ctx.job.id if hasattr(ctx.job, "id") else "unknown",
     )
 
+    try:
+        from agent_runtime.dispatch_log import install_dispatch_logger
+        from agent_runtime.floor_store import get_floor_store
+
+        get_floor_store()
+        install_dispatch_logger(get_agent_settings())
+    except Exception:
+        structlog.get_logger("entrypoint").warning(
+            "voice_floor_install_failed", exc_info=True
+        )
+
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     registry = _get_registry()

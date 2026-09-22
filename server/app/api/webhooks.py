@@ -243,7 +243,28 @@ _VOICE_META_KEYS = (
     # kept publishing a 640x360 face until these two were carried.
     "voice_relay_face_shape",
     "voice_relay_face_plate",
+    # 0 = unlimited (hub / DM). Channels default to 900 when the row omits it.
+    "voice_relay_max_spoken_chars",
 )
+
+
+def default_max_spoken_chars(room: Any) -> int:
+    """Hub and DM are unlimited. A channel caps at 900. Unknown stays at 900."""
+    room_type = getattr(room, "room_type", None)
+    value = str(getattr(room_type, "value", room_type) or "").lower()
+    if value in ("dm", "agent_hub", "group_dm"):
+        return 0
+    return 900
+
+
+def _coerce_max_spoken(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return 0 if n < 0 else n
 
 _VOICE_FLAG_KEYS = ("voice_relay_video", "voice_relay_multi")
 _FACE_SHAPES = ("wide", "square", "tall")
@@ -328,12 +349,18 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
             continue
         elif isinstance(v, str) and v.strip():
             wanted[k] = v
+        elif k == "voice_relay_max_spoken_chars":
+            parsed = _coerce_max_spoken(v)
+            if parsed is not None:
+                wanted[k] = str(parsed)
         elif isinstance(v, (int, float)) and k == "voice_relay_window_seconds":
             wanted[k] = str(int(v))
         elif isinstance(v, (list, tuple)) and k == "voice_relay_aliases":
             aliases = ",".join(str(x).strip() for x in v if str(x).strip())
             if aliases:
                 wanted[k] = aliases
+    if wanted and "voice_relay_max_spoken_chars" not in wanted:
+        wanted["voice_relay_max_spoken_chars"] = str(default_max_spoken_chars(room))
     if not wanted:
         return
     try:

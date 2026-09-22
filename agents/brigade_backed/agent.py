@@ -41,9 +41,11 @@ from agent_runtime.resilient_stt import NeverFatalSTT
 from agent_runtime import voice_dispatch
 from agent_runtime.voice_transcripts import (
     VoiceTranscriptResponder,
+    any_shared_mic,
     call_roster,
     elected_user_captioner,
     mention_needles,
+    participant_shared_mic,
     primary_agent_id,
 )
 
@@ -504,6 +506,23 @@ class BrigadeBackedAgent(StableAgent):
             or ""
         )
         my_needles = set(mention_needles(brigade_agent_id, self.agent_type))
+        self._dispatch_needles = my_needles
+        from agent_runtime.barge_in import BargeIn, install_chunked_say
+
+        self._barge = BargeIn()
+
+        def _spoken_limit() -> int:
+            from voice_relay.agent import max_spoken_chars_from_metadata
+
+            room = getattr(self, "_ctx_room", None)
+            return max_spoken_chars_from_metadata(
+                getattr(room, "metadata", "") if room is not None else ""
+            )
+
+        try:
+            install_chunked_say(session, self._barge, limit_of=_spoken_limit)
+        except Exception:
+            logger.debug("brigade_chunked_say_failed", exc_info=True)
 
         def _persist_user_line(speaker: str, text: str) -> None:
             """The user's spoken line becomes chat ONLY when it earns a reply.
@@ -532,6 +551,7 @@ class BrigadeBackedAgent(StableAgent):
                 _persist_user_line(speaker, text)
                 return True
             others, humans = call_roster(ctx.room, self._identity)
+            shared = any_shared_mic(ctx.room)
             decision = voice_dispatch.decide(
                 state=self._dispatch_floor,
                 me=self._dispatch_me,
@@ -542,6 +562,9 @@ class BrigadeBackedAgent(StableAgent):
                 other_agent_names=others,
                 human_count=humans,
                 primary_agent=primary_agent_id(ctx.room),
+                shared_mic=shared,
+                room=getattr(ctx.room, "name", "") or "",
+                agent_identity=self._join_identity or self._identity,
             )
             logger.info(
                 "voice_dispatch_decision",
@@ -665,6 +688,8 @@ class BrigadeBackedAgent(StableAgent):
                     # restart attempt, then the bounded direct path.
                     restart_session=self.restart_voice_session,
                     direct_reply=self._direct_voice_reply,
+                    linked_participant_getter=linked_participant,
+                    on_human_final=self._barge_on_human_final,
                 )
                 logger.info(
                     "voice_transcript_responder_wired",
@@ -679,6 +704,7 @@ class BrigadeBackedAgent(StableAgent):
         # responder's STT-alive signal, and the LOUD error/close reporters that
         # the 2026-08-10 incident lacked).
         self._wire_session_events(session)
+        self._attach_multi_track(linked_participant)
 
         # Shim: provide start(room) the way the old VoicePipelineAgent did, so
         # base.py's existing `self._pipeline.start(ctx.room)` call works.
@@ -741,6 +767,9 @@ class BrigadeBackedAgent(StableAgent):
                 floor = getattr(self, "_dispatch_floor", None)
                 me = getattr(self, "_dispatch_me", None)
                 state = str(getattr(ev, "new_state", "") or "")
+                barge = getattr(self, "_barge", None)
+                if barge is not None:
+                    barge.note_state(state)
                 if floor is not None and me and state in ("listening", "idle"):
                     voice_dispatch.observe_reply_finished(floor, me)
             except Exception:
@@ -750,6 +779,20 @@ class BrigadeBackedAgent(StableAgent):
             session.on("agent_state_changed", _release_floor)
         except Exception:
             logger.debug("floor_release_wire_failed", exc_info=True)
+
+        def _barge_final(ev: Any) -> None:
+            try:
+                if not bool(getattr(ev, "is_final", False)):
+                    return
+                text = (getattr(ev, "transcript", "") or "").strip()
+                self._barge_on_human_final(text)
+            except Exception:
+                logger.debug("brigade_barge_listener_failed", exc_info=True)
+
+        try:
+            session.on("user_input_transcribed", _barge_final)
+        except Exception:
+            logger.debug("brigade_barge_wire_failed", exc_info=True)
 
         # The user-line persister moves INTO the reply gate when one exists:
         # only a line that earns a reply lands in chat. Without a gate (none
@@ -770,6 +813,147 @@ class BrigadeBackedAgent(StableAgent):
             )
         session.on("error", self._on_session_error)
         session.on("close", self._on_session_close)
+
+    def _barge_on_human_final(self, text: str) -> None:
+        """Stop the in-flight say and release the floor. Empty text does nothing."""
+        barge = getattr(self, "_barge", None)
+        if barge is None or not barge.on_human_final(text):
+            return
+        floor = getattr(self, "_dispatch_floor", None)
+        me = getattr(self, "_dispatch_me", None)
+        if floor is not None and me:
+            voice_dispatch.observe_reply_finished(floor, me)
+        logger.info("brigade_barge_in", chars=len(text or ""), me=me)
+
+    def _attach_multi_track(self, linked_participant: Any) -> None:
+        """Elected captioner: one STT session per human mic, attributed by track."""
+        room = getattr(self, "_ctx_room", None)
+        if room is None:
+            return
+        try:
+            from agent_runtime.diarization import speaker_hint
+            from agent_runtime.multi_track_stt import attach_multi_track_stt
+
+            def _linked_identity() -> str:
+                try:
+                    linked = linked_participant() if callable(linked_participant) else None
+                except Exception:
+                    return ""
+                return str(getattr(linked, "identity", "") or "")
+
+            def _on_final(track: Any, text: str) -> None:
+                content = (text or "").strip()
+                if not content:
+                    return
+                self._barge_on_human_final(content)
+                hint = None
+                try:
+                    remotes = getattr(room, "remote_participants", {}) or {}
+                    participant = None
+                    for candidate in remotes.values():
+                        if str(getattr(candidate, "identity", "") or "") == track.participant_identity:
+                            participant = candidate
+                            break
+                    if participant is not None and participant_shared_mic(participant):
+                        hint = speaker_hint(
+                            track.participant_name,
+                            participant_identity=track.participant_identity,
+                            text=content,
+                        )
+                except Exception:
+                    logger.debug("captioner_speaker_hint_failed", exc_info=True)
+                publisher = getattr(self, "_transcript", None)
+                if publisher is not None:
+                    publisher.publish_user_line(
+                        participant_id=track.participant_identity,
+                        name=track.participant_name,
+                        text=content,
+                        source="captioner",
+                        speaker_hint=hint,
+                    )
+                # The session's own turn loop already decides for the human it
+                # is linked to. This path is the humans that loop cannot hear.
+                if track.participant_identity == _linked_identity():
+                    return
+                allowed = self._consider_spoken(track.participant_identity, content)
+                if not allowed:
+                    return
+                history = getattr(self, "_voice_history", None)
+                if history is not None:
+                    try:
+                        history.persist_user_utterance(track.participant_identity, content)
+                    except Exception:
+                        logger.debug("captioner_persist_failed", exc_info=True)
+                session = getattr(self, "_session", None)
+                if session is None:
+                    return
+
+                async def _speak() -> None:
+                    try:
+                        result = session.generate_reply(user_input=content)
+                        if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                            await result
+                    except Exception:
+                        logger.error("captioner_reply_failed", exc_info=True)
+                        floor = getattr(self, "_dispatch_floor", None)
+                        me = getattr(self, "_dispatch_me", None)
+                        if floor is not None and me:
+                            voice_dispatch.observe_reply_finished(floor, me)
+
+                try:
+                    asyncio.get_running_loop().create_task(
+                        _speak(), name=f"captioner-reply:{track.track_sid}"
+                    )
+                except RuntimeError:
+                    logger.debug("captioner_reply_no_loop")
+
+            attach_multi_track_stt(
+                room,
+                getattr(self, "_join_identity", "") or self._identity,
+                _on_final,
+            )
+        except Exception:
+            logger.warning("brigade_multi_track_failed", exc_info=True)
+
+    def _consider_spoken(self, speaker: str, text: str) -> bool:
+        """decide() for a line this worker heard outside its linked STT."""
+        if not (text or "").strip():
+            return False
+        if not voice_dispatch.dispatch_enabled():
+            return True
+        room = getattr(self, "_ctx_room", None)
+        try:
+            others, humans = call_roster(room, getattr(self, "_join_identity", "") or self._identity)
+            shared = any_shared_mic(room)
+            decision = voice_dispatch.decide(
+                state=getattr(self, "_dispatch_floor", None),
+                me=getattr(self, "_dispatch_me", "") or "",
+                my_names=getattr(self, "_dispatch_needles", set()) or set(),
+                speaker=speaker,
+                speaker_is_agent=False,
+                text=text,
+                other_agent_names=others,
+                human_count=humans,
+                primary_agent=primary_agent_id(room),
+                shared_mic=shared,
+                room=getattr(room, "name", "") or "",
+                agent_identity=getattr(self, "_join_identity", "") or self._identity,
+            )
+        except Exception:
+            logger.warning("captioner_decide_failed", exc_info=True)
+            return False
+        logger.info(
+            "voice_dispatch_decision",
+            source="captioner",
+            me=getattr(self, "_dispatch_me", ""),
+            speaker=speaker,
+            respond=decision.respond,
+            rule=decision.rule,
+            addressed=decision.addressed,
+            humans=humans,
+            preview=text[:80],
+        )
+        return bool(decision.respond)
 
     def _on_session_error(self, ev: Any) -> None:
         """LOUD ErrorEvent reporter (sync listener; must never raise)."""

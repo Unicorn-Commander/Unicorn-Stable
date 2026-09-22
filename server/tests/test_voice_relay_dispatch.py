@@ -257,9 +257,20 @@ class VoiceMetadataSyncTests(IsolatedAsyncioTestCase):
 
         lk = AsyncMock()
         lk.get_room_metadata = AsyncMock(
-            return_value={"voice_primary_agent_id": "majik"}
+            return_value={
+                "voice_primary_agent_id": "majik",
+                "voice_relay_max_spoken_chars": "900",
+            }
         )
-        await _sync_voice_metadata(lk, _room({"voice_primary_agent_id": "majik"}))
+        await _sync_voice_metadata(
+            lk,
+            _room(
+                {
+                    "voice_primary_agent_id": "majik",
+                    "voice_relay_max_spoken_chars": 900,
+                }
+            ),
+        )
         lk.update_room_metadata.assert_not_awaited()
 
     async def test_a_room_with_no_voice_settings_is_untouched(self) -> None:
