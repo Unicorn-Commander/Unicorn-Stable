@@ -7,8 +7,9 @@ import {
   type ReactNode,
 } from "react";
 import { useAppStore } from "@/stores/appStore";
-import { useCallUiStore } from "@/stores/callUiStore";
+import { useCallUiStore, type MobileCallMode } from "@/stores/callUiStore";
 import { useIsDesktop } from "@/hooks/usePanelResize";
+import { useRoomPanels } from "@/hooks/useRoomPanels";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChatPanel } from "./ChatPanel";
@@ -17,8 +18,19 @@ import { VoiceVideoBar } from "./VoiceVideoBar";
 import { SplitPane } from "./SplitPane";
 import { MobileCallModeSwitcher } from "./MobileCallModeSwitcher";
 import type { CallViewMode } from "@/lib/roomDataProtocol";
-import { ChevronUp, MessageSquare, X } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import clsx from "clsx";
+import { PanelHost } from "@/components/Layout/PanelHost";
+import {
+  installCallLayoutMirrors,
+  toggleCallChat,
+} from "@/lib/callLayoutActions";
+import { useRoomPanelHotkeys } from "./useRoomPanelHotkeys";
+import {
+  CHAT_DOCK_WIDTH,
+  type PanelMode,
+} from "@/stores/panelRegistry";
+import { usePanelChromeStore } from "@/stores/panelChromeStore";
 
 interface CallRoomLayoutProps {
   roomId: string;
@@ -45,17 +57,16 @@ const VIDEO_STAGE_MODES: ReadonlySet<CallViewMode> = new Set<CallViewMode>([
 /**
  * CallRoomLayout — decides how the CALL surface and the CHAT coexist.
  *
- * Desktop: a resizable {@link SplitPane} keeps chat and video beside each other
- * keyed off the agent-drivable {@link CallViewMode} (grid/focus/spotlight/
- * screen / sidebar / compact).
+ * Desktop: a resizable {@link SplitPane} keeps chat (360px default) beside the
+ * stage. Hidden chat drops the side column so the stage is the full width.
+ * The split stays in this window — a popped chat is the panel body portaled
+ * by {@link PanelHost}, never the split.
  *
- * Mobile: human-first intent modes from {@link MobileCallModeSwitcher}:
- *   • Video — edge-to-edge stage; chat as a half/full bottom sheet
- *   • Split — video + chat stacked (portrait) or side-by-side (landscape)
- *   • Chat  — full chat with a corner PiP of the live call surface
- *
- * The SAME <VoiceVideoBar> instance is kept mounted across mobile mode switches
- * (CSS layout only) so LiveKit tracks never detach on intent change.
+ * Mobile (<768px):
+ *   • Video — stage full size. Chat is not a sheet. A new message is a
+ *     one-line pill; tap opens Split.
+ *   • Split — chat is in normal flow below the stage (beside it in landscape).
+ *   • Chat — full chat, stage as a corner picture.
  */
 export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const stageAgentId = useAppStore((s) => s.ui.stageAgentId);
@@ -63,7 +74,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
   const viewMode = useCallUiStore((s) => s.viewModes[roomId]) ?? "compact";
   const showVideo = useCallUiStore((s) => s.showVideo);
-  const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
   const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
   const setViewMode = useCallUiStore((s) => s.setViewMode);
   const toggleVideo = useCallUiStore((s) => s.toggleVideo);
@@ -71,40 +81,30 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   const mobileCallModeUserOverride = useCallUiStore(
     (s) => s.mobileCallModeUserOverride,
   );
-  const mobileChatSheet = useCallUiStore((s) => s.mobileChatSheet);
   const setMobileCallMode = useCallUiStore((s) => s.setMobileCallMode);
-  const setMobileChatSheet = useCallUiStore((s) => s.setMobileChatSheet);
   const isDesktop = useIsDesktop();
   const isLandscape = useIsLandscape();
+  const panels = useRoomPanels(roomId);
+  const layoutEpoch = usePanelChromeStore((s) => s.layoutEpoch[roomId] ?? 0);
+  const [chatDock, setChatDock] = useState<HTMLElement | null>(null);
 
-  // The call PERSISTS across navigation, so "is there a call to show HERE?" is
-  // not the global voiceActive flag — it's whether THIS room owns the live
-  // call. In every other room the call surface stays hidden and the app-level
-  // floating CallDock represents the call instead.
+  useRoomPanelHotkeys(roomId);
+  useEffect(() => {
+    installCallLayoutMirrors();
+  }, []);
+
   const callIsHere = voiceActive && roomId === activeCallRoomId;
 
-  // ── Audio-first intent (desktop + mobile) ────────────────────────────────
-  // Every Stable call STARTS audio-only (mic only). "There is video" is the
-  // real `anyVideoLive` signal (someone publishing a camera/share), not the
-  // `showVideo` preference toggle and not a stage mode persisted from an
-  // earlier video call in this room. An audio call — the Majik voice-call
-  // case — must open as the slim bar / chips with chat, with the agent's
-  // face/stage strictly OPT-IN (view switcher, mobile Video intent, or an
-  // agent ui_command), never automatic.
   const anyVideoLive = useCallUiStore((s) => s.anyVideoLive);
   const audioIntentHold = useCallUiStore((s) => s.audioIntentHold);
   const applyAudioIntentHold = useCallUiStore((s) => s.applyAudioIntentHold);
   const liftAudioIntentHold = useCallUiStore((s) => s.liftAudioIntentHold);
 
-  // Session start with no live video: hold a persisted video-stage mode at
-  // "compact" (in memory — the preference itself survives). One decision per
-  // call; explicit setViewMode from anyone cancels the hold.
   useEffect(() => {
     if (!callIsHere || anyVideoLive) return;
     applyAudioIntentHold(roomId, VIDEO_STAGE_MODES.has(viewMode));
   }, [callIsHere, anyVideoLive, roomId, viewMode, applyAudioIntentHold]);
 
-  // Real video appeared while held → bring the room's chosen stage back.
   useEffect(() => {
     if (!callIsHere || !anyVideoLive) return;
     if (audioIntentHold?.roomId === roomId) {
@@ -112,9 +112,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     }
   }, [callIsHere, anyVideoLive, audioIntentHold, roomId, liftAudioIntentHold]);
 
-  // Mobile Video needs a real video stage (not audio-compact chips); Split
-  // only needs one when there is actually video to stage — an audio-only
-  // Split keeps the compact chips row above chat (the audio layout).
   useEffect(() => {
     if (!callIsHere || isDesktop) return;
     const needsStage =
@@ -125,10 +122,12 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
       if (!VIDEO_STAGE_MODES.has(viewMode)) {
         setViewMode(roomId, "grid");
       }
-      // Presentation bias: screen-share view mode already set by VoiceVideoBar;
-      // keep chat collapsed in pure Video so the share fills the stage.
       if (mobileCallMode === "video" && viewMode === "screen") {
         setChatCollapsed(true);
+        const mode = usePanelChromeStore.getState().getPanel(roomId, "chat").mode;
+        if (mode === "docked") {
+          usePanelChromeStore.getState().setPanelMode(roomId, "chat", "hidden");
+        }
       }
     }
   }, [
@@ -144,9 +143,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     setChatCollapsed,
   ]);
 
-  // Auto-lift to the Video intent only when someone is REALLY publishing
-  // video (camera/share) — not because of the showVideo preference or a
-  // stale stage mode. Only until the user picks a mode themselves.
   useEffect(() => {
     if (!callIsHere || isDesktop || mobileCallModeUserOverride) return;
     if (anyVideoLive && mobileCallMode !== "video") {
@@ -161,8 +157,6 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     setMobileCallMode,
   ]);
 
-  // Screen-share presentation bias: prefer Video intent (edge-to-edge stage)
-  // when the wire mode is Presentation and the user hasn't locked a mode.
   useEffect(() => {
     if (!callIsHere || isDesktop || mobileCallModeUserOverride) return;
     if (viewMode === "screen" && mobileCallMode !== "video") {
@@ -177,16 +171,20 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     setMobileCallMode,
   ]);
 
+  // A room that remembered "chat hidden" opens the phone on the full stage.
+  useEffect(() => {
+    if (!callIsHere || isDesktop) return;
+    if (panels.chat.mode !== "hidden") return;
+    if (mobileCallMode === "video" || mobileCallMode === "chat") return;
+    setMobileCallMode("video");
+  }, [callIsHere, isDesktop, panels.chat.mode, mobileCallMode, setMobileCallMode]);
+
   const chatColumn = (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* Agent avatar stage (co-working spotlight) — unchanged behavior. */}
       <AnimatePresence>
         {stageAgentId && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
-            // Clamp against --app-height (visual viewport), not vh: when the
-            // mobile keyboard opens, vh keeps phantom height and the stage
-            // shoves the composer off screen; --app-height tracks it.
             animate={{ height: "min(300px, calc(var(--app-height, 100dvh) * 0.4))", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
@@ -203,66 +201,122 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
     </div>
   );
 
-  // Single call surface instance — layout parents reflow via CSS so LiveKit
-  // never remounts on mobile Video ⇄ Split ⇄ Chat.
   const callSurface = (
     <ErrorBoundary label="the call">
       <VoiceVideoBar roomId={roomId} />
     </ErrorBoundary>
   );
 
-  // ── Mobile intent layouts ────────────────────────────────────────────────
+  const textLayout = callIsHere && panels.stage.mode === "floating";
+  const chatPresent = presentChat({
+    callIsHere,
+    isDesktop,
+    mobileCallMode,
+    chatMode: panels.chat.mode,
+    textLayout,
+  });
+
+  const chatHost = (
+    <PanelHost
+      roomId={roomId}
+      panelId="chat"
+      title="Chat"
+      dockElement={chatPresent === "docked" ? chatDock : null}
+      present={chatPresent}
+    >
+      {chatColumn}
+    </PanelHost>
+  );
+
   if (callIsHere && !isDesktop) {
+    const phoneMode: MobileCallMode =
+      mobileCallMode === "video" || panels.chat.mode === "hidden"
+        ? "video"
+        : mobileCallMode;
     return (
-      <MobileCallLayout
-        roomId={roomId}
-        mode={mobileCallMode}
-        sheet={mobileChatSheet}
-        isLandscape={isLandscape}
-        callSurface={callSurface}
-        chatColumn={chatColumn}
-        onOpenSheet={(snap) => setMobileChatSheet(snap)}
-        onCloseSheet={() => setMobileChatSheet(null)}
-        onReturnToVideo={() => setMobileCallMode("video", { user: true })}
-      />
+      <>
+        <MobileCallLayout
+          roomId={roomId}
+          mode={phoneMode}
+          isLandscape={isLandscape}
+          callSurface={callSurface}
+          onChatDock={setChatDock}
+          onOpenChat={() => toggleCallChat(roomId)}
+          onReturnToVideo={() => {
+            usePanelChromeStore.getState().setPanelMode(roomId, "chat", "hidden");
+            setMobileCallMode("video", { user: true });
+            setChatCollapsed(true);
+          }}
+        />
+        {chatHost}
+      </>
     );
   }
 
-  // Arrangement follows the chosen mode (see VIDEO_STAGE_MODES). Turning video
-  // off (showVideo=false) collapses any stage back to the slim bar — that's the
-  // user's "hide the video section → chat gets the whole screen" toggle.
   const videoMain = callIsHere && showVideo && VIDEO_STAGE_MODES.has(viewMode);
-  const callDock = callIsHere && viewMode === "sidebar";
-  const slimBar = callIsHere && !videoMain && !callDock;
+  const callDock = callIsHere && viewMode === "sidebar" && !textLayout;
+  const slimBar = callIsHere && !videoMain && !callDock && !textLayout;
+  const stageFrame = callIsHere && (videoMain || textLayout) && !callDock;
 
-  // Video is the star: resizable [ video │ chat ]. Chat is collapsible so a
-  // presenter can reclaim the full stage, then re-open chat with one click. The
-  // collapse is CONTROLLED off the shared `chatCollapsed` flag so the in-call
-  // "hide chat" button (VoiceVideoBar controls) and the divider chevron stay in
-  // lockstep — the chat pane stays mounted behind display:none either way.
-  if (videoMain) {
+  if (stageFrame) {
     return (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <SplitPane
-          storageKey="call-chat"
-          orientation={isDesktop ? "horizontal" : "vertical"}
-          defaultSize={isDesktop ? 380 : 260}
-          min={isDesktop ? 280 : 180}
-          max={isDesktop ? 680 : 520}
+          storageKey={`call-chat:${roomId}`}
+          orientation="horizontal"
+          defaultSize={CHAT_DOCK_WIDTH}
+          min={280}
+          max={680}
           collapsible
-          collapsed={chatCollapsed}
-          onCollapsedChange={setChatCollapsed}
+          collapsed={chatPresent !== "docked" || textLayout}
+          fullBleedWhenCollapsed
           secondaryLabel="chat"
-          primary={callSurface}
-          secondary={chatColumn}
+          className="relative"
+          preferredSize={panels.chat.geometry.w}
+          preferredEpoch={layoutEpoch}
+          onSizeCommit={(w) => {
+            const g = usePanelChromeStore.getState().getPanel(roomId, "chat").geometry;
+            if (g.w === w) return;
+            usePanelChromeStore.getState().setPanelGeometry(roomId, "chat", {
+              ...g,
+              w,
+            });
+          }}
+          primary={
+            <div className="relative flex min-h-0 min-w-0 flex-1">
+              {textLayout && chatPresent === "docked" && (
+                <div
+                  ref={setChatDock}
+                  className="flex min-h-0 min-w-0 flex-1 flex-col"
+                />
+              )}
+              <div
+                data-stage-root=""
+                className={clsx(
+                  "min-h-0 min-w-0 overflow-hidden",
+                  textLayout
+                    ? "absolute bottom-16 right-3 z-20 h-44 w-72 rounded-xl border border-line bg-slate-950 shadow-pop"
+                    : "flex flex-1 flex-col",
+                )}
+              >
+                {callSurface}
+              </div>
+            </div>
+          }
+          secondary={
+            <div
+              ref={textLayout ? undefined : setChatDock}
+              data-chat-dock="true"
+              className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden"
+            />
+          }
         />
+        {chatHost}
       </div>
     );
   }
 
-  // Co-working: chat is the star, the call docks as a narrow secondary column
-  // (in-flow + resizable — never the old fixed overlay that clipped chat).
-  if (callDock) {
+  if (callDock && chatPresent === "docked") {
     return (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <SplitPane
@@ -273,22 +327,59 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
           max={isDesktop ? 460 : 420}
           collapsible
           secondaryLabel="call"
-          primary={chatColumn}
+          primary={
+            <div ref={setChatDock} className="flex min-h-0 min-w-0 flex-1 flex-col" />
+          }
           secondary={callSurface}
         />
+        {chatHost}
       </div>
     );
   }
 
-  // Compact / audio / video-off, or no call: a slim call bar above full chat.
+  if (callIsHere && viewMode === "sidebar" && chatPresent !== "docked") {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1">{callSurface}</div>
+        {chatHost}
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {slimBar && (isDesktop || showVideo) && (
         <div className="shrink-0">{callSurface}</div>
       )}
-      {chatColumn}
+      {chatPresent === "docked" && (
+        <div ref={setChatDock} className="flex min-h-0 min-w-0 flex-1 flex-col" />
+      )}
+      {chatHost}
     </div>
   );
+}
+
+function presentChat(opts: {
+  callIsHere: boolean;
+  isDesktop: boolean;
+  mobileCallMode: MobileCallMode;
+  chatMode: PanelMode;
+  textLayout: boolean;
+}): PanelMode {
+  if (!opts.callIsHere) return "docked";
+  if (!opts.isDesktop) {
+    if (opts.mobileCallMode === "video" || opts.chatMode === "hidden") {
+      return "hidden";
+    }
+    if (opts.chatMode === "popped" || opts.chatMode === "floating") {
+      return opts.chatMode;
+    }
+    return "docked";
+  }
+  if (opts.textLayout && opts.chatMode !== "popped" && opts.chatMode !== "floating" && opts.chatMode !== "hidden") {
+    return "docked";
+  }
+  return opts.chatMode;
 }
 
 /* ------------------------------------------------------------------ *
@@ -297,29 +388,23 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
 
 interface MobileCallLayoutProps {
   roomId: string;
-  mode: "video" | "split" | "chat";
-  sheet: "half" | "full" | null;
+  mode: MobileCallMode;
   isLandscape: boolean;
   callSurface: ReactNode;
-  chatColumn: ReactNode;
-  onOpenSheet: (snap: "half" | "full") => void;
-  onCloseSheet: () => void;
+  onChatDock: (el: HTMLElement | null) => void;
+  onOpenChat: () => void;
   onReturnToVideo: () => void;
 }
 
 function MobileCallLayout({
   roomId,
   mode,
-  sheet,
   isLandscape,
   callSurface,
-  chatColumn,
-  onOpenSheet,
-  onCloseSheet,
+  onChatDock,
+  onOpenChat,
   onReturnToVideo,
 }: MobileCallLayoutProps) {
-  // Single persistent call surface + chat column — CSS only reflows them so
-  // LiveKit tracks and chat scroll/draft never remount on intent change.
   const [pipPos, setPipPos] = useState({ x: 12, y: 12 });
   const pipDrag = useRef<{
     pointerId: number;
@@ -375,7 +460,6 @@ function MobileCallLayout({
           mode === "chat" && "flex-col",
         )}
       >
-        {/* Overlay mode switcher (Video only) */}
         {mode === "video" && (
           <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-[max(0.25rem,env(safe-area-inset-top))]">
             <div className="pointer-events-auto">
@@ -384,8 +468,8 @@ function MobileCallLayout({
           </div>
         )}
 
-        {/* Persistent call surface — full / split pane / PiP via CSS */}
         <div
+          data-stage-root=""
           className={clsx(
             "min-h-0 min-w-0",
             mode === "video" && "flex flex-1 flex-col",
@@ -414,9 +498,7 @@ function MobileCallLayout({
           role={mode === "chat" ? "button" : undefined}
           tabIndex={mode === "chat" ? 0 : undefined}
           aria-label={mode === "chat" ? "Return to full video" : undefined}
-          title={
-            mode === "chat" ? "Tap to return to Video · drag to move" : undefined
-          }
+          title={mode === "chat" ? "Tap to return to Video · drag to move" : undefined}
           onKeyDown={
             mode === "chat"
               ? (e) => {
@@ -443,205 +525,85 @@ function MobileCallLayout({
           )}
         </div>
 
-        {/* Persistent chat — same fiber parent always; CSS places it as split
-            pane, full column, bottom sheet, or display:none. */}
-        {mode === "video" && sheet !== null && (
-          <button
-            type="button"
-            aria-label="Dismiss chat"
-            className="absolute inset-0 z-30 bg-slate-950/50"
-            onClick={onCloseSheet}
+        {/*
+          Phone Split: the chat slot is a flex sibling of the stage, under it
+          in portrait and beside it in landscape. It is not position:absolute
+          and there is no scrim, so it cannot cover the stage.
+          Phone Video: this slot is not rendered. Chat stays off the stage.
+        */}
+        {mode !== "video" && (
+          <div
+            ref={onChatDock}
+            className={clsx(
+              "flex min-h-0 min-w-0 flex-col",
+              mode === "split" &&
+                (isLandscape
+                  ? "w-1/2 flex-1 border-l border-line"
+                  : "min-h-0 flex-1 border-t border-line"),
+              mode === "chat" && "min-h-0 flex-1",
+            )}
           />
         )}
 
-        <div
-          className={clsx(
-            "flex min-h-0 min-w-0 flex-col",
-            mode === "split" &&
-              (isLandscape
-                ? "w-1/2 flex-1 border-l border-line"
-                : "min-h-0 flex-1 border-t border-line"),
-            mode === "chat" && "min-h-0 flex-1",
-            mode === "video" && sheet === null && "hidden",
-            mode === "video" &&
-              sheet === "half" &&
-              "absolute inset-x-0 bottom-0 z-40 h-[50dvh] max-h-full overflow-hidden rounded-t-2xl border-t border-line bg-surface-0 shadow-pop",
-            mode === "video" &&
-              sheet === "full" &&
-              "absolute inset-x-0 bottom-0 z-40 h-[92dvh] max-h-full overflow-hidden rounded-t-2xl border-t border-line bg-surface-0 shadow-pop",
-          )}
-          role={mode === "video" && sheet ? "dialog" : undefined}
-          aria-modal={mode === "video" && sheet ? true : undefined}
-          aria-label={mode === "video" && sheet ? "Chat" : undefined}
-        >
-          {mode === "video" && sheet !== null && (
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2">
-              <div className="flex items-center gap-2">
-                <span
-                  className="block h-1 w-10 rounded-full bg-slate-600/80"
-                  aria-hidden="true"
-                />
-                <span className="text-xs font-semibold text-slate-200">
-                  Chat
-                </span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenSheet(sheet === "half" ? "full" : "half")
-                  }
-                  className="focus-ring flex h-11 min-w-11 items-center justify-center rounded-lg px-2 text-xs font-medium text-slate-300 hover:bg-white/[0.06]"
-                >
-                  {sheet === "half" ? "Full" : "Half"}
-                </button>
-                <button
-                  type="button"
-                  onClick={onCloseSheet}
-                  className="focus-ring flex h-11 w-11 items-center justify-center rounded-lg text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
-                  aria-label="Close chat"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          )}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{chatColumn}</div>
-        </div>
-
         {mode === "video" && (
-          <>
-            <IncomingMessagePreview roomId={roomId} active={sheet === null} />
-            {sheet === null && (
-              /* Sits ABOVE VoiceVideoBar's permanent mic/cam/leave dock
-                 (pt-1 + h-10 buttons ≈ 2.75rem + safe-area) — anchored to
-                 bottom-0 this pill landed ON the camera button. Wrapper is
-                 click-transparent so a miss still reaches the controls. */
-              <div className="pointer-events-none absolute inset-x-0 bottom-[calc(3.25rem+env(safe-area-inset-bottom,0px))] z-20 flex flex-col items-center">
-                <button
-                  type="button"
-                  onClick={() => onOpenSheet("half")}
-                  className="focus-ring pointer-events-auto flex h-11 min-w-[11rem] items-center justify-center gap-2 rounded-full border border-line bg-slate-950/80 px-4 text-sm font-medium text-slate-100 shadow-pop backdrop-blur-md"
-                  aria-label="Open chat"
-                >
-                  <MessageSquare className="h-4 w-4 text-stable-cyan" />
-                  Chat
-                  <ChevronUp className="h-4 w-4 text-slate-400" />
-                </button>
-                <div className="pointer-events-auto">
-                  <SheetDragHandle
-                    onOpenHalf={() => onOpenSheet("half")}
-                    onOpenFull={() => onOpenSheet("full")}
-                  />
-                </div>
-              </div>
-            )}
-          </>
+          <div className="pointer-events-none absolute inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] z-20 flex justify-center px-3">
+            <IncomingMessagePill roomId={roomId} onOpen={onOpenChat} />
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-/** Thin swipe-up zone under the Chat button — opens half or full by distance. */
-function SheetDragHandle({
-  onOpenHalf,
-  onOpenFull,
-}: {
-  onOpenHalf: () => void;
-  onOpenFull: () => void;
-}) {
-  const startY = useRef<number | null>(null);
-
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    startY.current = e.clientY;
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (startY.current == null) return;
-    const dy = startY.current - e.clientY;
-    startY.current = null;
-    if (dy > 120) onOpenFull();
-    else if (dy > 36) onOpenHalf();
-  };
-
-  return (
-    <div
-      className="mt-1 flex h-8 w-full touch-none items-start justify-center"
-      onPointerDown={onPointerDown}
-      onPointerUp={onPointerUp}
-      onPointerCancel={() => {
-        startY.current = null;
-      }}
-      aria-hidden="true"
-    >
-      <span className="h-1 w-10 rounded-full bg-slate-600/60" />
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ *
- * Transient message previews while chat is hidden (Video mode)
- * ------------------------------------------------------------------ */
-
-function IncomingMessagePreview({
+/**
+ * One line, tappable. Tap leaves Video for Split (chat below the stage).
+ * Nothing here opens a sheet over the picture.
+ */
+function IncomingMessagePill({
   roomId,
-  active,
+  onOpen,
 }: {
   roomId: string;
-  active: boolean;
+  onOpen: () => void;
 }) {
   const messages = useAppStore((s) => s.messages[roomId]?.items);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
-  const setMobileChatSheet = useCallUiStore((s) => s.setMobileChatSheet);
-  const [preview, setPreview] = useState<{
-    id: string;
-    name: string;
-    text: string;
-  } | null>(null);
+  const [preview, setPreview] = useState<{ id: string; line: string } | null>(
+    null,
+  );
   const lastSeenId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!active) {
-      setPreview(null);
-      return;
-    }
     const items = messages ?? [];
     if (items.length === 0) return;
-    const last = items[items.length - 1]!;
+    const last = items[items.length - 1];
+    if (!last) return;
     if (lastSeenId.current === null) {
       lastSeenId.current = last.id;
       return;
     }
     if (last.id === lastSeenId.current) return;
     lastSeenId.current = last.id;
-    // Don't preview our own sends.
     if (currentUserId && last.sender_id === currentUserId) return;
-    const name = last.sender_name || "Someone";
     const text = (last.content || "").replace(/\s+/g, " ").trim();
     if (!text) return;
-    setPreview({
-      id: last.id,
-      name,
-      text: text.length > 90 ? `${text.slice(0, 87)}…` : text,
-    });
-    const t = window.setTimeout(() => setPreview(null), 4200);
-    return () => window.clearTimeout(t);
-  }, [messages, active, currentUserId]);
+    const name = last.sender_name || "Someone";
+    setPreview({ id: last.id, line: `${name}: ${text}` });
+    const timer = window.setTimeout(() => setPreview(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [messages, currentUserId]);
 
   if (!preview) return null;
 
   return (
     <button
       type="button"
-      onClick={() => setMobileChatSheet("half")}
-      className="focus-ring absolute inset-x-3 top-14 z-20 rounded-xl border border-line bg-slate-950/85 px-3 py-2 text-left shadow-pop backdrop-blur-md"
+      onClick={onOpen}
+      className="focus-ring pointer-events-auto flex h-9 max-w-full items-center gap-2 rounded-full border border-line bg-slate-950/90 px-3 text-left text-xs font-medium text-slate-100 shadow-pop backdrop-blur-md"
+      aria-label={`New message. ${preview.line}. Open chat below the stage.`}
     >
-      <p className="truncate text-xs font-semibold text-slate-100">
-        {preview.name}
-      </p>
-      <p className="line-clamp-2 text-xs text-slate-300">{preview.text}</p>
+      <MessageSquare className="h-3.5 w-3.5 shrink-0 text-stable-cyan" />
+      <span className="truncate">{preview.line}</span>
     </button>
   );
 }
-

@@ -41,7 +41,6 @@ import {
   PictureInPicture2,
   ExternalLink,
   GripVertical,
-  MessageSquare,
   RefreshCw,
   Plus,
   Sparkles,
@@ -94,6 +93,13 @@ import { VideoGrid } from "./VideoGrid";
 import { SplitPane } from "./SplitPane";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
+import { ChatToggleButton } from "@/components/Call/ChatToggleButton";
+import { LayoutPresetMenu } from "@/components/Call/LayoutPresetMenu";
+import { PanelHost } from "@/components/Layout/PanelHost";
+import { registerPanelOpener } from "@/components/Layout/panelOpeners";
+import { popPanel } from "@/lib/callLayoutActions";
+import { useRoomPanels } from "@/hooks/useRoomPanels";
+import { usePanelChromeStore } from "@/stores/panelChromeStore";
 import { AgentPresenceFace } from "@/components/Agents/AgentPresenceFace";
 import { frameHasPicture, frameLumaStats } from "@/lib/videoFrame";
 import {
@@ -1553,14 +1559,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const toggleVideo = useCallUiStore((s) => s.toggleVideo);
   const showTranscript = useCallUiStore((s) => s.showTranscript);
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
-  const chatCollapsed = useCallUiStore((s) => s.chatCollapsed);
-  const setChatCollapsed = useCallUiStore((s) => s.setChatCollapsed);
   const mobileCallMode = useCallUiStore((s) => s.mobileCallMode);
   const mobileCallModeUserOverride = useCallUiStore(
     (s) => s.mobileCallModeUserOverride,
   );
   const setMobileCallMode = useCallUiStore((s) => s.setMobileCallMode);
-  const setMobileChatSheet = useCallUiStore((s) => s.setMobileChatSheet);
   const hiddenTileIds = useCallUiStore((s) => s.hiddenTileIds);
   const setTileHidden = useCallUiStore((s) => s.setTileHidden);
   const focusedParticipantId = useCallUiStore((s) => s.focusedParticipantId);
@@ -2037,8 +2040,21 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     onClose: () => {
       setPopoutOpen(roomId, false);
       restorePrePopoutView();
+      const mode = usePanelChromeStore.getState().getPanel(roomId, "stage").mode;
+      if (mode === "popped") {
+        usePanelChromeStore.getState().setPanelMode(roomId, "stage", "docked");
+      }
     },
   });
+  const roomPanels = useRoomPanels(roomId);
+  const openStageRef = useRef<() => boolean>(() => false);
+  const closeStageRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    return registerPanelOpener(roomId, "stage", {
+      open: () => openStageRef.current(),
+      close: () => closeStageRef.current(),
+    });
+  }, [roomId]);
 
   // Per-feed windows: N open at once, one per camera / screen share.
   const feedPopouts = useFeedPopouts();
@@ -2235,7 +2251,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     }
   }
 
-  function openPopout() {
+  function openPopout(): boolean {
     // The pop-out shows the VIDEO STAGE, which the audio-compact default view
     // doesn't render — so lift out of chips as part of the same click instead
     // of hiding the control (which is why users concluded it didn't exist).
@@ -2246,7 +2262,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // drives the visible banner, so we must NOT claim the stage is detached
     // (and must not disturb the user's view mode for a window that never
     // opened).
-    if (!popout.open()) return;
+    if (!popout.open()) return false;
     if (showChips) {
       // Record the pre-pop-out view BEFORE mutating it so closing the window
       // restores it (setViewMode persists — see `popoutPriorViewRef`).
@@ -2255,6 +2271,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       if (viewMode === "compact") setViewMode(roomId, "grid");
     }
     setPopoutOpen(roomId, true);
+    return true;
   }
   function bringBackPopout() {
     // `close()` runs the handle's teardown synchronously, which fires the
@@ -2262,6 +2279,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     popout.close();
     setPopoutOpen(roomId, false);
   }
+  openStageRef.current = openPopout;
+  closeStageRef.current = bringBackPopout;
 
   // Big-tile resolution: durable PIN > agent FOCUS > debounced active speaker >
   // first remote > self (audit §4c).
@@ -2651,7 +2670,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   );
 
   const safeControls = (
-    <div className="glass flex shrink-0 items-center justify-center gap-1.5 rounded-2xl p-1.5">
+    <div className="glass flex max-w-full shrink-0 items-center justify-center gap-1.5 overflow-x-auto rounded-2xl p-1.5">
       <button
         onClick={() => {
           bumpChrome();
@@ -2700,6 +2719,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         onSelect={switchDevice}
         size="lg"
       />
+      <ChatToggleButton roomId={roomId} size="lg" />
+      <LayoutPresetMenu roomId={roomId} />
       <button
         onClick={disconnect}
         className="focus-ring flex h-11 w-11 items-center justify-center rounded-xl bg-rose-500/90 text-white transition hover:bg-rose-500 active:scale-[0.98]"
@@ -2876,48 +2897,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         )}
       </button>
 
-      {/* Hide / show the CHAT section. Hidden ⇒ the video fills the screen. Only
-          in the video-stage arrangement, where chat is the collapsible side
-          pane (mirrors the divider's collapse chevron via `chatCollapsed`).
-          On mobile Video intent, open the chat bottom sheet instead. */}
-      {!showChips && viewMode !== "sidebar" && (
-        <button
-          onClick={() => {
-            if (!isDesktop && mobileCallMode === "video") {
-              setMobileChatSheet("half");
-              return;
-            }
-            if (!isDesktop && mobileCallMode === "chat") {
-              setMobileCallMode("video", { user: true });
-              return;
-            }
-            setChatCollapsed();
-          }}
-          className={clsx(
-            "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-transparent transition-colors active:scale-[0.98]",
-            !chatCollapsed
-              ? "text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
-              : "bg-stable-purple/20 text-stable-purple-light hover:bg-stable-purple/30",
-          )}
-          aria-label={
-            !isDesktop && mobileCallMode === "video"
-              ? "Open chat"
-              : chatCollapsed
-                ? "Show chat"
-                : "Hide chat"
-          }
-          aria-pressed={chatCollapsed}
-          title={
-            !isDesktop && mobileCallMode === "video"
-              ? "Open chat as a sheet"
-              : chatCollapsed
-                ? "Show the chat"
-                : "Hide the chat — video fills the screen"
-          }
-        >
-          <MessageSquare className="h-5 w-5" />
-        </button>
-      )}
+      {/* Chat on/off. The button's fill follows the registry: hidden means
+          the stage is the full width. On a phone, Video hides chat and Split
+          puts it below the stage — this never opens a sheet over the picture. */}
+      {!mobileVideoChrome && <ChatToggleButton roomId={roomId} />}
+      {!mobileVideoChrome && <LayoutPresetMenu roomId={roomId} />}
 
       {/* Pop the video stage out into a REAL separate OS window you can drag to
           another monitor (desktop only — `popoutSupported` already folds in
@@ -2933,7 +2917,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           tooltips on both spell the difference out. */}
       {popoutSupported && (
         <button
-          onClick={poppedOut ? bringBackPopout : openPopout}
+          onClick={() => popPanel(roomId, "stage")}
           className={clsx(
             "focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-transparent transition-colors active:scale-[0.98]",
             poppedOut
@@ -3127,6 +3111,25 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         ) : null}
       </popout.Host>
 
+      {/* Transcript / canvas-class panels read the call store through this
+          portal. Mounted beside the stage host, not inside it, so the
+          transcript split never enters the popped window. */}
+      <PanelHost
+        roomId={roomId}
+        panelId="transcript"
+        title="Transcript"
+        present={
+          roomPanels.transcript.mode === "docked"
+            ? "hidden"
+            : roomPanels.transcript.mode
+        }
+      >
+        {roomPanels.transcript.mode === "popped" ||
+        roomPanels.transcript.mode === "floating" ? (
+          <TranscriptPanel />
+        ) : null}
+      </PanelHost>
+
       {/* Screen-share AUDIO owners. Mounted here — a sibling of the stage, in
           the MAIN document — so they survive pagination, view-mode switches and
           every pop-out. Audio never rides a portal into a child window (see
@@ -3226,16 +3229,16 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         ) : showChips ? (
           <div className="flex min-h-0 flex-1 flex-col gap-2">
             <div className="flex min-h-0 flex-1">{chipsRow}</div>
-            {showTranscript && (
+            {showTranscript && roomPanels.transcript.mode === "docked" && (
               <div className="h-40 shrink-0 overflow-hidden rounded-xl border border-line">
                 <TranscriptPanel />
               </div>
             )}
           </div>
         ) : (
-          // Video stage with a resizable, persisted transcript dock. The stage
-          // (SplitPane primary) stays mounted whether the transcript is shown or
-          // collapsed, so toggling captions never detaches the video tracks.
+          // The split stays in this window so the stage never remounts and
+          // never rides into a pop-out. A popped transcript is only the panel
+          // body, portaled by PanelHost below.
           <SplitPane
             storageKey="call-transcript"
             orientation="vertical"
@@ -3243,7 +3246,10 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             min={96}
             max={360}
             collapsible
-            collapsed={!showTranscript}
+            collapsed={
+              !(showTranscript && roomPanels.transcript.mode === "docked")
+            }
+            fullBleedWhenCollapsed
             onCollapsedChange={(c) => toggleTranscript(!c)}
             secondaryLabel="transcript"
             primary={
@@ -3256,9 +3262,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
               </div>
             }
             secondary={
-              <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-                <TranscriptPanel />
-              </div>
+              showTranscript && roomPanels.transcript.mode === "docked" ? (
+                <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                  <TranscriptPanel />
+                </div>
+              ) : (
+                <div />
+              )
             }
           />
         )}

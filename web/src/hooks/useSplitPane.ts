@@ -38,6 +38,8 @@ export interface SplitPaneOptions {
   orientation: SplitOrientation;
   /** Allow the secondary pane to collapse to zero (persisted). Default false. */
   collapsible?: boolean;
+  /** Called when a drag, key nudge, or double-click commits a size. */
+  onSizeCommit?: (size: number) => void;
 }
 
 /** How far one arrow-key press moves the divider, in px. */
@@ -101,6 +103,8 @@ export interface SplitPaneResult {
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
   toggleCollapsed: () => void;
+  /** Set the secondary size and persist it (preset apply). */
+  commitSize: (size: number) => void;
   orientation: SplitOrientation;
   /** Spread onto the drag handle element; add positioning classes at the call site. */
   dragHandleProps: SplitHandleAria;
@@ -108,7 +112,14 @@ export interface SplitPaneResult {
 
 export function useSplitPane(
   key: string,
-  { defaultSize, min, max, orientation, collapsible = false }: SplitPaneOptions,
+  {
+    defaultSize,
+    min,
+    max,
+    orientation,
+    collapsible = false,
+    onSizeCommit,
+  }: SplitPaneOptions,
 ): SplitPaneResult {
   const [size, setSize] = useState(() =>
     readStoredSize(key, orientation, defaultSize, min, max),
@@ -127,6 +138,8 @@ export function useSplitPane(
   } | null>(null);
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  const onSizeCommitRef = useRef(onSizeCommit);
+  onSizeCommitRef.current = onSizeCommit;
 
   // Re-read the stored size when the axis flips (breakpoint cross) or the key
   // changes, so the horizontal (width) and vertical (height) layouts each
@@ -146,8 +159,18 @@ export function useSplitPane(
       } catch {
         // Best-effort: size still applies for the session.
       }
+      onSizeCommitRef.current?.(w);
     },
     [key, orientation],
+  );
+
+  const commitSize = useCallback(
+    (next: number) => {
+      const w = clampSize(next, min, max);
+      setSize(w);
+      persistSize(w);
+    },
+    [min, max, persistSize],
   );
 
   const setCollapsed = useCallback(
@@ -259,6 +282,7 @@ export function useSplitPane(
     collapsed,
     setCollapsed,
     toggleCollapsed,
+    commitSize,
     orientation,
     dragHandleProps: {
       role: "separator",

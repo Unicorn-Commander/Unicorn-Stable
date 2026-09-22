@@ -40,6 +40,18 @@ export interface SplitPaneProps {
   /** Controlled collapse (optional). When omitted the split manages it itself. */
   collapsed?: boolean;
   onCollapsedChange?: (v: boolean) => void;
+  /**
+   * When collapsed, skip the in-flow expand tab so the primary pane is the
+   * full width of the split. The call bar restores a hidden chat.
+   */
+  fullBleedWhenCollapsed?: boolean;
+  onSizeCommit?: (size: number) => void;
+  /**
+   * When `preferredEpoch` changes to a non-zero value, snap the secondary
+   * size to `preferredSize` (a layout preset). User drags do not bump the epoch.
+   */
+  preferredSize?: number;
+  preferredEpoch?: number;
   className?: string;
 }
 
@@ -55,6 +67,10 @@ export function SplitPane({
   secondaryLabel = "panel",
   collapsed: collapsedProp,
   onCollapsedChange,
+  fullBleedWhenCollapsed = false,
+  onSizeCommit,
+  preferredSize,
+  preferredEpoch = 0,
   className,
 }: SplitPaneProps) {
   const split = useSplitPane(storageKey, {
@@ -63,11 +79,18 @@ export function SplitPane({
     max,
     orientation,
     collapsible,
+    onSizeCommit,
   });
 
   // Support a controlled `collapsed` prop while keeping the persisted internal
   // state as the default. When controlled, mirror the prop into the hook so the
   // persisted value + aria stay consistent.
+  const commitSize = split.commitSize;
+  useEffect(() => {
+    if (!preferredEpoch || preferredSize == null) return;
+    commitSize(preferredSize);
+  }, [preferredEpoch, preferredSize, commitSize]);
+
   const collapsed = collapsedProp ?? split.collapsed;
   useEffect(() => {
     if (collapsedProp !== undefined && collapsedProp !== split.collapsed) {
@@ -81,6 +104,7 @@ export function SplitPane({
   };
 
   const isH = orientation === "horizontal";
+  const bleed = collapsed && fullBleedWhenCollapsed;
 
   return (
     <div
@@ -92,7 +116,7 @@ export function SplitPane({
     >
       <div className="flex min-h-0 min-w-0 flex-1">{primary}</div>
 
-      {collapsed ? (
+      {bleed ? null : collapsed ? (
         <ExpandTab
           orientation={orientation}
           label={secondaryLabel}

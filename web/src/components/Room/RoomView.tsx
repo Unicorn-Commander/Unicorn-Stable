@@ -33,6 +33,10 @@ import { ThreadPanel } from "./ThreadPanel";
 import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
 import { CanvasPanel } from "./CanvasPanel";
+import { TasksPanel, ThreadsPanel } from "./TasksPanel";
+import { PanelHost } from "@/components/Layout/PanelHost";
+import { useRoomPanels } from "@/hooks/useRoomPanels";
+import { usePanelChromeStore } from "@/stores/panelChromeStore";
 import { LeaveRoomModal } from "./LeaveRoomModal";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
@@ -56,6 +60,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   // Desktop drag-to-resize for the docked participants column. On phones the
   // panel is a fixed-width overlay drawer, so the stored width never applies.
   const isDesktop = useIsDesktop();
+  const roomPanels = useRoomPanels(roomId);
   const participantsResize = usePanelResize("participants", {
     defaultWidth: 240,
     min: 200,
@@ -460,6 +465,17 @@ export function RoomView({ roomId }: RoomViewProps) {
       setLeaving(false);
     }
   }
+
+  const repliesFloated =
+    roomPanels.replies.mode === "popped" || roomPanels.replies.mode === "floating";
+  const canvasFloated =
+    roomPanels.canvas.mode === "popped" || roomPanels.canvas.mode === "floating";
+  const membersFloated =
+    roomPanels.members.mode === "popped" || roomPanels.members.mode === "floating";
+  const tasksFloated =
+    roomPanels.tasks.mode === "popped" || roomPanels.tasks.mode === "floating";
+  const threadsFloated =
+    roomPanels.threads.mode === "popped" || roomPanels.threads.mode === "floating";
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -1088,7 +1104,7 @@ export function RoomView({ roomId }: RoomViewProps) {
         />
 
         <AnimatePresence>
-          {threadMessageId && (
+          {threadMessageId && !repliesFloated && (
             <ThreadPanel
               key={threadMessageId}
               roomId={roomId}
@@ -1111,7 +1127,7 @@ export function RoomView({ roomId }: RoomViewProps) {
             crash is isolated to this drawer while exit animations still play. */}
         <ErrorBoundary label="the canvas">
           <AnimatePresence>
-            {canvasOpen && (
+            {canvasOpen && !canvasFloated && (
               <CanvasPanel
                 roomId={roomId}
                 onClose={() => toggleCanvas()}
@@ -1136,7 +1152,7 @@ export function RoomView({ roomId }: RoomViewProps) {
         </ErrorBoundary>
 
         <AnimatePresence initial={false}>
-          {participantPanelOpen && (
+          {participantPanelOpen && !membersFloated && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1178,6 +1194,91 @@ export function RoomView({ roomId }: RoomViewProps) {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {roomPanels.tasks.mode === "docked" && (
+          <div className="hidden h-full w-80 shrink-0 flex-col border-l border-line md:flex">
+            <TasksPanel roomId={roomId} />
+          </div>
+        )}
+        {roomPanels.threads.mode === "docked" && (
+          <div className="hidden h-full w-80 shrink-0 flex-col border-l border-line md:flex">
+            <ThreadsPanel roomId={roomId} />
+          </div>
+        )}
+
+        <PanelHost
+          roomId={roomId}
+          panelId="replies"
+          title="Replies"
+          present={repliesFloated ? roomPanels.replies.mode : "hidden"}
+        >
+          {repliesFloated && threadMessageId ? (
+            <ThreadPanel
+              roomId={roomId}
+              parentId={threadMessageId}
+              onClose={() => {
+                setThreadMessageId(null);
+                usePanelChromeStore.getState().setPanelMode(roomId, "replies", "hidden");
+              }}
+            />
+          ) : repliesFloated ? (
+            <p className="px-3 py-3 text-xs text-slate-400">
+              Open a reply to see it here.
+            </p>
+          ) : null}
+        </PanelHost>
+        <PanelHost
+          roomId={roomId}
+          panelId="canvas"
+          title="Canvas"
+          present={canvasFloated ? roomPanels.canvas.mode : "hidden"}
+        >
+          {canvasFloated ? (
+            <CanvasPanel
+              roomId={roomId}
+              onClose={() => {
+                setCanvasOpen(false);
+                usePanelChromeStore.getState().setPanelMode(roomId, "canvas", "hidden");
+              }}
+            />
+          ) : null}
+        </PanelHost>
+        <PanelHost
+          roomId={roomId}
+          panelId="members"
+          title="Members"
+          present={membersFloated ? roomPanels.members.mode : "hidden"}
+        >
+          {membersFloated ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <ParticipantStrip roomId={roomId} />
+              <div className="shrink-0 border-t border-line">
+                <BrigadeAgentPicker
+                  roomName={roomDetail?.id ?? roomId}
+                  onStartGroup={(a) =>
+                    openStartGroup([{ kind: "agent", id: a.id, name: a.name }])
+                  }
+                />
+              </div>
+            </div>
+          ) : null}
+        </PanelHost>
+        <PanelHost
+          roomId={roomId}
+          panelId="tasks"
+          title="Tasks"
+          present={tasksFloated ? roomPanels.tasks.mode : "hidden"}
+        >
+          {tasksFloated ? <TasksPanel roomId={roomId} /> : null}
+        </PanelHost>
+        <PanelHost
+          roomId={roomId}
+          panelId="threads"
+          title="Threads"
+          present={threadsFloated ? roomPanels.threads.mode : "hidden"}
+        >
+          {threadsFloated ? <ThreadsPanel roomId={roomId} /> : null}
+        </PanelHost>
       </div>
     </div>
   );
