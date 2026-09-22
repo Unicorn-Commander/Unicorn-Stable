@@ -1278,10 +1278,19 @@ def _clamp_window_seconds(value: Any) -> int:
     return max(MIN_WINDOW_SECONDS, min(MAX_WINDOW_SECONDS, n))
 
 
-class RoomVoiceSettingsBody(BaseModel):
-    """The voice settings a room owner can change today."""
+_FACE_SHAPES = ("wide", "square", "tall")
+_NO_COHOST = frozenset({"", "nobody", "none", "off"})
 
-    activation: str = Field(..., min_length=1, max_length=16)
+
+class RoomVoiceSettingsBody(BaseModel):
+    """Voice settings a room owner can change.
+
+    ``activation`` may be omitted when the caller is setting one of the other
+    keys (co-host, source, spoken length, face). Omitted keys are left as
+    they are. ``max_spoken_chars`` of 0 means unlimited.
+    """
+
+    activation: str | None = Field(default=None, max_length=16)
     window_seconds: int | None = Field(default=None, ge=1, le=600)
     #: The cast: sender USERNAME → Kokoro voice id (``{"agent-grok":
     #: "am_onyx"}``). Omitted = unchanged; ``{}`` = clear. Voice ids are not
@@ -1295,6 +1304,55 @@ class RoomVoiceSettingsBody(BaseModel):
     #: Give every OTHER sender in ``voices`` its own LiveKit participant
     #: (identity = username), hosted by the relay. Omitted = unchanged.
     multi: bool | None = None
+    #: Explicit co-host. ``nobody`` / ``none`` / ``off`` / ``""`` clears it.
+    #: This is the only source of ``voice_primary_agent_id``.
+    primary_agent_id: str | None = Field(default=None, max_length=64)
+    #: Whose chat messages the relay speaks. A hub with no source defaults
+    #: to the human owner's username instead of 409.
+    source: str | None = Field(default=None, max_length=100)
+    #: Kokoro persona. Stored as ``voice_relay_agent_id``.
+    agent_id: str | None = Field(default=None, max_length=64)
+    aliases: list[str] | None = None
+    face_shape: str | None = Field(default=None, max_length=16)
+    face_plate: bool | None = None
+    max_spoken_chars: int | None = Field(default=None, ge=0, le=20000)
+
+
+def _is_agent_hub(room: Any) -> bool:
+    room_type = getattr(room, "room_type", None)
+    value = str(getattr(room_type, "value", room_type) or "")
+    return value == RoomType.AGENT_HUB.value
+
+
+async def _hub_owner_username(db: AsyncSession, room: Any) -> str:
+    """The human owner's username, used as the relay source on an unconfigured hub."""
+    from app.models.participant import Participant
+
+    username = (
+        await db.execute(
+            select(Participant.username)
+            .join(RoomMember, RoomMember.participant_id == Participant.id)
+            .where(
+                RoomMember.room_id == room.id,
+                RoomMember.role == MemberRole.OWNER,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return username.strip() if isinstance(username, str) else ""
+
+
+def _clean_aliases(raw: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if not name or len(name) > 64:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="aliases must be spoken names of at most 64 characters",
+            )
+        cleaned.append(name)
+    return cleaned
 
 
 def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
@@ -1335,12 +1393,22 @@ async def update_voice_settings(
     did nothing until everyone left and rejoined, which reads as broken.
     ``live`` in the response says whether a live session actually heard it.
     """
-    mode = body.activation.strip().lower()
-    if mode not in VOICE_ACTIVATION_MODES:
+    mode: str | None
+    if body.activation is None:
+        mode = None
+    else:
+        mode = body.activation.strip().lower()
+        if mode not in VOICE_ACTIVATION_MODES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"activation must be one of {', '.join(VOICE_ACTIVATION_MODES)}",
+            )
+    if body.face_shape is not None and body.face_shape.strip().lower() not in _FACE_SHAPES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"activation must be one of {', '.join(VOICE_ACTIVATION_MODES)}",
+            detail=f"face_shape must be one of {', '.join(_FACE_SHAPES)}",
         )
+    aliases = _clean_aliases(body.aliases) if body.aliases is not None else None
     voices = _clean_relay_voices(body.voices) if body.voices is not None else None
 
     room = (
@@ -1374,12 +1442,51 @@ async def update_voice_settings(
     actor = room_control_actor(user)
 
     meta = dict(room.metadata_ or {})
-    if not str(meta.get("voice_relay_source") or "").strip():
+    source = str(meta.get("voice_relay_source") or "").strip()
+    if body.source is not None:
+        source = body.source.strip()
+        if not source:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="source must be a username",
+            )
+    if not source and _is_agent_hub(room):
+        source = await _hub_owner_username(db, room)
+        if source:
+            logger.info(
+                "voice_settings_hub_source_defaulted",
+                room_id=str(room_id),
+                source=source,
+            )
+    if not source:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This room has no voice agent configured",
         )
+    meta["voice_relay_source"] = source
+    if mode is None:
+        existing = str(meta.get("voice_relay_activation") or "").strip().lower()
+        mode = existing if existing in VOICE_ACTIVATION_MODES else "name"
     meta["voice_relay_activation"] = mode
+    if body.primary_agent_id is not None:
+        raw_primary = body.primary_agent_id.strip()
+        meta["voice_primary_agent_id"] = (
+            "nobody" if raw_primary.lower() in _NO_COHOST else raw_primary
+        )
+    if body.agent_id is not None and body.agent_id.strip():
+        meta["voice_relay_agent_id"] = body.agent_id.strip()
+    if aliases is not None:
+        meta["voice_relay_aliases"] = aliases
+    if body.face_shape is not None:
+        meta["voice_relay_face_shape"] = body.face_shape.strip().lower()
+    if body.face_plate is not None:
+        meta["voice_relay_face_plate"] = bool(body.face_plate)
+    if body.max_spoken_chars is not None:
+        meta["voice_relay_max_spoken_chars"] = int(body.max_spoken_chars)
+    elif "voice_relay_max_spoken_chars" not in meta:
+        from app.api.webhooks import default_max_spoken_chars
+
+        meta["voice_relay_max_spoken_chars"] = default_max_spoken_chars(room)
     window_seconds = (
         _clamp_window_seconds(body.window_seconds)
         if body.window_seconds is not None
@@ -1424,6 +1531,8 @@ async def update_voice_settings(
             frame["video"] = bool(body.video)
         if body.multi is not None:
             frame["multi"] = bool(body.multi)
+        if "voice_relay_max_spoken_chars" in meta:
+            frame["max_spoken_chars"] = int(meta["voice_relay_max_spoken_chars"])
         await livekit.send_data(room.livekit_room_name, frame)
         live = True
     except Exception:
@@ -1455,6 +1564,29 @@ async def update_voice_settings(
         **({"multi": _flag_on(meta.get("voice_relay_multi"))} if "voice_relay_multi" in meta else {}),
         **({"window_seconds": window_seconds} if mode == "window" else {}),
         **({"voices": voices} if voices is not None else {}),
+        **(
+            {"primary_agent_id": meta.get("voice_primary_agent_id")}
+            if body.primary_agent_id is not None
+            else {}
+        ),
+        **(
+            {"max_spoken_chars": int(meta["voice_relay_max_spoken_chars"])}
+            if body.max_spoken_chars is not None
+            else {}
+        ),
+        **({"source": source} if body.source is not None else {}),
+        **({"agent_id": meta.get("voice_relay_agent_id")} if body.agent_id is not None else {}),
+        **({"aliases": aliases} if aliases is not None else {}),
+        **(
+            {"face_shape": meta.get("voice_relay_face_shape")}
+            if body.face_shape is not None
+            else {}
+        ),
+        **(
+            {"face_plate": bool(meta.get("voice_relay_face_plate"))}
+            if body.face_plate is not None
+            else {}
+        ),
     }
 
 

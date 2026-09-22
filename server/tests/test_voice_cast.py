@@ -89,10 +89,18 @@ class MetadataSyncTests(IsolatedAsyncioTestCase):
             return_value={
                 "voice_relay_source": ROOK,
                 "voice_relay_voices": json.dumps(CAST, sort_keys=True),
+                "voice_relay_max_spoken_chars": "900",
             }
         )
         await _sync_voice_metadata(
-            lk, _room({"voice_relay_source": ROOK, "voice_relay_voices": CAST})
+            lk,
+            _room(
+                {
+                    "voice_relay_source": ROOK,
+                    "voice_relay_voices": CAST,
+                    "voice_relay_max_spoken_chars": 900,
+                }
+            ),
         )
         lk.update_room_metadata.assert_not_awaited()
 
