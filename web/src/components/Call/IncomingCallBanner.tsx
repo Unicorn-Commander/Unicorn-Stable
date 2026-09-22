@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Phone, PhoneOff, PhoneIncoming, VolumeX } from "lucide-react";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useIncomingCallStore } from "@/stores/incomingCallStore";
@@ -182,11 +183,14 @@ export function IncomingCallBanner() {
                   phone icon rides the corner so the call is still legible as a
                   call at a glance. */}
               <div className="relative shrink-0">
-                <Avatar
-                  name={call.callerName}
-                  src={call.callerAvatarUrl}
-                  id={call.callerId}
-                  size="lg"
+                <Identity
+                  {...resolveIdentity({
+                    id: call.callerId,
+                    display_name: call.callerName,
+                    avatar_url: call.callerAvatarUrl,
+                    participant_type: "human",
+                  })}
+                  size={40}
                 />
                 <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-slate-900 p-1">
                   <PhoneIncoming className="h-3.5 w-3.5 animate-pulse text-emerald-400" />

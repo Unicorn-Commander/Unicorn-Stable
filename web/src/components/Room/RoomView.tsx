@@ -34,8 +34,8 @@ import { SearchPanel } from "./SearchPanel";
 import { PinsPanel } from "./PinsPanel";
 import { CanvasPanel } from "./CanvasPanel";
 import { LeaveRoomModal } from "./LeaveRoomModal";
-import { Avatar } from "@/components/Avatar";
-import { AgentPortrait } from "@/components/Agents/AgentPortrait";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
 import { canEditVoiceSettings, voiceRelaySource } from "@/lib/voiceSettings";
 
@@ -500,17 +500,29 @@ export function RoomView({ roomId }: RoomViewProps) {
             <div className="flex min-w-0 items-center gap-2">
               <span className="relative shrink-0">
                 {dmAgentId ? (
-                  <AgentPortrait
-                    id={dmAgentId}
-                    name={dmAgentName}
-                    avatarUrl={dmAgent?.avatar_url}
+                  <Identity
+                    {...resolveIdentity({
+                      id: dmAgentId,
+                      display_name: dmAgentName,
+                      avatar_url: dmAgent?.avatar_url ?? dmAgentMember?.avatar_url,
+                      participant_type: "agent",
+                      is_online: dmAgentMember?.is_online,
+                      availability:
+                        dmAgentMember?.availability ?? dmAgent?.availability,
+                    })}
+                    presence={null}
                     size={24}
                   />
                 ) : (
-                  <Avatar
-                    name={dmPeerName}
-                    src={dmPeer?.avatar_url}
-                    size="sm"
+                  <Identity
+                    {...resolveIdentity(
+                      dmPeer ?? {
+                        display_name: dmPeerName,
+                        participant_type: "human",
+                      },
+                    )}
+                    presence={null}
+                    size={28}
                   />
                 )}
                 {dmAgentId ? (

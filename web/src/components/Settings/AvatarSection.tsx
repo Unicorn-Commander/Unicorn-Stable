@@ -16,7 +16,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, Loader2, RefreshCw, RotateCcw, Trash2, User } from "lucide-react";
-import { Avatar } from "@/components/ui/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { Tooltip } from "@/components/ui/Tooltip";
 import {
   ACCEPTED_AVATAR_TYPES,
@@ -109,13 +110,15 @@ export function AvatarSection() {
 
       <div className="rounded-xl border border-line bg-surface-1/60 p-3.5">
         <div className="flex items-start gap-4">
-          <Avatar
-            size="xl"
-            ring
-            avatarUrl={state?.effective_url}
-            name={state?.display_name || state?.username}
-            id={state?.username}
-            alt="Your current picture"
+          <Identity
+            {...resolveIdentity(
+              state ?? {
+                display_name: "You",
+                participant_type: "human",
+                is_self: true,
+              },
+            )}
+            size={96}
           />
 
           <div className="min-w-0 flex-1">

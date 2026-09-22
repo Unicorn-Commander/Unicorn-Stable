@@ -4,16 +4,14 @@
  *
  * WHY NOT `components/ui/Avatar`: it resolves through `lib/avatar.ts`, which
  * imports `services/auth` and the federation store — i.e. the Keycloak client
- * and the instance list. A guest has neither, and pulling that machinery into a
- * page that mounts ABOVE the auth gate is exactly the sort of edge that turns
- * "guests are a separate path" into "guests are the app with some buttons
- * hidden". `lib/identity.ts` (dependency-free) gives the same identity hue, and
- * initials are the whole avatar a guest roster needs: a guest has no picture,
- * and rendering a member's remote avatar URL here would mean re-implementing
- * that module's host allowlist to avoid turning the page into a tracking pixel.
+ * and the instance list. A guest has neither. `Identity` resolves through
+ * `lib/identity.ts`, which does not import either of those. NameDisc stays for
+ * surfaces that only have a name (a video tile, a message before the roster
+ * arrives).
  */
 import clsx from "clsx";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { isGuestParticipant } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import type { GuestRoomMember } from "@/services/guestApi";
@@ -67,7 +65,11 @@ export function GuestParticipantRow({ member }: { member: GuestRoomMember }) {
   return (
     <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
       <div className="relative">
-        <NameDisc name={member.display_name} id={id} size={28} />
+        <Identity
+          {...resolveIdentity({ ...member, id })}
+          presence={null}
+          size={28}
+        />
         <span
           className={clsx(
             "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900",

@@ -21,8 +21,8 @@ import {
   type PeopleDirectoryEntry,
   type UserPreferences,
 } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
-import { identityFor } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
@@ -294,7 +294,7 @@ function HumanMemberRow({
       )}
     >
       <div className={clsx("relative shrink-0", !online && "opacity-60")}>
-        <Avatar name={member.display_name} src={member.avatar_url} size="sm" />
+        <Identity {...resolveIdentity(member)} presence={null} size={28} />
         <OnlineIndicator online={online} />
       </div>
       <span className="min-w-0 flex-1 truncate text-xs font-medium">
@@ -360,7 +360,11 @@ function DirectoryPersonRow({
   return (
     <li className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 transition-colors hover:bg-white/[0.04]">
       <div className={clsx("relative shrink-0", !online && "opacity-60")}>
-        <Avatar name={person.display_name} src={person.avatar_url} size="sm" />
+        <Identity
+          {...resolveIdentity({ ...person, participant_type: "human" })}
+          presence={null}
+          size={28}
+        />
         <OnlineIndicator online={online} />
       </div>
       <div className="min-w-0 flex-1">
@@ -628,12 +632,11 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
         <div className="mb-4 flex items-center gap-2.5 px-1">
           <div className="flex -space-x-1.5">
             {presentMembers.slice(0, 5).map((m) => (
-              <Avatar
+              <Identity
                 key={m.participant_id || m.user_id || m.id || m.username}
-                name={m.display_name}
-                src={m.avatar_url}
-                size="xs"
-                isAgent={m.participant_type === "agent"}
+                {...resolveIdentity(m)}
+                presence={null}
+                size={20}
                 className="ring-2 ring-slate-900"
               />
             ))}
@@ -669,12 +672,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                   className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-slate-300 transition-colors hover:bg-white/[0.04]"
                 >
                   <div className="relative shrink-0">
-                    <Avatar
-                      name={m.display_name}
-                      src={m.avatar_url}
-                      size="sm"
-                      isAgent
-                    />
+                    <Identity {...resolveIdentity(m)} presence={null} size={28} />
                     {/* Was hardcoded mint+pulse for every agent — the same
                         "always online" claim this change removes. */}
                     <span

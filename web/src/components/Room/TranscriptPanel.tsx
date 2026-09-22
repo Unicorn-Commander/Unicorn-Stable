@@ -8,7 +8,8 @@ import {
   X,
   Sparkles,
 } from "lucide-react";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -17,8 +18,7 @@ import {
 } from "@/lib/devTranscript";
 import { isBrowserSttAvailable } from "@/lib/humanTranscript";
 import { api } from "@/services/api";
-import { Avatar } from "@/components/ui/Avatar";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+
 
 /**
  * Live call transcript. Renders speaker-labeled lines in near-real-time with
@@ -326,18 +326,33 @@ export function TranscriptPanel() {
               >
                 <div className="w-7 shrink-0 pt-0.5">
                   {!continuation && (
-                    <Avatar
-                      avatarUrl={resolveAgentPortrait(
-                        agentId,
-                        line.name,
-                        agent?.avatar_url ?? participant?.avatar_url,
+                    <Identity
+                      {...resolveIdentity(
+                        participant
+                          ? {
+                              ...participant,
+                              avatar_url:
+                                participant.avatar_url ?? agent?.avatar_url,
+                              participant_type:
+                                participant.participant_type ??
+                                (agent || line.source === "agent"
+                                  ? "agent"
+                                  : "human"),
+                            }
+                          : {
+                              id: agent?.id ?? agentId,
+                              display_name: line.name,
+                              username: line.participantId,
+                              avatar_url: agent?.avatar_url,
+                              participant_type:
+                                agent ||
+                                line.source === "agent" ||
+                                line.participantId.startsWith("agent-")
+                                  ? "agent"
+                                  : "human",
+                            },
                       )}
-                      emoji={agent?.emoji}
-                      id={agentId}
-                      name={line.name}
                       size={28}
-                      rounded="lg"
-                      alt=""
                     />
                   )}
                 </div>

@@ -10,7 +10,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, type ActivityEventType, type ApiError, type PendingApproval } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -212,13 +213,7 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
                   <li key={message.id} className="p-4">
                     <article className="rounded-2xl border border-line bg-white/[0.025] p-3.5">
                       <div className="flex items-start gap-3">
-                        <Avatar
-                          name={message.sender_name}
-                          src={message.sender_avatar}
-                          size="sm"
-                          isAgent
-                          id={message.sender_id}
-                        />
+                        <Identity {...resolveIdentity(message)} size={28} />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-100">
                             {message.sender_name}

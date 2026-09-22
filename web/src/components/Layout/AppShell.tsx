@@ -32,8 +32,8 @@ import {
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useFacePrefStore } from "@/stores/facePrefStore";
-import { Avatar } from "@/components/Avatar";
-import { identityFor } from "@/lib/identity";
+import { Identity, PhotoNudge } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
 import { getNotifyLevel } from "@/utils/mute";
 import { prepareRoomsForSidebar } from "@/utils/unreadModel";
@@ -195,6 +195,7 @@ export function AppShell() {
   const createRoomModalOpen = useAppStore((s) => s.ui.createRoomModalOpen);
   const settingsOpen = useAppStore((s) => s.ui.settingsOpen);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const openSettings = useAppStore((s) => s.openSettings);
   const savedOpen = useAppStore((s) => s.ui.savedOpen);
   const setSavedOpen = useAppStore((s) => s.setSavedOpen);
   const peopleDrawerOpen = useAppStore((s) => s.ui.peopleDrawerOpen);
@@ -215,6 +216,14 @@ export function AppShell() {
   }, [currentUser?.id, scopePalette, scopeFacePref]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
+  const selfFace = resolveIdentity({
+    id: currentUser?.id,
+    display_name: currentUser?.displayName || "You",
+    username: currentUser?.username,
+    avatar_url: currentUser?.avatarUrl,
+    participant_type: "human",
+    is_self: !!currentUser,
+  });
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -659,16 +668,21 @@ export function AppShell() {
                   avatar menu) is hidden while a room is open, so account actions
                   live at the foot of the drawer. Desktop keeps the Header menu. */}
               <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:hidden">
+                {selfFace.needsPhoto && (
+                  <div className="mb-1 px-1">
+                    <PhotoNudge
+                      onAdd={() => {
+                        openSettings("appearance");
+                      }}
+                    />
+                  </div>
+                )}
                 <div className="mb-1 flex items-center gap-2.5 px-2.5 py-2">
                   <span
                     className="inline-flex shrink-0 rounded-full"
                     style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
                   >
-                    <Avatar
-                      name={currentUser?.displayName ?? "U"}
-                      src={currentUser?.avatarUrl}
-                      size="sm"
-                    />
+                    <Identity {...selfFace} presence={null} size={24} />
                   </span>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-slate-100">

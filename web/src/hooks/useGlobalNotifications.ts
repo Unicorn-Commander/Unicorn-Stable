@@ -26,6 +26,7 @@ import {
 import { homeSummaryQueryKey } from "@/hooks/useLiveCalls";
 import { playCue } from "@/lib/sounds";
 import { ensurePushSubscription } from "@/lib/webpush";
+import { resolveIdentity } from "@/lib/identity";
 import { useGlobalPresence } from "@/hooks/useGlobalPresence";
 
 /**
@@ -161,10 +162,12 @@ export function useGlobalNotifications() {
       }
       if (loadPrefs().inAppToasts && shouldNotify) {
         const room = rooms.find((r) => r.id === event.room_id);
+        const face = resolveIdentity(event.message);
         pushToast({
           title: `${event.message.sender_name} in ${room?.name ?? "a room"}`,
           body: event.message.content.slice(0, 120),
           roomId: event.room_id,
+          icon: face.src,
         });
       }
 
@@ -179,13 +182,14 @@ export function useGlobalNotifications() {
         Notification.permission === "granted"
       ) {
         const room = rooms.find((r) => r.id === event.room_id);
+        const face = resolveIdentity(event.message);
         try {
           void navigator.serviceWorker.ready.then((registration) =>
             registration.showNotification(
               `${event.message.sender_name} in ${room?.name ?? "a room"}`,
               {
                 body: event.message.content.slice(0, 140),
-                icon: "/icon-192.png",
+                icon: face.src || "/icon-192.png",
                 tag: event.room_id,
                 data: { url: `/?room=${event.room_id}` },
               },
@@ -230,10 +234,17 @@ export function useGlobalNotifications() {
         // one call start cannot announce twice.
         playCue("notify");
         if (loadPrefs().inAppToasts) {
+          const face = resolveIdentity({
+            id: event.caller.id,
+            display_name: event.caller.display_name,
+            avatar_url: event.caller.avatar_url,
+            participant_type: "human",
+          });
           pushToast({
             title: `${event.caller.display_name} started a call`,
             body: `in #${event.room_name}`,
             roomId: event.room_id,
+            icon: face.src,
           });
         }
         return;

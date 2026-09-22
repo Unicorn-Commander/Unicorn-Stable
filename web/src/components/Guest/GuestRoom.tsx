@@ -48,7 +48,9 @@ import {
 } from "@/services/guestApi";
 import { GuestSocket, type GuestSocketStatus } from "@/services/guestSocket";
 import { GuestVideoStage } from "./GuestVideoStage";
-import { GuestBadge, GuestParticipantRow, NameDisc } from "./GuestChrome";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
+import { GuestBadge, GuestParticipantRow } from "./GuestChrome";
 
 interface GuestRoomProps {
   session: GuestSession;
@@ -104,7 +106,20 @@ function MessageRow({
   const name = message.sender_name || member?.display_name || "Someone";
   return (
     <li className="flex gap-2.5 px-2 py-1.5">
-      <NameDisc name={name} id={message.sender_id} size={28} className="mt-0.5" />
+      <Identity
+        {...resolveIdentity(
+          member
+            ? { ...member, display_name: name }
+            : {
+                id: message.sender_id,
+                display_name: name,
+                participant_type: message.sender_type,
+              },
+        )}
+        presence={null}
+        size={28}
+        className="mt-0.5"
+      />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-xs font-semibold text-slate-200">

@@ -2,8 +2,7 @@ import { LiveMicMeter } from "@/components/Call/LiveMicMeter";
 import { useIsLandscape } from "@/hooks/useIsLandscape";
 import { shouldUsePortraitStage } from "@/lib/portraitCall";
 import { PortraitCallStage } from "./PortraitCallStage";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
-import { puppetForTexture } from "@/lib/puppetRig";
+
 import { isGuestCallIdentity } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import {
@@ -93,7 +92,8 @@ import { VoiceAgentStatus } from "./VoiceAgentStatus";
 import { TalkGateIndicator } from "./TalkGateIndicator";
 import { VideoGrid } from "./VideoGrid";
 import { SplitPane } from "./SplitPane";
-import { Avatar } from "@/components/ui/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { AgentPresenceFace } from "@/components/Agents/AgentPresenceFace";
 import { frameHasPicture, frameLumaStats } from "@/lib/videoFrame";
 import {
@@ -649,6 +649,16 @@ interface ParticipantTileProps {
   onModerate?: (action: CallModerationAction) => void;
 }
 
+/** LiveKit identity is `<username>_<participant id>`, or the participant id alone. */
+function memberMatchesCallIdentity(
+  member: { participant_id?: string; user_id?: string; username?: string },
+  identity: string,
+): boolean {
+  const pid = member.participant_id || member.user_id;
+  if (!pid) return false;
+  return identity === pid || identity === `${member.username}_${pid}`;
+}
+
 function ParticipantTile({
   p,
   roomId,
@@ -727,6 +737,9 @@ function ParticipantTile({
    * than a new array on every store write. */
   const isGuestTile = useAppStore((s) =>
     isGuestCallIdentity(p.id, s.participants[roomId]),
+  );
+  const tileMember = useAppStore((s) =>
+    (s.participants[roomId] ?? []).find((m) => memberMatchesCallIdentity(m, p.id)),
   );
   /* The room's agent MEMBERS — persona fallback #3. `brigade_agent_id` above
    * comes off the sidebar LIST row, which an in-room invite does not refresh
@@ -951,15 +964,16 @@ function ParticipantTile({
           alt=""
         />
       ) : (
-        <Avatar
-          avatarUrl={agent?.avatar_url}
-          emoji={agent?.emoji}
-          id={p.id.replace(/^agent-/, "")}
-          name={p.name}
+        <Identity
+          {...resolveIdentity(
+            tileMember ?? {
+              id: p.id,
+              display_name: p.name,
+              participant_type: isGuestTile ? "guest" : "human",
+            },
+          )}
           size={size === "large" ? 96 : 64}
-          ring={speaking}
           className={clsx(speaking && !p.isMuted && "animate-pulse-soft")}
-          alt=""
         />
       )}
 
@@ -1371,6 +1385,11 @@ function AudioChip({
   const isGuestChip = useAppStore((s) =>
     isGuestCallIdentity(id, s.participants[roomId]),
   );
+  const chipMember = useAppStore((s) =>
+    isAgent
+      ? undefined
+      : (s.participants[roomId] ?? []).find((m) => memberMatchesCallIdentity(m, id)),
+  );
   // Member-roster fallback, same as ParticipantTile — the audio layout must
   // not name the character differently than the video tile does.
   const roomMembers = useAppStore((s) =>
@@ -1409,28 +1428,24 @@ function AudioChip({
           : undefined
       }
     >
-      <Avatar
-        avatarUrl={
-          isAgent
-            ? /* Same precedence as the stage tile, so the audio layout and the
-               * video layout can never draw two different characters for one
-               * participant. `puppetForTexture` returns one of OUR shipped
-               * paths or nothing, never the roster's raw string. */
-              (puppetForTexture(persona.artUrl)?.texture ??
-              resolveAgentPortrait(
-                persona.slug,
-                persona.name,
-                agent?.avatar_url,
-              ))
-            : agent?.avatar_url
-        }
-        emoji={agent?.emoji}
-        id={persona.slug}
-        name={persona.name}
+      <Identity
+        {...(isAgent
+          ? resolveIdentity({
+              id: persona.slug,
+              display_name: persona.name,
+              avatar_url: agent?.avatar_url,
+              art_url: persona.artUrl,
+              participant_type: "agent",
+            })
+          : resolveIdentity(
+              chipMember ?? {
+                id,
+                display_name: persona.name,
+                participant_type: isGuestChip ? "guest" : "human",
+              },
+            ))}
         size={32}
-        ring={isSpeaking}
         className={clsx(isSpeaking && !isMuted && "animate-pulse-soft")}
-        alt=""
       />
       <span className="max-w-[10ch] truncate text-xs font-medium text-slate-200">
         {persona.name}

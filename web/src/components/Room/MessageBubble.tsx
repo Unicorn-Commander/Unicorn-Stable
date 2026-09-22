@@ -33,13 +33,12 @@ import { api, type ApiError, type Message, type ProjectOpsProject } from "@/serv
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
-import { Avatar } from "@/components/Avatar";
-import { identityFor } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { isGuestSender } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import { isRoomApprover } from "@/lib/approvals";
 import { useModalA11y } from "@/hooks/useModalA11y";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🤔", "✅", "🚀", "👀"];
 const PO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -1754,21 +1753,13 @@ export function MessageBubble({
       <div className="my-2 flex justify-center px-4">
         <div className="glass-heavy max-w-md rounded-2xl p-4 shadow-pop">
           <div className="mb-3 flex items-start gap-2">
-            <Avatar
-              name={message.sender_name}
-              src={
-              message.sender_type === "agent"
-                ? resolveAgentPortrait(
-                    senderAgent?.id ?? null,
-                    message.sender_name,
-                    message.sender_avatar ?? senderAgent?.avatar_url,
-                  )
-                : message.sender_avatar
-            }
-              size="sm"
-              isAgent={isAgent}
-              emoji={senderAgent?.emoji}
-              id={message.sender_id}
+            <Identity
+              {...resolveIdentity({
+                ...message,
+                avatar_url: message.sender_avatar ?? senderAgent?.avatar_url,
+                art_url: message.sender_avatar,
+              })}
+              size={28}
             />
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold text-slate-200">
@@ -2252,21 +2243,13 @@ export function MessageBubble({
     >
       {showAvatar && (
         <div className="mt-0.5 shrink-0">
-          <Avatar
-            name={message.sender_name}
-            src={
-              message.sender_type === "agent"
-                ? resolveAgentPortrait(
-                    senderAgent?.id ?? null,
-                    message.sender_name,
-                    message.sender_avatar ?? senderAgent?.avatar_url,
-                  )
-                : message.sender_avatar
-            }
-            size="md"
-            isAgent={isAgent}
-            emoji={senderAgent?.emoji}
-            id={message.sender_id}
+          <Identity
+            {...resolveIdentity({
+              ...message,
+              avatar_url: message.sender_avatar ?? senderAgent?.avatar_url,
+              art_url: message.sender_avatar,
+            })}
+            size={36}
           />
         </div>
       )}

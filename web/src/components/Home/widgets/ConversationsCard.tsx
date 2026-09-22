@@ -2,7 +2,8 @@ import { useState } from "react";
 import clsx from "clsx";
 import { Hash, MessageSquare, MessagesSquare, UserRound, Users } from "lucide-react";
 import type { Room } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { ChannelBrowser } from "@/components/Sidebar/ChannelBrowser";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -62,6 +63,11 @@ export function ConversationsCard({
   // human chats yet" / "No channel activity" are lies — the data is just
   // late. Show a skeleton instead of the empty states.
   const roomsLoaded = useAppStore((s) => s.roomsLoaded);
+  const participantsByRoom = useAppStore((s) => s.participants);
+  const rosterAgents = useAppStore((s) => s.agents);
+  const selfId = useAppStore(
+    (s) => s.currentParticipantId ?? s.currentUser?.id ?? null,
+  );
 
   if (!roomsLoaded) {
     return (
@@ -170,19 +176,21 @@ export function ConversationsCard({
               return (
                 <li key={room.id}>
                   <HomeRow
-                    leading={
-                      room.type === "group_dm" ? (
-                        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-item-group">
-                          <Users className="h-4 w-4" />
-                        </span>
-                      ) : (
-                        <Avatar
-                          name={room.display_name || room.name}
-                          size="md"
-                          className="mt-0.5"
-                        />
-                      )
-                    }
+                    leading={(() => {
+                      const face = resolveIdentity(room, {
+                        selfId,
+                        members: participantsByRoom[room.id],
+                        agents: rosterAgents,
+                      });
+                      if (room.type === "group_dm" && face.origin === "name-only") {
+                        return (
+                          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-item-group">
+                            <Users className="h-4 w-4" />
+                          </span>
+                        );
+                      }
+                      return <Identity {...face} size={36} className="mt-0.5" />;
+                    })()}
                     title={room.display_name || room.name}
                     emphasis={unread > 0}
                     at={m?.created_at ?? null}

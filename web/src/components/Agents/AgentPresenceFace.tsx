@@ -35,8 +35,8 @@
  */
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Avatar } from "@/components/ui/Avatar";
-import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
 import { puppetForTexture } from "@/lib/puppetRig";
 import { resolveAgentVrmUrl } from "@/lib/agentVrmCatalog";
@@ -50,9 +50,7 @@ import {
   agentSlugFromIdentity,
   faceMountPlan,
   puppetAvailableFor,
-  selectFallbackRung,
   selectPresenceRung,
-  unicornStateFor,
   type PresenceExpression,
   type PresenceSurface,
 } from "@/lib/presenceFace";
@@ -102,13 +100,11 @@ export function AgentPresenceFace({
   avatarUrl,
   artUrl,
   vrmUrl,
-  emoji,
   size,
   surface,
   expression = "idle",
   isSpeaking = false,
   className,
-  alt = "",
 }: AgentPresenceFaceProps) {
   const slug = agentSlugFromIdentity(id || participantId);
   const flagEnabled = isTalkingFaceEnabled();
@@ -236,27 +232,19 @@ export function AgentPresenceFace({
 
   // What the 2D half renders — also the Suspense fallback, so the tile shows the
   // agent's portrait while the three.js chunk is on the wire instead of a hole.
-  const fallbackRung = selectFallbackRung(portraitSrc);
-  const twoD =
-    fallbackRung === "portrait" ? (
-      <Avatar
-        avatarUrl={portraitSrc}
-        emoji={emoji}
-        id={slug}
-        name={name}
-        size={size}
-        ring={isSpeaking}
-        className={clsx(isSpeaking && "animate-pulse-soft")}
-        alt={alt}
-      />
-    ) : (
-      <UnicornAvatar
-        id={slug}
-        name={name}
-        size={size}
-        state={unicornStateFor(expression)}
-      />
-    );
+  const twoD = (
+    <Identity
+      {...resolveIdentity({
+        id: slug,
+        display_name: name,
+        avatar_url: avatarUrl,
+        art_url: artUrl,
+        participant_type: "agent",
+      })}
+      size={size}
+      className={clsx(isSpeaking && "animate-pulse-soft")}
+    />
+  );
 
   if (rung !== "face") {
     return (

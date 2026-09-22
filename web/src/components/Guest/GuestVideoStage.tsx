@@ -41,7 +41,9 @@ import {
   getGuestLiveKitToken,
   type GuestRoomMember,
 } from "@/services/guestApi";
-import { GuestBadge, NameDisc } from "./GuestChrome";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
+import { GuestBadge } from "./GuestChrome";
 
 interface GuestVideoStageProps {
   session: GuestSession;
@@ -109,6 +111,11 @@ function TileView({
   // a LiveKit token carries no guest marker, and a `guest-` username prefix is
   // an identity detail, not a claim about access.
   const isGuest = isGuestCallIdentity(tile.identity, members);
+  const member = members.find((m) => {
+    const pid = m.participant_id || m.user_id;
+    if (!pid) return false;
+    return tile.identity === pid || tile.identity === `${m.username}_${pid}`;
+  });
 
   return (
     <div
@@ -133,7 +140,24 @@ function TileView({
         />
       ) : (
         <div className="grid h-full w-full place-items-center">
-          <NameDisc name={tile.name} id={tile.identity} size={64} />
+          <Identity
+            {...resolveIdentity(
+              member
+                ? { ...member, display_name: tile.name || member.display_name }
+                : {
+                    id: tile.identity,
+                    username: tile.identity,
+                    display_name: tile.name,
+                    participant_type: isGuest
+                      ? "guest"
+                      : tile.identity.startsWith("agent-")
+                        ? "agent"
+                        : "human",
+                  },
+            )}
+            presence={null}
+            size={64}
+          />
         </div>
       )}
       {!tile.isLocal && tile.audio && <audio ref={attachAudio} autoPlay />}

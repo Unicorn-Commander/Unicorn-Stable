@@ -4,8 +4,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark } from "lucide-react";
 import clsx from "clsx";
 import { api, type Message } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
-import { identityFor } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
@@ -130,12 +130,7 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
             return (
               <li key={m.id} className="p-3.5 transition-colors hover:bg-white/[0.02]">
                 <div className="flex items-start gap-2.5">
-                  <Avatar
-                    name={m.sender_name}
-                    src={m.sender_avatar}
-                    size="sm"
-                    isAgent={m.sender_type === "agent"}
-                  />
+                  <Identity {...resolveIdentity(m)} size={28} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
                       <span

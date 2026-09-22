@@ -98,9 +98,19 @@ export function ToastStack() {
                 }}
                 className="flex w-full items-start gap-2.5 p-3 pl-4 pr-9 text-left transition-colors hover:bg-white/[0.04]"
               >
-                <div className={`mt-0.5 rounded-md p-1.5 ${tone.chip}`}>
-                  <Bell className={`h-3.5 w-3.5 ${tone.icon}`} />
-                </div>
+                {t.icon ? (
+                  <img
+                    src={t.icon}
+                    alt=""
+                    width={28}
+                    height={28}
+                    className="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className={`mt-0.5 rounded-md p-1.5 ${tone.chip}`}>
+                    <Bell className={`h-3.5 w-3.5 ${tone.icon}`} />
+                  </div>
+                )}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">
                     {t.title}

@@ -20,7 +20,8 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { api } from "@/services/api";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { isNavV1Enabled, type NavView, useNavStore } from "@/stores/navStore";
@@ -373,6 +374,9 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
 }
 
 function Icon({ item }: { item: Item }) {
+  const roster = useAppStore((s) =>
+    item.kind === "agent" ? s.agents.find((agent) => agent.id === item.id) : undefined,
+  );
   if (item.kind === "action") {
     const ActionIcon = item.icon;
     return <ActionIcon className="h-4 w-4 shrink-0 text-stable-purple-light/80" />;
@@ -383,15 +387,19 @@ function Icon({ item }: { item: Item }) {
     return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
   if (item.kind === "dm")
     return <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />;
-  // Agents carry their identity hue — a 6px dot, same as sidebar agent DMs.
-  const ident = identityFor(item.id, item.label);
   return (
-    <span className="grid h-4 w-4 shrink-0 place-items-center">
-      <span
-        className="h-1.5 w-1.5 rounded-full"
-        style={{ background: ident.color, boxShadow: `0 0 0 3px ${ident.faint}` }}
-      />
-    </span>
+    <Identity
+      {...resolveIdentity(
+        roster ?? {
+          id: item.id,
+          name: item.label,
+          display_name: item.label,
+          participant_type: "agent",
+        },
+      )}
+      presence={null}
+      size={20}
+    />
   );
 }
 
