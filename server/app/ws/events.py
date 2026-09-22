@@ -34,6 +34,22 @@ CONTRACT_EVENTS: tuple[str, ...] = (
     VOICE_DISPATCH,
 )
 
+# --- L2 additions (conversation server lane). Additive: not part of the
+# frozen CONTRACT_EVENTS tuple the L0 test pins. ---
+
+#: A thread was archived (idle 14 d, or by its owner) or unarchived (a new
+#: message). ``payload.is_archived`` says which; sent to the thread AND its
+#: parent room. See services/room_archive.py.
+THREAD_ARCHIVED = "thread_archived"
+#: A group DM was converted to a channel in place (``payload.room_type``,
+#: ``visibility``, ``name``, ``display_name``). Room-scoped.
+ROOM_CONVERTED = "room_converted"
+#: Per-USER (not room) event: a room was created for / opened to this
+#: participant — hub, thread, group, invite accept, project channel.
+#: ``payload.kind`` says which; ``inviter_name`` is present only when it
+#: was someone else's doing. See services/room_push.py.
+ROOM_INVITED = "room_invited"
+
 __all__ = [
     "THREAD_CREATED",
     "ROOM_VISIBILITY",
@@ -42,4 +58,7 @@ __all__ = [
     "RECORDING_STATE",
     "VOICE_DISPATCH",
     "CONTRACT_EVENTS",
+    "THREAD_ARCHIVED",
+    "ROOM_CONVERTED",
+    "ROOM_INVITED",
 ]

@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.agent import AgentConfig
-from app.models.message import Message
+from app.models.message import ContentType, Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import (
     AGENT_MODES,
@@ -29,6 +30,7 @@ from app.models.room import (
 from app.services.agent_routing import participant_backend, find_agent_participant
 from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
+from app.services.mentions import parse_mentions
 from app.services.presence_service import PresenceService
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +40,26 @@ logger = structlog.get_logger(__name__)
 # room admin's browser must not be able to rewrite through the generic
 # update endpoint.
 CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled"})
+
+#: Threads nested under a parent row in GET /rooms are capped per parent; the
+#: rest come from GET /rooms/{id}/threads (which pages by include_archived).
+NESTED_THREADS_PER_PARENT = 25
+
+#: Room-slug shape shared by channels and converted groups (RoomCreate.name).
+ROOM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+@dataclass
+class ThreadCreation:
+    """What ``create_thread`` made: the thread room, the parent's system
+    line ("<name> started a thread: <title>"), the quoted seed (when a
+    ``seed_message_id`` was given) and every member it seeded — so the API
+    layer can fan the two messages out and push the room to each member."""
+
+    room: Room
+    system_message: Message | None = None
+    seed_message: Message | None = None
+    member_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 def dm_pair_key(a: uuid.UUID | str, b: uuid.UUID | str) -> str:
@@ -934,6 +956,7 @@ class RoomService:
         cursor: str | None = None,
         limit: int = 50,
         is_archived: bool = False,
+        nested: bool = False,
     ) -> dict[str, Any]:
         """List rooms the user is a member of, with pagination.
 
@@ -942,6 +965,13 @@ class RoomService:
         before; True returns ONLY the caller's archived rooms (the sidebar's
         "Archived" disclosure). It is a filter on the same membership-scoped
         query — never a way to see someone else's rooms.
+
+        ``nested`` (``GET /rooms?view=nested``, design §3) hangs each parent's
+        live threads under its row (``threads``, ``latest_thread_id``) and
+        keeps threads out of the top level. The DEFAULT is today's FLAT shape:
+        every room the caller is in — a thread parented by the 022 backfill
+        included — is an ordinary row, so a client that predates the
+        conversation model keeps showing all of them.
         """
         query = (
             select(Room)
@@ -952,6 +982,10 @@ class RoomService:
             )
             .order_by(Room.updated_at.desc())
         )
+        if nested:
+            # Threads (parent_room_id set) never appear at the top level of
+            # the nested view: they hang under their parent row.
+            query = query.where(Room.parent_room_id.is_(None))
 
         if cursor:
             try:
@@ -982,6 +1016,8 @@ class RoomService:
             .join(Room, Room.id == RoomMember.room_id)
             .where(Room.is_archived == is_archived)
         )
+        if nested:
+            count_query = count_query.where(Room.parent_room_id.is_(None))
         total_result = await self._db.execute(count_query)
         total = total_result.scalar() or 0
 
@@ -993,13 +1029,30 @@ class RoomService:
         last_msg_by_room: dict[str, Message] = {}
         unread_by_room: dict[str, int] = {}
         mention_by_room: dict[str, tuple[int, bool]] = {}
+        # Nested view only: live threads under this page's rooms, hung under
+        # their parent rows (design §3). Fetched before the batches so their
+        # previews / unread badges ride the same three queries as their
+        # parents. The flat default never runs this query.
+        threads: list[Room] = []
+        if nested and room_ids:
+            thread_rows = await self._db.execute(
+                select(Room)
+                .where(
+                    Room.parent_room_id.in_(room_ids),
+                    Room.is_archived == False,  # noqa: E712
+                )
+                .order_by(Room.updated_at.desc())
+            )
+            threads = list(thread_rows.scalars().all())
+        thread_ids = [t.id for t in threads]
+        batch_ids = room_ids + thread_ids
         if room_ids:
             # Latest non-deleted message per room (Postgres DISTINCT ON; the
             # leading ORDER BY column must match the DISTINCT column).
             lm_rows = await self._db.execute(
                 select(Message)
                 .where(
-                    Message.room_id.in_(room_ids),
+                    Message.room_id.in_(batch_ids),
                     Message.is_deleted == False,  # noqa: E712
                 )
                 .order_by(Message.room_id, Message.created_at.desc())
@@ -1020,7 +1073,7 @@ class RoomService:
                     & (RoomMember.participant_id == participant_id),
                 )
                 .where(
-                    Message.room_id.in_(room_ids),
+                    Message.room_id.in_(batch_ids),
                     Message.is_deleted == False,  # noqa: E712
                     Message.sender_id != participant_id,
                     or_(
@@ -1039,7 +1092,7 @@ class RoomService:
                     RoomMember.has_unread_mention,
                 ).where(
                     RoomMember.participant_id == participant_id,
-                    RoomMember.room_id.in_(room_ids),
+                    RoomMember.room_id.in_(batch_ids),
                 )
             )
             for rid, count, unread in mention_rows.all():
@@ -1047,8 +1100,35 @@ class RoomService:
 
         # Conversation-model extras (design §3): thread counts, the 1:1
         # counterpart and the agent members with their modes — batched for the
-        # whole page so the sidebar never guesses whose face to draw.
-        extras = await self._conversation_extras(rooms) if room_ids else {}
+        # whole page (parents AND their nested threads) so the sidebar never
+        # guesses whose face to draw.
+        extras = await self._conversation_extras(rooms + threads) if room_ids else {}
+
+        # Nested thread rows, newest activity first, capped per parent. A
+        # thread the caller is not a member of (someone else's thread in a
+        # channel they share) is listed with is_member=False and no badges;
+        # opening it joins them (join_room's parent-member rule).
+        def _activity(t: Room) -> Any:
+            lm = last_msg_by_room.get(str(t.id))
+            return (lm.created_at if lm is not None else None) or t.updated_at or t.created_at
+
+        threads_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for t in sorted(threads, key=_activity, reverse=True):
+            bucket = threads_by_parent.setdefault(str(t.parent_room_id), [])
+            if len(bucket) >= NESTED_THREADS_PER_PARENT:
+                continue
+            is_member = str(t.id) in mention_by_room
+            bucket.append({
+                "room": t,
+                "member_count": len(getattr(t, "members", None) or []),
+                "online_count": 0,
+                "last_message": last_msg_by_room.get(str(t.id)),
+                "unread_count": unread_by_room.get(str(t.id), 0) if is_member else 0,
+                "mention_count": mention_by_room.get(str(t.id), (0, False))[0],
+                "has_unread_mention": mention_by_room.get(str(t.id), (0, False))[1],
+                "is_member": is_member,
+                **extras.get(str(t.id), {}),
+            })
 
         # Enrich rooms with member/online counts + conversation-list extras
         enriched_rooms: list[dict[str, Any]] = []
@@ -1065,6 +1145,7 @@ class RoomService:
                 online_ids = await self._presence.get_online_in_room(str(room.id))
             except Exception:
                 online_ids = set()
+            nested = threads_by_parent.get(str(room.id), [])
             enriched_rooms.append({
                 "room": room,
                 "member_count": mc,
@@ -1073,6 +1154,9 @@ class RoomService:
                 "unread_count": unread_by_room.get(str(room.id), 0),
                 "mention_count": mention_by_room.get(str(room.id), (0, False))[0],
                 "has_unread_mention": mention_by_room.get(str(room.id), (0, False))[1],
+                "is_member": True,
+                "threads": nested,
+                "latest_thread_id": nested[0]["room"].id if nested else None,
                 **extras.get(str(room.id), {}),
             })
 
@@ -1238,16 +1322,20 @@ class RoomService:
 
         if room is None:
             slug = self.hub_slug(human_id, agent_id)
+            hub_meta: dict[str, Any] = {
+                "agent_hub": {"human_id": str(human_id), "agent_id": agent_id},
+                "brigade_agent_id": agent_id,
+                # Voice settings a NEW hub starts with (L2 item 1); an
+                # existing hub keeps whatever its owner set.
+                **(await self._hub_voice_defaults(human_id, agent_id)),
+            }
             try:
                 room = await self.create_room(
                     name=slug,
                     display_name=agent_p.display_name or agent_id,
                     room_type=RoomType.AGENT_HUB.value,
                     creator_id=human_id,
-                    metadata={
-                        "agent_hub": {"human_id": str(human_id), "agent_id": agent_id},
-                        "brigade_agent_id": agent_id,
-                    },
+                    metadata=hub_meta,
                     org_id=org_id,
                 )
                 created = True
@@ -1295,6 +1383,16 @@ class RoomService:
         {"brigade_agent_id", "brigade_agent_ids", "model_override", "voice_primary_agent_id"}
     )
 
+    #: A thread titled from its seed message keeps this many characters.
+    THREAD_TITLE_FROM_SEED_CHARS = 60
+
+    @classmethod
+    def thread_title_from_seed(cls, content: str | None) -> str:
+        compact = " ".join((content or "").split())
+        if len(compact) <= cls.THREAD_TITLE_FROM_SEED_CHARS:
+            return compact
+        return compact[: cls.THREAD_TITLE_FROM_SEED_CHARS - 1].rstrip() + "…"
+
     async def create_thread(
         self,
         *,
@@ -1302,14 +1400,26 @@ class RoomService:
         creator_id: uuid.UUID,
         title: str | None = None,
         seed_message_id: uuid.UUID | None = None,
-    ) -> Room:
+    ) -> ThreadCreation:
         """Create a THREAD: a child room under ``parent_id`` (design §3).
 
-        Inherits the parent's ``room_type`` (so a thread under a hub
-        auto-answers, one under a channel answers when named), ``org_id``,
-        ``visibility``, recording policy and the conversation-relevant
-        metadata; seeds members with the creator (OWNER) plus the parent's
-        agent members carrying the same ``agent_mode``. One level only.
+        Works on ANY room — dm, group_dm, agent_hub, channel (incl. project
+        channels) — for any member of the parent. Inherits the parent's
+        ``room_type`` (so a thread under a hub auto-answers, one under a
+        channel answers when named), ``org_id``, ``visibility``, recording
+        policy and the conversation-relevant metadata. One level only.
+
+        Members: the creator (OWNER), the parent's agent members with the same
+        ``agent_mode``, and every human @-mentioned in the title or the seed
+        message who is ALSO a member of the parent (a mention never widens a
+        private room's audience).
+
+        ``seed_message_id`` quotes that message as the thread's first entry —
+        a SYSTEM-styled message whose ``metadata.seed_message_id`` /
+        ``seed_room_id`` link back to the original, which is not moved. The
+        parent gets a SYSTEM line "<name> started a thread: <title>" carrying
+        ``metadata.thread_room_id``. ``thread_count`` on the parent is derived
+        (``_conversation_extras``), so nothing else needs maintaining.
         """
         parent = (await self._db.execute(select(Room).where(Room.id == parent_id))).scalar_one_or_none()
         if parent is None:
@@ -1324,6 +1434,32 @@ class RoomService:
         if parent.is_archived:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This room is archived")
 
+        seed: Message | None = None
+        if seed_message_id is not None:
+            seed = (
+                await self._db.execute(
+                    select(Message).where(
+                        Message.id == seed_message_id,
+                        Message.room_id == parent.id,
+                        Message.is_deleted == False,  # noqa: E712
+                    )
+                )
+            ).scalar_one_or_none()
+            if seed is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Seed message not found in this room",
+                )
+
+        creator = (
+            await self._db.execute(select(Participant).where(Participant.id == creator_id))
+        ).scalar_one_or_none()
+        creator_name = (
+            (getattr(creator, "display_name", None) or getattr(creator, "username", None) or "Someone")
+            if creator is not None
+            else "Someone"
+        )
+
         parent_meta = dict(parent.metadata_ or {})
         meta: dict[str, Any] = {
             k: v
@@ -1333,9 +1469,12 @@ class RoomService:
         }
         meta["thread"] = {
             "parent_room_id": str(parent.id),
-            "seed_message_id": str(seed_message_id) if seed_message_id else None,
+            "seed_message_id": str(seed.id) if seed is not None else None,
         }
-        display = (title or "").strip() or "New thread"
+        display = (title or "").strip()
+        if not display and seed is not None:
+            display = self.thread_title_from_seed(seed.content)
+        display = display or "New thread"
         slug = f"{parent.name[:80]}-t-{uuid.uuid4().hex[:8]}"
 
         room = await self.create_room(
@@ -1351,31 +1490,93 @@ class RoomService:
         room.visibility = getattr(parent, "visibility", "public")
         room.recording_policy = getattr(parent, "recording_policy", "off")
         room.recording_kind = getattr(parent, "recording_kind", "audio")
+        # A thread in a project channel is part of that project: the chip,
+        # the Tasks panel and promote-to-task pre-fill keep working inside it.
+        room.project_number = getattr(parent, "project_number", None)
 
-        # Seed the parent's agents with their modes.
-        agent_rows = await self._db.execute(
+        # Seed members from the parent's roster in one query: agents keep
+        # their mode; humans come along only when @-mentioned.
+        handles: set[str] = set(parse_mentions(display).handles)
+        if seed is not None:
+            handles |= set(parse_mentions(seed.content).handles)
+        member_rows = await self._db.execute(
             select(RoomMember, Participant)
             .join(Participant, Participant.id == RoomMember.participant_id)
-            .where(
-                RoomMember.room_id == parent.id,
-                Participant.participant_type == ParticipantType.AGENT,
-            )
+            .where(RoomMember.room_id == parent.id)
         )
-        for membership, participant in agent_rows.all():
+        member_ids: list[uuid.UUID] = [creator_id]
+        for membership, participant in member_rows.all():
             if participant.id == creator_id:
                 continue
-            self._db.add(
-                RoomMember(
-                    room_id=room.id,
-                    participant_id=participant.id,
-                    role=MemberRole.MEMBER,
-                    agent_mode=getattr(membership, "agent_mode", None),
+            if participant.participant_type == ParticipantType.AGENT:
+                self._db.add(
+                    RoomMember(
+                        room_id=room.id,
+                        participant_id=participant.id,
+                        role=MemberRole.MEMBER,
+                        agent_mode=getattr(membership, "agent_mode", None),
+                    )
                 )
+                member_ids.append(participant.id)
+            elif handles and (participant.username or "").casefold() in handles:
+                self._db.add(
+                    RoomMember(room_id=room.id, participant_id=participant.id, role=MemberRole.MEMBER)
+                )
+                member_ids.append(participant.id)
+
+        seed_message: Message | None = None
+        if seed is not None:
+            seed_sender = getattr(seed, "sender", None)
+            seed_message = Message(
+                room_id=room.id,
+                sender_id=creator_id,
+                content=seed.content,
+                content_type=ContentType.SYSTEM,
+                metadata_={
+                    "kind": "thread_seed",
+                    "seed_message_id": str(seed.id),
+                    "seed_room_id": str(parent.id),
+                    "seed_sender_id": str(seed.sender_id) if seed.sender_id else None,
+                    "seed_sender_name": (
+                        getattr(seed_sender, "display_name", None)
+                        or getattr(seed_sender, "username", None)
+                    ),
+                    "seed_created_at": seed.created_at.isoformat() if seed.created_at else None,
+                },
             )
+            self._db.add(seed_message)
+
+        system_message = Message(
+            room_id=parent.id,
+            sender_id=creator_id,
+            content=f"{creator_name} started a thread: {display}",
+            content_type=ContentType.SYSTEM,
+            metadata_={
+                "kind": "thread_started",
+                "thread_room_id": str(room.id),
+                "thread_title": display,
+            },
+        )
+        self._db.add(system_message)
+        # A new thread is activity on the parent: float it in the sidebar.
+        parent.updated_at = datetime.now(timezone.utc)
+
         await self._db.commit()
         await self._db.refresh(room)
-        logger.info("thread_created", room_id=str(room.id), parent_room_id=str(parent.id))
-        return room
+        logger.info(
+            "thread_created",
+            room_id=str(room.id),
+            parent_room_id=str(parent.id),
+            parent_type=parent.room_type.value,
+            seeded=len(member_ids),
+            from_seed=seed is not None,
+        )
+        return ThreadCreation(
+            room=room,
+            system_message=system_message,
+            seed_message=seed_message,
+            member_ids=member_ids,
+        )
 
     async def list_threads(
         self, parent_id: uuid.UUID, *, include_archived: bool = False
@@ -1434,6 +1635,232 @@ class RoomService:
         )
         return membership
 
+    async def _hub_voice_defaults(self, human_id: uuid.UUID, agent_id: str) -> dict[str, Any]:
+        """Voice settings a NEW hub starts with (L2 item 1): the relay speaks
+        the human's lines (``voice_relay_source`` = their username), the agent
+        answers everything said (``voice_relay_activation = always``) and wears
+        its preset voice from the server TTS preset table
+        (``api/tts.AGENT_VOICES``). Keys match ``webhooks._VOICE_META_KEYS`` so
+        they reach the LiveKit room metadata the workers read."""
+        username = (
+            await self._db.execute(select(Participant.username).where(Participant.id == human_id))
+        ).scalar_one_or_none()
+        meta: dict[str, Any] = {
+            "voice_relay_agent_id": agent_id,
+            "voice_primary_agent_id": agent_id,
+            "voice_relay_activation": "always",
+        }
+        if isinstance(username, str) and username.strip():
+            meta["voice_relay_source"] = username.strip()
+        voice: str | None = None
+        try:
+            from app.api.tts import resolve_agent_voice
+
+            voice = resolve_agent_voice(agent_id)
+        except Exception:  # pragma: no cover - the preset table is static
+            logger.warning("hub_voice_preset_lookup_failed", agent_id=agent_id, exc_info=True)
+        if voice:
+            meta["voice_relay_voices"] = {agent_id: voice}
+        return meta
+
+    async def thread_member_ids(self, room_id: uuid.UUID) -> list[uuid.UUID]:
+        rows = await self._db.execute(
+            select(RoomMember.participant_id).where(RoomMember.room_id == room_id)
+        )
+        return [pid for (pid,) in rows.all()]
+
+    # ------------------------------------------------------------------
+    # Project channels (design §3, L2 item 5)
+    # ------------------------------------------------------------------
+
+    async def ensure_project_channel(
+        self,
+        *,
+        creator_id: uuid.UUID,
+        project_number: str,
+        project: Mapping[str, Any],
+        org_id: str | None = None,
+    ) -> tuple[Room, bool]:
+        """Find-or-create THE private channel bound to ``project_number``.
+
+        Slug ``p-<number>-<slug>``, display ``P-00115 · <title>``, visibility
+        private, creator OWNER. A later caller for the same project joins the
+        existing channel as MEMBER (the project is visible to them in the
+        Project-Ops picker; the channel is where its work is discussed).
+        Returns ``(room, created)``.
+        """
+        from app.services.project_channels import (
+            normalize_project_number,
+            project_channel_display_name,
+            project_channel_slug,
+        )
+
+        # Bound numbers are stored canonical ("P-00115"); accept any spelling
+        # here too so a service caller cannot mint a second channel for
+        # "p-115".
+        canonical = normalize_project_number(project_number)
+        if canonical is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="project_number must look like P-00115",
+            )
+        project_number = canonical
+
+        stmt = select(Room).where(
+            Room.project_number == project_number,
+            Room.room_type == RoomType.CHANNEL,
+            Room.parent_room_id.is_(None),
+            Room.is_archived == False,  # noqa: E712
+        )
+        if org_id is not None:
+            stmt = stmt.where(or_(Room.org_id == org_id, Room.org_id.is_(None)))
+        room = (
+            await self._db.execute(stmt.order_by(Room.created_at.asc()).limit(1))
+        ).scalars().first()
+
+        if room is not None:
+            if await self._get_membership(room.id, creator_id) is None:
+                self._db.add(RoomMember(room_id=room.id, participant_id=creator_id, role=MemberRole.MEMBER))
+                await self._db.commit()
+                await self._db.refresh(room)
+                logger.info(
+                    "project_channel_joined",
+                    room_id=str(room.id),
+                    project_number=project_number,
+                    participant_id=str(creator_id),
+                )
+            return room, False
+
+        title = str(project.get("title") or project_number)
+        slug = project_channel_slug(project_number, title)
+        meta = {
+            "project": {
+                "number": project_number,
+                "id": project.get("id"),
+                "title": title,
+                "status": project.get("status"),
+                "due_date": project.get("dueDate"),
+                "bound_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
+        try:
+            room = await self.create_room(
+                name=slug,
+                display_name=project_channel_display_name(project_number, title),
+                room_type=RoomType.CHANNEL.value,
+                creator_id=creator_id,
+                description=f"Project channel for {project_number}",
+                metadata=meta,
+                org_id=org_id,
+            )
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_409_CONFLICT:
+                raise
+            # A stale (archived / re-bound) channel holds the slug; channels
+            # refuse silent uniquification, so pick the suffix here.
+            room = await self.create_room(
+                name=f"{slug[:90]}-{uuid.uuid4().hex[:6]}",
+                display_name=project_channel_display_name(project_number, title),
+                room_type=RoomType.CHANNEL.value,
+                creator_id=creator_id,
+                description=f"Project channel for {project_number}",
+                metadata=meta,
+                org_id=org_id,
+            )
+        room.visibility = "private"
+        room.project_number = project_number
+        await self._db.commit()
+        await self._db.refresh(room)
+        logger.info(
+            "project_channel_created",
+            room_id=str(room.id),
+            project_number=project_number,
+            creator=str(creator_id),
+        )
+        return room, True
+
+    # ------------------------------------------------------------------
+    # Group DM → private channel (design §3, L2 item 6)
+    # ------------------------------------------------------------------
+
+    async def convert_group_to_channel(
+        self,
+        *,
+        room_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        name: str | None = None,
+        display_name: str | None = None,
+        visibility: str = "private",
+    ) -> Room:
+        """Explicit, owner-only: a ``group_dm`` becomes a ``channel``.
+
+        Renames (slug + label) and retypes in place — members, messages,
+        calls and the LiveKit room all stay. Private by default (the group
+        was private by membership; a public channel is a deliberate second
+        step through PATCH visibility). Records ``metadata.converted_from``
+        so the audit line and the UI can say where the channel came from.
+        """
+        await self._require_role(room_id, actor_id, ["owner"])
+        room = (await self._db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
+        if room is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+        if room.room_type != RoomType.GROUP_DM:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only a group conversation can be converted to a channel",
+            )
+        if getattr(room, "parent_room_id", None) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A thread cannot be converted; convert its parent",
+            )
+        if visibility not in ROOM_VISIBILITIES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid visibility: {visibility}",
+            )
+
+        new_display = " ".join((display_name or "").split()) or room.display_name
+        new_name = (name or "").strip().lower() or group_slug_base(new_display)
+        if not ROOM_SLUG_RE.fullmatch(new_name) or len(new_name) > 100:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Channel name must be lowercase letters, digits, '.', '_' or '-'",
+            )
+        if new_name != room.name:
+            taken = (
+                await self._db.execute(select(Room.id).where(Room.name == new_name, Room.id != room.id))
+            ).scalar_one_or_none()
+            if taken is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Room with name '{new_name}' already exists",
+                )
+
+        meta = dict(room.metadata_ or {})
+        meta["converted_from"] = {
+            "room_type": RoomType.GROUP_DM.value,
+            "name": room.name,
+            "display_name": room.display_name,
+            "by": str(actor_id),
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        room.room_type = RoomType.CHANNEL
+        room.name = new_name
+        room.display_name = new_display
+        room.visibility = visibility
+        room.metadata_ = meta
+        await self._db.commit()
+        await self._db.refresh(room)
+        logger.info(
+            "group_converted_to_channel",
+            room_id=str(room.id),
+            name=new_name,
+            visibility=visibility,
+            by=str(actor_id),
+        )
+        return room
+
     async def join_room(
         self,
         room_id: uuid.UUID,
@@ -1459,18 +1886,28 @@ class RoomService:
                 detail="Room not found",
             )
 
+        # THREAD rule (design §3): a member of the parent may open any live
+        # thread under it — the thread inherited the parent's type and
+        # visibility, and the parent's membership is the audience. Checked
+        # first so a private parent's own members are not bounced by the
+        # visibility gate below; a non-member of the parent gets the same
+        # uniform 403 as any private room.
+        parent_member = False
+        if self_join and getattr(room, "parent_room_id", None) is not None:
+            parent_member = await self._get_membership(room.parent_room_id, participant_id) is not None
+
         # Private/invite-only gate: a user may only self-join public channels.
         # DM / group_dm / agent_hub membership comes exclusively from an invite
         # (or being the original DM counterpart), never by knowing the room
         # UUID. A PRIVATE channel (rooms.visibility, design §3) is invite-only
         # too — same uniform 403 so the response does not distinguish "exists
         # but private" from "not for you".
-        if self_join and room.room_type != RoomType.CHANNEL:
+        if self_join and not parent_member and room.room_type != RoomType.CHANNEL:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This room is invite-only",
             )
-        if self_join and getattr(room, "visibility", "public") == "private":
+        if self_join and not parent_member and getattr(room, "visibility", "public") == "private":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This room is invite-only",
@@ -1480,7 +1917,7 @@ class RoomService:
         # channel belonging to their org (or an org-less/community channel).
         # Blocks discovering + joining another org's channel by UUID. An invite
         # (self_join=False) still works cross-org for explicit collaboration.
-        if self_join:
+        if self_join and not parent_member:
             from app.config import get_settings as _get_settings
 
             org = _get_settings().instance_org_id
@@ -1611,6 +2048,18 @@ class RoomService:
             room.description = description
         if is_archived is not None:
             room.is_archived = is_archived
+            if getattr(room, "parent_room_id", None) is not None:
+                # Threads carry their archive time so a later message can
+                # unarchive them (services/room_archive.py); reassigned, not
+                # mutated, for JSONB change detection.
+                from app.services.room_archive import THREAD_ARCHIVED_AT_KEY, archive_stamp
+
+                stamped = dict(room.metadata_ or {})
+                if is_archived:
+                    stamped.update(archive_stamp(datetime.now(timezone.utc), "manual"))
+                else:
+                    stamped.pop(THREAD_ARCHIVED_AT_KEY, None)
+                room.metadata_ = stamped
         if visibility is not None:
             if visibility not in ROOM_VISIBILITIES:
                 raise HTTPException(
