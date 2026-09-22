@@ -944,7 +944,10 @@ export function HomeDashboard({
 
   return (
     <div className="flex-1 overflow-y-auto" data-testid="home-loaded">
-      <div className="animate-fade-in mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+      <div
+        className="animate-fade-in mx-auto w-full max-w-5xl px-4 py-6 sm:px-6"
+        data-testid="home-dashboard"
+      >
         <header className="card mb-4 flex items-center gap-3 px-4 py-4 sm:px-5">
           <Identity {...you} size={40} />
           <div>

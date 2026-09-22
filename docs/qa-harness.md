@@ -24,7 +24,9 @@ npm run dev -- --host 127.0.0.1 --port 5173   # one terminal
 npx playwright test                           # another; reuses that server
 ```
 
-The harness pins port 5173 (`web/playwright.config.ts`). Vite's own default in this repo is 3000. A fresh browser on `/` sees the marketing iframe first; the suite posts `stable:enter` so AuthGate can seed the dev mock user. Do not point the suite at `vite preview`: production mode does not seed that user.
+The harness pins port 5173 (`web/playwright.config.ts`). Vite's own default in this repo is 3000. A fresh browser on `/` sees the marketing iframe first; the suite posts `stable:enter` so AuthGate can seed the dev mock user. Home v3 also needs `GET /api/v1/home/summary?v=3`. The dev server has no API, so the suite fulfills that one request with an empty v3 inbox. Do not point the suite at `vite preview`: production mode does not seed that user.
+
+Direct is the old Chats destination (`nav-direct`). Its list carries `conversations-card`. New is hidden on Home; the suite opens Direct first, then the New button, which opens the sheet marked `create-room-modal`.
 
 Playwright does not wait for `networkidle`. The dev server's HMR socket never goes idle.
 

@@ -125,6 +125,13 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
       {DESTINATIONS.map(({ id, label, Icon }) => {
         const badge = badges[id] ?? 0;
         const active = activeView === id;
+        const testIds: Record<NavView, string> = {
+          home: "nav-home",
+          direct: "nav-direct",
+          channels: "nav-channels",
+          meetings: "nav-meetings",
+          agents: "nav-agents",
+        };
         return (
           <Tooltip key={id} content={badge > 0 ? `${label} · ${badge} need you` : label}>
             <button
@@ -132,6 +139,7 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
               onClick={() => select(id)}
               aria-current={active ? "page" : undefined}
               aria-label={badge > 0 ? `${label}, ${badge} need you` : label}
+              data-testid={testIds[id]}
               className={clsx(
                 "focus-ring relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-colors",
                 active ? "bg-white/[0.1] text-slate-50" : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",

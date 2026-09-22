@@ -39,8 +39,9 @@ const SURFACES: Array<{
     path: "/",
     waitFor: '[data-testid="create-room-modal"]',
     setup: async (page) => {
-      // Home hides the sidebar New chat control. The greeting's New room
-      // button is the same action and carries the same test id.
+      // Home hides New. Direct is the destination that shows it, and New
+      // opens the sheet that replaced the old create-room modal.
+      await clickTestId(page, "nav-direct");
       await clickTestId(page, "new-room-button");
     },
   },
@@ -105,6 +106,33 @@ async function setCallView(page: Page, chatCollapsed: boolean) {
  * Deep links skip the landing. Vite's HMR socket never goes idle, so this does
  * not wait for `networkidle`.
  */
+/** Home v3 will not leave its error state unless this request succeeds.
+ *  The dev server has no API, so the harness fulfills the v3 contract with
+ *  an empty inbox. That is the loaded dashboard, not a login. */
+async function stubHomeSummary(page: Page) {
+  await page.route("**/api/v1/home/summary**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        generated_at: new Date().toISOString(),
+        live_calls: [],
+        counts: {
+          unread_rooms: 0,
+          mention_rooms: 0,
+          approvals_pending: 0,
+          agents_available: 0,
+          people_online: 0,
+          worker_last_seen_at: null,
+        },
+        needs_you: [],
+        crew: [],
+        today: null,
+      }),
+    });
+  });
+}
+
 async function waitForAppReady(page: Page) {
   const shell = page.locator('[data-testid="app-shell"]');
   const landing = page.locator('iframe[title="Unicorn Stable"]');
@@ -194,6 +222,7 @@ for (const surface of SURFACES) {
     test(`${surface.name} @ ${viewport}`, async ({ page }, testInfo) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
+      await stubHomeSummary(page);
 
       await page.goto(surface.path);
       await waitForAppReady(page);
@@ -239,6 +268,7 @@ test.describe("Call View variations", () => {
     test(`CallView @ ${viewport} - grid with chat docked`, async ({ page }) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
+      await stubHomeSummary(page);
 
       await page.goto("/c/room-general");
       await waitForAppReady(page);
@@ -256,6 +286,7 @@ test.describe("Call View variations", () => {
     test(`CallView @ ${viewport} - grid with chat hidden`, async ({ page }) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
+      await stubHomeSummary(page);
 
       await page.goto("/c/room-general");
       await waitForAppReady(page);
@@ -276,6 +307,7 @@ test.describe("Accessibility sweep (report only)", () => {
   for (const surface of SURFACES) {
     test(`a11y:${surface.name}`, async ({ page }) => {
       await page.setViewportSize(DESKTOP_VIEWPORT);
+      await stubHomeSummary(page);
       await page.goto(surface.path);
       await waitForAppReady(page);
 

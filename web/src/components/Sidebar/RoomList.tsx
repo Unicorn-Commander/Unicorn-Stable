@@ -1793,12 +1793,13 @@ export function RoomList() {
     title?: string;
     hint?: string;
     emptyAgentCta?: boolean;
+    testId?: string;
   }) {
     const title = opts?.title ?? "Direct messages";
     const hint =
       opts?.hint ?? "Private — people and agents you talk to one-on-one";
     return (
-      <section>
+      <section data-testid={opts?.testId}>
         {renderSectionHeader(
           SECTION_KEYS.people,
           title,
@@ -2207,6 +2208,7 @@ export function RoomList() {
             {renderPeopleSection({
               title: "Direct messages",
               hint: "Human direct messages",
+              testId: "conversations-card",
               emptyAgentCta: false,
             })}
             {renderGroupsSection()}
@@ -2284,6 +2286,7 @@ export function RoomList() {
             type="button"
             onClick={() => useConversationUi.getState().openNewSheet()}
             className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-xl border border-line bg-white/[0.04] px-3 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-white/[0.07]"
+            data-testid="new-room-button"
           >
             <Plus className="h-4 w-4" />
             New

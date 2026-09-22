@@ -54,6 +54,7 @@ export function NewSheet() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-sheet-title"
+        data-testid="create-room-modal"
         className="glass-heavy flex max-h-[88dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl shadow-pop sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
