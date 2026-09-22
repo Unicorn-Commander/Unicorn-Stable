@@ -382,6 +382,43 @@ async def gateway_get_messages(
     )
 
 
+@router.get("/rooms/{room}/context")
+async def gateway_get_context(
+    room: str,
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    budget_tokens: int = Query(6000, ge=1, le=32000),
+    since: uuid.UUID | None = Query(None, description="Only entries newer than this message id"),
+) -> dict:
+    """The room stream a SEAT walks into (design §4) — the gateway mirror of
+    ``GET /rooms/{id}/context``: every sender, replies inline, voice lines,
+    within a token budget, never filtered by when the seat joined or was
+    last mentioned. Honours the seat's own ``context_depth`` when its
+    participant is a member. Same scope rules as the messages poll."""
+    from app.services.context_builder import build_context
+
+    await _gateway_rate_limit(principal, redis, bucket="gw_msg_read", fail_open=True)
+    room_obj = await _resolve_room(db, room)
+    await _enforce_scope(db, principal, room_obj)
+    seat = (
+        await db.execute(
+            select(Participant).where(Participant.keycloak_sub == f"brigade:{principal.agent_id}")
+        )
+    ).scalar_one_or_none()
+    payload = await build_context(
+        db,
+        room_id=room_obj.id,
+        budget_tokens=budget_tokens,
+        since_message_id=since,
+        for_participant_id=seat.id if seat is not None else None,
+    )
+    # Plain JSON (uuids/datetimes stringified) — the runner reads it as data.
+    from app.schemas.room import ContextResponse
+
+    return ContextResponse(**payload).model_dump(mode="json")
+
+
 # ---------------------------------------------------------------------------
 # Voice (suite TTS / STT) + session lifecycle for MCP bridges
 # ---------------------------------------------------------------------------

@@ -242,6 +242,8 @@ class Settings(BaseSettings):
     rate_limit_room_create_per_min: int = 20
     # Brigade agent invites (each spawns a GPU-backed worker + agent turns).
     rate_limit_agent_invite_per_min: int = 20
+    # invite LINKS (room_invites) minted per user per minute (design §3)
+    rate_limit_room_invite_per_min: int = 20
     # Guest invite REDEMPTION. Keyed on client IP, not on the presented secret
     # (keying on the secret would let an attacker rotate guesses for a fresh
     # bucket every time). This is the one unauthenticated guest endpoint and

@@ -32,6 +32,8 @@ from app.api.project_ops import router as project_ops_router
 from app.api.gateway import router as gateway_router  # ORCH-1 public agent-gateway
 from app.api.broadcast import router as broadcast_router
 from app.api.calls import router as calls_router
+from app.api.conversation import router as conversation_router
+from app.api.recording import router as recording_router
 from app.api.guests import router as guests_router
 from app.api.moderation import router as moderation_router
 from app.api.rooms import router as rooms_router
@@ -401,6 +403,10 @@ def create_app() -> FastAPI:
     app.include_router(health_router, tags=["Health"])
     app.include_router(home_router, prefix="/api/v1", tags=["Home"])
     app.include_router(rooms_router, prefix="/api/v1", tags=["Rooms"])
+    # Conversation model (hubs, threads, member modes, invite links, context)
+    # and recording policy — design docs/design/stable-ux-north-star-2026-09-21.md.
+    app.include_router(conversation_router, prefix="/api/v1", tags=["Conversation"])
+    app.include_router(recording_router, prefix="/api/v1", tags=["Recording"])
     app.include_router(messages_router, prefix="/api/v1", tags=["Messages"])
     app.include_router(gateway_router, prefix="/api/v1", tags=["Gateway"])  # ORCH-1
     app.include_router(tokens_router, prefix="/api/v1", tags=["Tokens"])

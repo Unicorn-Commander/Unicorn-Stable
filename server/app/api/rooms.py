@@ -63,6 +63,9 @@ def _room_to_response(
     unread_count: int = 0,
     mention_count: int = 0,
     has_unread_mention: bool = False,
+    thread_count: int = 0,
+    counterpart: Any = None,
+    agents: list[Any] | None = None,
 ) -> RoomResponse:
     last_msg_resp = None
     if last_message is not None:
@@ -91,6 +94,16 @@ def _room_to_response(
         unread_count=unread_count,
         mention_count=mention_count,
         has_unread_mention=has_unread_mention,
+        # Conversation model (021) + recording policy (023). getattr keeps the
+        # serializer usable on the SimpleNamespace rooms older tests build.
+        parent_room_id=getattr(room, "parent_room_id", None),
+        visibility=getattr(room, "visibility", None) or "public",
+        project_number=getattr(room, "project_number", None),
+        thread_count=thread_count,
+        counterpart=counterpart,
+        agents=agents or [],
+        recording_policy=getattr(room, "recording_policy", None) or "off",
+        recording_kind=getattr(room, "recording_kind", None) or "audio",
     )
 
 
@@ -492,6 +505,9 @@ async def browse_channels(
     stmt = _select(_Room).where(
         _Room.room_type == _RT.CHANNEL,
         _Room.is_archived == False,  # noqa: E712
+        # Private channels (design §3) are invite-only and never listed —
+        # deny by default: anything not explicitly public stays out.
+        _Room.visibility == "public",
         not_(_Room.id.in_(member_subq)),
     )
     org = settings.instance_org_id
@@ -543,6 +559,9 @@ async def list_rooms(
             unread_count=r.get("unread_count", 0),
             mention_count=r.get("mention_count", 0),
             has_unread_mention=r.get("has_unread_mention", False),
+            thread_count=r.get("thread_count", 0),
+            counterpart=r.get("counterpart"),
+            agents=r.get("agents") or [],
         )
         for r in result["rooms"]
     ]
@@ -564,10 +583,12 @@ async def get_room(
     """Get room details. Caller must be a member of the room."""
     svc = _build_room_service(db, livekit, presence)
     result = await svc.get_room(room_id)
+    extras = await svc.room_extras(result["room"])
     return _room_to_response(
         result["room"],
         result["member_count"],
         result["online_count"],
+        **extras,
     )
 
 
@@ -580,7 +601,12 @@ async def update_room(
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
     presence: Annotated[PresenceService, Depends(get_presence)],
 ) -> RoomResponse:
-    """Update room details. Requires admin or owner role."""
+    """Update room details. Requires admin or owner role.
+
+    ``visibility`` / ``project_number`` / ``recording_policy`` /
+    ``recording_kind`` are the conversation + recording contracts (design §3,
+    §8); a visibility change fans out ``room_visibility`` to the room.
+    """
     svc = _build_room_service(db, livekit, presence)
     room = await svc.update_room(
         room_id=room_id,
@@ -589,12 +615,33 @@ async def update_room(
         description=body.description,
         is_archived=body.is_archived,
         metadata=body.metadata,
+        visibility=body.visibility,
+        project_number=body.project_number,
+        recording_policy=body.recording_policy,
+        recording_kind=body.recording_kind,
     )
+    if body.visibility is not None:
+        try:
+            from app.api.messages import _ws_broadcast_room
+            from app.ws import events as ws_events
+
+            await _ws_broadcast_room(
+                db,
+                room_id,
+                {
+                    "type": ws_events.ROOM_VISIBILITY,
+                    "payload": {"room_id": str(room_id), "visibility": body.visibility},
+                },
+            )
+        except Exception:
+            logger.warning("room_visibility_fanout_failed", exc_info=True)
     result = await svc.get_room(room_id)
+    extras = await svc.room_extras(result["room"])
     return _room_to_response(
         result["room"],
         result["member_count"],
         result["online_count"],
+        **extras,
     )
 
 
