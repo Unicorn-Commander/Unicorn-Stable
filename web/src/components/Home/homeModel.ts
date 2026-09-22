@@ -542,3 +542,168 @@ export function buildRevision(
   if (typeof revision !== "string" || revision.length === 0) return null;
   return revision.slice(0, 7);
 }
+
+/* ── Dashboard v3 ────────────────────────────────────────────────── */
+
+export const HOME_SECTION_IDS = [
+  "needs_you",
+  "live_now",
+  "crew",
+  "recent",
+  "today",
+] as const;
+
+export type HomeSectionId = (typeof HOME_SECTION_IDS)[number];
+
+/** A live call plus the v3 pills. Missing flags mean the detail poll has not landed. */
+export interface HomeLiveCall {
+  room_id: string;
+  display_name: string;
+  room_type: string;
+  participant_count: number;
+  has_agent: boolean;
+  recording?: boolean;
+  broadcast?: boolean;
+  floor_holder?: {
+    participant_id: string;
+    kind: string;
+    display_name: string;
+    avatar_url: string | null;
+    agent_id: string | null;
+  } | null;
+}
+
+export function normalizeSectionOrder(
+  order: readonly string[] | null | undefined,
+): HomeSectionId[] {
+  const known = new Set<string>(HOME_SECTION_IDS);
+  const out: HomeSectionId[] = [];
+  for (const id of order ?? []) {
+    if (known.has(id) && !out.includes(id as HomeSectionId)) {
+      out.push(id as HomeSectionId);
+    }
+  }
+  for (const id of HOME_SECTION_IDS) {
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+export function moveSection(
+  order: readonly HomeSectionId[],
+  id: HomeSectionId,
+  dir: -1 | 1,
+): HomeSectionId[] {
+  const next = [...order];
+  const index = next.indexOf(id);
+  const target = index + dir;
+  if (index < 0 || target < 0 || target >= next.length) return next;
+  const from = next[index];
+  const to = next[target];
+  if (!from || !to) return next;
+  next[index] = to;
+  next[target] = from;
+  return next;
+}
+
+export function reorderSections(
+  order: readonly HomeSectionId[],
+  fromId: HomeSectionId,
+  toId: HomeSectionId,
+): HomeSectionId[] {
+  if (fromId === toId) return [...order];
+  const next = order.filter((id) => id !== fromId);
+  const index = next.indexOf(toId);
+  if (index < 0) return [...order];
+  next.splice(index, 0, fromId);
+  return next;
+}
+
+export function partitionNeedsYou<T extends { stale: boolean }>(
+  rows: readonly T[],
+): { fresh: T[]; stale: T[] } {
+  return {
+    fresh: rows.filter((row) => !row.stale),
+    stale: rows.filter((row) => row.stale),
+  };
+}
+
+/** Last 12 conversations touched, human DMs and groups before everything else. */
+export function recentConversations(rooms: Room[], cap = 12): Room[] {
+  const visible = rooms.filter((room) => !room.is_archived);
+  const human = visible.filter(isHumanConversation).sort(sortByRecency);
+  const other = visible
+    .filter((room) => !isHumanConversation(room))
+    .sort(sortByRecency);
+  return [...human, ...other].slice(0, cap);
+}
+
+/** Heartbeat / task "since" newer than this still counts as working. */
+export const CREW_WORKING_MS = 90_000;
+
+export function isCrewWorking(
+  card: { current_task?: string | null; since?: string | null; status: string },
+  now: number,
+): boolean {
+  if (card.current_task) return true;
+  if (!card.since || card.status === "offline") return false;
+  const at = Date.parse(card.since);
+  if (Number.isNaN(at)) return false;
+  return now - at <= CREW_WORKING_MS;
+}
+
+export function modeLabel(mode: string | null | undefined): string {
+  switch (mode) {
+    case "answers_all":
+      return "Answers all";
+    case "when_named":
+      return "When named";
+    case "listening":
+      return "Listening";
+    case "muted":
+      return "Muted";
+    default:
+      return "Default";
+  }
+}
+
+/**
+ * Hide Today only when both federated blocks are null and there is no local
+ * standing-room catalog to show instead. An empty list is a real answer.
+ */
+export function todaySectionHidden(
+  today: { po_tasks: unknown[] | null; meetings: unknown[] | null } | null,
+  standingFallback: number,
+): boolean {
+  if (today == null) return standingFallback === 0;
+  if (today.po_tasks == null && today.meetings == null) return standingFallback === 0;
+  return false;
+}
+
+/** Occupancy from the shared live-call poll, with v3 recording / floor laid on top. */
+export function mergeLiveCalls(
+  live: readonly HomeLiveCall[],
+  detailed: readonly HomeLiveCall[],
+): HomeLiveCall[] {
+  const extra = new Map(detailed.map((call) => [call.room_id, call]));
+  const seen = new Set<string>();
+  const out: HomeLiveCall[] = [];
+  for (const call of live) {
+    seen.add(call.room_id);
+    const rich = extra.get(call.room_id);
+    out.push({
+      room_id: call.room_id,
+      display_name: rich?.display_name || call.display_name,
+      room_type: rich?.room_type || call.room_type,
+      participant_count: call.participant_count,
+      has_agent: call.has_agent,
+      recording: rich?.recording ?? false,
+      broadcast: rich?.broadcast ?? false,
+      floor_holder: rich?.floor_holder ?? null,
+    });
+  }
+  for (const call of detailed) {
+    if (!seen.has(call.room_id)) out.push(call);
+  }
+  return out;
+}
