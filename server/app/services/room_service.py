@@ -16,7 +16,16 @@ from sqlalchemy.orm import selectinload
 from app.models.agent import AgentConfig
 from app.models.message import Message
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
-from app.models.room import MemberRole, Room, RoomMember, RoomType
+from app.models.room import (
+    AGENT_MODES,
+    RECORDING_KINDS,
+    RECORDING_POLICIES,
+    ROOM_VISIBILITIES,
+    MemberRole,
+    Room,
+    RoomMember,
+    RoomType,
+)
 from app.services.agent_routing import participant_backend, find_agent_participant
 from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
@@ -1036,6 +1045,11 @@ class RoomService:
             for rid, count, unread in mention_rows.all():
                 mention_by_room[str(rid)] = (count, unread)
 
+        # Conversation-model extras (design §3): thread counts, the 1:1
+        # counterpart and the agent members with their modes — batched for the
+        # whole page so the sidebar never guesses whose face to draw.
+        extras = await self._conversation_extras(rooms) if room_ids else {}
+
         # Enrich rooms with member/online counts + conversation-list extras
         enriched_rooms: list[dict[str, Any]] = []
         for room in rooms:
@@ -1059,6 +1073,7 @@ class RoomService:
                 "unread_count": unread_by_room.get(str(room.id), 0),
                 "mention_count": mention_by_room.get(str(room.id), (0, False))[0],
                 "has_unread_mention": mention_by_room.get(str(room.id), (0, False))[1],
+                **extras.get(str(room.id), {}),
             })
 
         return {
@@ -1066,6 +1081,358 @@ class RoomService:
             "total": total,
             "cursor": next_cursor,
         }
+
+    # ------------------------------------------------------------------
+    # Conversation model (design §3, migration 021/022): hubs, threads,
+    # per-member agent mode, list extras.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def hub_slug(human_id: uuid.UUID | str, agent_id: str) -> str:
+        """Deterministic hub slug — MUST match 022_agent_hubs_backfill so a
+        backfilled hub and an API-ensured hub land on the same name."""
+        import hashlib
+
+        digest = hashlib.md5(f"{human_id}:{agent_id}".encode()).hexdigest()
+        return f"hub-{digest[:12]}"
+
+    async def _conversation_extras(self, rooms: Sequence[Room]) -> dict[str, dict[str, Any]]:
+        """Batched ``thread_count`` / ``counterpart`` / ``agents`` for a page
+        of rooms. Keyed by ``str(room.id)``."""
+        room_ids = [r.id for r in rooms]
+        out: dict[str, dict[str, Any]] = {
+            str(r.id): {"thread_count": 0, "counterpart": None, "agents": []}
+            for r in rooms
+        }
+        if not room_ids:
+            return out
+
+        thread_rows = await self._db.execute(
+            select(Room.parent_room_id, func.count())
+            .where(
+                Room.parent_room_id.in_(room_ids),
+                Room.is_archived == False,  # noqa: E712
+            )
+            .group_by(Room.parent_room_id)
+        )
+        for parent_id, cnt in thread_rows.all():
+            if str(parent_id) in out:
+                out[str(parent_id)]["thread_count"] = int(cnt or 0)
+
+        member_rows = await self._db.execute(
+            select(RoomMember, Participant)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(RoomMember.room_id.in_(room_ids))
+            .order_by(RoomMember.joined_at.asc())
+        )
+        by_room: dict[str, list[tuple[RoomMember, Participant]]] = {}
+        for membership, participant in member_rows.all():
+            by_room.setdefault(str(membership.room_id), []).append((membership, participant))
+
+        for room in rooms:
+            rows = by_room.get(str(room.id), [])
+            agents: list[dict[str, Any]] = []
+            counterpart: dict[str, Any] | None = None
+            for membership, participant in rows:
+                if participant.participant_type == ParticipantType.AGENT:
+                    sub = participant.keycloak_sub or ""
+                    agents.append({
+                        "participant_id": participant.id,
+                        "agent_id": sub[len("brigade:"):] if sub.startswith("brigade:") else None,
+                        "display_name": participant.display_name or participant.username,
+                        "avatar_url": participant.avatar_url,
+                        "agent_mode": getattr(membership, "agent_mode", None),
+                    })
+            if room.room_type == RoomType.AGENT_HUB and agents:
+                a = agents[0]
+                counterpart = {
+                    "participant_id": a["participant_id"],
+                    "kind": "agent",
+                    "display_name": a["display_name"],
+                    "username": None,
+                    "avatar_url": a["avatar_url"],
+                    "avatar_emoji": None,
+                    "agent_id": a["agent_id"],
+                }
+                for _m, p in rows:
+                    if p.id == a["participant_id"]:
+                        counterpart["username"] = p.username
+                        counterpart["avatar_emoji"] = p.avatar_emoji
+            elif room.room_type == RoomType.DM:
+                creator = str(room.created_by) if room.created_by else None
+                # The "other" side: prefer the non-creator human; a DM whose
+                # creator left still has exactly one human left to show.
+                humans = [p for _m, p in rows if p.participant_type != ParticipantType.AGENT]
+                other = next((p for p in humans if str(p.id) != creator), None) or (
+                    humans[0] if humans else None
+                )
+                if other is not None:
+                    counterpart = {
+                        "participant_id": other.id,
+                        "kind": other.participant_type.value,
+                        "display_name": other.display_name or other.username,
+                        "username": other.username,
+                        "avatar_url": other.avatar_url,
+                        "avatar_emoji": other.avatar_emoji,
+                        "agent_id": None,
+                    }
+            out[str(room.id)]["agents"] = agents
+            out[str(room.id)]["counterpart"] = counterpart
+        return out
+
+    async def room_extras(self, room: Room) -> dict[str, Any]:
+        """``_conversation_extras`` for one room (GET /rooms/{id})."""
+        return (await self._conversation_extras([room])).get(
+            str(room.id), {"thread_count": 0, "counterpart": None, "agents": []}
+        )
+
+    async def ensure_agent_hub(
+        self,
+        *,
+        human_id: uuid.UUID,
+        agent_id: str,
+        org_id: str | None = None,
+    ) -> tuple[Room, bool]:
+        """Find-or-create THE hub room for (human, agent). Idempotent.
+
+        The hub is what "Talk to <agent>" opens; threads (child rooms) hang
+        under it. Exactly one exists per pair — enforced by the partial unique
+        index ``uq_rooms_agent_hub`` (022) — so a concurrent double-call
+        resolves to the same row. Returns ``(room, created)``.
+        """
+        agent_id = (agent_id or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", agent_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid agent id",
+            )
+
+        def _existing_stmt():
+            return select(Room).where(
+                Room.room_type == RoomType.AGENT_HUB,
+                Room.metadata_["agent_hub"]["human_id"].astext == str(human_id),
+                Room.metadata_["agent_hub"]["agent_id"].astext == agent_id,
+            )
+
+        room = (await self._db.execute(_existing_stmt())).scalar_one_or_none()
+        created = False
+
+        agent_p = await find_agent_participant(self._db, agent_id)
+        if agent_p is None or getattr(agent_p, "id", None) is None:
+            # Mirror agent_chat_responder's bootstrap: an agent the roster names
+            # but nobody has talked to yet gets its Participant on first use.
+            # (find_agent_participant hands back a TRANSIENT placeholder for a
+            # provisioned-but-silent runner seat — keep its backend fact.)
+            placeholder_meta = getattr(agent_p, "metadata_", None) if agent_p is not None else None
+            agent_p = Participant(
+                keycloak_sub=f"brigade:{agent_id}",
+                username=f"agent-{agent_id}",
+                display_name=agent_id.replace("-", " ").title(),
+                participant_type=ParticipantType.AGENT,
+                status=ParticipantStatus.ONLINE,
+                metadata_=dict(placeholder_meta) if isinstance(placeholder_meta, dict) else None,
+            )
+            self._db.add(agent_p)
+            await self._db.commit()
+            await self._db.refresh(agent_p)
+
+        if room is None:
+            slug = self.hub_slug(human_id, agent_id)
+            try:
+                room = await self.create_room(
+                    name=slug,
+                    display_name=agent_p.display_name or agent_id,
+                    room_type=RoomType.AGENT_HUB.value,
+                    creator_id=human_id,
+                    metadata={
+                        "agent_hub": {"human_id": str(human_id), "agent_id": agent_id},
+                        "brigade_agent_id": agent_id,
+                    },
+                    org_id=org_id,
+                )
+                created = True
+            except IntegrityError:
+                # Lost the race to a concurrent ensure — take theirs.
+                await self._db.rollback()
+                room = (await self._db.execute(_existing_stmt())).scalar_one_or_none()
+                if room is None:
+                    raise
+
+        # Seed / repair memberships: the human owns the hub, the agent answers
+        # everything in it. Both idempotent.
+        human_m = await self._get_membership(room.id, human_id)
+        if human_m is None:
+            self._db.add(RoomMember(room_id=room.id, participant_id=human_id, role=MemberRole.OWNER))
+        agent_m = await self._get_membership(room.id, agent_p.id)
+        if agent_m is None:
+            self._db.add(
+                RoomMember(
+                    room_id=room.id,
+                    participant_id=agent_p.id,
+                    role=MemberRole.MEMBER,
+                    agent_mode="answers_all",
+                )
+            )
+        elif getattr(agent_m, "agent_mode", None) is None:
+            agent_m.agent_mode = "answers_all"
+        await self._db.commit()
+        await self._db.refresh(room)
+
+        logger.info(
+            "agent_hub_ensured",
+            room_id=str(room.id),
+            agent_id=agent_id,
+            human_id=str(human_id),
+            created=created,
+        )
+        return room, created
+
+    #: Parent metadata keys a thread INHERITS. Everything else (agent_hub,
+    #: dm_pair, conference, pinned_message_ids, backfill_022…) stays with the
+    #: parent — those are identity facts, not conversation settings.
+    THREAD_INHERITED_METADATA_PREFIXES: tuple[str, ...] = ("voice_relay_",)
+    THREAD_INHERITED_METADATA_KEYS: frozenset[str] = frozenset(
+        {"brigade_agent_id", "brigade_agent_ids", "model_override", "voice_primary_agent_id"}
+    )
+
+    async def create_thread(
+        self,
+        *,
+        parent_id: uuid.UUID,
+        creator_id: uuid.UUID,
+        title: str | None = None,
+        seed_message_id: uuid.UUID | None = None,
+    ) -> Room:
+        """Create a THREAD: a child room under ``parent_id`` (design §3).
+
+        Inherits the parent's ``room_type`` (so a thread under a hub
+        auto-answers, one under a channel answers when named), ``org_id``,
+        ``visibility``, recording policy and the conversation-relevant
+        metadata; seeds members with the creator (OWNER) plus the parent's
+        agent members carrying the same ``agent_mode``. One level only.
+        """
+        parent = (await self._db.execute(select(Room).where(Room.id == parent_id))).scalar_one_or_none()
+        if parent is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+        if await self._get_membership(parent.id, creator_id) is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this room")
+        if getattr(parent, "parent_room_id", None) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Threads cannot be nested; start the thread from the parent room",
+            )
+        if parent.is_archived:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This room is archived")
+
+        parent_meta = dict(parent.metadata_ or {})
+        meta: dict[str, Any] = {
+            k: v
+            for k, v in parent_meta.items()
+            if k in self.THREAD_INHERITED_METADATA_KEYS
+            or any(k.startswith(p) for p in self.THREAD_INHERITED_METADATA_PREFIXES)
+        }
+        meta["thread"] = {
+            "parent_room_id": str(parent.id),
+            "seed_message_id": str(seed_message_id) if seed_message_id else None,
+        }
+        display = (title or "").strip() or "New thread"
+        slug = f"{parent.name[:80]}-t-{uuid.uuid4().hex[:8]}"
+
+        room = await self.create_room(
+            name=slug,
+            display_name=display,
+            room_type=parent.room_type.value,
+            creator_id=creator_id,
+            metadata=meta,
+            org_id=parent.org_id,
+            max_participants=parent.max_participants,
+        )
+        room.parent_room_id = parent.id
+        room.visibility = getattr(parent, "visibility", "public")
+        room.recording_policy = getattr(parent, "recording_policy", "off")
+        room.recording_kind = getattr(parent, "recording_kind", "audio")
+
+        # Seed the parent's agents with their modes.
+        agent_rows = await self._db.execute(
+            select(RoomMember, Participant)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id == parent.id,
+                Participant.participant_type == ParticipantType.AGENT,
+            )
+        )
+        for membership, participant in agent_rows.all():
+            if participant.id == creator_id:
+                continue
+            self._db.add(
+                RoomMember(
+                    room_id=room.id,
+                    participant_id=participant.id,
+                    role=MemberRole.MEMBER,
+                    agent_mode=getattr(membership, "agent_mode", None),
+                )
+            )
+        await self._db.commit()
+        await self._db.refresh(room)
+        logger.info("thread_created", room_id=str(room.id), parent_room_id=str(parent.id))
+        return room
+
+    async def list_threads(
+        self, parent_id: uuid.UUID, *, include_archived: bool = False
+    ) -> list[Room]:
+        stmt = select(Room).where(Room.parent_room_id == parent_id)
+        if not include_archived:
+            stmt = stmt.where(Room.is_archived == False)  # noqa: E712
+        stmt = stmt.order_by(Room.updated_at.desc())
+        return list((await self._db.execute(stmt)).scalars().all())
+
+    async def set_member_settings(
+        self,
+        *,
+        room_id: uuid.UUID,
+        actor_id: uuid.UUID | None,
+        target_participant_id: uuid.UUID,
+        agent_mode: str | None = None,
+        context_depth: int | None = None,
+        actor_is_controller: bool = False,
+    ) -> RoomMember:
+        """Set an agent member's ``agent_mode`` and/or any member's
+        ``context_depth``. Owner/admin, or a room-control gateway key
+        (``actor_is_controller``)."""
+        if not actor_is_controller:
+            if actor_id is None:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+            await self._require_role(room_id, actor_id, ["owner", "admin"])
+        membership = await self._get_membership(room_id, target_participant_id)
+        if membership is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+        if agent_mode is not None:
+            if agent_mode not in AGENT_MODES:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid agent_mode: {agent_mode}",
+                )
+            participant = (
+                await self._db.execute(select(Participant).where(Participant.id == target_participant_id))
+            ).scalar_one_or_none()
+            if participant is None or participant.participant_type != ParticipantType.AGENT:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="agent_mode applies to agent members only",
+                )
+            membership.agent_mode = agent_mode
+        if context_depth is not None:
+            membership.context_depth = None if context_depth == 0 else int(context_depth)
+        await self._db.commit()
+        await self._db.refresh(membership)
+        logger.info(
+            "member_settings_updated",
+            room_id=str(room_id),
+            participant_id=str(target_participant_id),
+            agent_mode=membership.agent_mode,
+            context_depth=membership.context_depth,
+        )
+        return membership
 
     async def join_room(
         self,
@@ -1093,9 +1460,17 @@ class RoomService:
             )
 
         # Private/invite-only gate: a user may only self-join public channels.
-        # DM / group_dm membership comes exclusively from an invite (or being
-        # the original DM counterpart), never by knowing the room UUID.
+        # DM / group_dm / agent_hub membership comes exclusively from an invite
+        # (or being the original DM counterpart), never by knowing the room
+        # UUID. A PRIVATE channel (rooms.visibility, design §3) is invite-only
+        # too — same uniform 403 so the response does not distinguish "exists
+        # but private" from "not for you".
         if self_join and room.room_type != RoomType.CHANNEL:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This room is invite-only",
+            )
+        if self_join and getattr(room, "visibility", "public") == "private":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This room is invite-only",
@@ -1200,6 +1575,10 @@ class RoomService:
         description: str | None = None,
         is_archived: bool | None = None,
         metadata: dict[str, Any] | None = None,
+        visibility: str | None = None,
+        project_number: str | None = None,
+        recording_policy: str | None = None,
+        recording_kind: str | None = None,
     ) -> Room:
         """Update room details. Requires admin or owner role.
 
@@ -1209,6 +1588,12 @@ class RoomService:
         ``conference``, ``dm_pair``) that a PATCH body must never stomp.
         Non-allowlisted keys are silently dropped, matching the endpoint's
         lenient contract.
+
+        ``visibility`` applies to CHANNEL rooms only (422 otherwise);
+        ``project_number`` binds a channel to a Project-Ops project (an empty
+        string clears it); ``recording_policy`` / ``recording_kind`` are the
+        recording contract (design §8) — stored here, enforced by the
+        recording service.
         """
         await self._require_role(room_id, participant_id, ["owner", "admin"])
 
@@ -1226,6 +1611,35 @@ class RoomService:
             room.description = description
         if is_archived is not None:
             room.is_archived = is_archived
+        if visibility is not None:
+            if visibility not in ROOM_VISIBILITIES:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid visibility: {visibility}",
+                )
+            if room.room_type != RoomType.CHANNEL:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only channels have a visibility; DMs, groups and hubs are private by membership",
+                )
+            room.visibility = visibility
+        if project_number is not None:
+            cleaned = project_number.strip()
+            room.project_number = cleaned or None
+        if recording_policy is not None:
+            if recording_policy not in RECORDING_POLICIES:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid recording_policy: {recording_policy}",
+                )
+            room.recording_policy = recording_policy
+        if recording_kind is not None:
+            if recording_kind not in RECORDING_KINDS:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid recording_kind: {recording_kind}",
+                )
+            room.recording_kind = recording_kind
         if metadata:
             allowed = {
                 k: v

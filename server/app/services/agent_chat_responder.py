@@ -581,6 +581,7 @@ async def _respond(
             room_type=room_type,
             content=msg.content or "",
             brigade_agent_id=brigade_agent_id,
+            agent_mode=_agent_mode_for(room, agent_participant),
         ):
             return
 
@@ -1066,16 +1067,21 @@ async def _resolve_agent(
     return None, None
 
 
-def _should_respond(
-    *, room_type: str, content: str, brigade_agent_id: str
-) -> bool:
-    """@-mention rule: DM = always respond; CHANNEL/GROUP_DM = only if mentioned.
+def _agent_mode_for(room: Any, agent_participant: Any) -> str | None:
+    """The agent's per-room ``agent_mode`` (room_members, migration 021) read
+    off the already-loaded ``room.members`` relationship — no extra query, so
+    callers that mock the session's execute sequence are unaffected."""
+    if room is None or agent_participant is None:
+        return None
+    target = getattr(agent_participant, "id", None)
+    for m in getattr(room, "members", None) or []:
+        if getattr(m, "participant_id", None) == target:
+            mode = getattr(m, "agent_mode", None)
+            return mode if isinstance(mode, str) and mode else None
+    return None
 
-    Mentions match ``@<brigade_agent_id>``, ``@<spaced display>``,
-    ``@everyone``, or ``@all`` (case-insensitive).
-    """
-    if room_type == "dm":
-        return True
+
+def _is_mentioned(content: str, brigade_agent_id: str) -> bool:
     lc = content.lower()
     if "@everyone" in lc or "@all" in lc:
         return True
@@ -1084,6 +1090,35 @@ def _should_respond(
         brigade_agent_id.replace("-", " ").lower(),
     }
     return any(f"@{n}" in lc for n in needles if n)
+
+
+def _should_respond(
+    *,
+    room_type: str,
+    content: str,
+    brigade_agent_id: str,
+    agent_mode: str | None = None,
+) -> bool:
+    """Decide whether the resolved agent answers this message.
+
+    ``agent_mode`` (room_members.agent_mode, design §3) wins when set:
+      answers_all → always; when_named → only when @-mentioned;
+      listening / muted → never (listening still READS the room via the
+      context builder; it just never posts unasked).
+    With no mode the pre-contract rule stands: DM (and an agent hub, which is
+    a 1:1 by construction) = always respond; CHANNEL/GROUP_DM = only if
+    mentioned. Mentions match ``@<brigade_agent_id>``, ``@<spaced display>``,
+    ``@everyone``, or ``@all`` (case-insensitive).
+    """
+    if agent_mode == "answers_all":
+        return True
+    if agent_mode == "when_named":
+        return _is_mentioned(content, brigade_agent_id)
+    if agent_mode in ("listening", "muted"):
+        return False
+    if room_type in ("dm", "agent_hub"):
+        return True
+    return _is_mentioned(content, brigade_agent_id)
 
 
 async def _build_history(
