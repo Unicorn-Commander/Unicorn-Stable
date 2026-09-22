@@ -43,7 +43,7 @@ jobs:
   # webServer on port 5173). A production preview would not seed the dev mock
   # user, and every surface would stop at Keycloak.
   web-e2e:
-    runs-on: legacy1
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: web

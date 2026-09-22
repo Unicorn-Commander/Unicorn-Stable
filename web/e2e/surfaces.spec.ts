@@ -133,6 +133,55 @@ async function stubHomeSummary(page: Page) {
   });
 }
 
+/**
+ * The Vite dev mock serves rooms but no message history, so a room renders
+ * "Couldn't load messages". Fulfil the history call with a deterministic
+ * backlog (40 messages, long enough to overflow both viewports) so the list
+ * has something to scroll — and so a room capture shows a real conversation.
+ */
+async function stubMessages(page: Page, count = 40) {
+  const base = Date.parse("2026-09-22T12:00:00Z");
+  const senders = [
+    { id: "u-aaron", name: "Aaron Stransky" },
+    { id: "u-jason", name: "Jason Reed" },
+    { id: "a-persephone", name: "Persephone" },
+  ];
+  const messages = Array.from({ length: count }, (_, i) => {
+    const sender = senders[i % senders.length]!;
+    return {
+      id: `msg-${i + 1}`,
+      room_id: "room-general",
+      sender_id: sender.id,
+      sender_name: sender.name,
+      sender_type: sender.id.startsWith("a-") ? "agent" : "human",
+      content:
+        i === count - 1
+          ? "Last message in the room — this one must be on screen when the room opens."
+          : `Message ${i + 1} of ${count}: deploy notes, review comments and other room chatter.`,
+      content_type: "text",
+      created_at: new Date(base + i * 60_000).toISOString(),
+      updated_at: new Date(base + i * 60_000).toISOString(),
+      is_edited: false,
+      is_deleted: false,
+      metadata: {},
+      reply_count: 0,
+    };
+  });
+  await page.route("**/api/v1/rooms/*/messages**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      // Newest first, the way the real endpoint pages backwards; the client
+      // reverses it for display.
+      body: JSON.stringify({
+        messages: [...messages].reverse(),
+        cursor: null,
+        has_more: false,
+      }),
+    });
+  });
+}
+
 async function waitForAppReady(page: Page) {
   const shell = page.locator('[data-testid="app-shell"]');
   const landing = page.locator('iframe[title="Unicorn Stable"]');
@@ -299,6 +348,65 @@ test.describe("Call View variations", () => {
         fullPage: true,
       });
       await assertPageHealth(page, viewport);
+    });
+  }
+});
+
+// Aaron, 2026-09-22: "it still kind of jumps at the bottom, instead of going to
+// the last message. I shouldn't have to scroll." The list mounts at the top and
+// a settle loop drags it to the newest message; it now stays unpainted until
+// that lands. This guard reads the same flag the paint does: at the instant the
+// list is revealed it must already be on the newest message, not mid-drag.
+test.describe("Chat opens on the newest message", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`room opens pinned to the bottom @ ${viewport}`, async ({ page }) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      await stubMessages(page);
+
+      await page.goto("/c/room-general");
+      await waitForAppReady(page);
+      await page.waitForSelector('[data-testid="room-view"]', { timeout: 60_000 });
+
+      // Revealed only once the pin settled.
+      const list = page.locator('[data-testid="message-list"][data-pin-settled="true"]');
+      await list.waitFor({ timeout: 30_000 });
+
+      const geometry = await page
+        .locator('[data-virtuoso-scroller="true"]')
+        .first()
+        .evaluate((el) => ({
+          distanceFromBottom: Math.round(
+            el.scrollHeight - el.scrollTop - el.clientHeight,
+          ),
+          overflow: Math.round(el.scrollHeight - el.clientHeight),
+        }));
+      // The backlog must actually overflow, or "at the bottom" proves nothing.
+      expect(geometry.overflow).toBeGreaterThan(100);
+      // 4px of slack for sub-pixel row heights; anything more is a visible gap.
+      expect(geometry.distanceFromBottom).toBeLessThanOrEqual(4);
+
+      // And it is painted: a room that never reveals would be a blank pane.
+      await expect(list).toHaveCSS("opacity", "1");
+      await page.screenshot({
+        path: `test-results/RoomWithMessages-${viewport}.png`,
+        fullPage: false,
+      });
+
+      // On a phone the room's top bar carries the drawer toggle — the only way
+      // back to the room list — so it must stay on screen. (Desktop hides that
+      // button: the AppShell header owns the toggle there.)
+      if (viewport === "mobile") {
+        await expect(
+          page.getByRole("button", { name: "Open sidebar" }),
+        ).toBeInViewport();
+      }
+      // And the page itself must not scroll — the message list is the scroller.
+      const pageScroll = await page.evaluate(
+        () => document.scrollingElement?.scrollTop ?? 0,
+      );
+      expect(pageScroll).toBe(0);
     });
   }
 });

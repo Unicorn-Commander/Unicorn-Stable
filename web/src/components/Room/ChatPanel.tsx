@@ -5,7 +5,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
 import { Identity } from "@/components/ui/Identity";
-import { identityFor, resolveIdentity, rosterParticipantType } from "@/lib/identity";
+import {
+  identityFor,
+  resolveIdentity,
+  rosterParticipantType,
+} from "@/lib/identity";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
 import { ws } from "@/services/websocket";
@@ -104,8 +108,19 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
-  const { messages, hasMore, loading, error, retryInitial, sendMessage, loadMore, editMessage, deleteMessage, retryMessage, resync } =
-    useChat(roomId);
+  const {
+    messages,
+    hasMore,
+    loading,
+    error,
+    retryInitial,
+    sendMessage,
+    loadMore,
+    editMessage,
+    deleteMessage,
+    retryMessage,
+    resync,
+  } = useChat(roomId);
   const { typingUsers, sendTypingIndicator, clearTypingIndicator } =
     usePresence(roomId);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -133,9 +148,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     ? (chatModels?.find((m) => m.id === modelOverride)?.label ?? modelOverride)
     : null;
   // Room-aware composer placeholder ("Message #general" / "Message Majik").
-  const roomForLabel = useAppStore((s) =>
-    s.rooms.find((r) => r.id === roomId),
-  );
+  const roomForLabel = useAppStore((s) => s.rooms.find((r) => r.id === roomId));
   const composerPlaceholder = roomForLabel
     ? roomForLabel.type === "channel"
       ? `Message #${roomForLabel.display_name || roomForLabel.name}`
@@ -176,7 +189,8 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const leadMember = leadAgent
     ? participants.find(
         (p) =>
-          (leadAgent.participant_id && p.participant_id === leadAgent.participant_id) ||
+          (leadAgent.participant_id &&
+            p.participant_id === leadAgent.participant_id) ||
           p.display_name === leadAgent.label,
       )
     : undefined;
@@ -286,7 +300,8 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     } else {
       // No read receipt yet (participants may not have loaded): count back the
       // room's cold-load unread_count from the end of the fetched history.
-      const unread = state.rooms.find((r) => r.id === roomId)?.unread_count ?? 0;
+      const unread =
+        state.rooms.find((r) => r.id === roomId)?.unread_count ?? 0;
       if (unread > 0) {
         anchor = history[Math.max(0, history.length - unread)];
       }
@@ -321,6 +336,22 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   const prevLastMessageIdRef = useRef<string | null>(null);
   // Which room we've already force-pinned to newest after its first render.
   const didInitialPinRef = useRef<string | null>(null);
+  // Reveal gate. The list MOUNTS AT THE TOP (see the Virtuoso block: an
+  // initialTopMostItemIndex wedges it against firstItemIndex) and the pin loop
+  // below drags it to the newest message over ~300ms. That drag was visible:
+  // the room opened on old messages and lurched downward. So the list stays
+  // transparent — laid out and measurable, just not painted — until the pin
+  // settles, and the loading skeleton holds the space meanwhile. A room that
+  // needs no pin never hides: this starts true and only a room change arms it.
+  const [pinSettled, setPinSettled] = useState(true);
+  const revealTimerRef = useRef<number | undefined>(undefined);
+  const reveal = useCallback(() => {
+    if (revealTimerRef.current) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = undefined;
+    }
+    setPinSettled(true);
+  }, []);
   // Which room:message deep-link we've already centered — so live arrivals
   // don't re-scroll the permalink target on every list change.
   const handledDeepLinkRef = useRef<string | null>(null);
@@ -342,9 +373,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // RoomMember.last_read_at and fans a `read_receipt` out to the room. Which
   // is exactly why the throttling above matters — it is a real DB write plus
   // a frame to every member, not a no-op any more.
-  const lastMarkedRef = useRef<{ roomId: string; id: string; at: number } | null>(
-    null,
-  );
+  const lastMarkedRef = useRef<{
+    roomId: string;
+    id: string;
+    at: number;
+  } | null>(null);
   const newestMessageId =
     messages.length > 0 ? messages[messages.length - 1]!.id : null;
   useEffect(() => {
@@ -416,6 +449,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // clear pill/anchor state carried over from the last room.
     isAtBottomRef.current = true;
     setIsAtBottom(true);
+    // Arm the reveal gate for this room; the pin (or the 3s backstop) opens it.
+    setPinSettled(false);
+    if (revealTimerRef.current) window.clearTimeout(revealTimerRef.current);
+    revealTimerRef.current = window.setTimeout(() => {
+      revealTimerRef.current = undefined;
+      // Backstop: nothing may leave a room permanently unpainted, whatever the
+      // pin loop does. Worst case the user sees the last few frames of a drag.
+      setPinSettled(true);
+    }, 3000);
     setNewWhileScrolledUp(0);
     prevLastMessageIdRef.current = null;
     setFirstItemIndex(START);
@@ -433,49 +475,54 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     }
     pinTimersRef.current = {};
   }, []);
-  const pinToNewest = useCallback(() => {
-    clearPinTimers();
-    // Hold the list at the bottom, EVERY FRAME, until layout stops moving.
-    // Fixed-delay settle taps (150/400/800ms) all lost to reality: a first
-    // page of heavy markdown keeps re-measuring past any schedule, and each
-    // late reflow re-opened a gap above the fold — the room then showed the
-    // TOP of the page. So instead: drive the real scroller (scrollToIndex is
-    // not used here — under firstItemIndex reverse-scroll its LAST index math
-    // repeatedly landed on the top of the loaded page) and only stop once
-    // scrollHeight has been stable for ~6 frames, capped at 2.5s. While the
-    // loop runs the user cannot scroll away from the bottom; that window is
-    // typically ~300ms on room open and the pin fires once per room, so it
-    // never fights a reader afterward.
-    const startedAt = performance.now();
-    let lastHeight = -1;
-    let stableTicks = 0;
-    // setInterval, NOT requestAnimationFrame: rAF is fully suspended in
-    // hidden tabs, and a room can legitimately need its pin while hidden
-    // (restored session in a background tab, automation, prerender). A 50ms
-    // tick is imperceptible when visible — each tick is a no-op once the list
-    // is anchored — and browsers clamp it to ~1s when hidden, which still
-    // lands the pin.
-    const timer = window.setInterval(() => {
-      const scroller = listWrapRef.current?.querySelector<HTMLElement>(
-        '[data-virtuoso-scroller="true"]',
-      );
-      if (!scroller) return;
-      scroller.scrollTop = scroller.scrollHeight;
-      if (scroller.scrollHeight === lastHeight) {
-        stableTicks += 1;
-      } else {
-        stableTicks = 0;
-        lastHeight = scroller.scrollHeight;
-      }
-      if (stableTicks >= 6 || performance.now() - startedAt > 2500) {
-        window.clearInterval(timer);
-        if (pinTimersRef.current.interval === timer) {
-          pinTimersRef.current.interval = undefined;
+  const pinToNewest = useCallback(
+    (onSettled?: () => void) => {
+      clearPinTimers();
+      // Hold the list at the bottom, EVERY FRAME, until layout stops moving.
+      // Fixed-delay settle taps (150/400/800ms) all lost to reality: a first
+      // page of heavy markdown keeps re-measuring past any schedule, and each
+      // late reflow re-opened a gap above the fold — the room then showed the
+      // TOP of the page. So instead: drive the real scroller (scrollToIndex is
+      // not used here — under firstItemIndex reverse-scroll its LAST index math
+      // repeatedly landed on the top of the loaded page) and only stop once
+      // scrollHeight has been stable for ~6 frames, capped at 2.5s. While the
+      // loop runs the user cannot scroll away from the bottom; that window is
+      // typically ~300ms on room open and the pin fires once per room, so it
+      // never fights a reader afterward.
+      const startedAt = performance.now();
+      let lastHeight = -1;
+      let stableTicks = 0;
+      // setInterval, NOT requestAnimationFrame: rAF is fully suspended in
+      // hidden tabs, and a room can legitimately need its pin while hidden
+      // (restored session in a background tab, automation, prerender). A 50ms
+      // tick is imperceptible when visible — each tick is a no-op once the list
+      // is anchored — and browsers clamp it to ~1s when hidden, which still
+      // lands the pin.
+      const timer = window.setInterval(() => {
+        const scroller = listWrapRef.current?.querySelector<HTMLElement>(
+          '[data-virtuoso-scroller="true"]',
+        );
+        if (!scroller) return;
+        scroller.scrollTop = scroller.scrollHeight;
+        if (scroller.scrollHeight === lastHeight) {
+          stableTicks += 1;
+        } else {
+          stableTicks = 0;
+          lastHeight = scroller.scrollHeight;
         }
-      }
-    }, 50);
-    pinTimersRef.current.interval = timer;
-  }, [clearPinTimers]);
+        if (stableTicks >= 6 || performance.now() - startedAt > 2500) {
+          window.clearInterval(timer);
+          if (pinTimersRef.current.interval === timer) {
+            pinTimersRef.current.interval = undefined;
+          }
+          // Settled at the newest message: safe to paint.
+          onSettled?.();
+        }
+      }, 50);
+      pinTimersRef.current.interval = timer;
+    },
+    [clearPinTimers],
+  );
 
   // Keep the list pinned to the newest message when the scroller SHRINKS —
   // mobile keyboard opening (--app-height collapses) or the composer growing.
@@ -488,7 +535,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     const ro = new ResizeObserver(() => {
       if (!isAtBottomRef.current) return;
       requestAnimationFrame(() =>
-        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" }),
+        virtuosoRef.current?.scrollToIndex({
+          index: "LAST",
+          align: "end",
+          behavior: "auto",
+        }),
       );
     });
     ro.observe(el);
@@ -518,9 +569,21 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     if (didInitialPinRef.current === roomId) return;
     if (document.visibilityState !== "visible") return;
     didInitialPinRef.current = roomId;
-    if (new URLSearchParams(window.location.search).get("message")) return;
-    pinToNewest();
-  }, [roomId, messages.length, pinToNewest]);
+    if (new URLSearchParams(window.location.search).get("message")) {
+      // The deep link owns the scroll target; nothing to wait for.
+      reveal();
+      return;
+    }
+    pinToNewest(reveal);
+  }, [roomId, messages.length, pinToNewest, reveal]);
+  // Drop the reveal backstop with the component.
+  useEffect(
+    () => () => {
+      if (revealTimerRef.current) window.clearTimeout(revealTimerRef.current);
+    },
+    [],
+  );
+
   // Pin timers must survive list growth (a message landing <150ms after the pin
   // must not cancel the settle tap); clear only on unmount.
   useEffect(() => clearPinTimers, [roomId, clearPinTimers]);
@@ -536,12 +599,15 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
       if (didInitialPinRef.current === roomId) return;
       if (messages.length === 0) return;
       didInitialPinRef.current = roomId;
-      if (new URLSearchParams(window.location.search).get("message")) return;
-      pinToNewest();
+      if (new URLSearchParams(window.location.search).get("message")) {
+        reveal();
+        return;
+      }
+      pinToNewest(reveal);
     }
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [roomId, messages.length, pinToNewest]);
+  }, [roomId, messages.length, pinToNewest, reveal]);
 
   // Count what arrived while scrolled up (the pill's "N new messages" label).
   // Keyed on the last message ID, not list length, so loadMore prepends and
@@ -569,7 +635,9 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   // — once it's rendered — grab the element and flash the ring. Fail-safe: if
   // the id isn't in the loaded window, do nothing.
   useEffect(() => {
-    const messageId = new URLSearchParams(window.location.search).get("message");
+    const messageId = new URLSearchParams(window.location.search).get(
+      "message",
+    );
     if (!messageId) return;
     const key = `${roomId}:${messageId}`;
     if (messages.length === 0) {
@@ -625,7 +693,12 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
   function handleSend(
     content: string,
     threadId?: string,
-    attachments?: { url: string; filename: string; content_type: string; size: number }[],
+    attachments?: {
+      url: string;
+      filename: string;
+      content_type: string;
+      size: number;
+    }[],
     extraMetadata?: Record<string, unknown>,
   ) {
     // Sending is the end of typing. Retract BEFORE the message goes out so the
@@ -640,47 +713,57 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     // room because message #31 happened to be sent in it.
     const hadPriorHumanMessage =
       hasMore || messages.some((m) => m.sender_type === "human");
-    void sendMessage(content, threadId, attachments, extraMetadata).then((outcome) => {
-      // Only a server-confirmed send earns follow-up work. The promise now
-      // settles at the send's TERMINAL state (acked/failed, spanning the
-      // automatic retry) — renaming a room after a message that was never
-      // delivered would be titling it off nothing.
-      if (outcome !== "acked") return;
-      // Auto-title agent DMs: after the first human message, replace the
-      // default "chat with <agent>" with a one-line summary ≤42 chars, and set
-      // metadata.auto_titled so we never overwrite a user rename (the server
-      // persists the flag via the RoomUpdate metadata allowlist and it rides
-      // back on room.metadata_).
-      if (autoTitleDoneRef.current || hadPriorHumanMessage || threadId) return;
-      const room = useAppStore.getState().rooms.find((r) => r.id === roomId);
-      if (!room) return;
-      const isAgentDm =
-        room.type === "dm" &&
-        !!room.brigade_agent_id;
-      const isDefaultName = /^chat with /i.test(room.display_name || room.name);
-      const meta = room.metadata_;
-      if (isAgentDm && isDefaultName && !meta?.auto_titled) {
-        autoTitleDoneRef.current = true;
-        const summary = content.trim().slice(0, 42);
-        if (summary.length > 0) {
-          api.updateRoom(roomId, {
-            display_name: summary,
-            metadata: { auto_titled: true },
-          }).then(() => {
-            queryClient.invalidateQueries({ queryKey: ["rooms"] });
-          }).catch((err) => {
-            console.debug("[chat] auto-title failed", err);
-            autoTitleDoneRef.current = false;
-          });
+    void sendMessage(content, threadId, attachments, extraMetadata).then(
+      (outcome) => {
+        // Only a server-confirmed send earns follow-up work. The promise now
+        // settles at the send's TERMINAL state (acked/failed, spanning the
+        // automatic retry) — renaming a room after a message that was never
+        // delivered would be titling it off nothing.
+        if (outcome !== "acked") return;
+        // Auto-title agent DMs: after the first human message, replace the
+        // default "chat with <agent>" with a one-line summary ≤42 chars, and set
+        // metadata.auto_titled so we never overwrite a user rename (the server
+        // persists the flag via the RoomUpdate metadata allowlist and it rides
+        // back on room.metadata_).
+        if (autoTitleDoneRef.current || hadPriorHumanMessage || threadId)
+          return;
+        const room = useAppStore.getState().rooms.find((r) => r.id === roomId);
+        if (!room) return;
+        const isAgentDm = room.type === "dm" && !!room.brigade_agent_id;
+        const isDefaultName = /^chat with /i.test(
+          room.display_name || room.name,
+        );
+        const meta = room.metadata_;
+        if (isAgentDm && isDefaultName && !meta?.auto_titled) {
+          autoTitleDoneRef.current = true;
+          const summary = content.trim().slice(0, 42);
+          if (summary.length > 0) {
+            api
+              .updateRoom(roomId, {
+                display_name: summary,
+                metadata: { auto_titled: true },
+              })
+              .then(() => {
+                queryClient.invalidateQueries({ queryKey: ["rooms"] });
+              })
+              .catch((err) => {
+                console.debug("[chat] auto-title failed", err);
+                autoTitleDoneRef.current = false;
+              });
+          }
         }
-      }
-    });
+      },
+    );
     // Arm the missed-reply resync poll, but only where a reply can actually be
     // missed. This says nothing about whether an agent is working — it only
     // covers a dropped WS event on our own send.
     if (roomHasAgent) setResyncUntil(Date.now() + RESYNC_WINDOW_MS);
     requestAnimationFrame(() =>
-      virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth", align: "end" }),
+      virtuosoRef.current?.scrollToIndex({
+        index: "LAST",
+        behavior: "smooth",
+        align: "end",
+      }),
     );
   }
 
@@ -726,6 +809,39 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
 
   const virtuosoComponents = useMemo(() => ({ Header }), [Header]);
 
+  // Shown while messages load AND, once they have, while the list is still
+  // settling on the newest message — so the room never paints a half-scrolled
+  // list on its way down.
+  const loadingSkeleton = (
+    <div
+      className="mx-auto w-full max-w-[52rem] space-y-6 px-2 pt-6"
+      aria-hidden="true"
+    >
+      {[68, 42, 84].map((w, i) => (
+        <div
+          key={i}
+          className="flex animate-pulse-soft gap-3"
+          style={{ animationDelay: `${i * 150}ms` }}
+        >
+          <div className="h-9 w-9 shrink-0 rounded-full bg-white/[0.05]" />
+          <div className="min-w-0 flex-1 space-y-2 pt-1">
+            <div className="h-3 w-24 rounded bg-white/[0.06]" />
+            <div
+              className="h-3 rounded bg-white/[0.04]"
+              style={{ width: `${w}%` }}
+            />
+            {i !== 1 && (
+              <div
+                className="h-3 rounded bg-white/[0.04]"
+                style={{ width: `${Math.round(w * 0.6)}%` }}
+              />
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Relative wrapper so the jump pill can float over the scroll area —
@@ -739,33 +855,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
             aria-live="polite"
           >
             {loading ? (
-              <div
-                className="mx-auto w-full max-w-[52rem] space-y-6 px-2 pt-6"
-                aria-hidden="true"
-              >
-                {[68, 42, 84].map((w, i) => (
-                  <div
-                    key={i}
-                    className="flex animate-pulse-soft gap-3"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  >
-                    <div className="h-9 w-9 shrink-0 rounded-full bg-white/[0.05]" />
-                    <div className="min-w-0 flex-1 space-y-2 pt-1">
-                      <div className="h-3 w-24 rounded bg-white/[0.06]" />
-                      <div
-                        className="h-3 rounded bg-white/[0.04]"
-                        style={{ width: `${w}%` }}
-                      />
-                      {i !== 1 && (
-                        <div
-                          className="h-3 rounded bg-white/[0.04]"
-                          style={{ width: `${Math.round(w * 0.6)}%` }}
-                        />
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              loadingSkeleton
             ) : error ? (
               <div className="m-auto flex max-w-xs flex-col items-center gap-3 text-center">
                 <p className="font-display text-sm font-semibold text-slate-200">
@@ -794,132 +884,165 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
             )}
           </div>
         ) : (
-          <Virtuoso
-            key={roomId}
-            ref={virtuosoRef}
-            data={messages}
-            firstItemIndex={firstItemIndex}
-            // Deliberately NO initialTopMostItemIndex: combined with
-            // firstItemIndex (reverse infinite scroll) it parks Virtuoso in
-            // its pending-initial-location state — item list visibility:hidden
-            // with a full-height padding placeholder, zero rows ever rendered,
-            // and scrollToIndex silently ignored, so the room looks
-            // permanently blank and even "Jump to latest" is dead. Mounting
-            // visible-at-top and letting the pin effect below scroll to the
-            // newest message (rAF + settle tap) lands identically and cannot
-            // wedge.
-            computeItemKey={(_index, message) => message.id}
-            followOutput={(atBottom) => (atBottom ? "smooth" : false)}
-            atBottomStateChange={(atBottom) => {
-              isAtBottomRef.current = atBottom;
-              setIsAtBottom(atBottom);
-              if (atBottom) setNewWhileScrolledUp(0);
-            }}
-            startReached={() => handleLoadMore()}
-            atTopThreshold={400}
-            components={virtuosoComponents}
-            style={{ flex: 1, minHeight: 0 }}
-            role="log"
-            aria-label="Chat messages"
-            aria-live="polite"
-            itemContent={(index, message) => {
-              const arrayIndex = index - firstItemIndex;
-              const prevMessage =
-                arrayIndex > 0 ? messages[arrayIndex - 1] : undefined;
-              const showAvatar =
-                !prevMessage ||
-                prevMessage.sender_id !== message.sender_id ||
-                new Date(message.created_at).getTime() -
-                  new Date(prevMessage.created_at).getTime() >
-                  300_000;
+          <>
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              data-testid="message-list"
+              // The e2e guard reads this: the moment it flips to "true" the
+              // list must already sit on the newest message (e2e/surfaces.spec).
+              data-pin-settled={pinSettled ? "true" : "false"}
+              style={{
+                opacity: pinSettled ? 1 : 0,
+                transition: "opacity 120ms ease-out",
+              }}
+            >
+              <Virtuoso
+                key={roomId}
+                ref={virtuosoRef}
+                data={messages}
+                firstItemIndex={firstItemIndex}
+                // Deliberately NO initialTopMostItemIndex: combined with
+                // firstItemIndex (reverse infinite scroll) it parks Virtuoso in
+                // its pending-initial-location state — item list visibility:hidden
+                // with a full-height padding placeholder, zero rows ever rendered,
+                // and scrollToIndex silently ignored, so the room looks
+                // permanently blank and even "Jump to latest" is dead. Mounting
+                // visible-at-top and letting the pin effect below scroll to the
+                // newest message (rAF + settle tap) lands identically and cannot
+                // wedge.
+                // A room with three messages sits at the BOTTOM of the pane, the
+                // way every chat client does it — without this Virtuoso parks a
+                // short list against the top and the composer floats under a gap.
+                alignToBottom
+                computeItemKey={(_index, message) => message.id}
+                followOutput={(atBottom) => (atBottom ? "smooth" : false)}
+                atBottomStateChange={(atBottom) => {
+                  isAtBottomRef.current = atBottom;
+                  setIsAtBottom(atBottom);
+                  if (atBottom) setNewWhileScrolledUp(0);
+                }}
+                startReached={() => handleLoadMore()}
+                atTopThreshold={400}
+                components={virtuosoComponents}
+                style={{ flex: 1, minHeight: 0 }}
+                role="log"
+                aria-label="Chat messages"
+                aria-live="polite"
+                itemContent={(index, message) => {
+                  const arrayIndex = index - firstItemIndex;
+                  const prevMessage =
+                    arrayIndex > 0 ? messages[arrayIndex - 1] : undefined;
+                  const showAvatar =
+                    !prevMessage ||
+                    prevMessage.sender_id !== message.sender_id ||
+                    new Date(message.created_at).getTime() -
+                      new Date(prevMessage.created_at).getTime() >
+                      300_000;
 
-              const showDaySeparator =
-                !prevMessage ||
-                !sameDay(
-                  new Date(prevMessage.created_at),
-                  new Date(message.created_at),
-                );
+                  const showDaySeparator =
+                    !prevMessage ||
+                    !sameDay(
+                      new Date(prevMessage.created_at),
+                      new Date(message.created_at),
+                    );
 
-              return (
-                <div className="mx-auto w-full max-w-[52rem] px-4 md:px-8">
-                  <div id={`m-${message.id}`}>
-                    {showDaySeparator && (
-                      <div className="my-4 flex items-center gap-3 px-2">
-                        <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-700/60" />
-                        <span className="glass rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                          {formatDayLabel(new Date(message.created_at))}
-                        </span>
-                        <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-700/60" />
-                      </div>
-                    )}
-                    {message.id === unreadAnchorId && (
-                      <div
-                        className="my-3 flex items-center gap-3 px-2"
-                        role="separator"
-                        aria-label="New messages"
-                      >
-                        <div className="h-px flex-1 bg-gradient-to-r from-transparent to-stable-purple/40" />
-                        <span className="rounded-full border border-stable-purple/40 bg-stable-purple/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-stable-purple-light">
-                          New messages
-                        </span>
-                        <div className="h-px flex-1 bg-gradient-to-l from-transparent to-stable-purple/40" />
-                      </div>
-                    )}
-                    <MessageBubble
-                      message={message}
-                      isOwn={message.sender_id === currentUser?.id}
-                      showAvatar={showAvatar}
-                      onEdit={editMessage}
-                      onDelete={deleteMessage}
-                      onReply={handleReply}
-                      onRetry={retryMessage}
-                      forceEditTick={editFocusId === message.id ? editTick : 0}
-                      overrideModelLabel={overrideModelLabel}
-                    />
-                    {/* "Seen by" pill — only on the most recent OWN message that
+                  return (
+                    <div className="mx-auto w-full max-w-[52rem] px-4 md:px-8">
+                      <div id={`m-${message.id}`}>
+                        {showDaySeparator && (
+                          <div className="my-4 flex items-center gap-3 px-2">
+                            <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-700/60" />
+                            <span className="glass rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                              {formatDayLabel(new Date(message.created_at))}
+                            </span>
+                            <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-700/60" />
+                          </div>
+                        )}
+                        {message.id === unreadAnchorId && (
+                          <div
+                            className="my-3 flex items-center gap-3 px-2"
+                            role="separator"
+                            aria-label="New messages"
+                          >
+                            <div className="h-px flex-1 bg-gradient-to-r from-transparent to-stable-purple/40" />
+                            <span className="rounded-full border border-stable-purple/40 bg-stable-purple/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-stable-purple-light">
+                              New messages
+                            </span>
+                            <div className="h-px flex-1 bg-gradient-to-l from-transparent to-stable-purple/40" />
+                          </div>
+                        )}
+                        <MessageBubble
+                          message={message}
+                          isOwn={message.sender_id === currentUser?.id}
+                          showAvatar={showAvatar}
+                          onEdit={editMessage}
+                          onDelete={deleteMessage}
+                          onReply={handleReply}
+                          onRetry={retryMessage}
+                          forceEditTick={
+                            editFocusId === message.id ? editTick : 0
+                          }
+                          overrideModelLabel={overrideModelLabel}
+                        />
+                        {/* "Seen by" pill — only on the most recent OWN message that
                         other participants have read past. Shows up to 3 avatars.
                         Never on an unACKed (optimistic) send: nobody can have
                         seen a message the server hasn't confirmed persisting,
                         and receipt timestamps landing after the bubble's local
                         created_at would fake exactly that. */}
-                    {message.sender_id === currentUser?.id &&
-                      !message.id.startsWith("optimistic-") &&
-                      arrayIndex === messages.length - 1 &&
-                      (() => {
-                        const seers = participants.filter((p) => {
-                          const pid = p.participant_id || p.user_id || "";
-                          if (!pid || pid === currentUser?.id) return false;
-                          const at = readReceipts[pid];
-                          if (!at) return false;
-                          return new Date(at) >= new Date(message.created_at);
-                        });
-                        if (seers.length === 0) return null;
-                        return (
-                          <div className="ml-12 mt-1 flex items-center gap-1 text-[10px] text-slate-500">
-                            <span>Seen by</span>
-                            <div className="flex -space-x-1">
-                              {seers.slice(0, 3).map((p) => (
-                                <Identity
-                                  key={p.participant_id || p.user_id}
-                                  {...resolveIdentity({
-                                    ...p,
-                                    participant_type: rosterParticipantType(p),
-                                  })}
-                                  presence={null}
-                                  size={20}
-                                  className="ring-1 ring-slate-900"
-                                />
-                              ))}
-                            </div>
-                            {seers.length > 3 && <span>+{seers.length - 3}</span>}
-                          </div>
-                        );
-                      })()}
-                  </div>
-                </div>
-              );
-            }}
-          />
+                        {message.sender_id === currentUser?.id &&
+                          !message.id.startsWith("optimistic-") &&
+                          arrayIndex === messages.length - 1 &&
+                          (() => {
+                            const seers = participants.filter((p) => {
+                              const pid = p.participant_id || p.user_id || "";
+                              if (!pid || pid === currentUser?.id) return false;
+                              const at = readReceipts[pid];
+                              if (!at) return false;
+                              return (
+                                new Date(at) >= new Date(message.created_at)
+                              );
+                            });
+                            if (seers.length === 0) return null;
+                            return (
+                              <div className="ml-12 mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+                                <span>Seen by</span>
+                                <div className="flex -space-x-1">
+                                  {seers.slice(0, 3).map((p) => (
+                                    <Identity
+                                      key={p.participant_id || p.user_id}
+                                      {...resolveIdentity({
+                                        ...p,
+                                        participant_type:
+                                          rosterParticipantType(p),
+                                      })}
+                                      presence={null}
+                                      size={20}
+                                      className="ring-1 ring-slate-900"
+                                    />
+                                  ))}
+                                </div>
+                                {seers.length > 3 && (
+                                  <span>+{seers.length - 3}</span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+            </div>
+            {!pinSettled && (
+              <div
+                className="pointer-events-none absolute inset-0 overflow-hidden px-4 py-3 md:px-8"
+                aria-hidden="true"
+              >
+                {loadingSkeleton}
+              </div>
+            )}
+          </>
         )}
 
         {/* Jump-to-first-unread chip — gap #14. Only for a BIG cold backlog
@@ -950,10 +1073,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                 className="glass-heavy flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium text-slate-200 shadow-pop transition-colors hover:border-stable-purple/40 hover:text-white focus-ring"
                 aria-label={`Jump to first unread — ${anchorUnreadCount} new messages`}
               >
-                <ArrowUp className="h-3.5 w-3.5 text-stable-purple" aria-hidden="true" />
-                <span>
-                  {anchorUnreadCount} new since your last visit
-                </span>
+                <ArrowUp
+                  className="h-3.5 w-3.5 text-stable-purple"
+                  aria-hidden="true"
+                />
+                <span>{anchorUnreadCount} new since your last visit</span>
                 <span className="font-semibold text-stable-purple-light">
                   Jump to first unread
                 </span>
@@ -991,7 +1115,10 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                 : "Jump to latest"
             }
           >
-            <ArrowDown className="h-3.5 w-3.5 text-stable-purple" aria-hidden="true" />
+            <ArrowDown
+              className="h-3.5 w-3.5 text-stable-purple"
+              aria-hidden="true"
+            />
             {newWhileScrolledUp > 0
               ? `${newWhileScrolledUp} new ${newWhileScrolledUp === 1 ? "message" : "messages"}`
               : "Jump to latest"}
@@ -1012,7 +1139,9 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                 aria-live="polite"
                 aria-atomic="true"
               >
-                {describeTypists(typingUsers.map((u) => u.username || "Someone"))}
+                {describeTypists(
+                  typingUsers.map((u) => u.username || "Someone"),
+                )}
               </p>
             )}
             {thinkingAgents.length > 0 && (
@@ -1023,7 +1152,8 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                       leadAgent?.participant_id ||
                       leadMember?.participant_id ||
                       leadAgent?.agent_id,
-                    display_name: leadAgent?.label ?? leadMember?.display_name ?? "Agent",
+                    display_name:
+                      leadAgent?.label ?? leadMember?.display_name ?? "Agent",
                     avatar_url: leadMember?.avatar_url,
                     participant_type: "agent",
                   })}
@@ -1080,7 +1210,9 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
           onTyping={sendTypingIndicator}
           onEditLast={triggerEditLast}
           disabledReason={
-            iAmMuted ? "You've been muted in this channel by a moderator." : undefined
+            iAmMuted
+              ? "You've been muted in this channel by a moderator."
+              : undefined
           }
           placeholder={composerPlaceholder}
         />
@@ -1088,7 +1220,6 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     </div>
   );
 }
-
 
 interface EmptyChannelProps {
   roomId: string;
@@ -1122,7 +1253,13 @@ const CHANNEL_CHIPS: { label: string; action: ChipAction }[] = [
   { label: "🤖 Invite an agent", action: "invite-agent" },
 ];
 
-function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteAgent }: EmptyChannelProps) {
+function EmptyChannel({
+  roomId,
+  participants,
+  currentUserId,
+  onPrompt,
+  onInviteAgent,
+}: EmptyChannelProps) {
   const requestInsert = useAppStore((s) => s.requestInsert);
 
   function runChip(action: ChipAction) {
@@ -1152,7 +1289,9 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
       ? others[0]
       : others.length === 0 &&
           counterpart &&
-          (room?.type === "agent_hub" || counterpart.kind === "agent" || room?.brigade_agent_id)
+          (room?.type === "agent_hub" ||
+            counterpart.kind === "agent" ||
+            room?.brigade_agent_id)
         ? {
             participant_id: counterpart.participant_id,
             display_name: counterpart.display_name,
@@ -1224,7 +1363,8 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
           The start of the conversation
         </p>
         <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-500">
-          Be the first to say something — others see it the moment you hit enter.
+          Be the first to say something — others see it the moment you hit
+          enter.
         </p>
         <div className="mx-auto mt-5 grid w-full max-w-sm grid-cols-1 gap-2 min-[430px]:flex min-[430px]:flex-wrap min-[430px]:justify-center">
           {CHANNEL_CHIPS.map((chip) => (
