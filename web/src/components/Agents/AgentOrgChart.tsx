@@ -59,8 +59,8 @@ import {
   nodesRect,
   collectSubtreeIds,
 } from "./orgViewport";
-import { Avatar } from "@/components/ui/Avatar";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 
 function label(a: Agent): string {
   return a.display_name || a.name;
@@ -136,14 +136,11 @@ function OrgGraphNode(props: NodeProps) {
         className="!h-1.5 !w-1.5 !border-0 !bg-slate-600"
       />
       <span className="relative flex h-9 w-9 shrink-0">
-        <Avatar
-          avatarUrl={resolveAgentPortrait(agent.id, label(agent), agent.avatar_url)}
-          emoji={agent.emoji}
-          id={agent.id}
-          name={label(agent)}
+        <Identity
+          {...resolveIdentity(agent)}
+          presence={null}
           size={36}
-          rounded="lg"
-          alt=""
+          dimmed={agent.status === "offline"}
         />
         <StatusDot
           status={agent.status}

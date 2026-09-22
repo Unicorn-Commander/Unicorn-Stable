@@ -10,8 +10,8 @@ import {
   isAgentEntitled,
 } from "@/lib/agentEntitlement";
 import { useModalA11y } from "@/hooks/useModalA11y";
-import { identityFor } from "@/lib/identity";
-import { Avatar } from "@/components/Avatar";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 
 interface CreateDmModalProps {
@@ -376,10 +376,15 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                       className="flex items-center justify-between gap-3 py-2"
                     >
                       <div className="flex min-w-0 items-center gap-2.5">
-                        <Avatar
-                          name={u.display_name || u.username}
-                          src={u.avatar_url}
-                          size="sm"
+                        <Identity
+                          {...resolveIdentity({
+                            id: u.id,
+                            username: u.username,
+                            display_name: u.display_name || u.username,
+                            avatar_url: u.avatar_url,
+                            participant_type: "human",
+                          })}
+                          size={28}
                         />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-slate-200">
@@ -437,19 +442,15 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                     className="flex items-center justify-between gap-3 py-2"
                   >
                     <div className="flex min-w-0 items-center gap-2.5">
-                      <div
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border"
-                        style={{
-                          background: ident.soft,
-                          borderColor: ident.border,
-                        }}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="h-1.5 w-1.5 rounded-full"
-                          style={{ background: ident.color }}
-                        />
-                      </div>
+                      <Identity
+                        {...resolveIdentity({
+                          id: a.id,
+                          name: a.name,
+                          display_name: a.name,
+                          participant_type: "agent",
+                        })}
+                        size={28}
+                      />
                       <div className="min-w-0">
                         <p
                           className="truncate text-sm font-medium"

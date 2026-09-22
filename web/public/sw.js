@@ -113,7 +113,33 @@ self.addEventListener("fetch", (event) => {
 
 // --- push ----------------------------------------------------------------
 // Defensive handler for future web-push. Expects a JSON payload of the shape
-// { title, body, url, tag }. Tolerates missing/invalid data.
+// { title, body, url, tag, icon }. Tolerates missing/invalid data.
+// `icon` is a resolved face URL. Only same-origin paths and https on our
+// hosts are accepted — a push payload is attacker-influenced.
+function notificationIcon(url) {
+  if (typeof url !== "string" || !url.trim()) return "/icon-192.png";
+  const raw = url.trim();
+  if (raw.startsWith("/") && !raw.startsWith("//") && !raw.includes("\\")) {
+    return raw;
+  }
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:") return "/icon-192.png";
+    const host = parsed.hostname.toLowerCase();
+    const ok =
+      host === self.location.hostname ||
+      host === "magicunicorn.dev" ||
+      host.endsWith(".magicunicorn.dev") ||
+      host === "magicunicorn.tech" ||
+      host.endsWith(".magicunicorn.tech") ||
+      host === "unicorncommander.ai" ||
+      host.endsWith(".unicorncommander.ai");
+    return ok ? raw : "/icon-192.png";
+  } catch (_) {
+    return "/icon-192.png";
+  }
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   if (event.data) {
@@ -129,7 +155,7 @@ self.addEventListener("push", (event) => {
   const options = {
     body: payload.body || "",
     tag: payload.tag, // undefined is fine → no coalescing
-    icon: "/icon-192.png",
+    icon: notificationIcon(payload.icon),
     badge: "/icon-192.png",
     data: { url: payload.url || "/" },
   };

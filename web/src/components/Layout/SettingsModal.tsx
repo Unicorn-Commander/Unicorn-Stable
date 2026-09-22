@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { Identity, PhotoNudge } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import {
   Bell,
   BellRing,
@@ -20,8 +21,7 @@ import clsx from "clsx";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
-import { Avatar } from "@/components/Avatar";
-import { identityFor } from "@/lib/identity";
+
 import { logout } from "@/services/auth";
 import { api } from "@/services/api";
 import { ensurePushSubscription } from "@/lib/webpush";
@@ -133,7 +133,11 @@ export function SettingsModal({
   onClose,
   initialPane = "account",
 }: SettingsModalProps) {
-  const [pane, setPane] = useState<PaneId>(initialPane);
+  const requestedPane = useAppStore((s) => s.ui.settingsPane);
+  const [pane, setPane] = useState<PaneId>(requestedPane ?? initialPane);
+  useEffect(() => {
+    if (requestedPane) setPane(requestedPane);
+  }, [requestedPane]);
   const panelRef = useModalA11y(true, onClose);
 
   return (
@@ -343,34 +347,11 @@ function AgentsPane() {
               saving === agent.id,
               () => void choose(agent.id),
               <>
-                {(() => {
-                  // Ladder (bundle art first, allowlisted roster URL second)
-                  // instead of a raw roster URL: ~38 of Brigade's bindings
-                  // 404 and this img had no onError — a live broken-image
-                  // glyph in Settings.
-                  const src = resolveAgentPortrait(
-                    agent.id,
-                    agent.display_name || agent.name,
-                    agent.avatar_url,
-                  );
-                  return src ? (
-                    <img
-                      src={src}
-                      alt=""
-                      loading="lazy"
-                      onError={(e) => {
-                        e.currentTarget.style.display = "none";
-                      }}
-                      className="h-8 w-8 shrink-0 rounded-lg object-cover ring-1 ring-white/10"
-                    />
-                  ) : (
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-base">
-                      {agent.emoji || (
-                        <Bot className="h-4 w-4 text-slate-400" />
-                      )}
-                    </span>
-                  );
-                })()}
+                <Identity
+                  {...resolveIdentity(agent)}
+                  presence={null}
+                  size={32}
+                />
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium text-slate-100">
                     {agent.display_name || agent.name}
@@ -580,6 +561,16 @@ function AccountPane({
 }) {
   const currentUser = useAppStore((s) => s.currentUser);
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
+  const selfFace = currentUser
+    ? resolveIdentity({
+        id: currentUser.id,
+        display_name: currentUser.displayName,
+        username: currentUser.username,
+        avatar_url: currentUser.avatarUrl,
+        participant_type: "human",
+        is_self: true,
+      })
+    : null;
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-5">
@@ -589,11 +580,7 @@ function AccountPane({
             className="inline-flex shrink-0 rounded-full"
             style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
           >
-            <Avatar
-              name={currentUser.displayName}
-              src={currentUser.avatarUrl}
-              size="lg"
-            />
+            {selfFace && <Identity {...selfFace} presence={null} size={40} />}
           </span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-slate-100">
@@ -607,6 +594,11 @@ function AccountPane({
                 Appearance → Your picture uploads a Stable-only override. A
                 user who read this pane concluded the feature did not exist.
                 Name and email really are Ops-Center's; the picture is both. */}
+            {selfFace?.needsPhoto && (
+              <div className="mt-2">
+                <PhotoNudge onAdd={onGoToAppearance} />
+              </div>
+            )}
             <p className="mt-1 text-[11px] text-slate-500">
               Your name and email come from{" "}
               <a

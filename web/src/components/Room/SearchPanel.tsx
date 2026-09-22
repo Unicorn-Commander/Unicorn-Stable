@@ -3,9 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import clsx from "clsx";
 import { Search, SearchX, X } from "lucide-react";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { api, type Message } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
 import { parseSearchQuery, removeOperatorToken } from "@/utils/searchOperators";
 
 interface SearchPanelProps {
@@ -176,12 +176,7 @@ export function SearchPanel({ roomId, onClose, onSelect }: SearchPanelProps) {
                       className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
                     />
                   )}
-                  <Avatar
-                    name={m.sender_name}
-                    src={m.sender_avatar}
-                    size="sm"
-                    isAgent={m.sender_type === "agent"}
-                  />
+                  <Identity {...resolveIdentity(m)} size={28} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
                       <span

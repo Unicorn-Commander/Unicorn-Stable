@@ -1,10 +1,7 @@
 import type { Agent, Message } from "@/services/api";
 import { Bot } from "lucide-react";
-import {
-  AgentPortrait,
-  RoomAgentPortrait,
-} from "@/components/Agents/AgentPortrait";
-import { identityFor } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import {
   unreadCountFor,
   type AgentFeedModel,
@@ -48,10 +45,15 @@ function AgentPortraitForMessage({
       a.display_name === message.sender_name || a.name === message.sender_name,
   );
   return (
-    <AgentPortrait
-      id={rosterMatch?.id ?? message.sender_id}
-      name={message.sender_name}
-      avatarUrl={message.sender_avatar || rosterMatch?.avatar_url}
+    <Identity
+      {...resolveIdentity({
+        id: rosterMatch?.id ?? message.sender_id,
+        display_name: message.sender_name,
+        username: message.sender_name,
+        avatar_url: message.sender_avatar || rosterMatch?.avatar_url,
+        participant_type: "agent",
+      })}
+      size={32}
       className="mt-0.5"
     />
   );
@@ -124,7 +126,13 @@ export function AgentActivityFeed({
             return (
               <li key={room.id}>
                 <HomeRow
-                  leading={<RoomAgentPortrait room={room} />}
+                  leading={
+                    <Identity
+                      {...resolveIdentity(room, { agents: roster })}
+                      size={32}
+                      className="mt-0.5"
+                    />
+                  }
                   title={room.display_name || room.name}
                   at={m?.created_at ?? null}
                   unread={unread}

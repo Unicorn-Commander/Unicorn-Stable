@@ -47,6 +47,8 @@ interface UIState {
   // sidebar drawer can open Saved messages while the Header bar is hidden.
   savedOpen: boolean;
   settingsOpen: boolean;
+  /** Pane to land on when Settings opens. Null keeps the modal's default. */
+  settingsPane: "account" | "appearance" | "devices" | "notifications" | "agents" | "instance" | "help" | null;
   cheatsheetOpen: boolean;
   threadMessageId: string | null;
   stageAgentId: string | null;
@@ -76,6 +78,8 @@ export interface Toast {
   kind?: "success" | "error" | "info";
   /** Never auto-dismiss (user must close). For failures that need action. */
   sticky?: boolean;
+  /** Resolved face URL. Absent → the bell chip. */
+  icon?: string | null;
 }
 
 interface AppState {
@@ -155,6 +159,10 @@ interface AppState {
   toggleParticipantPanel: () => void;
   setParticipantPanelOpen: (open: boolean) => void;
   toggleSettings: () => void;
+  /** Open Settings on a pane. The photo nudge uses "appearance". */
+  openSettings: (
+    pane?: "account" | "appearance" | "devices" | "notifications" | "agents" | "instance" | "help",
+  ) => void;
   toggleCheatsheet: () => void;
   setThreadMessageId: (id: string | null) => void;
   setStageAgentId: (id: string | null) => void;
@@ -210,6 +218,7 @@ export const useAppStore = create<AppState>((set) => ({
     participantPanelOpen: false,
     savedOpen: false,
     settingsOpen: false,
+    settingsPane: null,
     cheatsheetOpen: false,
     threadMessageId: null,
     stageAgentId: null,
@@ -621,7 +630,16 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   toggleSettings: () =>
     set((state) => ({
-      ui: { ...state.ui, settingsOpen: !state.ui.settingsOpen },
+      ui: {
+        ...state.ui,
+        settingsOpen: !state.ui.settingsOpen,
+        // The gear always opens on Account. openSettings picks a pane.
+        settingsPane: null,
+      },
+    })),
+  openSettings: (pane = "account") =>
+    set((state) => ({
+      ui: { ...state.ui, settingsOpen: true, settingsPane: pane },
     })),
   toggleCheatsheet: () =>
     set((state) => ({

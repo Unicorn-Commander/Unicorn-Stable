@@ -12,14 +12,15 @@ import {
   ShieldCheck,
   Sparkles,
   UserRound,
+  Users,
   Video,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type PeopleDirectoryEntry } from "@/services/api";
-import { AgentPortrait } from "@/components/Agents/AgentPortrait";
+import { Identity } from "@/components/ui/Identity";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
-import { Avatar } from "@/components/Avatar";
+import { resolveIdentity } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -143,6 +144,9 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const currentUser = useAppStore((s) => s.currentUser);
+  const currentParticipantId = useAppStore((s) => s.currentParticipantId);
+  const participantsByRoom = useAppStore((s) => s.participants);
+  const rosterAgents = useAppStore((s) => s.agents);
   const clearUnread = useAppStore((s) => s.clearUnread);
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
@@ -582,7 +586,15 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
         {roomsLoaded && rooms.length === 0 && (
           <section className="mb-6 rounded-2xl border border-stable-purple/30 bg-stable-purple/10 p-5" aria-label="Get started">
             <div className="flex items-center gap-4">
-              <AgentPortrait id={agentRoster[0]?.id} name={agentRoster[0]?.name ?? "Majik"} size={56} />
+              <Identity
+                {...resolveIdentity({
+                  id: agentRoster[0]?.id,
+                  name: agentRoster[0]?.name ?? "Majik",
+                  display_name: agentRoster[0]?.name ?? "Majik",
+                  participant_type: "agent",
+                })}
+                size={56}
+              />
               <div><p className="font-display text-lg font-semibold text-slate-100">Meet {agentRoster[0]?.name ?? "Majik"}</p><p className="mt-1 text-sm text-slate-300">Your workspace starts with one useful conversation.</p></div>
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-3">
@@ -688,9 +700,11 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                         <li key={`approval-${approval.message.id}`}>
                           <HomeRow
                             leading={
-                              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-rose-500/15 text-rose-300">
-                                <ShieldCheck className="h-4 w-4" />
-                              </span>
+                              <Identity
+                                {...resolveIdentity(approval.message)}
+                                size={36}
+                                className="mt-0.5"
+                              />
                             }
                             title="Approval needed"
                             at={approval.message.created_at}
@@ -718,19 +732,33 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                       <li key={`${kind}-${room.id}`}>
                         <HomeRow
                           leading={
-                            kind === "mention" ? (
-                              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
-                                <AtSign className="h-4 w-4" />
-                              </span>
-                            ) : kind === "channel" ||
-                              room.type === "channel" ? (
-                              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-item-channel/15 text-item-channel">
-                                <Hash className="h-4 w-4" />
+                            room.type === "channel" ? (
+                              kind === "mention" ? (
+                                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-stable-purple/15 text-stable-purple-light">
+                                  <AtSign className="h-4 w-4" />
+                                </span>
+                              ) : (
+                                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-item-channel/15 text-item-channel">
+                                  <Hash className="h-4 w-4" />
+                                </span>
+                              )
+                            ) : room.type === "group_dm" &&
+                              resolveIdentity(room, {
+                                selfId: currentParticipantId ?? currentUser?.id,
+                                members: participantsByRoom[room.id],
+                                agents: rosterAgents,
+                              }).origin === "name-only" ? (
+                              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-item-group">
+                                <Users className="h-4 w-4" />
                               </span>
                             ) : (
-                              <Avatar
-                                name={room.display_name || room.name}
-                                size="md"
+                              <Identity
+                                {...resolveIdentity(room, {
+                                  selfId: currentParticipantId ?? currentUser?.id,
+                                  members: participantsByRoom[room.id],
+                                  agents: rosterAgents,
+                                })}
+                                size={36}
                                 className="mt-0.5"
                               />
                             )
@@ -1042,11 +1070,15 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                           className="card card-hover focus-ring flex w-full items-center gap-3 px-3.5 py-3 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <span className="relative shrink-0">
-                            <Avatar
-                              id={person.id}
-                              name={label}
-                              src={person.avatar_url}
-                              size="md"
+                            <Identity
+                              {...resolveIdentity({
+                                ...person,
+                                display_name: label,
+                                participant_type: "human",
+                                is_online: true,
+                              })}
+                              presence={null}
+                              size={36}
                             />
                             <span
                               className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-stable-mint animate-live"
@@ -1133,10 +1165,9 @@ export function HomeDashboard({ onOpenActivity }: { onOpenActivity?: (tab: Activ
                           )}
                         >
                           <span className="relative shrink-0">
-                            <AgentPortrait
-                              id={agent.id}
-                              name={agent.display_name || agent.name}
-                              avatarUrl={agent.avatar_url}
+                            <Identity
+                              {...resolveIdentity(agent)}
+                              presence={null}
                               size={32}
                               dimmed={unreachable || agent.status === "offline"}
                             />

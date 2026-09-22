@@ -4,14 +4,13 @@ import { ArrowDown, ArrowUp, Loader2, X } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
-import { UnicornAvatar } from "@/components/Agents/UnicornAvatar";
+import { Identity } from "@/components/ui/Identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
-import { AgentPortrait } from "@/components/Agents/AgentPortrait";
 import { ws } from "@/services/websocket";
-import { Avatar } from "@/components/Avatar";
 import { StableMark } from "@/components/StableMark";
-import { identityFor } from "@/lib/identity";
+
 import {
   EMPTY_AGENT_ACTIVITY,
   EMPTY_MEMBERS,
@@ -900,12 +899,11 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                             <span>Seen by</span>
                             <div className="flex -space-x-1">
                               {seers.slice(0, 3).map((p) => (
-                                <Avatar
+                                <Identity
                                   key={p.participant_id || p.user_id}
-                                  name={p.display_name}
-                                  src={p.avatar_url}
-                                  size="xs"
-                                  id={p.participant_id || p.user_id}
+                                  {...resolveIdentity(p)}
+                                  presence={null}
+                                  size={20}
                                   className="ring-1 ring-slate-900"
                                 />
                               ))}
@@ -1016,15 +1014,17 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
             )}
             {thinkingAgents.length > 0 && (
               <div className="flex items-center gap-2">
-                <UnicornAvatar
-                  name={leadAgent?.label ?? "Agent"}
-                  id={
-                    leadAgent?.participant_id ||
-                    leadMember?.participant_id ||
-                    leadAgent?.agent_id
-                  }
+                <Identity
+                  {...resolveIdentity({
+                    id:
+                      leadAgent?.participant_id ||
+                      leadMember?.participant_id ||
+                      leadAgent?.agent_id,
+                    display_name: leadAgent?.label ?? leadMember?.display_name ?? "Agent",
+                    avatar_url: leadMember?.avatar_url,
+                    participant_type: "agent",
+                  })}
                   size={20}
-                  state="talking"
                 />
                 <p className="animate-shimmer text-xs font-medium">
                   {describeAgents(thinkingAgents)}
@@ -1106,14 +1106,6 @@ const AGENT_PROMPTS = [
   "Walk me through a typical task you handle.",
 ];
 
-/** Brigade slug for a member row when we have one, else the display name —
- *  the portrait ladder matches on either. Member rows carry a participant
- *  UUID, which never matches a Brigade id, so passing that alone would skip
- *  the bundled art entirely. */
-function agentKeyFor(member: { username?: string; display_name: string }): string {
-  return (member.username || member.display_name).replace(/^agent-/, "");
-}
-
 // Empty-channel starter chips. Each wires to a real action (see runChip):
 // "invite-agent" opens the room's invite flow; the other two seed the composer
 // and focus it via the store's requestInsert (consumed + focused by
@@ -1174,12 +1166,10 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
               className="absolute -inset-3 rounded-full blur-2xl opacity-70"
               style={{ background: ident.ring }}
             />
-            <AgentPortrait
-              id={agentKeyFor(onlyAgent)}
-              name={onlyAgent.display_name}
-              avatarUrl={onlyAgent.avatar_url}
+            <Identity
+              {...resolveIdentity(onlyAgent)}
               size={128}
-              className="relative h-full w-full rounded-2xl"
+              className="relative"
             />
           </div>
           <p className="font-display text-lg font-semibold text-slate-100">

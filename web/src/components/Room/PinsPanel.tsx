@@ -2,9 +2,9 @@ import { useEffect } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pin, X, CornerDownRight } from "lucide-react";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { api, type Message } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { ws, type WsEventPayload } from "@/services/websocket";
 
@@ -86,12 +86,7 @@ export function PinsPanel({ roomId, onClose }: PinsPanelProps) {
                 className="rounded-xl border border-line bg-surface-1/80 p-2.5 transition-colors hover:border-line-strong"
               >
                 <div className="flex items-start gap-2">
-                  <Avatar
-                    name={m.sender_name}
-                    src={m.sender_avatar}
-                    size="sm"
-                    isAgent={m.sender_type === "agent"}
-                  />
+                  <Identity {...resolveIdentity(m)} size={28} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
                       <span

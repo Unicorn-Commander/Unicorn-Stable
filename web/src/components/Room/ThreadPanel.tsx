@@ -2,11 +2,11 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { X, Send, CornerDownRight, MessagesSquare } from "lucide-react";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { newClientMsgId } from "@/lib/sendPipeline";
 import { api, type Message } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
-import { Avatar } from "@/components/Avatar";
 import { MessageBubble } from "./MessageBubble";
 
 interface ThreadPanelProps {
@@ -173,12 +173,7 @@ export function ThreadPanel({ roomId, parentId, onClose }: ThreadPanelProps) {
         {parent && (
           <div className="border-b border-line bg-white/[0.02] px-3 py-3">
             <div className="flex gap-2">
-              <Avatar
-                name={parent.sender_name}
-                src={parent.sender_avatar}
-                size="sm"
-                isAgent={parent.sender_type === "agent"}
-              />
+              <Identity {...resolveIdentity(parent)} size={28} />
               <div className="min-w-0 flex-1">
                 <p className="text-xs text-slate-300">
                   <span

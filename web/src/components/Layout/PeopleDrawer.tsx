@@ -25,7 +25,8 @@ import {
   type PeopleDirectoryEntry,
   type UserPreferences,
 } from "@/services/api";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useDirectCall } from "@/hooks/useDirectCall";
 import type { CallKind } from "@/lib/callEntry";
@@ -182,10 +183,13 @@ function PersonRow({
           aria-label={`Message ${person.display_name}`}
         >
           <span className="relative shrink-0">
-            <Avatar
-              name={person.display_name}
-              src={person.avatar_url}
-              size="sm"
+            <Identity
+              {...resolveIdentity({
+                ...person,
+                participant_type: "human",
+              })}
+              presence={null}
+              size={28}
             />
             <OnlineDot online={online} />
           </span>

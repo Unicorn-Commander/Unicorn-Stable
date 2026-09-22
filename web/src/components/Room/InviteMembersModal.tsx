@@ -6,7 +6,8 @@ import clsx from "clsx";
 import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
-import { Avatar } from "@/components/Avatar";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 
 interface InviteMembersModalProps {
   roomId: string;
@@ -149,10 +150,15 @@ export function InviteMembersModal({
                     className="flex items-center justify-between gap-3 py-2 transition-colors hover:bg-white/[0.02]"
                   >
                     <div className="flex min-w-0 items-center gap-2.5">
-                      <Avatar
-                        name={u.display_name || u.username}
-                        src={u.avatar_url}
-                        size="sm"
+                      <Identity
+                        {...resolveIdentity({
+                          id: u.id,
+                          username: u.username,
+                          display_name: u.display_name || u.username,
+                          avatar_url: u.avatar_url,
+                          participant_type: "human",
+                        })}
+                        size={28}
                       />
                       <div className="min-w-0">
                         <p className="truncate text-sm text-slate-200">

@@ -22,8 +22,8 @@ import {
 } from "./agentClass";
 import { PaidToolsBadge } from "./AgentBadges";
 import { StatusDot } from "./StatusDot";
-import { Avatar } from "@/components/ui/Avatar";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+import { Identity } from "@/components/ui/Identity";
+import { resolveIdentity } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 
 function label(a: Agent): string {
@@ -195,18 +195,10 @@ export function AgentChatModal({
           />
           <div className="relative flex items-start gap-3">
             <span className="relative flex h-14 w-14 shrink-0 shadow-soft">
-              <Avatar
-                avatarUrl={resolveAgentPortrait(
-                  focusAgent.id,
-                  label(focusAgent),
-                  focusAgent.avatar_url,
-                )}
-                emoji={focusAgent.emoji}
-                id={focusAgent.id}
-                name={label(focusAgent)}
+              <Identity
+                {...resolveIdentity(focusAgent)}
+                presence={null}
                 size={56}
-                rounded="lg"
-                alt=""
               />
               <StatusDot
                 status={focusAgent.status}

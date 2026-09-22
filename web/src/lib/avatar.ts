@@ -41,7 +41,12 @@
  */
 import { getToken, refreshToken } from "@/services/auth";
 import { useFederationStore } from "@/stores/federationStore";
-import { identityFor, type Identity } from "@/lib/identity";
+import {
+  identityFor,
+  initialsFor,
+  registerAvatarSrc,
+  type Identity,
+} from "@/lib/identity";
 
 /** Hosts we will point an `<img>` at. Suffix-matched on the parsed hostname,
  *  never on the raw string — `magicunicorn.dev.evil.com` must not match. */
@@ -115,25 +120,12 @@ export function toAvatarSrc(url: string | null | undefined): string | null {
   return raw.startsWith("/") ? `${avatarApiBase()}${raw}` : raw;
 }
 
-/**
- * Up to two initials. Handles "Aaron Stransky" -> AS, "majik" -> MA,
- * "agent-corporal-qwen" -> CQ (the "agent" prefix carries no information), and
- * degrades to "?" rather than to an empty circle.
- */
-export function initialsFor(name?: string | null): string {
-  const cleaned = (name ?? "")
-    .replace(/^agent[-_\s]+/i, "")
-    .replace(/[_-]+/g, " ")
-    .trim();
-  if (!cleaned) return "?";
-  const words = cleaned.split(/\s+/).filter(Boolean);
-  if (words.length >= 2) {
-    return (words[0]![0]! + words[1]![0]!).toUpperCase();
-  }
-  const w = words[0]!;
-  // Single token: two letters reads better than one in a circle.
-  return (w.length >= 2 ? w.slice(0, 2) : w).toUpperCase();
-}
+// API-relative portraits follow the active instance. identity.ts cannot
+// import this module (guest pages import identity.ts and must not pull
+// Keycloak), so the signed-in app registers the resolver at load.
+registerAvatarSrc(toAvatarSrc);
+
+export { initialsFor } from "@/lib/identity";
 
 export type AvatarKind = "image" | "emoji" | "initials";
 

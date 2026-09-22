@@ -46,7 +46,8 @@ import {
 } from "@/utils/unreadModel";
 import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { stripMarkdown } from "@/utils/messagePreview";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
@@ -83,7 +84,7 @@ import { resolveDefaultAgent } from "./newChat";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { usePresenceStore } from "@/stores/presenceStore";
 import type { PeopleDirectoryEntry } from "@/services/api";
-import { Avatar } from "@/components/ui/Avatar";
+
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 
 /**
@@ -312,12 +313,13 @@ export function RoomList() {
                     title={person.display_name}
                   >
                     <span className="relative">
-                      <Avatar
-                        avatarUrl={person.avatar_url}
-                        id={person.id}
-                        name={person.display_name}
+                      <Identity
+                        {...resolveIdentity({
+                          ...person,
+                          participant_type: "human",
+                        })}
+                        presence={null}
                         size={36}
-                        alt=""
                       />
                       <span
                         className={
@@ -1082,12 +1084,30 @@ export function RoomList() {
             className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-slate-300 transition-colors hover:text-slate-100 md:py-1.5"
             title={`Open your latest conversation with ${name}`}
           >
-            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+            <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
               {isAgent ? (
-                <span
-                  aria-hidden="true"
-                  className="h-1.5 w-1.5 rounded-full"
-                  style={{ background: ident.color }}
+                <Identity
+                  {...resolveIdentity(
+                    rosterAgent
+                      ? {
+                          ...rosterAgent,
+                          avatar_url:
+                            agentMember?.avatar_url ?? rosterAgent.avatar_url,
+                          is_online: agentMember?.is_online,
+                          availability:
+                            agentMember?.availability ?? rosterAgent.availability,
+                        }
+                      : {
+                          id: entry.agentId,
+                          display_name: name,
+                          avatar_url: agentMember?.avatar_url,
+                          participant_type: "agent",
+                          is_online: agentMember?.is_online,
+                          availability: agentMember?.availability,
+                        },
+                  )}
+                  presence={null}
+                  size={20}
                 />
               ) : (
                 <MessageSquare className="h-4 w-4 opacity-60" />

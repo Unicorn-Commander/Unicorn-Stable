@@ -3,13 +3,13 @@ import { Minimize2, Maximize2, Maximize, Minimize, Bot, X } from "lucide-react";
 import { useState } from "react";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
+import { Identity } from "@/components/ui/Identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useTileFullscreen } from "@/hooks/useTileFullscreen";
 import { useAppStore } from "@/stores/appStore";
 import { api } from "@/services/api";
-import { Avatar } from "@/components/ui/Avatar";
-import { resolveAgentPortrait } from "@/lib/resolveAgentPortrait";
+
 
 interface StageViewProps {
   agentId: string;
@@ -126,18 +126,14 @@ export function StageView({ agentId, roomId }: StageViewProps) {
         />
       ) : (
         <div className="flex animate-fade-in flex-col items-center gap-3">
-          <Avatar
-            avatarUrl={resolveAgentPortrait(
-              agentId.replace(/^agent-/, ""),
-              displayName,
-              stageAgent?.avatar_url,
-            )}
-            emoji={stageEmoji}
-            id={agentId.replace(/^agent-/, "")}
-            name={displayName}
+          <Identity
+            {...resolveIdentity({
+              id: agentId.replace(/^agent-/, ""),
+              display_name: displayName,
+              avatar_url: stageAgent?.avatar_url,
+              participant_type: "agent",
+            })}
             size={64}
-            ring
-            alt=""
           />
           <p className="font-display text-sm font-semibold text-slate-100">
             {displayName}

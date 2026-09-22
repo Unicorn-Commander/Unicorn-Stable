@@ -24,9 +24,9 @@ import { useDirectCall } from "@/hooks/useDirectCall";
 import { CALL_KIND_LABEL } from "@/lib/callEntry";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
-import { Avatar } from "@/components/Avatar";
+import { Identity, PhotoNudge } from "@/components/ui/Identity";
 import { Tooltip } from "@/components/ui";
-import { identityFor } from "@/lib/identity";
+import { identityFor, resolveIdentity } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { api } from "@/services/api";
 import { useFederationStore } from "@/stores/federationStore";
@@ -53,6 +53,7 @@ export function Header({
   const peopleDrawerOpen = useAppStore((s) => s.ui.peopleDrawerOpen);
   const togglePeopleDrawer = useAppStore((s) => s.togglePeopleDrawer);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
+  const openSettings = useAppStore((s) => s.openSettings);
   const toggleCheatsheet = useAppStore((s) => s.toggleCheatsheet);
   // SavedPanel is now rendered once at the AppShell level (so the mobile drawer
   // account section can open it); here we only need the opener.
@@ -66,6 +67,14 @@ export function Header({
   const { startCall } = useDirectCall();
   // Identity hue for the signed-in resident — rings the avatar + menu header.
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
+  const selfFace = resolveIdentity({
+    id: currentUser?.id,
+    display_name: currentUser?.displayName || "You",
+    username: currentUser?.username,
+    avatar_url: currentUser?.avatarUrl,
+    participant_type: "human",
+    is_self: !!currentUser,
+  });
   const activeInstanceId = useFederationStore((state) => state.activeInstanceId);
   const { data: pendingApprovals } = useQuery({
     queryKey: ["approvals", "pending", activeInstanceId],
@@ -422,7 +431,10 @@ export function Header({
 
         {/* Account menu — desktop only; on phones account lives in the sidebar
             drawer's footer (see AppShell). */}
-        <div className="relative hidden md:block" ref={menuRef}>
+        <div className="relative hidden items-center gap-2 md:flex" ref={menuRef}>
+          {selfFace.needsPhoto && (
+            <PhotoNudge onAdd={() => openSettings("appearance")} />
+          )}
           <button
             ref={avatarBtnRef}
             onClick={() => setUserMenuOpen(!userMenuOpen)}
@@ -432,11 +444,7 @@ export function Header({
             aria-haspopup="menu"
             aria-expanded={userMenuOpen}
           >
-            <Avatar
-              name={currentUser?.displayName ?? "U"}
-              src={currentUser?.avatarUrl}
-              size="sm"
-            />
+            <Identity {...selfFace} presence={null} size={24} />
           </button>
 
           {userMenuOpen && (
@@ -450,11 +458,7 @@ export function Header({
                   className="inline-flex shrink-0 rounded-full"
                   style={{ boxShadow: `0 0 0 2px ${userIdent.ring}` }}
                 >
-                  <Avatar
-                    name={currentUser?.displayName ?? "U"}
-                    src={currentUser?.avatarUrl}
-                    size="sm"
-                  />
+                  <Identity {...selfFace} presence={null} size={24} />
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-slate-100">
