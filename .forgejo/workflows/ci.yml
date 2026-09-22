@@ -62,14 +62,14 @@ jobs:
         run: npx playwright test --reporter=html
       - name: upload playwright artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: playwright-report
           path: web/playwright-report
           retention-days: 7
       - name: upload test screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: playwright-screenshots
           path: web/test-results
