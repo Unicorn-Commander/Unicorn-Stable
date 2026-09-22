@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Database, Hash, LayoutTemplate, Link2, LogOut, Mic, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Circle, Database, Hash, LayoutTemplate, Link2, LogOut, Mic, MoreVertical, PanelLeftOpen, Pencil, Pin, Search, UserPlus, UserRound, Users } from "lucide-react";
 import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
@@ -27,6 +27,7 @@ import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
+import { RecordingSettingsModal } from "./RecordingSettingsModal";
 import { StartGroupModal } from "./StartGroupModal";
 import type { StartGroupPick } from "./startGroupModel";
 import { ThreadPanel } from "./ThreadPanel";
@@ -113,6 +114,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   // to it. Only offered when the room HAS a voice agent (voice_relay_source)
   // and the caller is owner/admin, the exact gate the PATCH enforces.
   const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
+  const [recordingSettingsOpen, setRecordingSettingsOpen] = useState(false);
   // "Start a group with <peer>…" — the EXPLICIT DM→group conversion. 1:1 DMs
   // deliberately have no Invite (inviting silently converted the private
   // room); this replacement creates a NEW group room instead. `startGroupSeed`
@@ -356,6 +358,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   const voiceAgentSource = voiceRelaySource(roomDetail?.metadata_);
   const showVoiceSettings =
     voiceAgentSource !== null && canEditVoiceSettings(members);
+  const showRecordingSettings = canEditVoiceSettings(members);
   // The person on the other side of a human 1:1 — members arrive from the
   // room-members query above (is_self is server-set, the only reliable marker).
   const dmPeer = members?.find(
@@ -935,6 +938,19 @@ export function RoomView({ roomId }: RoomViewProps) {
                     a person looks for room configuration. Gated to rooms
                     that HAVE a voice agent and to owner/admin — the server's
                     exact gate, so nobody sees a control that could only 403. */}
+                {showRecordingSettings && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    setRecordingSettingsOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+                >
+                  <Circle className="h-4 w-4 fill-rose-500 text-rose-400" />
+                  Recording…
+                </button>
+                )}
                 {showVoiceSettings && (
                 <button
                   role="menuitem"
@@ -1042,6 +1058,16 @@ export function RoomView({ roomId }: RoomViewProps) {
             roomId={roomId}
             roomName={displayName}
             onClose={() => setVoiceSettingsOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {recordingSettingsOpen && (
+          <RecordingSettingsModal
+            roomId={roomId}
+            roomName={displayName}
+            onClose={() => setRecordingSettingsOpen(false)}
           />
         )}
       </AnimatePresence>

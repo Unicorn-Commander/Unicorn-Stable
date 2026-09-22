@@ -113,6 +113,13 @@ export interface GuestSession {
    * has no business sitting in storage.
    */
   inviteKey: string;
+  /**
+   * OPTIONAL. The room's recording policy when redeem or /guest/me sent one.
+   * null means the server has not said — the join screen stays quiet.
+   */
+  recordingPolicy: "off" | "on_request" | "always" | null;
+  /** OPTIONAL. True when a recording is already on at join time. */
+  recordingActive: boolean | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,6 +143,22 @@ function readBool(
 ): boolean {
   const value = raw[key];
   return typeof value === "boolean" ? value : fallback;
+}
+
+function readOptionalBool(
+  raw: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = raw[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function readRecordingPolicy(
+  raw: Record<string, unknown>,
+): "off" | "on_request" | "always" | null {
+  const value = raw.recording_policy;
+  if (value === "off" || value === "on_request" || value === "always") return value;
+  return null;
 }
 
 /**
@@ -263,6 +286,8 @@ export function guestSessionFromRedeem(
     // Falls back to whatever a stored blob carried, so the storage round-trip
     // goes through this one validator without losing the link it came from.
     inviteKey: guestInviteKey(inviteToken) || (readString(raw, "invite_key") ?? ""),
+    recordingPolicy: readRecordingPolicy(raw),
+    recordingActive: readOptionalBool(raw, "recording_active") ?? null,
   };
 }
 
@@ -289,6 +314,9 @@ export function mergeGuestMe(session: GuestSession, raw: unknown): GuestSession 
     historyFromMs: readHistoryBoundaryMs(raw) ?? session.historyFromMs,
     capabilities:
       Object.keys(capabilities).length > 0 ? capabilities : session.capabilities,
+    recordingPolicy: readRecordingPolicy(raw) ?? session.recordingPolicy,
+    recordingActive:
+      readOptionalBool(raw, "recording_active") ?? session.recordingActive,
   };
 }
 
@@ -784,6 +812,8 @@ export function readStoredGuestSession(
       typeof parsed.historyFromMs === "number" ? parsed.historyFromMs : undefined,
     capabilities: parsed.capabilities,
     invite_key: parsed.inviteKey,
+    recording_policy: parsed.recordingPolicy,
+    recording_active: parsed.recordingActive,
   });
 }
 

@@ -28,7 +28,8 @@ import {
   type GuestRedeemOutcome,
   type GuestSession,
 } from "@/lib/guest";
-import { GuestApiError, redeemGuestInvite } from "@/services/guestApi";
+import { GuestApiError, leaveGuestSession, redeemGuestInvite } from "@/services/guestApi";
+import { guestRecordingConsent } from "@/lib/recording";
 
 interface GuestRedeemPageProps {
   /** The raw invite token from the URL path. */
@@ -47,6 +48,13 @@ export function GuestRedeemPage({
   const [passphrase, setPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<GuestRedeemOutcome | null>(null);
+  const [pending, setPending] = useState<GuestSession | null>(null);
+  const consent = pending
+    ? guestRecordingConsent({
+        policy: pending.recordingPolicy,
+        active: pending.recordingActive,
+      })
+    : null;
 
   useEffect(() => {
     document.title = "Join as a guest · Stable";
@@ -86,6 +94,14 @@ export function GuestRedeemPage({
         setOutcome("unavailable");
         return;
       }
+      const line = guestRecordingConsent({
+        policy: session.recordingPolicy,
+        active: session.recordingActive,
+      });
+      if (line) {
+        setPending(session);
+        return;
+      }
       onJoined(session);
     } catch (error) {
       const status = error instanceof GuestApiError ? error.status : 0;
@@ -101,6 +117,44 @@ export function GuestRedeemPage({
       : outcome
         ? redeemMessageFor(outcome)
         : null;
+
+  if (pending && consent) {
+    return (
+      <div className="flex min-h-dvh w-full items-center justify-center bg-slate-900 p-4">
+        <div className="glass flex w-full max-w-md flex-col gap-5 rounded-2xl p-8">
+          <div className="flex flex-col items-center gap-3 text-center">
+            <StableMark className="h-12 w-12 drop-shadow-[0_0_24px_rgba(139,92,246,0.45)]" />
+            <h1 className="font-display text-2xl font-bold tracking-tight text-slate-100">
+              This room records
+            </h1>
+          </div>
+          <p
+            data-testid="guest-recording-consent"
+            className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm leading-relaxed text-rose-100"
+          >
+            {consent}
+          </p>
+          <button
+            type="button"
+            className="gradient-bg focus-ring inline-flex w-full items-center justify-center rounded-lg px-6 py-3 text-sm font-semibold text-white"
+            onClick={() => onJoined(pending)}
+          >
+            Join the room
+          </button>
+          <button
+            type="button"
+            className="focus-ring text-sm text-slate-400 hover:text-slate-200"
+            onClick={() => {
+              void leaveGuestSession(pending.token).catch(() => {});
+              setPending(null);
+            }}
+          >
+            Don't join
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-dvh w-full items-center justify-center bg-slate-900 p-4">

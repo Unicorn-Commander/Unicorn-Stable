@@ -835,6 +835,17 @@ class StableWebSocket {
         raw.payload !== undefined
           ? (raw.payload as WsEventPayload)
           : ({ ...raw } as unknown as WsEventPayload);
+      // recording_state's contract fields live in the payload. If a producer
+      // also stamps room_id on the envelope, keep it — the pill is per room.
+      if (
+        parsed.type === "recording_state" &&
+        payload &&
+        typeof payload === "object" &&
+        typeof raw.room_id === "string" &&
+        !("room_id" in payload)
+      ) {
+        (payload as { room_id?: string }).room_id = raw.room_id;
+      }
       this.emit(parsed.type, payload);
     };
 

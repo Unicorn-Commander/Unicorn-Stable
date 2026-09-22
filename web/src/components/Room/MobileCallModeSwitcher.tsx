@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import type { ReactNode } from "react";
 import { Video, Columns2, MessageSquare } from "lucide-react";
 import {
   useCallUiStore,
@@ -10,6 +11,8 @@ interface MobileCallModeSwitcherProps {
   className?: string;
   /** Compact strip without the "In call" label (e.g. overlaid on video). */
   overlay?: boolean;
+  /** Phone top pills beside the mode switcher (the REC receipt). */
+  extra?: ReactNode;
 }
 
 const MODES: {
@@ -48,6 +51,7 @@ const MODES: {
 export function MobileCallModeSwitcher({
   className,
   overlay = false,
+  extra,
 }: MobileCallModeSwitcherProps) {
   const mode = useCallUiStore((s) => s.mobileCallMode);
   const setMobileCallMode = useCallUiStore((s) => s.setMobileCallMode);
@@ -77,10 +81,10 @@ export function MobileCallModeSwitcher({
   return (
     <div
       className={clsx(
-        "flex shrink-0 items-center justify-between gap-2",
+        "flex w-full max-w-full shrink-0 flex-wrap items-center gap-2",
         overlay
-          ? "px-2 py-1"
-          : "h-12 border-b border-line bg-slate-950/85 px-3",
+          ? "justify-center px-2 py-1"
+          : "min-h-12 justify-between border-b border-line bg-slate-950/85 px-3 py-1",
         className,
       )}
       role="group"
@@ -91,6 +95,8 @@ export function MobileCallModeSwitcher({
           In call
         </span>
       )}
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {extra}
       <div
         className={clsx(
           "flex items-center gap-0.5 rounded-xl border border-line p-0.5",
@@ -124,6 +130,7 @@ export function MobileCallModeSwitcher({
             </button>
           );
         })}
+      </div>
       </div>
     </div>
   );

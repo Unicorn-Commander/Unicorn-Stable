@@ -141,6 +141,13 @@ export class GuestSocket {
         raw.payload !== undefined && typeof raw.payload === "object"
           ? (raw.payload as Record<string, unknown>)
           : { ...raw };
+      if (
+        type === "recording_state" &&
+        typeof raw.room_id === "string" &&
+        typeof payload.room_id !== "string"
+      ) {
+        payload.room_id = raw.room_id;
+      }
       this.handlers.onEvent?.(type, payload);
     };
 

@@ -48,6 +48,7 @@ import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { stripMarkdown } from "@/utils/messagePreview";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
+import { MeetingsRecordings } from "@/components/Meetings/RecordingsList";
 import { agentPresence, humanPresence } from "@/lib/agentStatus";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
@@ -1999,6 +2000,7 @@ export function RoomList() {
             )}
           </>
         )}
+        <MeetingsRecordings roomId={activeRoomId} />
       </section>
     );
   }

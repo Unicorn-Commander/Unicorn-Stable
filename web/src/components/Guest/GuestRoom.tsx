@@ -51,6 +51,14 @@ import { GuestVideoStage } from "./GuestVideoStage";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { GuestBadge, GuestParticipantRow } from "./GuestChrome";
+import { RecPillLive } from "@/components/Call/RecPill";
+import { playCue } from "@/lib/sounds";
+import {
+  IDLE_RECORDING,
+  recordingSystemLine,
+  starterDisplayName,
+} from "@/lib/recording";
+import { useRecordingStore } from "@/stores/recordingStore";
 
 interface GuestRoomProps {
   session: GuestSession;
@@ -153,6 +161,8 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
   const [showRoster, setShowRoster] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const listRef = useRef<HTMLUListElement | null>(null);
+  const membersRef = useRef(members);
+  membersRef.current = members;
 
   const canChat = guestCan(session, "chat", true);
 
@@ -173,6 +183,14 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
       ? `${session.roomName} · Guest · Stable`
       : "Guest · Stable";
   }, [session.roomName]);
+
+  useEffect(() => {
+    if (!session.recordingActive) return;
+    useRecordingStore.getState().seedIfIdle(session.roomId, {
+      ...IDLE_RECORDING,
+      active: true,
+    });
+  }, [session.roomId, session.recordingActive]);
 
   /** Upsert by id — the POST response and the socket echo carry the same
    *  message, and the room's own history may re-deliver it on a reconnect. */
@@ -260,6 +278,33 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
           case "members_changed":
             void refreshMembers();
             break;
+          case "recording_state": {
+            const result = useRecordingStore
+              .getState()
+              .applyFrame(session.roomId, payload);
+            if (!result || result.transition === "none") break;
+            playCue(result.transition === "start" ? "rec-start" : "rec-stop");
+            const subject = result.transition === "stop" ? result.prev : result.next;
+            const line = recordingSystemLine(
+              result.transition,
+              subject,
+              starterDisplayName(subject, membersRef.current),
+            );
+            if (line) {
+              upsert({
+                id: `recording:${session.roomId}:${result.transition}:${subject.startedAt ?? "none"}`,
+                room_id: session.roomId,
+                sender_id: "system",
+                sender_type: "system",
+                sender_name: "Stable",
+                sender_avatar: null,
+                content: line,
+                content_type: "system",
+                created_at: new Date().toISOString(),
+              });
+            }
+            break;
+          }
           default:
             // Unknown event types are IGNORED, not logged as errors: the server
             // adds frames over time and an old guest tab must keep working.
@@ -347,6 +392,7 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
               {session.roomName || "Room"}
             </h1>
             <GuestBadge />
+            <RecPillLive roomId={session.roomId} members={members} />
           </div>
           <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
             <span
