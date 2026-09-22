@@ -497,7 +497,7 @@ export function RoomView({ roomId }: RoomViewProps) {
     roomPanels.threads.mode === "popped" || roomPanels.threads.mode === "floating";
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-testid="room-view">
       {/* Room header */}
       {/* Glass paint lives on an inner layer: backdrop-filter on the header
           itself would make it the containing block for fixed descendants,

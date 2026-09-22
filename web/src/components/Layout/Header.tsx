@@ -247,6 +247,7 @@ export function Header({
             aria-label="People"
             aria-haspopup="dialog"
             aria-expanded={peopleDrawerOpen}
+            data-testid="open-people"
             data-people-trigger
           >
             <UserRound className="h-4 w-4" />
@@ -417,6 +418,7 @@ export function Header({
               onClick={toggleSettings}
               className="focus-ring rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-2"
               aria-label="Settings"
+              data-testid="open-settings"
             >
               <Settings className="h-4 w-4" />
             </button>

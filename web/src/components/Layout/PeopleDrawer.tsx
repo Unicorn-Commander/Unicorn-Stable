@@ -753,6 +753,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
           style={{ width: dockResize.width }}
           role="complementary"
           aria-label="People sidebar"
+          data-testid="people-drawer"
         >
           <div
             {...dockResize.dragHandleProps}
@@ -779,6 +780,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
           minW={280}
           minH={320}
           header={headerBar}
+          data-testid="people-drawer"
         >
           {body}
         </FloatingWindow>
@@ -799,6 +801,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
           "items-end justify-center md:items-stretch md:justify-end",
         )}
         onClick={onClose}
+        data-testid="people-drawer"
       >
         <motion.section
           ref={panelRef}

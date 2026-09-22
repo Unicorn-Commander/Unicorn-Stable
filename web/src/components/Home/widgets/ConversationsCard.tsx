@@ -71,7 +71,7 @@ export function ConversationsCard({
 
   if (!roomsLoaded) {
     return (
-      <section aria-labelledby="home-conversations-heading" aria-busy="true">
+      <section aria-labelledby="home-conversations-heading" aria-busy="true" data-testid="conversations-card">
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <MessagesSquare className="h-4 w-4 text-stable-cyan" />
@@ -105,7 +105,7 @@ export function ConversationsCard({
   }
 
   return (
-    <section aria-labelledby="home-conversations-heading">
+    <section aria-labelledby="home-conversations-heading" data-testid="conversations-card">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-stable-cyan" />

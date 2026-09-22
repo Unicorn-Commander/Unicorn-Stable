@@ -93,6 +93,13 @@ export function ViewSwitcher() {
             badge > 0
               ? `${label}, ${badge > 99 ? "99+" : badge} need you`
               : label;
+          const testIds: Record<NavView, string> = {
+            home: "nav-home",
+            direct: "nav-direct",
+            channels: "nav-channels",
+            meetings: "nav-meetings",
+            agents: "nav-agents",
+          };
           return (
             <li key={id}>
               <button
@@ -107,6 +114,7 @@ export function ViewSwitcher() {
                 aria-label={badgeLabel}
                 aria-current={isActive ? "page" : undefined}
                 title={badgeLabel}
+                data-testid={testIds[id]}
               >
                 <span className="relative">
                   <Icon

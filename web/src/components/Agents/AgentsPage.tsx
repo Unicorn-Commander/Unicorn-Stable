@@ -49,7 +49,7 @@ export function AgentsPage() {
   );
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto" data-testid="agents-page">
       <div className="animate-fade-in mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
         {/* Hero */}
         <header className="card relative mb-6 overflow-hidden px-6 py-7 sm:px-8 sm:py-8">

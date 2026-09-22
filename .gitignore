@@ -66,3 +66,5 @@ deploy/per-org/instances/
 deploy/selfhost/livekit.yaml
 deploy/selfhost/instances.json
 deploy/selfhost/keycloak-import/
+web/test-results/
+web/playwright-report/

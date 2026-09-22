@@ -110,6 +110,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/70 p-4 pt-[12dvh] backdrop-blur-sm"
       onClick={onClose}
+      data-testid="global-search-modal"
     >
       <motion.div
         ref={panelRef}

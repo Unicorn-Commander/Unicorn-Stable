@@ -87,6 +87,7 @@ export function NewChatButton({
           className="focus-ring gradient-bg flex flex-1 items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-white transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={`Start a new chat with ${def.name}`}
           title={`New chat with ${def.name}`}
+          data-testid="new-room-button"
         >
           <SquarePen className="h-4 w-4" />
           {starting ? "Starting…" : "New chat"}

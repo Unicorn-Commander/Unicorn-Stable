@@ -249,7 +249,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
 
   if (stageFrame) {
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="call-room-layout">
         <SplitPane
           storageKey={`call-chat:${roomId}`}
           legacyStorageKey="call-chat"
@@ -308,7 +308,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
 
   if (callDock && chatPresent === "docked") {
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="call-room-layout">
         <SplitPane
           storageKey="call-dock"
           orientation={isDesktop ? "horizontal" : "vertical"}
@@ -337,7 +337,7 @@ export function CallRoomLayout({ roomId, onInviteAgent }: CallRoomLayoutProps) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="call-room-layout">
       {slimBar && (isDesktop || showVideo) && (
         <div className="shrink-0">{callSurface}</div>
       )}
