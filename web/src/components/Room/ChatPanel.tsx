@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useChat } from "@/hooks/useChat";
 import { Identity } from "@/components/ui/Identity";
-import { identityFor, resolveIdentity } from "@/lib/identity";
+import { identityFor, resolveIdentity, rosterParticipantType } from "@/lib/identity";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
 import { ws } from "@/services/websocket";
@@ -901,7 +901,10 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                               {seers.slice(0, 3).map((p) => (
                                 <Identity
                                   key={p.participant_id || p.user_id}
-                                  {...resolveIdentity(p)}
+                                  {...resolveIdentity({
+                                    ...p,
+                                    participant_type: rosterParticipantType(p),
+                                  })}
                                   presence={null}
                                   size={20}
                                   className="ring-1 ring-slate-900"
@@ -1025,6 +1028,7 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
                     participant_type: "agent",
                   })}
                   size={20}
+                  state="talking"
                 />
                 <p className="animate-shimmer text-xs font-medium">
                   {describeAgents(thinkingAgents)}
@@ -1167,7 +1171,7 @@ function EmptyChannel({ roomId, participants, currentUserId, onPrompt, onInviteA
               style={{ background: ident.ring }}
             />
             <Identity
-              {...resolveIdentity(onlyAgent)}
+              {...resolveIdentity({ ...onlyAgent, participant_type: "agent" })}
               size={128}
               className="relative"
             />

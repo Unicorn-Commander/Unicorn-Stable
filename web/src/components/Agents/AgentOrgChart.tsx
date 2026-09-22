@@ -137,9 +137,11 @@ function OrgGraphNode(props: NodeProps) {
       />
       <span className="relative flex h-9 w-9 shrink-0">
         <Identity
-          {...resolveIdentity(agent)}
+          {...resolveIdentity({ ...agent, participant_type: "agent" })}
           presence={null}
           size={36}
+          shape="rounded"
+          emoji={agent.emoji}
           dimmed={agent.status === "offline"}
         />
         <StatusDot

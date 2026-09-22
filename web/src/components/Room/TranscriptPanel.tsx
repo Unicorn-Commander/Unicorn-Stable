@@ -353,6 +353,8 @@ export function TranscriptPanel() {
                             },
                       )}
                       size={28}
+                      shape="rounded"
+                      emoji={agent?.emoji}
                     />
                   )}
                 </div>

@@ -1084,13 +1084,14 @@ export function RoomList() {
             className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-slate-300 transition-colors hover:text-slate-100 md:py-1.5"
             title={`Open your latest conversation with ${name}`}
           >
-            <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
+            <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
               {isAgent ? (
                 <Identity
                   {...resolveIdentity(
                     rosterAgent
                       ? {
                           ...rosterAgent,
+                          participant_type: "agent",
                           avatar_url:
                             agentMember?.avatar_url ?? rosterAgent.avatar_url,
                           is_online: agentMember?.is_online,

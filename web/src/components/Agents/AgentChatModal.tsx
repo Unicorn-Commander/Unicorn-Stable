@@ -196,9 +196,11 @@ export function AgentChatModal({
           <div className="relative flex items-start gap-3">
             <span className="relative flex h-14 w-14 shrink-0 shadow-soft">
               <Identity
-                {...resolveIdentity(focusAgent)}
+                {...resolveIdentity({ ...focusAgent, participant_type: "agent" })}
                 presence={null}
                 size={56}
+                shape="rounded"
+                emoji={focusAgent.emoji}
               />
               <StatusDot
                 status={focusAgent.status}
