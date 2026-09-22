@@ -268,6 +268,18 @@ class RecordingResponse(BaseModel):
     mo_session_id: str | None = None
     retention_until: datetime | None = None
     legal_hold: bool = False
+    # --- filled by the recording lane (L8s); additive, all optional ---
+    # LiveKit's own egress id (EG_…), accepted as an alias on the item routes.
+    egress_id: str | None = None
+    started_by_name: str | None = None
+    # Meeting-Ops session page for playback (the transcript export's link).
+    mo_session_url: str | None = None
+    # none | pending | delivering | delivered | failed | no_session | blocked
+    handoff_status: str | None = None
+    file_size_bytes: int | None = None
+    # What THIS caller may do (owner/admin or whoever started it).
+    can_delete: bool = False
+    can_download: bool = False
 
 
 class RoomListResponse(BaseModel):

@@ -215,6 +215,19 @@ class RedeemBody(BaseModel):
     passphrase: str | None = Field(None, max_length=128)
 
 
+class GuestRecordingInfo(BaseModel):
+    """The consent line (design §8): whether this room's call is being
+    recorded right now, and whether it may be. Same shape as the
+    ``recording_state`` WebSocket frame's payload, minus room_id."""
+
+    active: bool = False
+    policy: str = "off"
+    kind: str = "audio"
+    started_by: dict[str, Any] | None = None
+    started_at: str | None = None
+    recording_id: str | None = None
+
+
 class RedeemResponse(BaseModel):
     # The guest's API credential. Returned once; the browser holds it.
     session_token: str
@@ -232,6 +245,9 @@ class RedeemResponse(BaseModel):
     history_from: datetime
     allow_agent_trigger: bool
     allow_mention_email: bool
+    # ADDITIVE: recording consent. A guest walking into a room that records
+    # (or may) must be told before their camera is on.
+    recording: GuestRecordingInfo = Field(default_factory=GuestRecordingInfo)
 
 
 class GuestMe(BaseModel):
@@ -253,6 +269,19 @@ class GuestMe(BaseModel):
     history_from: datetime
     allow_agent_trigger: bool
     allow_mention_email: bool
+    recording: GuestRecordingInfo = Field(default_factory=GuestRecordingInfo)
+
+
+async def _guest_recording_info(db: AsyncSession, room: Room) -> dict[str, Any]:
+    """Fail-open: a consent line that cannot be computed reads as 'not
+    recording, policy off' rather than breaking the guest's join."""
+    try:
+        from app.services.call_recording import room_recording_state
+
+        return await room_recording_state(db, room)
+    except Exception:
+        logger.warning("guest_recording_info_failed", room_id=str(room.id), exc_info=True)
+        return {"active": False, "policy": "off", "kind": "audio"}
 
 
 class GuestSessionInfo(BaseModel):
@@ -926,6 +955,7 @@ async def redeem_guest_invite(
         "history_from": getattr(invite, "history_from", None) or invite.created_at,
         "allow_agent_trigger": bool(getattr(invite, "allow_agent_trigger", False)),
         "allow_mention_email": bool(getattr(invite, "allow_mention_email", False)),
+        "recording": await _guest_recording_info(db, room),
     }
 
 
@@ -963,6 +993,7 @@ async def get_guest_me(
         "history_from": user.get("guest_history_from") or _now(),
         "allow_agent_trigger": bool(user.get("guest_allow_agent_trigger")),
         "allow_mention_email": bool(user.get("guest_allow_mention_email")),
+        "recording": await _guest_recording_info(db, room),
     }
 
 

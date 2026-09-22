@@ -93,7 +93,9 @@ async def livekit_webhook(
     elif event_type == "track_published":
         await _handle_track_published(event)
     elif event_type in ("egress_started", "egress_updated", "egress_ended"):
-        await _handle_egress_event(event, db, settings, event_type)
+        await _handle_egress_event(
+            event, db, settings, event_type, redis=redis, livekit=livekit
+        )
     else:
         logger.debug("webhook_event_unhandled", event_type=event_type)
 
@@ -622,12 +624,22 @@ async def _handle_participant_joined(
     except Exception:
         logger.error("voice_relay_ensure_failed", room_id=str(room.id), exc_info=True)
 
-    # Automatic call-audio recording: any real join means a call is live in
-    # this room; the DB lease inside makes "start once" true across all four
-    # uvicorn workers. Fail-open BY CONTRACT — a broken/absent egress service
-    # must never break the call, presence, or this webhook's 200.
+    # Policy-driven call recording (design §8): an `always` room records from
+    # the first real join; an `on_request` room records when the joiner who
+    # STARTED the call is entitled and asked for it (record_my_calls). The DB
+    # lease inside makes "start once" true across all four uvicorn workers.
+    # Fail-open BY CONTRACT — a broken/absent egress service must never break
+    # the call, presence, or this webhook's 200.
     try:
-        await call_recording.ensure_room_recording(db, settings, livekit, room)
+        await call_recording.ensure_room_recording(
+            db,
+            settings,
+            livekit,
+            room,
+            redis=redis,
+            joiner=participant if participant_id else None,
+            joiner_identity=identity,
+        )
     except Exception:
         logger.error(
             "call_recording_ensure_failed",
@@ -774,7 +786,9 @@ async def _handle_participant_left(
     # instead of waiting out LiveKit's empty_timeout (which would append
     # minutes of silence). Fail-open: recording must never break the webhook.
     try:
-        await call_recording.stop_room_recording_if_idle(db, settings, livekit, room)
+        await call_recording.stop_room_recording_if_idle(
+            db, settings, livekit, room, redis=redis
+        )
     except Exception:
         logger.error(
             "call_recording_idle_stop_failed",
@@ -836,7 +850,7 @@ async def _handle_room_finished(
         # webhook), stop the egress when the room dies. Fail-open.
         try:
             await call_recording.stop_room_recording(
-                db, settings, livekit, room, reason="room_finished"
+                db, settings, livekit, room, reason="room_finished", redis=redis
             )
         except Exception:
             logger.error(
@@ -851,17 +865,26 @@ async def _handle_egress_event(
     db: AsyncSession,
     settings: Settings,
     event_type: str,
+    *,
+    redis: Redis | None = None,
+    livekit: LiveKitService | None = None,
 ) -> None:
     """Fold LiveKit egress lifecycle webhooks into recording bookkeeping.
 
     ``egress_ended`` is the single authority that a recording finished (or
-    died) and is what queues the Meeting-Ops audio hand-off. Fail-open: an
+    died): it queues the storage upload + Meeting-Ops hand-off, frees a
+    composite's capacity slot and revokes its recorder token. Fail-open: an
     exception here must not turn the webhook into a non-200 (LiveKit would
     retry forever against a persistent bug).
     """
     try:
         await call_recording.handle_egress_event(
-            db, settings, event_type, getattr(event, "egress_info", None)
+            db,
+            settings,
+            event_type,
+            getattr(event, "egress_info", None),
+            redis=redis,
+            livekit=livekit,
         )
     except Exception:
         logger.error(
