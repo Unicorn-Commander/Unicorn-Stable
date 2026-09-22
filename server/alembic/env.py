@@ -64,9 +64,14 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection: object) -> None:
     """Run migrations using the given connection."""
+    # One transaction PER migration (not one for the whole run): PostgreSQL
+    # refuses to USE an enum label in the transaction that added it, and 022
+    # must use the 'agent_hub' label that 021 adds. Measured in CI 2026-09-22:
+    # UnsafeNewEnumValueUsageError with a single run-wide transaction.
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
+        transaction_per_migration=True,
     )
     with context.begin_transaction():
         context.run_migrations()
