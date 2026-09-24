@@ -10,6 +10,7 @@ import {
   Keyboard,
   Loader2,
   MessageSquare,
+  MessagesSquare,
   Plus,
   Search,
   Server,
@@ -24,7 +25,13 @@ import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
-import { isNavV1Enabled, type NavView, useNavStore } from "@/stores/navStore";
+import {
+  isDirectoryPath,
+  isNavV1Enabled,
+  isNavV2Enabled,
+  type NavView,
+  useNavStore,
+} from "@/stores/navStore";
 import { displayName, instanceHost } from "@/lib/instances";
 import { useModalA11y } from "@/hooks/useModalA11y";
 
@@ -149,8 +156,45 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       { kind: "action", id: "settings", label: "Settings", sub: "Preferences & appearance", icon: Settings, run: () => g().toggleSettings() },
       { kind: "action", id: "shortcuts", label: "Keyboard shortcuts", sub: "Cheatsheet", icon: Keyboard, run: () => g().toggleCheatsheet() },
     ];
-    // Jump to primary destinations when the view-based shell is on.
-    if (isNavV1Enabled()) {
+    // Search reaches the same places as the rail. Filters are not in here.
+    if (isNavV2Enabled()) {
+      const nav = useNavStore.getState();
+      actionItems.unshift(
+        {
+          kind: "action",
+          id: "view-home",
+          label: "Go to Home",
+          sub: "Dashboard",
+          icon: Home,
+          run: () => {
+            nav.setV2Destination("home");
+            navigate("/");
+          },
+        },
+        {
+          kind: "action",
+          id: "view-conversations",
+          label: "Go to Conversations",
+          sub: "Everyone and every channel, newest first",
+          icon: MessagesSquare,
+          run: () => {
+            nav.setV2Destination("conversations");
+            if (isDirectoryPath(window.location.pathname)) navigate("/");
+          },
+        },
+        {
+          kind: "action",
+          id: "view-directory",
+          label: "Open directory",
+          sub: "Roster and org chart",
+          icon: Users,
+          run: () => {
+            nav.setV2Destination("directory");
+            navigate("/agents");
+          },
+        },
+      );
+    } else if (isNavV1Enabled()) {
       const goView = (view: NavView) => {
         useNavStore.getState().setActiveView(view);
         if (view === "home") navigate("/");

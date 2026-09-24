@@ -45,6 +45,7 @@ import {
 } from "@/utils/unreadModel";
 import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { stripMarkdown } from "@/utils/messagePreview";
+import { displayName } from "@/lib/instances";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { MeetingsRecordings } from "@/components/Meetings/RecordingsList";
@@ -55,8 +56,11 @@ import { useFederationStore } from "@/stores/federationStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
   isNavV1Enabled,
+  isNavV2Enabled,
+  shellDestinationForPath,
   useNavStore,
   viewForRoom,
+  type ConversationFilter,
 } from "@/stores/navStore";
 import {
   useChannelCategories,
@@ -66,15 +70,19 @@ import {
 import { useVoice } from "@/contexts/VoiceProvider";
 import { useLiveCalls } from "@/hooks/useLiveCalls";
 import {
+  buildConversationRows,
   buildSidebarModel,
+  groupFaceRoom,
   isPrivateChannel,
   roomsForView,
+  roomsOnConversationRow,
   SECTION_KEYS,
   type PersonEntry,
   type SidebarGroup,
   type SidebarRow,
   type SidebarView,
 } from "./sidebarModel";
+import { ViewSwitcher } from "./ViewSwitcher";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
@@ -89,6 +97,32 @@ import type { PeopleDirectoryEntry } from "@/services/api";
 
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { HomeRail } from "@/components/Home/HomeRail";
+
+/** Active workspace, pinned above the one Conversations list. */
+function WorkspaceTitle() {
+  const activeId = useFederationStore((s) => s.activeInstanceId);
+  const instances = useFederationStore((s) => s.instances);
+  const accessible = useFederationStore((s) => s.accessibleInstances);
+  const metaByInstance = useFederationStore((s) => s.metaByInstance);
+  const pool = accessible.length > 0 ? accessible : instances;
+  const instance = pool.find((item) => item.id === activeId) ?? pool[0];
+  const name = instance
+    ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
+    : "Stable";
+  return (
+    <div className="shrink-0 px-3 pt-2" data-testid="conversation-list-header">
+      <p
+        data-testid="workspace-name"
+        className="truncate text-sm font-semibold text-slate-50"
+      >
+        {name}
+      </p>
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+        Conversations
+      </h2>
+    </div>
+  );
+}
 
 /**
  * Bump-version subscription to the draft store. localStorage is not reactive,
@@ -145,12 +179,23 @@ export function RoomList() {
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
+  const currentParticipantId = useAppStore((s) => s.currentParticipantId);
   const agents = useAppStore((s) => s.agents);
   const defaultAgentId = useAppStore((s) => s.defaultAgentId);
   const setDefaultAgentId = useAppStore((s) => s.setDefaultAgentId);
-  // View-based shell (Slice 2). Flag defaults on; classic list when off.
+  // Nav v2 (default on) is one Conversations list. Off restores the five-view
+  // shell, which itself falls back to the classic tree when nav v1 is off.
+  const navV2 = isNavV2Enabled();
   const navV1 = isNavV1Enabled();
   const activeView = useNavStore((s) => s.activeView);
+  const storedV2Destination = useNavStore((s) => s.v2Destination);
+  // Directory follows the URL. A stored "directory" on any other path is Home.
+  const v2Destination = shellDestinationForPath(
+    location.pathname,
+    storedV2Destination,
+  );
+  const conversationFilter = useNavStore((s) => s.conversationFilter);
+  const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rememberRoom = useNavStore((s) => s.rememberRoom);
   const setActiveView = useNavStore((s) => s.setActiveView);
   const scope = useFederationStore((s) => s.activeInstanceId);
@@ -163,8 +208,9 @@ export function RoomList() {
   const { byRoomId: liveCallByRoomId } = useLiveCalls();
   // Draft pencils: bump on every draft save/clear so rows stay truthful.
   useDraftVersion();
-  // Model view: classic mode always builds the full tree.
-  const modelView: SidebarView = navV1 ? activeView : "all";
+  // Model view: classic mode always builds the full tree. The one list builds
+  // its own rows (view "all") so a Meetings/Direct activeView cannot hide them.
+  const modelView: SidebarView = navV2 ? "all" : navV1 ? activeView : "all";
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
@@ -180,6 +226,22 @@ export function RoomList() {
   const rawUnreadFor = (room: Room) =>
     unreadCounts[room.id] ?? room.unread_count ?? 0;
   const unreadFor = (room: Room) => badgeCount(room.id, rawUnreadFor(room));
+  // Same rooms the unread-first sort counts (parent + threads, hub included).
+  // Expanded rows badge only the room the row itself is; nested rows badge
+  // themselves. A collapsed channel or agent hub otherwise showed no badge
+  // while the sort still treated the row as unread.
+  const rowBadgeCount = (row: SidebarRow): number => {
+    const all = roomsOnConversationRow(row);
+    if (row.kind === "person") {
+      if (!row.expanded) return all.reduce((n, item) => n + unreadFor(item), 0);
+      const hubListed = row.entry.threads.some(
+        (thread) => thread.id === row.entry.hub.id,
+      );
+      return hubListed ? 0 : unreadFor(row.entry.hub);
+    }
+    if (row.expanded) return unreadFor(row.room);
+    return all.reduce((n, item) => n + unreadFor(item), 0);
+  };
 
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
@@ -191,7 +253,10 @@ export function RoomList() {
     if (room && scope) {
       const view = viewForRoom(room);
       rememberRoom(scope, view, id);
-      if (navV1) setActiveView(view);
+      // Standing rooms stay channels in the one list. viewForRoom still
+      // records the v1 slot so the five-view fallback can restore Meetings.
+      if (navV2) setV2Destination("conversations");
+      else if (navV1) setActiveView(view);
     }
     navigate(`/c/${id}`);
     // On mobile the sidebar is an overlay drawer; close it after selecting a
@@ -222,13 +287,13 @@ export function RoomList() {
     queryKey: ["my-preferences", scope],
     queryFn: () => api.getMyPreferences(),
     staleTime: 60_000,
-    enabled: navV1 && activeView === "direct",
+    enabled: !navV2 && navV1 && activeView === "direct",
   });
   const { data: peopleDirectory = [] } = useQuery({
     queryKey: ["people-directory", scope, ""],
     queryFn: () => api.getPeopleDirectory(""),
     staleTime: 30_000,
-    enabled: navV1 && activeView === "direct",
+    enabled: !navV2 && navV1 && activeView === "direct",
   });
   const favoritePeople: PeopleDirectoryEntry[] = (() => {
     const ids = myPreferences?.favorite_people_ids ?? [];
@@ -266,9 +331,24 @@ export function RoomList() {
   const [archivedRooms, setArchivedRooms] = useState<Room[]>([]);
   const [showArchived, setShowArchived] = useState(false);
 
+  // The archived list is per server. Clear it on switch so A's rooms cannot
+  // be opened while B is the active instance, then refetch.
   useEffect(() => {
-    api.getArchivedRooms().then((rooms) => setArchivedRooms(rooms)).catch(() => {});
-  }, []);
+    let cancelled = false;
+    setArchivedRooms([]);
+    setShowArchived(false);
+    if (scope) {
+      api
+        .getArchivedRooms()
+        .then((next) => {
+          if (!cancelled) setArchivedRooms(next);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [scope]);
 
   async function handleArchiveRoom(room: Room) {
     try {
@@ -441,10 +521,11 @@ export function RoomList() {
   useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
   // Focused mode filter/sort (slice 3) before view filter so classic + nav-v1
-  // share the same attention rules. AppShell mirrors this for Alt+↑/↓.
+  // share the same attention rules. The one list hides that toggle, so a
+  // saved Focused mode must not narrow it. AppShell mirrors this for Alt+↑/↓.
   const preparedRooms = useMemo(
     () =>
-      prepareRoomsForSidebar(rooms, focusMode, (room) => ({
+      prepareRoomsForSidebar(rooms, navV2 ? "all" : focusMode, (room) => ({
         unread: unreadCounts[room.id] ?? room.unread_count ?? 0,
         hasMention: mentionUnreads[room.id] === true,
         notifyLevel: getNotifyLevel(room.id),
@@ -454,6 +535,7 @@ export function RoomList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
     [
       rooms,
+      navV2,
       focusMode,
       unreadCounts,
       mentionUnreads,
@@ -491,12 +573,63 @@ export function RoomList() {
     ],
   );
 
+  const roomIsUnread = (room: Room) => {
+    const raw = unreadCounts[room.id] ?? room.unread_count ?? 0;
+    return badgeCount(room.id, raw) > 0 || mentionUnreads[room.id] === true;
+  };
+  // One list. Raw rooms, not the Focused subset: All / Unread / People /
+  // Channels is the only narrowing, and it is not a destination.
+  const conversationRows = useMemo(
+    () =>
+      navV2 && v2Destination === "conversations"
+        ? buildConversationRows({
+            rooms,
+            searchQuery,
+            scope,
+            categories,
+            people: peopleByScope,
+            folders: folderDefs,
+            expandedPeople,
+            filter: conversationFilter,
+            isUnread: roomIsUnread,
+            activeRoomId,
+          })
+        : [],
+    // mutedVersion recomputes badges when a mute lands outside React.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- roomIsUnread closes over the maps above
+    [
+      navV2,
+      v2Destination,
+      rooms,
+      searchQuery,
+      scope,
+      categories,
+      peopleByScope,
+      folderDefs,
+      expandedPeople,
+      conversationFilter,
+      activeRoomId,
+      unreadCounts,
+      mentionUnreads,
+      mutedVersion,
+    ],
+  );
+
+  // The mark-read label and the click use this same list. Under v2 that is
+  // the filtered, searched rows on screen — not every room in the server.
+  const visibleUnreadTargets = roomsNeedingMarkRead(
+    navV2
+      ? conversationRows.flatMap((row) => roomsOnConversationRow(row))
+      : roomsForView(preparedRooms, modelView),
+    rawUnreadFor,
+  );
+
   // Standing conference catalog for the Meetings empty state / entry points.
   const { data: conferenceCatalog = [] } = useQuery({
     queryKey: ["conference-catalog", scope],
     queryFn: () => api.getConferenceCatalog(),
     staleTime: 5 * 60_000,
-    enabled: navV1 && activeView === "meetings",
+    enabled: !navV2 && navV1 && activeView === "meetings",
   });
   // Hide catalog entries the user already joined (matched by display label).
   const unjoinedConferenceCatalog = useMemo(() => {
@@ -629,17 +762,13 @@ export function RoomList() {
   }
 
   /**
-   * Mark every room in the current Focused/All + view slice as read.
-   * Uses sequential mark_read WS frames (no batch API yet) + local clear.
+   * Mark the rooms the label counted. Under v2 that is the filtered list
+   * (search included), not every room on the server. Focused mode does not
+   * apply there. Sequential mark_read frames — there is no batch API yet.
    */
   function markVisibleSectionRead() {
     if (markingAllRead) return;
-    // preparedRooms already applies Focused; roomsForView matches the on-screen
-    // destination so we never clear unreads for rooms another view is hiding.
-    const targets = roomsNeedingMarkRead(
-      roomsForView(preparedRooms, modelView),
-      rawUnreadFor,
-    );
+    const targets = visibleUnreadTargets;
     if (targets.length === 0) return;
     setMarkingAllRead(true);
     try {
@@ -666,6 +795,9 @@ export function RoomList() {
     currentCat: string | undefined,
     section: FolderSection,
   ) {
+    // The one list ignores folders. Filing a row there would hide it from
+    // the order the user is looking at.
+    if (navV2) return null;
     const names = section === "channels" ? channelFolders : peopleFolders;
     return (
       <>
@@ -845,14 +977,26 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
-    const unread = unreadFor(room);
+    const unread = rowBadgeCount({
+      kind: "channel",
+      id: room.id,
+      room,
+      threads,
+      expanded,
+      archivedCount,
+    });
     const cat = channelsFiled?.[room.id];
     const menuOpen = menuKey === room.id;
     const muted = isMuted(room.id);
     const priv = isPrivateChannel(room);
     const Icon = priv ? Lock : Hash;
     return (
-      <li key={room.id} className="relative">
+      <li
+        key={room.id}
+        className="relative"
+        data-shape="channel"
+        data-testid="conversation-row"
+      >
         <div
           className={clsx(
             "group relative flex items-center rounded-lg transition-colors",
@@ -875,6 +1019,7 @@ export function RoomList() {
             )}
             aria-current={isActive ? "page" : undefined}
           >
+            {navV2 && <span className="sr-only">Channel. </span>}
             <Icon
               className={clsx(
                 "h-4 w-4 shrink-0",
@@ -1086,7 +1231,12 @@ export function RoomList() {
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
     const hasActive = threads.some((r) => r.id === activeRoomId);
-    const unreadTotal = threads.reduce((n, r) => n + unreadFor(r), 0);
+    const unreadTotal = rowBadgeCount({
+      kind: "person",
+      id: entry.key,
+      entry,
+      expanded,
+    });
     // A live call in ANY thread with this person badges the collapsed row;
     // the expanded thread rows carry their own badge.
     const liveThread = threads.find((r) => liveCallByRoomId[r.id]);
@@ -1126,8 +1276,20 @@ export function RoomList() {
         ? Math.max(0, nested.length - 1)
         : nested.length;
     const threadHint = olderArchivedLabel(older, expanded ? 0 : entry.archivedCount);
+    const directFace = navV2
+      ? resolveIdentity(entry.hub, {
+          selfId: currentUserId,
+          agents,
+          members: participantsByRoom[entry.hub.id],
+        })
+      : null;
     return (
-      <li key={entry.key} className="relative">
+      <li
+        key={entry.key}
+        className="relative"
+        data-shape="direct"
+        data-testid="conversation-row"
+      >
         <div
           className={clsx(
             "group relative flex w-full items-center rounded-lg pr-1 transition-colors",
@@ -1156,8 +1318,16 @@ export function RoomList() {
             className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-slate-300 transition-colors hover:text-slate-100 md:py-1.5"
             title={`Open your latest conversation with ${name}`}
           >
-            <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
-              {isAgent ? (
+            {navV2 && <span className="sr-only">Direct. </span>}
+            <span
+              className={clsx(
+                "relative flex shrink-0 items-center justify-center",
+                navV2 ? "h-7 w-7" : "h-6 w-6",
+              )}
+            >
+              {navV2 && directFace ? (
+                <Identity {...directFace} presence={null} size={28} />
+              ) : isAgent ? (
                 <Identity
                   {...resolveIdentity(
                     rosterAgent
@@ -1228,7 +1398,7 @@ export function RoomList() {
                       {formatTimestamp(latest.last_message.created_at)}
                     </span>
                   )}
-                  {!expanded && unreadTotal > 0 && (
+                  {unreadTotal > 0 && (
                     <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
                       {unreadTotal > 99 ? "99+" : unreadTotal}
                     </span>
@@ -1322,14 +1492,46 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
-    const unread = unreadFor(room);
+    const unread = rowBadgeCount({
+      kind: "group",
+      id: room.id,
+      room,
+      threads,
+      expanded,
+      archivedCount,
+    });
     const menuOpen = menuKey === room.id;
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
     const badge = humanPresence(others.some((p) => p.is_online));
+    const loadedMembers = participantsByRoom[room.id];
+    const groupIdentity = navV2
+      ? resolveIdentity(
+          groupFaceRoom(room, [currentUserId, currentParticipantId]),
+          {
+            selfId: currentUserId,
+            members:
+              loadedMembers && loadedMembers.length > 0
+                ? loadedMembers
+                : room.members,
+            agents,
+          },
+        )
+      : null;
+    // One resolved face is the last-sender fallback (members come back empty
+    // on the list). A group mark is the stack glyph until two faces exist.
+    const groupPile =
+      groupIdentity?.faces && groupIdentity.faces.length >= 2
+        ? groupIdentity
+        : null;
     return (
-      <li key={room.id} className="relative">
+      <li
+        key={room.id}
+        className="relative"
+        data-shape="group"
+        data-testid="conversation-row"
+      >
         <div
           className={clsx(
             "group relative flex items-center rounded-lg transition-colors",
@@ -1352,11 +1554,21 @@ export function RoomList() {
             )}
             aria-current={isActive ? "page" : undefined}
           >
-            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-              <Users
-                className="h-4 w-4 text-amber-300/70"
-                aria-label="Private group — invite only"
-              />
+            {navV2 && <span className="sr-only">Group. </span>}
+            <span
+              className={clsx(
+                "relative flex shrink-0 items-center justify-center",
+                navV2 ? "h-7 w-7" : "h-4 w-4",
+              )}
+            >
+              {groupPile ? (
+                <Identity {...groupPile} presence={null} size={28} />
+              ) : (
+                <Users
+                  className="h-4 w-4 text-amber-300/70"
+                  aria-label="Private group — invite only"
+                />
+              )}
               {badge && (
                 <span
                   className={clsx(
@@ -1891,63 +2103,61 @@ export function RoomList() {
         {collapsed && (
           <ul role="list" className="ml-1.5 border-l border-line pl-1">
             {archivedRooms.map((room) => (
-              <li key={room.id}>
-                <button
-                  onClick={() => {
-                    openRoom(room.id);
-                    setShowArchived(false);
-                  }}
-                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-[13px]">
-                        {room.last_message ? (
-                          <>
-                            <span className="font-medium">
-                              {room.last_message.sender_name}:
-                            </span>{" "}
-                            {formatLastMessage(room.last_message.content)}
-                          </>
-                        ) : (
-                          <span className="italic text-slate-500">
-                            New conversation
-                          </span>
-                        )}
-                      </span>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        {room.last_message && (
-                          <span className="text-[10px] tabular-nums text-slate-500">
-                            {formatTimestamp(room.last_message.created_at)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+              <li key={room.id} className="relative">
+                <div className="flex items-center gap-1">
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuKey(room.id);
+                    type="button"
+                    onClick={() => {
+                      openRoom(room.id);
+                      setShowArchived(false);
                     }}
-                    className="shrink-0 rounded-md p-1 text-slate-500 hover:text-slate-200"
+                    className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                      {room.last_message ? (
+                        <>
+                          <span className="font-medium">
+                            {room.last_message.sender_name}:
+                          </span>{" "}
+                          {formatLastMessage(room.last_message.content)}
+                        </>
+                      ) : (
+                        <span className="italic text-slate-500">
+                          New conversation
+                        </span>
+                      )}
+                    </span>
+                    {room.last_message && (
+                      <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
+                        {formatTimestamp(room.last_message.created_at)}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMenuKey(menuKey === room.id ? null : room.id)
+                    }
+                    className="focus-ring shrink-0 rounded-md p-1 text-slate-500 hover:text-slate-200"
+                    aria-label={`Options for ${room.name}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuKey === room.id}
                   >
                     <MoreVertical className="h-3.5 w-3.5" />
                   </button>
-                  {menuKey === room.id &&
-                    renderMenuShell(
-                      <>
-                        <div className="my-0.5 border-t border-line" />
-                        <button
-                          role="menuitem"
-                          onClick={() => handleUnarchiveRoom(room)}
-                          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-                        >
-                          <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                          Unarchive chat
-                        </button>
-                      </>,
-                    )}
-                </button>
+                </div>
+                {menuKey === room.id &&
+                  renderMenuShell(
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => handleUnarchiveRoom(room)}
+                      className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                    >
+                      <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                      Unarchive chat
+                    </button>,
+                  )}
               </li>
             ))}
           </ul>
@@ -2114,6 +2324,97 @@ export function RoomList() {
     return <HomeRail onOpenRoom={openRoom} />;
   }
 
+  const EMPTY_COPY: Record<ConversationFilter, { title: string; hint: string }> = {
+    all: {
+      title: "No conversations yet",
+      hint: "Message a person, talk to an agent, or open a channel.",
+    },
+    unread: {
+      title: "Nothing unread",
+      hint: "Directs with new messages and rooms where you were mentioned show up here.",
+    },
+    people: {
+      title: "No people yet",
+      hint: "Directs and groups live here. Channels stay under the Channels filter.",
+    },
+    channels: {
+      title: "No channels yet",
+      hint: "Named places, including standing rooms you call into, show up here.",
+    },
+  };
+
+  /** One recency list. Shape is the mark on the row, not a tab. */
+  function renderConversationBody() {
+    const q = searchQuery.trim();
+    const copy = q
+      ? {
+          title: `No conversations match “${q}”`,
+          hint: "Try another name, or clear the search.",
+        }
+      : EMPTY_COPY[conversationFilter];
+    const activeRoom = activeRoomId
+      ? rooms.find((room) => room.id === activeRoomId)
+      : undefined;
+    return (
+      <section data-testid="conversations-card" aria-label="Conversations">
+        {conversationFilter === "channels" && (
+          <div className="flex items-center justify-between px-2.5 pb-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Channels
+            </h3>
+            <button
+              type="button"
+              onClick={() => setBrowseOpen(true)}
+              className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+              aria-label="Browse channels"
+              title="Browse channels you can join"
+              data-testid="browse-channels"
+            >
+              Browse
+            </button>
+          </div>
+        )}
+        {roomsLoaded && conversationRows.length === 0 && (
+          <div className="mx-2 mb-2 rounded-lg border border-dashed border-line-strong px-3 py-3 text-xs text-slate-500">
+            <p className="font-medium text-slate-400">{copy.title}</p>
+            <p className="mt-1 leading-relaxed">{copy.hint}</p>
+            {conversationFilter === "channels" && (
+              <button
+                type="button"
+                onClick={() => setBrowseOpen(true)}
+                className="focus-ring mt-2 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stable-cyan transition-colors hover:bg-stable-cyan/10"
+                aria-label="Browse channels"
+              >
+                Browse channels
+              </button>
+            )}
+          </div>
+        )}
+        <ul role="list">{conversationRows.map(renderRow)}</ul>
+        {renderArchivedSection()}
+        <MeetingsRecordings
+          roomId={activeRoomId}
+          collapsible
+          relevantOnly
+          standing={activeRoom?.is_conference === true}
+        />
+      </section>
+    );
+  }
+
+  /** Directory is the Agents page in the main pane, not a second conversation list. */
+  function renderDirectoryBody() {
+    return (
+      <div className="px-3 py-3" data-testid="directory-sidebar-note">
+        <p className="text-sm font-semibold text-slate-100">Directory</p>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">
+          Roster and org chart are open in the main pane. Agent hubs stay in
+          Conversations, with everyone else.
+        </p>
+      </div>
+    );
+  }
+
   /** First-load placeholder: the rooms payload hasn't landed yet, so the
    *  sidebar must not flash "No conversations yet" / "No channels yet"
    *  empty states or a stub list. Shimmer rows match the ChatPanel skeleton
@@ -2145,9 +2446,14 @@ export function RoomList() {
     );
   }
 
-  /** Classic (flag off) or view-filtered (flag on) body. */
+  /** Classic tree, five-view shell, or the one Conversations list. */
   function renderNavBody() {
     if (!roomsLoaded) return renderNavSkeleton();
+    if (navV2) {
+      if (v2Destination === "home") return renderHomeBody();
+      if (v2Destination === "directory") return renderDirectoryBody();
+      return renderConversationBody();
+    }
     if (!navV1) {
       return (
         <>
@@ -2215,10 +2521,13 @@ export function RoomList() {
     }
   }
 
-  // Search + New chat: hide on Home (minimal rail). Show on other views and classic.
-  const showToolbar = !navV1 || activeView !== "home";
-  const searchPlaceholder =
-    activeView === "agents"
+  // Search + New chat: hide on Home. The one list shows them; Directory does not.
+  const showToolbar = navV2
+    ? v2Destination === "conversations"
+    : !navV1 || activeView !== "home";
+  const searchPlaceholder = navV2
+    ? "Search conversations…"
+    : activeView === "agents"
       ? "Search agents…"
       : activeView === "channels"
         ? "Search channels…"
@@ -2228,11 +2537,8 @@ export function RoomList() {
             ? "Search direct…"
             : "Search rooms…";
 
-  const visibleUnreadTargets = roomsNeedingMarkRead(
-    roomsForView(preparedRooms, modelView),
-    rawUnreadFor,
-  );
   const focusedEmpty =
+    !navV2 &&
     focusMode === "focused" &&
     showToolbar &&
     peopleCount === 0 &&
@@ -2265,8 +2571,9 @@ export function RoomList() {
               aria-label={searchPlaceholder}
             />
           </div>
-          {/* Slice 3: Focused (mentions + DM unreads) vs All + mark section read. */}
+          {/* Five-view shell keeps Focused / All. The one list uses the filters under the workspace name. */}
           <div className="flex items-center gap-1.5">
+            {!navV2 && (
             <div
               role="group"
               aria-label="Unread filter"
@@ -2301,6 +2608,7 @@ export function RoomList() {
                 All
               </button>
             </div>
+            )}
             <button
               type="button"
               onClick={markVisibleSectionRead}
@@ -2320,6 +2628,13 @@ export function RoomList() {
             </button>
           </div>
         </div>
+      )}
+
+      {navV2 && v2Destination === "conversations" && (
+        <>
+          <WorkspaceTitle />
+          <ViewSwitcher />
+        </>
       )}
 
       <nav

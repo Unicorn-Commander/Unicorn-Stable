@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Phone,
   Plus,
+  Search,
   X,
 } from "lucide-react";
 import clsx from "clsx";
@@ -25,7 +26,9 @@ import { beginThread, openAgentHub } from "@/lib/beginThread";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
 import { useAppStore } from "@/stores/appStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
+import { isNavV2Enabled } from "@/stores/navStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
+import { ChannelBrowser } from "./ChannelBrowser";
 
 /**
  * ⌘N / + New / the phone FAB outside a room.
@@ -37,14 +40,16 @@ export function NewSheet() {
   const close = useConversationUi((s) => s.closeNewSheet);
   const panelRef = useModalA11y(open, close);
   const [step, setStep] = useState<NewSheetItemId | "menu">("menu");
+  const [browse, setBrowse] = useState(false);
 
   useEffect(() => {
     if (open) setStep(initial ?? "menu");
   }, [open, initial]);
 
-  if (!open) return null;
-
   return (
+    <>
+      {browse && <ChannelBrowser onClose={() => setBrowse(false)} />}
+      {open && (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/70 p-0 backdrop-blur-sm sm:items-start sm:p-4 sm:pt-[10dvh]"
       onClick={close}
@@ -72,7 +77,19 @@ export function NewSheet() {
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {step === "menu" && <Menu onPick={setStep} />}
+          {step === "menu" && (
+            <Menu
+              onPick={setStep}
+              onBrowse={
+                isNavV2Enabled()
+                  ? () => {
+                      close();
+                      setBrowse(true);
+                    }
+                  : undefined
+              }
+            />
+          )}
           {step === "person" && <PersonStep onDone={close} />}
           {step === "agent" && <AgentStep onDone={close} />}
           {step === "thread" && <ThreadStep onDone={close} />}
@@ -93,10 +110,18 @@ export function NewSheet() {
         )}
       </div>
     </div>
+      )}
+    </>
   );
 }
 
-function Menu({ onPick }: { onPick: (id: NewSheetItemId) => void }) {
+function Menu({
+  onPick,
+  onBrowse,
+}: {
+  onPick: (id: NewSheetItemId) => void;
+  onBrowse?: () => void;
+}) {
   return (
     <ul className="flex flex-col gap-1">
       {NEW_SHEET_ITEMS.map((item) => (
@@ -121,6 +146,26 @@ function Menu({ onPick }: { onPick: (id: NewSheetItemId) => void }) {
           </button>
         </li>
       ))}
+      {onBrowse && (
+        <li>
+          <button
+            type="button"
+            onClick={onBrowse}
+            data-testid="new-sheet-browse-channels"
+            className="focus-ring flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-white/[0.05]"
+          >
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-300">
+              <Search className="h-4 w-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-slate-100">Browse channels</span>
+              <span className="block truncate text-xs text-slate-500">
+                Join a channel that already exists
+              </span>
+            </span>
+          </button>
+        </li>
+      )}
     </ul>
   );
 }

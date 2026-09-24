@@ -20,12 +20,17 @@ import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
+  isDirectoryPath,
   isNavV1Enabled,
+  isNavV2Enabled,
+  shellDestinationForPath,
   useNavStore,
   viewForRoom,
 } from "@/stores/navStore";
 import {
+  buildConversationRows,
   buildSidebarModel,
+  flattenConversationRows,
   flattenSidebarOrder,
   type SidebarView,
 } from "@/components/Sidebar/sidebarModel";
@@ -37,7 +42,7 @@ import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
 import { OPEN_ACTIVITY_EVENT } from "@/lib/shellEvents";
 import { getNotifyLevel } from "@/utils/mute";
-import { prepareRoomsForSidebar } from "@/utils/unreadModel";
+import { badgeCount, prepareRoomsForSidebar } from "@/utils/unreadModel";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
 import { useRecordingReceipts } from "@/hooks/useRecordingReceipts";
 import { useCallDeepLink } from "@/hooks/useCallDeepLink";
@@ -129,6 +134,33 @@ function sidebarRoomOrder(): string[][] {
     useChannelCategories.getState();
   const { searchQuery, expandedPeople, focusMode } = useSidebarUi.getState();
   const scope = useFederationStore.getState().activeInstanceId;
+  const isUnread = (room: { id: string; unread_count?: number }) => {
+    const raw = unreadCounts[room.id] ?? room.unread_count ?? 0;
+    return badgeCount(room.id, raw) > 0 || mentionUnreads[room.id] === true;
+  };
+  // One list: same filter and order RoomList renders. Focused mode is a
+  // five-view control and must not hide rows the Unread filter would show.
+  if (isNavV2Enabled()) {
+    const destination = shellDestinationForPath(
+      window.location.pathname,
+      useNavStore.getState().v2Destination,
+    );
+    if (destination !== "conversations") return [];
+    return flattenConversationRows(
+      buildConversationRows({
+        rooms,
+        searchQuery,
+        scope,
+        categories,
+        people,
+        folders,
+        expandedPeople,
+        filter: useNavStore.getState().conversationFilter,
+        isUnread,
+        activeRoomId,
+      }),
+    );
+  }
   // Same filter/sort as RoomList so Alt+↑/↓ walks what is on screen.
   const prepared = prepareRoomsForSidebar(rooms, focusMode, (room) => ({
     unread: unreadCounts[room.id] ?? room.unread_count ?? 0,
@@ -560,17 +592,42 @@ export function AppShell() {
   // Do NOT force Home when routeRoomId is null: the user may be on Chats with
   // no room open (URL still `/`) after clicking the view switcher.
   useEffect(() => {
+    const nav = useNavStore.getState();
+    // One list: a room is a conversation, including standing rooms. Do not
+    // steer the rail from metadata.conference. Remember the v1 view anyway so
+    // turning the flag off still restores Meetings / Direct / Channels.
+    if (isNavV2Enabled()) {
+      if (isDirectoryPath(location.pathname)) {
+        if (nav.v2Destination !== "directory") nav.setV2Destination("directory");
+        return;
+      }
+      // Back from /agents used to leave "directory" selected on Home, which
+      // replaced the list with the directory note. Directory is the URL.
+      if (!routeRoomId) {
+        if (nav.v2Destination === "directory") nav.setV2Destination("home");
+        return;
+      }
+      const room = storeRooms.find((r) => r.id === routeRoomId);
+      if (!room) {
+        if (nav.v2Destination === "directory") nav.setV2Destination("home");
+        return;
+      }
+      nav.setV2Destination("conversations");
+      if (activeInstanceId) {
+        nav.rememberRoom(activeInstanceId, viewForRoom(room), routeRoomId);
+      }
+      return;
+    }
     if (!isNavV1Enabled()) return;
     if (!routeRoomId) return;
     const room = storeRooms.find((r) => r.id === routeRoomId);
     if (!room) return;
     const view = viewForRoom(room);
-    const nav = useNavStore.getState();
     nav.setActiveView(view);
     if (activeInstanceId) {
       nav.rememberRoom(activeInstanceId, view, routeRoomId);
     }
-  }, [routeRoomId, storeRooms, activeInstanceId]);
+  }, [routeRoomId, storeRooms, activeInstanceId, location.pathname]);
 
   useEffect(() => {
     if (agents) {
@@ -672,7 +729,9 @@ export function AppShell() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (isNavV1Enabled()) {
+                      if (isNavV2Enabled()) {
+                        useNavStore.getState().setV2Destination("home");
+                      } else if (isNavV1Enabled()) {
                         useNavStore.getState().setActiveView("home");
                       }
                       navigate("/");

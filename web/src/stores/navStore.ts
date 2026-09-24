@@ -2,13 +2,32 @@ import { create } from "zustand";
 import type { Room } from "@/services/api";
 
 /**
- * View-based sidebar destinations.
+ * View-based sidebar destinations (nav v1, the five-view shell).
  *
  * Direct is people and agent hubs (threads live under the row). Channels,
  * Meetings, and Agents stay their own destinations. People-as-a-directory
  * still lives in the top-bar drawer.
+ *
+ * Nav v2 replaces this shell with Home · Conversations · Directory. The
+ * five views stay so `stable_nav_v2=0` restores them. They are not filters.
  */
 export type NavView = "home" | "direct" | "channels" | "meetings" | "agents";
+
+/** Rail destinations when the one-list shell is on. Not a filter. */
+export type ShellDestination = "home" | "conversations" | "directory";
+
+/**
+ * Narrows the one Conversations list. A filter is not a destination: it
+ * never gets a route, a rail button, or a last-room slot.
+ */
+export type ConversationFilter = "all" | "unread" | "people" | "channels";
+
+export const CONVERSATION_FILTERS: readonly ConversationFilter[] = [
+  "all",
+  "unread",
+  "people",
+  "channels",
+] as const;
 
 export const NAV_VIEWS: readonly NavView[] = [
   "home",
@@ -44,10 +63,76 @@ export function isNavV1Enabled(): boolean {
   return true;
 }
 
+/** localStorage key for the one-list shell. `"0"` / `"false"` restores nav v1. */
+export const NAV_V2_FLAG_KEY = "stable_nav_v2";
+
 /**
- * Which destination a room belongs to. Used for deep-link view selection and
- * last-room memory. Hubs and DMs land on Direct (the Agents destination is
- * the same hubs, filtered). Conference rooms map to meetings.
+ * Whether the one Conversations list is on.
+ *
+ * An explicit nav-v1 opt-out wins first. `stable_nav_v1` `"0"` / `"false"`,
+ * or `VITE_NAV_V1` `"0"` / `"false"`, restores the classic tree and keeps
+ * this shell off even when `stable_nav_v2` is `"1"`. Otherwise v2's default
+ * would swallow that choice.
+ *
+ * Then:
+ *   1. localStorage `stable_nav_v2` — "0"/"false" off, "1"/"true" on
+ *   2. `import.meta.env.VITE_NAV_V2` — "0"/"false" off
+ *   3. default **on**
+ *
+ * Off with nav v1 still on is the five-view shell (Home / Direct / Channels /
+ * Meetings / Agents). Off because nav v1 is off is the classic tree.
+ */
+export function isNavV2Enabled(): boolean {
+  if (!isNavV1Enabled()) return false;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem(NAV_V2_FLAG_KEY);
+      if (raw === "0" || raw === "false") return false;
+      if (raw === "1" || raw === "true") return true;
+    } catch {
+      // private mode / blocked storage — fall through to env
+    }
+  }
+  const env = import.meta.env.VITE_NAV_V2;
+  if (env === "0" || env === "false") return false;
+  return true;
+}
+
+/** `/agents` and anything under it. Not a stored rail choice. */
+export function isDirectoryPath(pathname: string): boolean {
+  return pathname === "/agents" || pathname.startsWith("/agents/");
+}
+
+/**
+ * Rail selection for a URL.
+ *
+ * Directory is the agents route. A room URL is Conversations. Anywhere else,
+ * a stored "directory" is stale (back from /agents used to leave it selected
+ * on Home) and reads as Home. Conversations can still sit on `/` with no room.
+ */
+export function shellDestinationForPath(
+  pathname: string,
+  stored: ShellDestination,
+): ShellDestination {
+  if (isDirectoryPath(pathname)) return "directory";
+  if (pathname.startsWith("/c/")) return "conversations";
+  if (stored === "directory") return "home";
+  return stored;
+}
+
+function initialShellDestination(): ShellDestination {
+  if (typeof window === "undefined") return "home";
+  return shellDestinationForPath(window.location.pathname, "home");
+}
+
+/**
+ * Which v1 destination a room belongs to. Used for deep-link view selection
+ * and last-room memory when the five-view shell is showing.
+ *
+ * Hubs and DMs land on Direct (the Agents destination is the same hubs,
+ * filtered). Conference rooms still map to Meetings so the flag-off shell
+ * keeps today's routing. The one-list shell does not call this to pick a
+ * destination — a standing room is just a channel row.
  */
 export function viewForRoom(room: Room): NavView {
   if (room.is_conference) return "meetings";
@@ -62,6 +147,10 @@ export function viewForRoom(room: Room): NavView {
 
 interface NavState {
   activeView: NavView;
+  /** Rail selection for the one-list shell. Ignored while nav v2 is off. */
+  v2Destination: ShellDestination;
+  /** Which slice of the one list is showing. Not a destination. */
+  conversationFilter: ConversationFilter;
   /**
    * Last opened room per (server, view). Survives view switches so returning
    * to a destination can restore (when no room is open) or highlight.
@@ -69,6 +158,8 @@ interface NavState {
    */
   lastRoomByViewByServer: Record<string, Partial<Record<NavView, string>>>;
   setActiveView: (view: NavView) => void;
+  setV2Destination: (destination: ShellDestination) => void;
+  setConversationFilter: (filter: ConversationFilter) => void;
   rememberRoom: (serverId: string, view: NavView, roomId: string) => void;
   lastRoomFor: (serverId: string | null, view: NavView) => string | null;
   /** Land on Home after a server switch (URL already goes to `/`). */
@@ -77,9 +168,15 @@ interface NavState {
 
 export const useNavStore = create<NavState>((set, get) => ({
   activeView: "home",
+  v2Destination: initialShellDestination(),
+  conversationFilter: "all",
   lastRoomByViewByServer: {},
 
   setActiveView: (view) => set({ activeView: view }),
+
+  setV2Destination: (destination) => set({ v2Destination: destination }),
+
+  setConversationFilter: (filter) => set({ conversationFilter: filter }),
 
   rememberRoom: (serverId, view, roomId) => {
     if (!serverId || view === "home" || !roomId) return;
@@ -99,5 +196,6 @@ export const useNavStore = create<NavState>((set, get) => ({
     return get().lastRoomByViewByServer[serverId]?.[view] ?? null;
   },
 
-  resetForServer: () => set({ activeView: "home" }),
+  resetForServer: () =>
+    set({ activeView: "home", v2Destination: "home", conversationFilter: "all" }),
 }));
