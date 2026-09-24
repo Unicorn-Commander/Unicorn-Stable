@@ -10,6 +10,8 @@ interface ModelSwitcherProps {
   roomId: string;
   /** Optional extra classes for the trigger button. */
   className?: string;
+  /** List stays in normal flow so a parent menu can scroll it. */
+  embedded?: boolean;
 }
 
 /**
@@ -18,7 +20,11 @@ interface ModelSwitcherProps {
  * the appStore modelOverrides map and read at send-time by useChat (chat) and
  * VoiceProvider (the spoken agent), so picking a model here changes both.
  */
-export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
+export function ModelSwitcher({
+  roomId,
+  className,
+  embedded = false,
+}: ModelSwitcherProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -74,12 +80,21 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
   }
 
   return (
-    <div className="relative flex items-center gap-1" ref={wrapRef}>
+    <div
+      className={clsx(
+        "relative flex gap-1",
+        embedded ? "w-full flex-col items-stretch" : "items-center",
+      )}
+      ref={wrapRef}
+    >
       <button
         ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         className={clsx(
-          "flex max-w-[10rem] items-center gap-1.5 rounded-lg border px-2 py-2.5 text-xs transition-colors focus-ring md:max-w-[12rem] md:py-1.5",
+          "flex items-center gap-1.5 rounded-lg border px-2 text-xs transition-colors focus-ring",
+          embedded
+            ? "w-full max-w-full py-2"
+            : "max-w-[10rem] py-2.5 md:max-w-[12rem] md:py-1.5",
           override
             ? "border-stable-cyan/40 bg-stable-cyan/10 text-stable-cyan hover:border-stable-cyan/60 hover:bg-stable-cyan/15"
             : "border-line bg-white/[0.03] text-slate-300 hover:border-line-strong hover:bg-white/[0.05] hover:text-slate-100",
@@ -113,7 +128,12 @@ export function ModelSwitcher({ roomId, className }: ModelSwitcherProps) {
         <div
           ref={menuRef}
           role="menu"
-          className="glass-heavy absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-auto rounded-xl py-1 shadow-pop animate-fade-in"
+          className={clsx(
+            "glass-heavy z-50 overflow-auto rounded-xl py-1 shadow-pop",
+            embedded
+              ? "mt-1 max-h-none w-full"
+              : "absolute left-0 top-full mt-1 max-h-80 w-64 animate-fade-in",
+          )}
         >
           {/* Default row — clears the override. */}
           <button
