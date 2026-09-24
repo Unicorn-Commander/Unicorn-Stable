@@ -785,9 +785,20 @@ function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdenti
   }
 
   if (type === "group_dm") {
-    const others = members
-      .filter((member) => !memberIsSelf(member, opts?.selfId))
-      .slice(0, 3);
+    // The face leads with whoever SPOKE LAST, because the row's preview text
+    // is that person's words — a face that disagrees with the line beside it
+    // misattributes the message. (#fleet-watch, 2026-09-23: The Colonel's
+    // hourly report sat next to Persephone's face purely because she joined
+    // the room first.) The rest of the facepile keeps member order behind it.
+    const lastSenderId = str(asLoose(room.last_message).sender_id);
+    const ranked = members.filter((member) => !memberIsSelf(member, opts?.selfId));
+    if (lastSenderId) {
+      const spokeLast = ranked.findIndex(
+        (member) => str(asLoose(member).participant_id ?? asLoose(member).id) === lastSenderId,
+      );
+      if (spokeLast > 0) ranked.unshift(...ranked.splice(spokeLast, 1));
+    }
+    const others = ranked.slice(0, 3);
     const faces = others.map((member) => {
       const face = resolveSubject(member);
       if (!face.faces) return face;
@@ -810,6 +821,9 @@ function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdenti
       };
     }
     if (faces[0]) return faces[0];
+    // Members not loaded yet (the list endpoint sends them lazily): the last
+    // message still names its sender, so the row is right on the first paint.
+    if (room.last_message) return resolveSubject(messageAsPerson(asLoose(room.last_message)));
     return nameOnly(id, name, "name-only");
   }
 
@@ -908,6 +922,13 @@ function subjectKey(x: Loose): string {
   // only there would share a cache entry.
   if (x.counterpart && typeof x.counterpart === "object") {
     out += "\u001ec" + subjectKey(asLoose(x.counterpart)) + "\u001e";
+  }
+  // Same for the last speaker: a group row leads with whoever spoke last, so
+  // two states of one room that differ only in their newest message must not
+  // share an entry (caught by the fleet-watch tests).
+  if (x.last_message && typeof x.last_message === "object") {
+    const last = asLoose(x.last_message);
+    out += `\u001el${str(last.id)}:${str(last.sender_id)}\u001e`;
   }
   return out;
 }

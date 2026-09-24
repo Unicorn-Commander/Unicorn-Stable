@@ -611,3 +611,64 @@ describe("resolveIdentity messages and rooms", () => {
     expect(face.origin).toBe("subject");
   });
 });
+
+describe("a group row's face matches the words beside it", () => {
+  const colonel = {
+    participant_id: "p-colonel",
+    username: "agent-colonel",
+    display_name: "The Colonel",
+    participant_type: "agent",
+  };
+  const persephone = {
+    participant_id: "p-persephone",
+    username: "agent-persephone",
+    display_name: "Persephone",
+    participant_type: "agent",
+  };
+  const room = {
+    id: "fleet-watch",
+    name: "fleet-watch",
+    display_name: "Fleet Watch · The Colonel",
+    type: "group_dm",
+    // Join order, which is how the server returns them.
+    members: [persephone, colonel],
+  };
+
+  it("leads with whoever spoke last, not whoever joined first", () => {
+    const face = resolveIdentity({
+      ...room,
+      last_message: {
+        id: "m1",
+        sender_id: "p-colonel",
+        sender_name: "The Colonel",
+        sender_type: "agent",
+        content: "The Colonel — read-only report",
+      },
+    });
+    const lead = face.faces?.[0] ?? face;
+    expect(lead.name).toBe("The Colonel");
+    expect(lead.src).toContain("the-colonel");
+  });
+
+  it("falls back to member order when nothing has been said yet", () => {
+    const face = resolveIdentity(room);
+    const lead = face.faces?.[0] ?? face;
+    expect(lead.name).toBe("Persephone");
+  });
+
+  it("uses the last sender even before member rows arrive", () => {
+    const face = resolveIdentity({
+      ...room,
+      members: [],
+      last_message: {
+        id: "m1",
+        sender_id: "p-colonel",
+        sender_name: "The Colonel",
+        sender_type: "agent",
+        content: "report",
+      },
+    });
+    expect(face.name).toBe("The Colonel");
+    expect(face.src).toContain("the-colonel");
+  });
+});
