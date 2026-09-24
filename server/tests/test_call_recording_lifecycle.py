@@ -178,7 +178,7 @@ class StartRecording(IsolatedAsyncioTestCase):
         starter = uuid.uuid4()
         with patch("app.api.broadcast.mint_recorder_token", mint):
             row = await CR.start_recording(
-                db, _settings(call_recording_composite_preset="H264_1080P_30"), lk, r,
+                db, _settings(call_recording_composite_preset="H264_1080P_30", call_recording_composite_template="stable"), lk, r,
                 kind="composite", started_by=starter, redis=redis, trigger="user", started_by_name="Aaron",
             )
         self.assertEqual(row.kind, "composite")

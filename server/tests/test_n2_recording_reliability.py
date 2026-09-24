@@ -379,3 +379,40 @@ async def test_media_session_backfill_is_quiet_when_unconfigured() -> None:
     db = FakeDB()
     assert await CR._sweep_media_sessions(lambda: db, Settings(call_recording_enabled=True)) == 0
     assert db.executed == []
+
+
+# --- 6. composite template: livekit's own grid until our page exists ------
+
+
+@pytest.mark.asyncio
+async def test_default_composite_uses_livekit_template_without_a_recorder_token() -> None:
+    from recording_fakes import FakeRedis
+
+    r = room(recording_policy="always", recording_kind="composite")
+    db = FakeDB()
+    lk = livekit()
+    mint = AsyncMock()
+    with (
+        patch("app.api.broadcast.mint_recorder_token", mint),
+        patch.object(CR, "_ws_room", AsyncMock()),
+        patch.object(CR, "announce_recording", AsyncMock()),
+    ):
+        row = await CR.start_recording(
+            db, _settings(call_recording_composite_layout="speaker"), lk, r,
+            kind="composite", started_by=None, redis=FakeRedis(), trigger="policy always",
+        )
+    assert row.kind == "composite"
+    mint.assert_not_awaited()
+    args, kwargs = lk.start_room_composite_video_egress.await_args
+    assert args[0] == r.livekit_room_name
+    assert kwargs["custom_base_url"] is None
+    assert kwargs["layout"] == "speaker"
+
+
+def test_composite_template_normalises() -> None:
+    from app.config import Settings
+
+    assert CR.composite_template(Settings(call_recording_composite_template="stable")) == "stable"
+    assert CR.composite_template(Settings(call_recording_composite_template="STABLE ")) == "stable"
+    assert CR.composite_template(Settings(call_recording_composite_template="")) == "livekit"
+    assert CR.composite_template(Settings(call_recording_composite_template="whatever")) == "livekit"

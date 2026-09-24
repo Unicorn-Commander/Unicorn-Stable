@@ -76,6 +76,17 @@ mirrored onto `participants.metadata->>'stable_recorder'` at sign-in.
 
 ## Composite video — how it works and the web contract
 
+**Which page gets rendered — `CALL_RECORDING_COMPOSITE_TEMPLATE` (2026-09-24):**
+`livekit` (default) renders the grid template the egress container ships —
+every participant's camera tile with its name, nothing of ours has to be
+reachable, `CALL_RECORDING_COMPOSITE_LAYOUT` = grid | speaker | single-speaker.
+`stable` renders our broadcast page with a recorder token, exactly as the rest
+of this section describes. ⚠️ Measured 09-24 on dogfood: the `stable` page is
+not yet a composite — `/broadcast/{room}/composite` falls into the one-tile
+OBS page, reads no `rt` token and never logs `START_RECORDING`, so the egress
+sits until the room empties and ends with "Start signal not received"
+(egress_aborted 412). Until that page exists (own task), leave the default.
+
 A composite is a LiveKit **room-composite egress** with `custom_base_url` =
 our broadcast page carrying a **recorder token**:
 

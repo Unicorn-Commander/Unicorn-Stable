@@ -110,16 +110,18 @@ class LiveKitService:
         room_name: str,
         filepath: str,
         *,
-        custom_base_url: str,
+        custom_base_url: str | None,
         preset: str = "H264_720P_30",
         layout: str = "grid",
     ) -> Any:
-        """Start a composite VIDEO egress that renders our own web template.
+        """Start a composite VIDEO egress.
 
-        ``custom_base_url`` is the broadcast page carrying a recorder token
-        (design §8: "the recording looks exactly like the show feed"); the
-        egress worker's headless Chrome loads it and LiveKit appends its own
-        ``url``/``token``/``layout`` query parameters. Writes an MP4 to the
+        ``custom_base_url`` set → the egress worker's headless Chrome renders
+        that page (our broadcast page carrying a recorder token, design §8:
+        "the recording looks exactly like the show feed"); LiveKit appends
+        its own ``url``/``token``/``layout`` query parameters. None → the
+        template the egress container ships (``layout`` picks grid/speaker),
+        which needs nothing of ours to be reachable. Writes an MP4 to the
         shared egress volume. Same fail-open contract as the audio variant.
 
         The URL carries a credential, so it is never logged here — only the
@@ -135,7 +137,7 @@ class LiveKitService:
         request = proto_egress.RoomCompositeEgressRequest(
             room_name=room_name,
             layout=layout,
-            custom_base_url=custom_base_url,
+            custom_base_url=custom_base_url or "",
             preset=preset_value,
             file_outputs=[
                 proto_egress.EncodedFileOutput(

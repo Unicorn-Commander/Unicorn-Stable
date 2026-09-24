@@ -119,6 +119,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def composite_template(settings: Settings) -> str:
+    """``livekit`` (the egress container's own grid template) or ``stable``
+    (our broadcast page + recorder token). Anything else reads as livekit."""
+    value = str(getattr(settings, "call_recording_composite_template", "") or "").strip().lower()
+    return "stable" if value == "stable" else "livekit"
+
+
 def is_service_identity(identity: str) -> bool:
     """True for identities that observe/record but are not call participants."""
     value = str(identity or "")
@@ -622,17 +629,20 @@ async def start_recording(
 
     try:
         if kind == KIND_COMPOSITE:
-            from app.api.broadcast import composite_template_url, mint_recorder_token
+            template_url: str | None = None
+            if composite_template(settings) == "stable":
+                from app.api.broadcast import composite_template_url, mint_recorder_token
 
-            raw_token, _token_row = await mint_recorder_token(
-                db, room, egress_row_id=row.id, ttl_seconds=max_duration_seconds(settings)
-            )
-            template_url = composite_template_url(settings, room.id, raw_token)
+                raw_token, _token_row = await mint_recorder_token(
+                    db, room, egress_row_id=row.id, ttl_seconds=max_duration_seconds(settings)
+                )
+                template_url = composite_template_url(settings, room.id, raw_token)
             info = await livekit.start_room_composite_video_egress(
                 room.livekit_room_name,
                 filepath,
                 custom_base_url=template_url,
                 preset=getattr(settings, "call_recording_composite_preset", "H264_720P_30"),
+                layout=getattr(settings, "call_recording_composite_layout", "grid") or "grid",
             )
         else:
             info = await livekit.start_room_audio_egress(room.livekit_room_name, filepath)

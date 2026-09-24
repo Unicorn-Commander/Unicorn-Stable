@@ -450,6 +450,19 @@ class Settings(BaseSettings):
     # LiveKit EncodingOptionsPreset name for composites (H264_720P_30,
     # H264_1080P_30, ...). 720p30 until CPU per stream is measured live.
     call_recording_composite_preset: str = "H264_720P_30"
+    # Which page the egress worker's Chrome renders for a composite:
+    #   livekit — the template the egress container ships (a grid of every
+    #             participant's camera, names on tiles); needs nothing of ours
+    #             to be reachable. What dogfood records with until the branded
+    #             page exists.
+    #   stable  — our broadcast page at /broadcast/{room}/composite carrying a
+    #             recorder token (design §8). ⚠️ 2026-09-24: that page does not
+    #             yet exist as a composite (no grid, no START_RECORDING
+    #             signal), so this mode ends every composite with "Start
+    #             signal not received".
+    call_recording_composite_template: str = "livekit"
+    # Layout name for the livekit template: grid | speaker | single-speaker.
+    call_recording_composite_layout: str = "grid"
     # Concurrent composite egresses allowed across the whole instance (a
     # Redis semaphore; starting one more answers 429).
     recording_max_composite: int = 2
