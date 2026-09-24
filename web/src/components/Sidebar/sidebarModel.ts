@@ -13,7 +13,7 @@ import {
   type FolderSection,
   type PersonThreads,
 } from "@/stores/categoryStore";
-import type { NavView } from "@/stores/navStore";
+import type { ConversationFilter, NavView } from "@/stores/navStore";
 
 /**
  * The sidebar's structure, computed once and consumed by everything that needs
@@ -570,6 +570,131 @@ export function flattenSidebarOrder(model: SidebarModel): string[][] {
             entries.push(nested.length > 0 ? [row.id, ...nested] : [row.id]);
           }
         }
+      }
+    }
+  }
+  return entries;
+}
+
+/** The mark a one-list row wears. Threads are not rows. */
+export type ConversationShape = "direct" | "group" | "channel";
+
+export function conversationShape(row: SidebarRow): ConversationShape {
+  if (row.kind === "channel") return "channel";
+  if (row.kind === "group") return "group";
+  return "direct";
+}
+
+/** Parent plus the threads that live inside it. The hub counts even when the
+ *  expanded list is only children. */
+export function roomsOnConversationRow(row: SidebarRow): Room[] {
+  if (row.kind === "person") {
+    const hub = row.entry.hub;
+    const extra = row.entry.threads.filter((thread) => thread.id !== hub.id);
+    return [hub, ...extra];
+  }
+  return [row.room, ...row.threads];
+}
+
+function conversationRowId(row: SidebarRow): string {
+  if (row.kind === "person") return row.entry.hub.id;
+  return row.room.id;
+}
+
+/** Newest activity on the row: last message, else the room's own timestamps. */
+export function conversationRecency(row: SidebarRow): number {
+  let best = 0;
+  for (const room of roomsOnConversationRow(row)) {
+    const stamp =
+      room.last_message?.created_at || room.updated_at || room.created_at;
+    const at = Date.parse(stamp || "");
+    if (Number.isFinite(at) && at > best) best = at;
+  }
+  return best;
+}
+
+function rowHasUnread(
+  row: SidebarRow,
+  isUnread: (room: Room) => boolean,
+): boolean {
+  return roomsOnConversationRow(row).some(isUnread);
+}
+
+export interface ConversationListInput {
+  rooms: Room[];
+  searchQuery: string;
+  scope: string | null;
+  categories: SidebarModelInput["categories"];
+  people: SidebarModelInput["people"];
+  folders: SidebarModelInput["folders"];
+  expandedPeople: Record<string, boolean>;
+  filter: ConversationFilter;
+  isUnread: (room: Room) => boolean;
+}
+
+/**
+ * The one Conversations list.
+ *
+ * Built from the same row model as the sectioned sidebar (so a thread stays
+ * under its parent) then flattened and ordered unread-first, then recency.
+ * Section collapse and folders do not apply: this is one list, not three
+ * destinations. `view: "all"` keeps standing rooms (`is_conference`) in the
+ * channel rows instead of routing them to a Meetings destination.
+ */
+export function buildConversationRows(input: ConversationListInput): SidebarRow[] {
+  const model = buildSidebarModel({
+    rooms: input.rooms,
+    searchQuery: input.searchQuery,
+    scope: input.scope,
+    categories: input.categories,
+    people: input.people,
+    folders: input.folders,
+    collapsed: {},
+    expandedPeople: input.expandedPeople,
+    view: "all",
+  });
+  const rows: SidebarRow[] = [];
+  for (const section of model.sections) {
+    for (const group of section.groups) rows.push(...group.rows);
+  }
+  const { filter, isUnread } = input;
+  const visible = rows.filter((row) => {
+    const shape = conversationShape(row);
+    if (filter === "people" && shape === "channel") return false;
+    if (filter === "channels" && shape !== "channel") return false;
+    if (filter === "unread" && !rowHasUnread(row, isUnread)) return false;
+    return true;
+  });
+  visible.sort((a, b) => {
+    const unreadDelta =
+      Number(rowHasUnread(b, isUnread)) - Number(rowHasUnread(a, isUnread));
+    if (unreadDelta !== 0) return unreadDelta;
+    const recentDelta = conversationRecency(b) - conversationRecency(a);
+    if (recentDelta !== 0) return recentDelta;
+    return conversationRowId(a).localeCompare(conversationRowId(b));
+  });
+  return visible;
+}
+
+/** Alt+↑/↓ order for the one list. Same expansion rules as the sectioned tree. */
+export function flattenConversationRows(rows: readonly SidebarRow[]): string[][] {
+  const entries: string[][] = [];
+  for (const row of rows) {
+    if (row.kind === "person") {
+      const ids = row.entry.threads.map((thread) => thread.id);
+      if (ids.length === 0) continue;
+      if (row.expanded && ids.length > 1) {
+        for (const id of ids) entries.push([id]);
+      } else {
+        entries.push(ids);
+      }
+    } else {
+      const nested = row.threads.map((thread) => thread.id);
+      if (row.expanded && nested.length > 0) {
+        entries.push([row.id]);
+        for (const id of nested) entries.push([id]);
+      } else {
+        entries.push(nested.length > 0 ? [row.id, ...nested] : [row.id]);
       }
     }
   }

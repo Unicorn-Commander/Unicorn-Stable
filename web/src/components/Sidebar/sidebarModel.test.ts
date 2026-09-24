@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Room } from "@/services/api";
 import {
+  buildConversationRows,
   buildSidebarModel,
+  conversationShape,
   flattenSidebarOrder,
   isPrivateChannel,
   roomsForView,
+  type SidebarRow,
 } from "./sidebarModel";
 
 function room(over: Partial<Room> = {}): Room {
@@ -193,5 +196,152 @@ describe("sidebar nesting", () => {
     expect(roomsForView(all, "direct").map((r) => r.id)).toEqual(
       expect.arrayContaining(["hub", "dm", "g", "t-new"]),
     );
+  });
+});
+
+function rowId(row: SidebarRow): string {
+  return row.kind === "person" ? row.entry.hub.id : row.room.id;
+}
+
+describe("one conversation list", () => {
+  const base = {
+    searchQuery: "",
+    scope: null,
+    categories: {},
+    people: {},
+    folders: {},
+    expandedPeople: {},
+  };
+  const unreadOld = room({
+    id: "dm-old",
+    name: "Pat",
+    type: "dm",
+    unread_count: 2,
+    updated_at: "2026-09-01T00:00:00Z",
+    counterpart: {
+      participant_id: "pat",
+      kind: "human",
+      display_name: "Pat Lee",
+    },
+  });
+  const readNew = room({
+    id: "general",
+    name: "general",
+    type: "channel",
+    visibility: "public",
+    unread_count: 0,
+    updated_at: "2026-09-24T12:00:00Z",
+  });
+  const standing = room({
+    id: "war",
+    name: "war-room",
+    type: "channel",
+    is_conference: true,
+    unread_count: 0,
+    updated_at: "2026-09-24T08:00:00Z",
+  });
+  const crew = room({
+    id: "crew",
+    name: "crew",
+    display_name: "Crew",
+    type: "group_dm",
+    unread_count: 0,
+    updated_at: "2026-09-20T00:00:00Z",
+  });
+  const hub = room({
+    id: "hub-p",
+    name: "Persephone",
+    type: "agent_hub",
+    brigade_agent_id: "persephone",
+    unread_count: 1,
+    updated_at: "2026-09-10T00:00:00Z",
+    counterpart: {
+      participant_id: "p-persephone",
+      kind: "agent",
+      display_name: "Persephone",
+      agent_id: "persephone",
+    },
+  });
+  const thread = room({
+    id: "war-thread",
+    name: "Incident",
+    type: "channel",
+    parent_room_id: "war",
+    updated_at: "2026-09-24T18:00:00Z",
+  });
+  const locked = room({
+    id: "leadership",
+    name: "leadership",
+    type: "channel",
+    visibility: "private",
+    unread_count: 0,
+    updated_at: "2026-09-02T00:00:00Z",
+  });
+  const rooms = [readNew, unreadOld, standing, crew, hub, thread, locked];
+  const isUnread = (candidate: { unread_count?: number }) =>
+    (candidate.unread_count ?? 0) > 0;
+
+  it("orders unread first, then recency, and keeps threads inside the parent", () => {
+    const rows = buildConversationRows({
+      ...base,
+      rooms,
+      filter: "all",
+      isUnread,
+    });
+    // Unread first (hub is the newer unread). Then recency, and a thread's
+    // activity counts for its parent — war's child is newer than #general.
+    expect(rows.map(rowId)).toEqual([
+      "hub-p",
+      "dm-old",
+      "war",
+      "general",
+      "crew",
+      "leadership",
+    ]);
+    expect(rows.map(conversationShape)).toEqual([
+      "direct",
+      "direct",
+      "channel",
+      "channel",
+      "group",
+      "channel",
+    ]);
+    expect(rows.map(rowId)).not.toContain("war-thread");
+    const war = rows.find((row) => rowId(row) === "war");
+    expect(war?.kind === "channel" && war.threads.map((t) => t.id)).toEqual([
+      "war-thread",
+    ]);
+    const lockedRow = rows.find((row) => rowId(row) === "leadership");
+    expect(
+      lockedRow?.kind === "channel" && isPrivateChannel(lockedRow.room),
+    ).toBe(true);
+    expect(standing.is_conference).toBe(true);
+    expect(conversationShape(rows.find((row) => rowId(row) === "war")!)).toBe(
+      "channel",
+    );
+  });
+
+  it("treats All, Unread, People, and Channels as filters on that one list", () => {
+    const people = buildConversationRows({
+      ...base,
+      rooms,
+      filter: "people",
+      isUnread,
+    }).map(rowId);
+    expect(people).toEqual(["hub-p", "dm-old", "crew"]);
+    const channels = buildConversationRows({
+      ...base,
+      rooms,
+      filter: "channels",
+      isUnread,
+    }).map(rowId);
+    expect(channels).toEqual(["war", "general", "leadership"]);
+    const unread = buildConversationRows({
+      ...base,
+      rooms,
+      filter: "unread",
+      isUnread,
+    }).map(rowId);
+    expect(unread).toEqual(["hub-p", "dm-old"]);
   });
 });
