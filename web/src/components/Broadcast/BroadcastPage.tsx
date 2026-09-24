@@ -11,6 +11,12 @@ import {
   shouldPlayAudio,
   type BroadcastJoinResponse,
 } from "@/lib/broadcast";
+import {
+  broadcastLowerThirdOptIn,
+  roomLowerThirdOptIn,
+  subtitleFromMetadata,
+} from "@/lib/tileChrome";
+import { BroadcastLowerThird } from "@/components/Room/LowerThird";
 
 /**
  * /broadcast/:roomId/:participantIdentity?token=…&bg=…&audio=…
@@ -31,6 +37,11 @@ import {
  *  2. Render anything but video. No avatar, no placeholder, no spinner, no
  *     error text — every one of those would be composited into a live stream.
  *     Camera off, participant gone, token refused: all render the background.
+ *     The one exception is an opt-in lower third: `?lowerThird=1` on the
+ *     token URL, or `lower_third: true` on the join payload if a room ever
+ *     sends it. The join payload does not send that field today. Default off
+ *     — a link without either still paints nothing but the camera. The strip
+ *     is a name, never a button.
  *  3. Say WHY it failed. The server answers unknown / revoked / expired with
  *     one identical 403 so the endpoint is not a token oracle. Neither the DOM
  *     nor the console gets to undo that.
@@ -116,6 +127,13 @@ export function BroadcastPage() {
 
   const [videoTrack, setVideoTrack] = useState<RemoteTrack | null>(null);
   const [audioTrack, setAudioTrack] = useState<RemoteTrack | null>(null);
+  /** Room asked for a lower third via the join payload. The URL flag is separate. */
+  const [broadcastRoomOptIn, setBroadcastRoomOptIn] = useState(false);
+  const [broadcastSpeaker, setBroadcastSpeaker] = useState<{
+    id: string;
+    name: string;
+    subtitle: string | null;
+  } | null>(null);
   /** A still of the outgoing feed, held over a re-mint so it doesn't blink. */
   const [frozenFrame, setFrozenFrame] = useState<string | null>(null);
 
@@ -274,6 +292,7 @@ export function BroadcastPage() {
       // black: it keeps broadcasting them after they stopped. Only an in-flight
       // swap may hold one, and only until the element plays or FREEZE_MAX_MS.
       if (!videoPub && !swappingRef.current) setFrozenFrame(null);
+      syncSpeaker(session);
     }
 
     /**
@@ -301,6 +320,39 @@ export function BroadcastPage() {
       }
     }
 
+    function roomOptInFromJoin(join: BroadcastJoinResponse): boolean {
+      return roomLowerThirdOptIn({
+        lower_third: (join as { lower_third?: unknown }).lower_third,
+      });
+    }
+
+    /** Name strip for the person this token was minted for, while they speak. */
+    function syncSpeaker(session: BroadcastSession) {
+      if (disposed || session.gen !== generation) return;
+      const roomOn = roomOptInFromJoin(session.join);
+      if (
+        !broadcastLowerThirdOptIn({
+          search: window.location.search,
+          roomOptIn: roomOn,
+        })
+      ) {
+        return;
+      }
+      const target = (session.room.activeSpeakers ?? []).find((speaker) =>
+        isBroadcastTarget(speaker.identity, session.join.participant_identity),
+      );
+      if (!target) {
+        setBroadcastSpeaker(null);
+        return;
+      }
+      const label = (session.join.participant_label || target.name || "").trim();
+      setBroadcastSpeaker({
+        id: target.identity,
+        name: label || target.identity,
+        subtitle: subtitleFromMetadata(target.metadata),
+      });
+    }
+
     function goDark() {
       clearTimers();
       const dead = current;
@@ -308,6 +360,8 @@ export function BroadcastPage() {
       roomRef.current = null;
       setVideoTrack(null);
       setAudioTrack(null);
+      setBroadcastSpeaker(null);
+      setBroadcastRoomOptIn(false);
       clearFreeze();
       if (dead) void dead.room.disconnect();
     }
@@ -346,6 +400,7 @@ export function BroadcastPage() {
         .on(RoomEvent.TrackSubscribed, resubscribe)
         .on(RoomEvent.TrackUnsubscribed, resubscribe)
         .on(RoomEvent.Reconnected, resubscribe)
+        .on(RoomEvent.ActiveSpeakersChanged, () => syncSpeaker(session))
         .on(RoomEvent.Disconnected, () => {
           // A SUPERSEDED session was evicted by our own re-mint (the LiveKit
           // identity is per broadcast token, so the replacement kicks its
@@ -391,6 +446,7 @@ export function BroadcastPage() {
         return;
       }
       if (disposed || gen !== generation) return;
+      setBroadcastRoomOptIn(roomOptInFromJoin(join));
 
       const previous = current;
       if (isRefresh) freezeCurrentFrame();
@@ -518,6 +574,13 @@ export function BroadcastPage() {
         />
       )}
       {audioTrack && <audio ref={attachAudio} autoPlay />}
+      <BroadcastLowerThird
+        search={window.location.search}
+        roomOptIn={broadcastRoomOptIn}
+        speakerId={broadcastSpeaker?.id ?? null}
+        name={broadcastSpeaker?.name ?? ""}
+        subtitle={broadcastSpeaker?.subtitle}
+      />
     </div>
   );
 }
