@@ -22,7 +22,11 @@ export function previewText(content: string): string {
 
 export function rowTime(dateStr: string): string {
   try {
-    return formatDistanceToNowStrict(new Date(dateStr), { addSuffix: false });
+    const at = new Date(dateStr);
+    // Anything inside the last minute is "now". "0 seconds" is a stopwatch
+    // reading, not a thing anyone says about a message that just landed.
+    if (Date.now() - at.getTime() < 60_000) return "now";
+    return formatDistanceToNowStrict(at, { addSuffix: false });
   } catch {
     return "";
   }

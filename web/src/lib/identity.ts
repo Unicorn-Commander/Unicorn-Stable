@@ -209,7 +209,7 @@ declare const safeAvatarBrand: unique symbol;
  */
 export type SafeAvatarSrc = string & { readonly [safeAvatarBrand]: true };
 
-export type IdentityKind = "human" | "agent" | "app" | "guest";
+export type IdentityKind = "human" | "agent" | "app" | "guest" | "channel";
 export type IdentityRing = "amber" | "grey" | "dashed" | "none";
 /**
  * `online` — a client is connected. `available` — an agent can be invoked
@@ -234,6 +234,9 @@ export interface ResolvedIdentity {
   fallbacks: SafeAvatarSrc[];
   /** Group rooms: up to three member faces. Absent otherwise. */
   faces?: ResolvedIdentity[];
+  /** A mark to draw instead of a picture: an agent's roster glyph, or "lock"
+   *  on a private channel. Spread straight into <Identity emoji=…>. */
+  emoji?: string | null;
   /** Signed-in human with no photo on any rung. */
   needsPhoto?: boolean;
   origin?: IdentityOrigin;
@@ -673,7 +676,10 @@ function memberList(value: unknown): Loose[] {
 
 function nameOnly(id: string, name: string, origin: IdentityOrigin): ResolvedIdentity {
   return {
-    kind: "human",
+    // A channel is a PLACE. Rendering "#general" as the monogram "GE" dresses
+    // a room up as a person and puts it in the same visual grammar as the
+    // humans and agents beside it in the list.
+    kind: origin === "channel" ? "channel" : "human",
     id,
     name,
     src: null,
@@ -781,6 +787,12 @@ function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdenti
     const human =
       others.find((member) => str(member.participant_type) !== "agent") ?? others[0];
     if (human) return resolveSubject(human);
+    // No counterpart and no member rows yet: the last message still names who
+    // sent it, which beats a monogram of the ROOM's slug ("dm-jason" → "DJ").
+    const last = asLoose(room.last_message);
+    if (room.last_message && str(last.sender_id) !== str(opts?.selfId)) {
+      return resolveSubject(messageAsPerson(last));
+    }
     return nameOnly(id, name, "name-only");
   }
 
@@ -827,7 +839,10 @@ function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdenti
     return nameOnly(id, name, "name-only");
   }
 
-  return nameOnly(id, name, "channel");
+  const channel = nameOnly(id, name, "channel");
+  return str(room.visibility) === "private"
+    ? { ...channel, emoji: "lock" }
+    : channel;
 }
 
 /**

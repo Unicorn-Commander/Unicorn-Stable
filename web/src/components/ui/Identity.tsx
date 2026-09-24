@@ -184,7 +184,7 @@ function Face({
 
   const current = seenKey === ladderKey ? (ladder[step] ?? null) : (ladder[0] ?? null);
   const hue = identityFor(id, name);
-  const square = kind === "app";
+  const square = kind === "app" || kind === "channel";
   const glyph = (emoji ?? "").trim();
   const forceBust = kind === "agent" && !!state;
   const showImage = !!current && !forceBust;
@@ -202,7 +202,15 @@ function Face({
     width: px,
     height: px,
     borderRadius: square ? 8 : shape === "rounded" ? Math.max(4, px * 0.22) : 9999,
-    background: showImage ? (square ? "#131a28" : hue.soft) : hue.gradient,
+    background:
+      kind === "channel"
+        ? // Neutral: a room takes no identity colour of its own.
+          "color-mix(in srgb, currentColor 8%, transparent)"
+        : showImage
+          ? square
+            ? "#131a28"
+            : hue.soft
+          : hue.gradient,
     boxShadow:
       ring === "amber"
         ? `0 0 0 2px ${AGENT_RING_AMBER}`
@@ -242,6 +250,17 @@ function Face({
         onError={() => setStep((n) => n + 1)}
         className="h-full w-full object-cover"
       />
+    );
+  } else if (kind === "channel") {
+    // A place, not a face: the room's own mark, muted, never a monogram.
+    body = (
+      <span
+        className="font-semibold text-slate-400"
+        style={{ fontSize: Math.round(px * 0.56), lineHeight: 1 }}
+        aria-hidden="true"
+      >
+        {glyph === "lock" ? "\u{1F512}" : "#"}
+      </span>
     );
   } else if (kind === "agent" && glyph) {
     body = (

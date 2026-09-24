@@ -672,3 +672,60 @@ describe("a group row's face matches the words beside it", () => {
     expect(face.src).toContain("the-colonel");
   });
 });
+
+describe("a channel is a place, not a person", () => {
+  it("renders a channel mark instead of a monogram", () => {
+    const face = resolveIdentity({
+      id: "room-general",
+      name: "general",
+      display_name: "general",
+      type: "channel",
+      members: [],
+    });
+    expect(face.kind).toBe("channel");
+    expect(face.src).toBeNull();
+    expect(face.ring).toBe("none");
+  });
+
+  it("marks a private channel with a lock", () => {
+    const face = resolveIdentity({
+      id: "room-secret",
+      name: "doe-filing",
+      type: "channel",
+      visibility: "private",
+      members: [],
+    });
+    expect(face.kind).toBe("channel");
+    expect(face.emoji).toBe("lock");
+  });
+
+  it("still gives people and agents their faces", () => {
+    expect(
+      resolveIdentity({ id: "p", display_name: "Jason", participant_type: "human" }).kind,
+    ).toBe("human");
+    expect(
+      resolveIdentity({ id: "persephone", display_name: "Persephone", participant_type: "agent" })
+        .kind,
+    ).toBe("agent");
+  });
+});
+
+describe("a DM row without member rows", () => {
+  it("uses the last sender rather than a monogram of the room slug", () => {
+    const face = resolveIdentity({
+      id: "dm-jason",
+      name: "dm-jason",
+      display_name: "dm-jason",
+      type: "dm",
+      members: [],
+      last_message: {
+        id: "m9",
+        sender_id: "p-jason",
+        sender_name: "Jason Reed",
+        sender_type: "human",
+        content: "Got the Summit Medical meeting confirmed",
+      },
+    });
+    expect(face.name).toBe("Jason Reed");
+  });
+});
