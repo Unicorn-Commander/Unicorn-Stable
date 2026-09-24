@@ -15,6 +15,8 @@ import {
   priorityModel,
   rankedFleet,
   serviceEntries,
+  homeEmptyPolicy,
+  homeRailConversations,
   isCrewWorking,
   mergeLiveCalls,
   moveSection,
@@ -699,6 +701,99 @@ describe("dashboard v3", () => {
         NOW,
       ),
     ).toBe(false);
+  });
+
+  it("folds a clear day into one statement and keeps sections that have rows", () => {
+    const clear = homeEmptyPolicy({
+      needsCount: 0,
+      liveCount: 0,
+      crewCount: 0,
+      recentCount: 4,
+      hadConversations: true,
+      todayCount: 0,
+      todayKnown: false,
+    });
+    expect(clear.allClear).toBe(true);
+    expect(clear.sections).toEqual({
+      needs_you: "omit",
+      live_now: "omit",
+      crew: "omit",
+      recent: "content",
+      today: "omit",
+    });
+
+    const withLive = homeEmptyPolicy({
+      needsCount: 0,
+      liveCount: 1,
+      crewCount: 2,
+      recentCount: 0,
+      hadConversations: true,
+      todayCount: 0,
+      todayKnown: true,
+    });
+    expect(withLive.allClear).toBe(true);
+    expect(withLive.sections.live_now).toBe("content");
+    expect(withLive.sections.crew).toBe("content");
+    expect(withLive.sections.needs_you).toBe("omit");
+    expect(withLive.sections.today).toBe("omit");
+    expect(withLive.sections.recent).toBe("omit");
+
+    const busy = homeEmptyPolicy({
+      needsCount: 2,
+      liveCount: 0,
+      crewCount: 0,
+      recentCount: 0,
+      hadConversations: true,
+      todayCount: 0,
+      todayKnown: true,
+    });
+    expect(busy.allClear).toBe(false);
+    expect(busy.sections.needs_you).toBe("content");
+    expect(busy.sections.live_now).toBe("line");
+    expect(busy.sections.crew).toBe("omit");
+    expect(busy.sections.recent).toBe("line");
+    expect(busy.sections.today).toBe("line");
+    expect(
+      homeEmptyPolicy({
+        needsCount: 1,
+        liveCount: 0,
+        crewCount: 0,
+        recentCount: 0,
+        hadConversations: false,
+        todayCount: 0,
+        todayKnown: false,
+      }).sections.recent,
+    ).toBe("omit");
+  });
+
+  it("pins starred human DMs ahead of the other recent rooms", () => {
+    const rooms = [
+      activeRoom(1, {
+        id: "jason",
+        type: "dm",
+        counterpart: {
+          participant_id: "user-jason",
+          kind: "human",
+          display_name: "Jason",
+        },
+      }),
+      activeRoom(2, { id: "ada", type: "dm" }),
+      activeRoom(3, { id: "general", type: "channel" }),
+      activeRoom(4, {
+        id: "old",
+        type: "dm",
+        is_archived: true,
+        counterpart: {
+          participant_id: "user-old",
+          kind: "human",
+          display_name: "Old",
+        },
+      }),
+    ];
+    const rail = homeRailConversations(rooms, ["user-old", "user-jason", ""]);
+    expect(rail.pinned.map((room) => room.id)).toEqual(["jason"]);
+    expect(rail.recent.map((room) => room.id)).toEqual(["ada", "general"]);
+    expect(homeRailConversations(rooms, []).pinned).toEqual([]);
   });
 
   it("hides Today only when every federated block is null and nothing local stands in", () => {

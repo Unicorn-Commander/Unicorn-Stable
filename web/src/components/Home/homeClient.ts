@@ -161,6 +161,19 @@ export function fetchHomeSummaryV3(): Promise<HomeSummaryV3> {
   return homeRequest<unknown>("GET", "/api/v1/home/summary?v=3").then(parseHomeSummaryV3);
 }
 
+/** The crew card's hub, creating it when the summary has not recorded one yet. */
+export async function ensureAgentHub(card: {
+  agent_id: string;
+  hub_room_id?: string | null;
+}): Promise<string> {
+  if (card.hub_room_id) return card.hub_room_id;
+  const hub = await homeRequest<{ id: string }>(
+    "POST",
+    `/api/v1/agents/${encodeURIComponent(card.agent_id)}/hub`,
+  );
+  return hub.id;
+}
+
 export function fetchSectionPrefs(): Promise<HomeSectionPrefs> {
   return homeRequest<HomeSectionPrefs>("GET", "/api/v1/home/section-prefs");
 }

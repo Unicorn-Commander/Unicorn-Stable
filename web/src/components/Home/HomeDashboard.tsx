@@ -21,6 +21,7 @@ import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import type { ActivityTab } from "@/components/Layout/ActivityCenter";
 import { previewText, rowTime } from "./widgets/HomeRow";
 import {
+  homeEmptyPolicy,
   isCrewWorking,
   mergeLiveCalls,
   modeLabel,
@@ -33,6 +34,7 @@ import {
   type HomeSectionId,
 } from "./homeModel";
 import {
+  ensureAgentHub,
   fetchHomeSummaryV3,
   fetchSectionPrefs,
   homeRequest,
@@ -52,6 +54,15 @@ const SECTION_LABEL: Record<HomeSectionId, string> = {
   crew: "Your crew",
   recent: "Recent",
   today: "Today",
+};
+
+/** One sentence for a section that exists and is empty. Not a card. */
+const QUIET_LINE: Record<HomeSectionId, string> = {
+  needs_you: "You're all clear",
+  live_now: "Nothing live right now.",
+  crew: "",
+  recent: "No conversations yet.",
+  today: "Nothing due today.",
 };
 
 const AGENT_MODES = [
@@ -108,8 +119,12 @@ function AppFace({ id, name }: { id: string; name: string }) {
 }
 
 function Count({ n }: { n: number }) {
+  if (n <= 0) return null;
   return (
-    <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300">
+    <span
+      className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300"
+      data-testid="home-count"
+    >
       {n}
     </span>
   );
@@ -125,14 +140,6 @@ function Pill({ children, tone }: { children: string; tone: "live" | "rec" }) {
     >
       {children}
     </span>
-  );
-}
-
-function EmptyLine({ children }: { children: string }) {
-  return (
-    <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
-      {children}
-    </p>
   );
 }
 
@@ -296,21 +303,12 @@ export function HomeDashboard({
     [busy, fail, queryClient],
   );
 
-  const hubFor = useCallback(async (card: CrewCard) => {
-    if (card.hub_room_id) return card.hub_room_id;
-    const hub = await homeRequest<{ id: string }>(
-      "POST",
-      `/api/v1/agents/${encodeURIComponent(card.agent_id)}/hub`,
-    );
-    return hub.id;
-  }, []);
-
   const openHub = useCallback(
     async (card: CrewCard) => {
       if (busy) return;
       setBusy(card.agent_id);
       try {
-        const id = await hubFor(card);
+        const id = await ensureAgentHub(card);
         openRoom(id);
       } catch (error) {
         fail("Couldn't open the hub", error);
@@ -318,7 +316,7 @@ export function HomeDashboard({
         setBusy(null);
       }
     },
-    [busy, fail, hubFor, openRoom],
+    [busy, fail, openRoom],
   );
 
   const newThread = useCallback(
@@ -326,7 +324,7 @@ export function HomeDashboard({
       if (busy) return;
       setBusy(`thread:${card.agent_id}`);
       try {
-        const hub = await hubFor(card);
+        const hub = await ensureAgentHub(card);
         const thread = await homeRequest<{ id: string }>(
           "POST",
           `/api/v1/rooms/${hub}/threads`,
@@ -340,7 +338,7 @@ export function HomeDashboard({
         setBusy(null);
       }
     },
-    [busy, fail, hubFor, openRoom],
+    [busy, fail, openRoom],
   );
 
   const changeMode = useCallback(
@@ -348,7 +346,7 @@ export function HomeDashboard({
       if (busy) return;
       setBusy(`mode:${card.agent_id}`);
       try {
-        const hub = await hubFor(card);
+        const hub = await ensureAgentHub(card);
         await homeRequest(
           "PATCH",
           `/api/v1/rooms/${hub}/members/${card.participant_id}`,
@@ -362,7 +360,7 @@ export function HomeDashboard({
         setBusy(null);
       }
     },
-    [busy, fail, hubFor, queryClient],
+    [busy, fail, queryClient],
   );
 
   const joinStanding = useCallback(
@@ -610,9 +608,7 @@ export function HomeDashboard({
   }
 
   function renderLive() {
-    if (liveCalls.length === 0 && working.length === 0) {
-      return <EmptyLine>Nothing live right now.</EmptyLine>;
-    }
+    if (liveCalls.length === 0 && working.length === 0) return null;
     return (
       <ul className="card overflow-hidden">
         {liveCalls.map((call) => {
@@ -685,9 +681,7 @@ export function HomeDashboard({
   }
 
   function renderCrew() {
-    if (home.crew.length === 0) {
-      return <EmptyLine>No agents in your rooms yet.</EmptyLine>;
-    }
+    if (home.crew.length === 0) return null;
     return (
       <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {home.crew.map((card) => (
@@ -761,7 +755,7 @@ export function HomeDashboard({
   }
 
   function renderRecent() {
-    if (recent.length === 0) return <EmptyLine>No conversations yet.</EmptyLine>;
+    if (recent.length === 0) return null;
     return (
       <ul className="card overflow-hidden">
         {recent.map((room) => (
@@ -833,9 +827,7 @@ export function HomeDashboard({
     const meetingCount = standing.length + (recaps?.length ?? 0);
     return (
       <div className="space-y-3">
-        {tasks == null ? null : tasks.length === 0 ? (
-          <EmptyLine>No tasks due through tomorrow.</EmptyLine>
-        ) : (
+        {tasks == null || tasks.length === 0 ? null : (
           <div className="card overflow-hidden">{tasks.map(renderTask)}</div>
         )}
         {standing.length > 0 && (
@@ -867,9 +859,7 @@ export function HomeDashboard({
             ))}
           </ul>
         )}
-        {recaps == null ? null : recaps.length === 0 ? (
-          <EmptyLine>No Meeting-Ops recaps in the last day.</EmptyLine>
-        ) : (
+        {recaps == null || recaps.length === 0 ? null : (
           <ul className="card overflow-hidden">
             {recaps.map((meeting) => (
               <li key={meeting.id} className="flex items-start gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
@@ -885,21 +875,31 @@ export function HomeDashboard({
             ))}
           </ul>
         )}
-        <span className="sr-only">
-          {taskCount + meetingCount} today
-        </span>
+        {taskCount + meetingCount > 0 && (
+          <span className="sr-only">{taskCount + meetingCount} today</span>
+        )}
       </div>
     );
   }
+
+  const todayCount =
+    (home.today?.po_tasks?.length ?? 0) + standing.length + (recaps?.length ?? 0);
+  const policy = homeEmptyPolicy({
+    needsCount: needs.fresh.length + needs.stale.length,
+    liveCount: liveCalls.length + working.length,
+    crewCount: home.crew.length,
+    recentCount: recent.length,
+    hadConversations: rooms.length > 0,
+    todayCount: hideToday ? 0 : todayCount,
+    todayKnown: !hideToday,
+  });
 
   const sections: Record<HomeSectionId, { count: number; body: ReactNode; hidden?: boolean }> = {
     needs_you: {
       count: needs.fresh.length,
       body: (
         <div className="space-y-2">
-          {needs.fresh.length === 0 && needs.stale.length === 0 ? (
-            <EmptyLine>You're clear.</EmptyLine>
-          ) : (
+          {needs.fresh.length === 0 && needs.stale.length === 0 ? null : (
             <>
               {needs.fresh.length > 0 && renderNeeds(needs.fresh)}
               {needs.stale.length > 0 && (
@@ -933,10 +933,7 @@ export function HomeDashboard({
     crew: { count: home.crew.length, body: renderCrew() },
     recent: { count: recent.length, body: renderRecent() },
     today: {
-      count:
-        (home.today?.po_tasks?.length ?? 0) +
-        standing.length +
-        (recaps?.length ?? 0),
+      count: todayCount,
       hidden: hideToday,
       body: renderToday(),
     },
@@ -961,13 +958,31 @@ export function HomeDashboard({
           </div>
         </header>
         <div className="space-y-4">
+          {policy.allClear && (
+            <p className="px-1 text-sm text-slate-300" data-testid="home-all-clear">
+              You're all clear
+            </p>
+          )}
           {order.map((id) => {
             const section = sections[id];
-            if (section.hidden) return null;
+            const chrome = policy.sections[id];
+            if (section.hidden || chrome === "omit") return null;
+            if (chrome === "line") {
+              return (
+                <p
+                  key={id}
+                  className="px-1 text-xs text-slate-500"
+                  data-testid={`home-quiet-${id}`}
+                >
+                  {QUIET_LINE[id]}
+                </p>
+              );
+            }
             const isCollapsed = collapsed[id] === true;
             return (
               <section
                 key={id}
+                data-testid={`home-section-${id}`}
                 aria-labelledby={`home-${id}-heading`}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={() => dropOn(id)}
