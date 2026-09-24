@@ -972,3 +972,121 @@ class ChunkSpokenTests(TestCase):
 
         chunks = chunk_spoken("first line\nsecond line\nthird line", limit=15)
         self.assertEqual(chunks, ["first line", "second line", "third line"])
+
+
+class CastDispatchTests(TestCase):
+    """N4 rehearsal 2026-09-24: with Rook as the persona, "Grok, …", "Zen, …"
+    and "Shox, …" were dropped as not addressed — the L5 dispatcher only ran
+    in the (undeployed) per-agent workers. The relay routes them now."""
+
+    AARON = "aaron_c0cf018d-f9d4-4638-a43b-23914024aad4"
+    SHAFEN = "shafen_d1cf018d-f9d4-4638-a43b-23914024aad4"
+
+    def setUp(self) -> None:
+        from agent_runtime.floor_store import InMemoryFloorStore, configure_floor_store
+
+        configure_floor_store(InMemoryFloorStore())
+
+    def tearDown(self) -> None:
+        from agent_runtime.floor_store import configure_floor_store
+
+        configure_floor_store()
+
+    def _agent(self, *, humans=("aaron_c0cf018d-f9d4-4638-a43b-23914024aad4",), primary=None):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from voice_relay.agent import VoiceRelayAgent
+
+        agent = VoiceRelayAgent.__new__(VoiceRelayAgent)
+        VoiceRelayAgent.__init__(agent)
+        agent._activation = "name"
+        agent._my_names = {"rook"}
+        agent._identity = "agent-claude-code"
+        agent._relay_persona = "rook"
+        agent._room_name = "stable-rehearsal"
+        agent._primary_agent = primary
+        agent._cast = {
+            "agent-grok": SimpleNamespace(display_name="Grok"),
+            "agent-zen": SimpleNamespace(display_name="Zen"),
+            "agent-majik": SimpleNamespace(display_name="Majik Mane"),
+        }
+        identities = [*humans, "agent-grok", "agent-zen", "agent-majik"]
+        agent._lk_room = SimpleNamespace(
+            remote_participants={i: SimpleNamespace(identity=i, metadata="") for i in identities}
+        )
+        agent._publisher = MagicMock()
+        return agent
+
+    def _persisted(self, agent):
+        return [c.args[1] for c in agent._publisher.persist_user_utterance.call_args_list]
+
+    def test_a_line_naming_a_cast_member_is_handed_to_that_agent(self) -> None:
+        agent = self._agent()
+        self.assertTrue(agent._maybe_persist(self.AARON, "zen, tell me one thing", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["@agent-zen zen, tell me one thing"])
+
+    def test_grok_is_not_swallowed_as_a_near_miss_of_rook(self) -> None:
+        agent = self._agent()
+        self.assertTrue(agent._maybe_persist(self.AARON, "grok, what is the point", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["@agent-grok grok, what is the point"])
+
+    def test_an_unnamed_follow_up_sticks_with_the_agent_last_addressed(self) -> None:
+        agent = self._agent()
+        agent._maybe_persist(self.AARON, "grok, in one sentence, why rehearse?", ear="stt")
+        self.assertTrue(agent._maybe_persist(self.AARON, "and why does that matter live?", ear="stt"))
+        self.assertEqual(self._persisted(agent)[-1], "@agent-grok and why does that matter live?")
+
+    def test_a_follow_up_to_the_persona_does_not_drift_to_the_cohost(self) -> None:
+        """Name mode stays strict for the persona's own follow-ups (window mode
+        is the opt-in), but the claim keeps the line from going to Zen."""
+        agent = self._agent(primary="zen")
+        self.assertTrue(agent._maybe_persist(self.AARON, "rook, status?", ear="stt"))
+        self.assertFalse(agent._maybe_persist(self.AARON, "and after that?", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["rook, status?"])
+
+    def test_unaddressed_talk_goes_to_the_cohost_only_with_one_human(self) -> None:
+        agent = self._agent(primary="zen")
+        self.assertTrue(agent._maybe_persist(self.AARON, "does anyone know what time it is", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["@agent-zen does anyone know what time it is"])
+        two = self._agent(primary="zen", humans=(self.AARON, self.SHAFEN))
+        self.assertFalse(two._maybe_persist(self.AARON, "does anyone know what time it is", ear="stt"))
+        two._publisher.persist_user_utterance.assert_not_called()
+
+    def test_a_shared_mic_counts_as_two_humans(self) -> None:
+        from types import SimpleNamespace
+
+        agent = self._agent(primary="zen")
+        agent._lk_room.remote_participants[self.AARON] = SimpleNamespace(
+            identity=self.AARON, metadata='{"shared_mic": true}'
+        )
+        self.assertFalse(agent._maybe_persist(self.AARON, "what do we think", ear="stt"))
+
+    def test_the_persona_as_cohost_takes_unaddressed_talk(self) -> None:
+        agent = self._agent(primary="rook")
+        self.assertTrue(agent._maybe_persist(self.AARON, "does anyone know what time it is", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["does anyone know what time it is"])
+
+    def test_nobody_is_cohost_means_unaddressed_talk_is_nobodys(self) -> None:
+        agent = self._agent(primary=None)
+        self.assertFalse(agent._maybe_persist(self.AARON, "does anyone know what time it is", ear="stt"))
+
+    def test_naming_a_different_agent_hands_the_floor_over(self) -> None:
+        import time
+
+        agent = self._agent()
+        floor = agent._floor()
+        self.assertTrue(floor.take_floor("agent-grok", now=time.monotonic()))
+        self.assertTrue(agent._maybe_persist(self.AARON, "zen, go ahead", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["@agent-zen zen, go ahead"])
+        self.assertEqual(floor.floor_holder(now=time.monotonic()), "agent-zen")
+
+    def test_a_display_name_word_addresses_the_cast_member(self) -> None:
+        agent = self._agent()
+        self.assertTrue(agent._maybe_persist(self.AARON, "majik, play the intro", ear="stt"))
+        self.assertEqual(self._persisted(agent), ["@agent-majik majik, play the intro"])
+
+    def test_off_and_always_modes_do_not_route(self) -> None:
+        agent = self._agent()
+        agent._activation = "off"
+        self.assertFalse(agent._maybe_persist(self.AARON, "zen, hello", ear="stt"))

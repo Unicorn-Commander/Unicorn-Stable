@@ -91,6 +91,8 @@ conversation. It transports words; it does not author them.
 from __future__ import annotations
 
 import asyncio
+import time
+from types import SimpleNamespace
 import json
 import re
 from typing import Any, NamedTuple
@@ -776,6 +778,9 @@ class VoiceRelayAgent(StableAgent):
         #: Who the held pedal addresses, when not the relay's own persona.
         #: Set with each open frame, cleared with each close.
         self._gate_target: str | None = None
+        #: The room's designated voice co-host (``voice_primary_agent_id``),
+        #: read with the rest of the relay config. None = nobody.
+        self._primary_agent: str | None = None
         #: sender username → Kokoro voice id. Empty until build_pipeline reads
         #: the room; ``_speaking_for()`` then substitutes the legacy single
         #: source so a relay built by hand in a test still has a map.
@@ -842,6 +847,11 @@ class VoiceRelayAgent(StableAgent):
             job_window
             if job_window != DEFAULT_WINDOW_SECONDS
             else window_seconds_from_metadata(room_meta)
+        )
+        from agent_runtime.voice_transcripts import primary_agent_id
+
+        self._primary_agent = primary_agent_id(SimpleNamespace(metadata=job_meta)) or primary_agent_id(
+            ctx.room
         )
         self._name_aliases = aliases_from_metadata(job_meta, self._relay_persona)
         if not self._name_aliases:
@@ -1429,7 +1439,13 @@ class VoiceRelayAgent(StableAgent):
             agent turn; "um" as a turn is absurd, costs a real reply, and the
             agent then SAYS something to an utterance that meant nothing.
         """
-        if not self._is_for_us(text):
+        for_us = self._is_for_us(text)
+        outcome: str | None = None
+        if not for_us:
+            outcome = self._dispatch_outside_persona(speaker, text, ear=ear)
+            if outcome == "routed":
+                return True
+        if not for_us and outcome != "persona":
             reason = log_name_near_miss(text, self._listen_names())
             if reason:
                 # Visible on purpose: a silent miss is how "Rook isn't
@@ -1476,6 +1492,7 @@ class VoiceRelayAgent(StableAgent):
                 ear=ear,
             )
         self._publisher.persist_user_utterance(speaker, content)
+        self._claim_sticky(speaker, target or self._identity)
         logger.info(
             "voice_relay_heard_addressed",
             speaker=speaker,
@@ -1484,6 +1501,186 @@ class VoiceRelayAgent(StableAgent):
             preview=text[:80],
         )
         return True
+
+    # ------------------------------------------------------------------
+    # Cast dispatch: a line that is not for the persona may be for a cast
+    # member. Measured 2026-09-24 (N4 rehearsal): with Rook as the persona,
+    # "Grok, …", "Zen, …" and "Shox, …" were all dropped as "not addressed" —
+    # the L5 dispatcher only ran inside the per-agent Brigade voice workers,
+    # and that worker path is not deployed. The relay is the one live voice
+    # path, so it routes here: by name, else the agent this speaker last
+    # addressed (30 s sticky), else the room's co-host when one human is
+    # talking. One agent holds the floor at a time; a person NAMING a
+    # different agent is the human's cut and hands the floor over.
+    # ------------------------------------------------------------------
+
+    def _floor(self) -> Any:
+        """The room's shared floor (Redis when VOICE_FLOOR_BACKEND=redis)."""
+        from agent_runtime.floor_store import BoundFloor, get_floor_store
+        from agent_runtime.voice_dispatch import make_room_key
+
+        return BoundFloor(get_floor_store(), make_room_key(getattr(self, "_room_name", "")))
+
+    def _claim_sticky(self, speaker: str, agent: str) -> None:
+        """Remember who this speaker is talking to. Never raises into the loop."""
+        try:
+            self._floor().claim(speaker, agent, now=time.monotonic())
+        except Exception:
+            logger.debug("voice_relay_sticky_claim_failed", exc_info=True)
+
+    def _cast_needles(self) -> dict[str, set[str]]:
+        """Spoken name forms per hosted cast identity (``agent-grok`` → grok…)."""
+        out: dict[str, set[str]] = {}
+        for identity, member in (self._cast or {}).items():
+            if not identity or identity in (self._identity, self._source_username):
+                continue
+            agent_id = identity[6:] if identity.startswith("agent-") else identity
+            names = set(mention_needles(agent_id, None))
+            display = str(getattr(member, "display_name", "") or "").strip().lower()
+            if display:
+                names.add(display)
+                names.add(display.split()[0])
+            names.discard("")
+            if names:
+                out[identity] = names
+        return out
+
+    def _human_count(self) -> int:
+        count = 0
+        try:
+            for participant in getattr(self._lk_room, "remote_participants", {}).values():
+                if human_identity(getattr(participant, "identity", None)):
+                    count += 1
+        except Exception:
+            return 0
+        return count
+
+    def _shared_mic_in_call(self) -> bool:
+        from agent_runtime.voice_transcripts import participant_shared_mic
+
+        try:
+            for participant in getattr(self._lk_room, "remote_participants", {}).values():
+                if participant_shared_mic(participant):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _primary_identity(self, needles: dict[str, set[str]]) -> str | None:
+        """The co-host as an identity: ours, a cast member's, or None."""
+        primary = str(self._primary_agent or "").strip().lower()
+        if not primary:
+            return None
+        if primary in (self._relay_persona, self._identity, self._source_username):
+            return self._identity
+        for identity in needles:
+            if identity == primary or identity == f"agent-{primary}":
+                return identity
+        return None
+
+    def _dispatch_outside_persona(self, speaker: str, text: str, *, ear: str) -> str | None:
+        """Where a line that is not addressed to the persona by name goes.
+
+        Returns ``"routed"`` (persisted as a mention of a cast member, its
+        responder answers and the cast speaks it), ``"persona"`` (ours after
+        all: a sticky follow-up to us, or unaddressed talk when we are the
+        co-host and one human is talking), or None (nobody's).
+        """
+        if self._activation not in ("name", "window") or self._publisher is None:
+            return None
+        from agent_runtime import voice_dispatch
+
+        needles = self._cast_needles()
+        now = time.monotonic()
+        try:
+            floor = self._floor()
+        except Exception:
+            logger.warning("voice_relay_floor_unavailable", exc_info=True)
+            return None
+        humans = self._human_count()
+        shared = self._shared_mic_in_call()
+        primary = self._primary_identity(needles)
+        by_name = next(
+            (identity for identity, names in needles.items() if voice_dispatch.spoken_name_match(text, names)),
+            None,
+        )
+        candidate = by_name
+        rule = "addressed_by_name"
+        if candidate is None:
+            held = floor.sticky_agent(speaker, now=now)
+            if held == self._identity:
+                # Our own follow-ups stay strict in name mode ("window" mode
+                # is the opt-in for that); the claim only stops the line from
+                # drifting to a cast member the speaker addressed earlier.
+                return None
+            if held in needles:
+                candidate, rule = held, "sticky_follow_up"
+        if candidate is None and primary is not None:
+            if (2 if shared else humans) <= 1 and not filler_only(text):
+                candidate, rule = primary, "solo_human_cohost"
+        if candidate is None:
+            return None
+        if candidate == self._identity:
+            self._claim_sticky(speaker, self._identity)
+            logger.info(
+                "voice_relay_persona_dispatch", rule=rule, speaker=speaker, ear=ear, chars=len(text)
+            )
+            return "persona"
+
+        others = {identity: names for identity, names in needles.items() if identity != candidate}
+        others[self._identity] = set(self._listen_names())
+        kwargs: dict[str, Any] = dict(
+            my_names=needles[candidate],
+            speaker=speaker,
+            speaker_is_agent=False,
+            text=text,
+            other_agent_names=others,
+            human_count=humans,
+            primary_agent=primary,
+            shared_mic=shared,
+            room=floor.room,
+            agent_identity=self._identity,
+        )
+        try:
+            decision = voice_dispatch.decide(state=floor, me=candidate, now=now, **kwargs)
+            if not decision.respond and decision.rule == "floor_busy" and by_name is not None:
+                holder = floor.floor_holder(now=now)
+                if holder and holder != candidate:
+                    floor.release_floor(holder)
+                    logger.info(
+                        "voice_relay_floor_handed_over",
+                        from_agent=holder,
+                        to_agent=candidate,
+                        speaker=speaker,
+                    )
+                    decision = voice_dispatch.decide(state=floor, me=candidate, now=now, **kwargs)
+        except Exception:
+            logger.warning("voice_relay_cast_dispatch_failed", target=candidate, exc_info=True)
+            return None
+        logger.info(
+            "voice_relay_cast_dispatch",
+            target=candidate,
+            respond=decision.respond,
+            rule=decision.rule,
+            humans=humans,
+            shared_mic=shared,
+            cohost=primary,
+            ear=ear,
+            chars=len(text),
+        )
+        if not decision.respond:
+            return None
+        self._publisher.persist_user_utterance(speaker, f"@{candidate} {text}")
+        logger.info(
+            "voice_relay_heard_addressed",
+            speaker=speaker,
+            chars=len(text),
+            ear=ear,
+            target=candidate,
+            rule=decision.rule,
+            preview=text[:80],
+        )
+        return "routed"
 
     def _listen_names(self) -> set[str]:
         return set(self._my_names) | set(self._name_aliases)
@@ -1768,6 +1965,11 @@ class VoiceRelayAgent(StableAgent):
             if puppet is not None:
                 puppet.end_playout()
         self._touch_window()
+        if line.sender and line.sender in (self._cast or {}):
+            try:
+                self._floor().release_floor(line.sender)
+            except Exception:
+                logger.debug("voice_relay_floor_release_failed", exc_info=True)
         logger.info(
             "voice_relay_spoke",
             chars=len(text),
