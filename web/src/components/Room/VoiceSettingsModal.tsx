@@ -20,12 +20,14 @@ import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Check, Loader2, Mic, X } from "lucide-react";
-import { api, type ApiError, type Room } from "@/services/api";
+import { api, type ApiError, type Room, type VoiceCast } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import {
   canEditVoiceSettings,
+  castSeatLockReason,
+  nextBench,
   voiceActivationOptions,
   voiceAgentDisplayName,
   voiceRelayActivation,
@@ -119,6 +121,60 @@ export function VoiceSettingsModal({
       });
     } finally {
       setSavingFlag(null);
+    }
+  }
+
+  /* THE BENCH (2026-09-24). Who in the cast is on stage for calls here. A
+   * benched seat keeps its voice assignment but sits out: the server hands
+   * the relay the cast minus the bench, so the seat loses its tile and its
+   * spoken lines, live, until it is switched back on. Chat is unaffected.
+   * Seats come from GET /voice-cast (real display names, even for seats that
+   * are not room members); a switch PATCHes the whole bench. */
+  const castKey = ["room-voice-cast", roomId] as const;
+  const { data: cast } = useQuery({
+    queryKey: castKey,
+    queryFn: () => api.getVoiceCast(roomId),
+    staleTime: 15_000,
+    enabled: Boolean(source),
+  });
+  const [savingSeat, setSavingSeat] = useState<string | null>(null);
+  const onStageCount = cast?.seats.filter((seat) => seat.on_stage).length ?? 0;
+
+  async function toggleSeat(username: string, onStage: boolean) {
+    if (!canEdit || !cast || saving || savingFlag || savingSeat) return;
+    setSavingSeat(username);
+    const previous = qc.getQueryData<VoiceCast>(castKey);
+    const bench = nextBench(cast.bench, username, onStage);
+    qc.setQueryData<VoiceCast>(castKey, (prev) =>
+      prev
+        ? {
+            bench,
+            seats: prev.seats.map((seat) =>
+              seat.username === username ? { ...seat, on_stage: onStage } : seat,
+            ),
+          }
+        : prev,
+    );
+    try {
+      await api.updateVoiceSettings(roomId, currentMode, { bench });
+      void qc.invalidateQueries({ queryKey: castKey });
+      void qc.invalidateQueries({ queryKey: ["room", roomId] });
+    } catch (e) {
+      if (previous !== undefined) {
+        qc.setQueryData<VoiceCast>(castKey, previous);
+      }
+      void qc.invalidateQueries({ queryKey: castKey });
+      const err = e as ApiError;
+      useAppStore.getState().pushToast({
+        title: "Couldn't change who's on stage",
+        body:
+          (typeof err?.detail === "string" && err.detail) ||
+          err?.message ||
+          "Request failed",
+        kind: "error",
+      });
+    } finally {
+      setSavingSeat(null);
     }
   }
 
@@ -355,6 +411,77 @@ export function VoiceSettingsModal({
                   );
                 })}
               </div>
+              {cast && cast.seats.length > 0 && (
+                <div className="mt-4" aria-label="Cast on stage">
+                  <h3 className="text-xs font-medium text-slate-300">
+                    On stage ({onStageCount} of {cast.seats.length})
+                  </h3>
+                  <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                    Benched seats keep their voice but sit out calls: no tile
+                    and no spoken lines until you switch them back on. Chat is
+                    unchanged.
+                  </p>
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {cast.seats.map((seat) => {
+                      const lock = castSeatLockReason(seat.locked);
+                      const busy = savingSeat === seat.username;
+                      return (
+                        <button
+                          key={seat.username}
+                          role="switch"
+                          aria-checked={seat.on_stage}
+                          aria-label={`${seat.display_name} on stage`}
+                          title={lock ?? undefined}
+                          disabled={
+                            !canEdit ||
+                            lock !== null ||
+                            saving !== null ||
+                            savingFlag !== null ||
+                            savingSeat !== null
+                          }
+                          onClick={() => void toggleSeat(seat.username, !seat.on_stage)}
+                          className={clsx(
+                            "focus-ring flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-left transition-colors",
+                            seat.on_stage
+                              ? "border-stable-cyan/40 bg-stable-cyan/5"
+                              : "border-line bg-surface-2/50",
+                            canEdit && lock === null && "hover:border-line-strong",
+                            (!canEdit || lock !== null) && "cursor-default",
+                            savingSeat !== null && !busy && "opacity-60",
+                          )}
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium text-slate-100">
+                              {seat.display_name}
+                            </span>
+                            {lock && (
+                              <span className="block text-[11px] leading-snug text-slate-500">
+                                {lock}
+                              </span>
+                            )}
+                          </span>
+                          {busy ? (
+                            <Loader2
+                              aria-hidden="true"
+                              className="h-3.5 w-3.5 shrink-0 animate-spin text-slate-400"
+                            />
+                          ) : (
+                            <span
+                              aria-hidden="true"
+                              className={clsx(
+                                "shrink-0 text-[11px] font-medium",
+                                seat.on_stage ? "text-stable-cyan" : "text-slate-500",
+                              )}
+                            >
+                              {seat.on_stage ? "On stage" : "Benched"}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <p className="mt-3 text-[11px] leading-snug text-slate-500">
                 A change reaches a call that&rsquo;s already running instantly
                 when possible; otherwise it applies from the next call.

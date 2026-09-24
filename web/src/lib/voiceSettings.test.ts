@@ -18,6 +18,8 @@ import {
   voiceRelaySource,
   voiceSettingsSavedToast,
   voiceRelayFlag,
+  nextBench,
+  castSeatLockReason,
 } from "./voiceSettings";
 
 function member(over: Partial<RoomMember> = {}): RoomMember {
@@ -222,5 +224,26 @@ describe("voiceRelayFlag", () => {
     expect(voiceRelayFlag({ voice_relay_video: "false" }, "voice_relay_video")).toBe(false);
     expect(voiceRelayFlag({ voice_relay_multi: 1 }, "voice_relay_multi")).toBe(true);
     expect(voiceRelayFlag({ voice_relay_multi: "junk" }, "voice_relay_multi")).toBe(false);
+  });
+});
+
+describe("cast bench", () => {
+  it("benches and brings back one seat, keeping the server's sorted shape", () => {
+    const benched = nextBench(["agent-oryx-gpt"], "agent-dikdik-haiku", false);
+    expect(benched).toEqual(["agent-dikdik-haiku", "agent-oryx-gpt"]);
+    expect(nextBench(benched, "agent-oryx-gpt", true)).toEqual(["agent-dikdik-haiku"]);
+  });
+
+  it("is idempotent in both directions", () => {
+    expect(nextBench(["agent-kudu-sonnet"], "agent-kudu-sonnet", false)).toEqual([
+      "agent-kudu-sonnet",
+    ]);
+    expect(nextBench([], "agent-kudu-sonnet", true)).toEqual([]);
+  });
+
+  it("explains a fixed seat and leaves a free one unexplained", () => {
+    expect(castSeatLockReason("voice_agent")).toMatch(/always on stage/);
+    expect(castSeatLockReason("co_host")).toMatch(/another co-host/);
+    expect(castSeatLockReason(null)).toBeNull();
   });
 });

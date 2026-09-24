@@ -318,6 +318,67 @@ def _relay_voices_json(value: Any) -> str | None:
     return None
 
 
+#: Cast members benched off the stage (2026-09-24, Aaron: "maybe we have the
+#: option of bringing them in or not?"). Usernames from ``voice_relay_voices``
+#: that keep their voice assignment but do not join the call: every path that
+#: hands the cast to the relay hands it the cast MINUS the bench, so a benched
+#: seat gets no tile, no voice and no spoken routing until it is brought back.
+#: The relay itself never sees this key.
+VOICE_BENCH_KEY = "voice_relay_bench"
+
+
+def relay_cast(value: Any) -> dict[str, str] | None:
+    """``voice_relay_voices`` as a clean dict; None when the room has no cast."""
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    if not isinstance(value, dict):
+        return None
+    return {
+        str(k).strip(): str(v).strip()
+        for k, v in value.items()
+        if str(k).strip() and str(v).strip()
+    }
+
+
+def relay_bench(meta: dict[str, Any] | None) -> list[str]:
+    """The benched usernames, sorted and de-duplicated. Absent = nobody."""
+    raw = (meta or {}).get(VOICE_BENCH_KEY)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return sorted({str(u).strip() for u in raw if str(u).strip()})
+
+
+def stage_voices(meta: dict[str, Any] | None) -> dict[str, str] | None:
+    """The cast the relay hosts: the room's cast minus its bench.
+
+    None when the room has no cast at all (the worker then speaks for its
+    source alone, exactly as before casts existed). An EMPTY dict when a cast
+    exists but everyone in it is benched — that must still reach the worker,
+    or LiveKit's merge-only metadata would keep the previous cast on stage.
+    """
+    cast = relay_cast((meta or {}).get("voice_relay_voices"))
+    if cast is None:
+        return None
+    benched = set(relay_bench(meta))
+    return {k: v for k, v in cast.items() if k not in benched}
+
+
+def _stage_voices_json(meta: dict[str, Any] | None) -> str | None:
+    """:func:`stage_voices` as the JSON string LiveKit metadata carries."""
+    stage = stage_voices(meta)
+    if stage is None:
+        return None
+    return json.dumps(stage, sort_keys=True)
+
+
 async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
     """Carry the room's standing voice settings into the live media room.
 
@@ -334,8 +395,9 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
     for k in _VOICE_META_KEYS:
         v = meta.get(k)
         if k == "voice_relay_voices":
-            encoded = _relay_voices_json(v)
-            if encoded:
+            # The STAGE cast (cast minus bench), never the raw roster.
+            encoded = _stage_voices_json(meta)
+            if encoded is not None:
                 wanted[k] = encoded
         elif k in _VOICE_FLAG_KEYS:
             # Carried even when OFF, so a room that switches a face off gets
@@ -435,9 +497,10 @@ async def _ensure_voice_relay(
 
     display_name = await _relay_display_name(db, source) if db is not None else None
     room_meta = room.metadata_ if isinstance(getattr(room, "metadata_", None), dict) else {}
-    # The cast (sender → voice). Carried as a JSON string, like every other
-    # value in LiveKit metadata; the worker accepts either form.
-    voices_json = _relay_voices_json(room_meta.get("voice_relay_voices"))
+    # The cast (sender → voice) minus anyone benched. Carried as a JSON
+    # string, like every other value in LiveKit metadata; the worker accepts
+    # either form.
+    voices_json = _stage_voices_json(room_meta)
     try:
         await livekit.dispatch_agent(
             room_name=room.livekit_room_name,
@@ -460,7 +523,7 @@ async def _ensure_voice_relay(
                     if activation == "window"
                     else {}
                 ),
-                **({"voice_relay_voices": voices_json} if voices_json else {}),
+                **({"voice_relay_voices": voices_json} if voices_json is not None else {}),
                 # Faces / per-member participants, only when the room asked.
                 **{
                     k: "true"

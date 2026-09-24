@@ -1317,6 +1317,11 @@ class RoomVoiceSettingsBody(BaseModel):
     #: checked against the served list here — the server does not know what
     #: Kokoro serves; the relay does, and falls back with a log line.
     voices: dict[str, str] | None = None
+    #: Cast members OFF stage: usernames from the cast who keep their voice
+    #: but do not join the call (no tile, no voice, no spoken routing) until
+    #: brought back. Omitted = unchanged; ``[]`` = everyone on stage. The
+    #: room's own voice agent and its co-host cannot be benched.
+    bench: list[str] | None = None
     #: Publish a rendered puppet as each relay participant's CAMERA track, so
     #: agents show in the grid, on /broadcast and in OBS like a human on a
     #: webcam. Omitted = unchanged. Default off.
@@ -1390,6 +1395,79 @@ def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
     return cleaned
 
 
+def _clean_bench(raw: list[str]) -> list[str]:
+    """Shape-check a bench list; sorted and de-duplicated."""
+    cleaned: set[str] = set()
+    for item in raw:
+        name = str(item or "").strip()
+        if not name or len(name) > 64:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="bench must list cast usernames of at most 64 characters",
+            )
+        cleaned.add(name)
+    return sorted(cleaned)
+
+
+@router.get("/rooms/{room_id}/voice-cast")
+async def get_voice_cast(
+    room_id: uuid.UUID,
+    _user: Annotated[dict[str, Any], Depends(require_room_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """The room's voice cast as seats: who is on stage and who is benched.
+
+    Member-visible, because the stage is what everyone on the call sees;
+    changing it is the owner/admin PATCH below. Names come from the
+    participant rows, so a seat that is not a room member still shows as the
+    character the room knows ("Corporal Forge", not "agent-qwen-35b").
+    ``locked`` marks the two seats the PATCH refuses to bench: the room's own
+    voice agent and its co-host.
+    """
+    from app.api.webhooks import relay_bench, relay_cast
+    from app.models.participant import Participant
+
+    room = (
+        await db.execute(select(Room).where(Room.id == room_id))
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+    meta = room.metadata_ if isinstance(room.metadata_, dict) else {}
+    cast = relay_cast(meta.get("voice_relay_voices")) or {}
+    benched = set(relay_bench(meta))
+    names: dict[str, str] = {}
+    if cast:
+        rows = (
+            await db.execute(
+                select(Participant.username, Participant.display_name).where(
+                    Participant.username.in_(list(cast))
+                )
+            )
+        ).all()
+        names = {username: (display or "").strip() for username, display in rows}
+    source = str(meta.get("voice_relay_source") or "").strip()
+    primary = str(meta.get("voice_primary_agent_id") or "").strip().lower()
+    seats: list[dict[str, Any]] = []
+    for username, voice in cast.items():
+        short = username[6:] if username.startswith("agent-") else username
+        locked: str | None = None
+        if username == source:
+            locked = "voice_agent"
+        elif primary and primary not in _NO_COHOST and short.lower() == primary:
+            locked = "co_host"
+        seats.append(
+            {
+                "username": username,
+                "display_name": names.get(username) or short,
+                "voice": voice,
+                "on_stage": username not in benched,
+                "locked": locked,
+            }
+        )
+    seats.sort(key=lambda seat: (seat["locked"] is None, seat["display_name"].lower()))
+    return {"seats": seats, "bench": sorted(benched & set(cast))}
+
+
 @router.patch("/rooms/{room_id}/voice-settings")
 async def update_voice_settings(
     room_id: uuid.UUID,
@@ -1430,6 +1508,7 @@ async def update_voice_settings(
         )
     aliases = _clean_aliases(body.aliases) if body.aliases is not None else None
     voices = _clean_relay_voices(body.voices) if body.voices is not None else None
+    bench = _clean_bench(body.bench) if body.bench is not None else None
 
     room = (
         await db.execute(select(Room).where(Room.id == room_id))
@@ -1523,6 +1602,40 @@ async def update_voice_settings(
         meta["voice_relay_video"] = bool(body.video)
     if body.multi is not None:
         meta["voice_relay_multi"] = bool(body.multi)
+    from app.api.webhooks import VOICE_BENCH_KEY, relay_bench, relay_cast, stage_voices
+
+    if bench is not None:
+        cast = relay_cast(meta.get("voice_relay_voices")) or {}
+        unknown = [u for u in bench if u not in cast]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Not in this room's cast: {', '.join(unknown)}",
+            )
+        primary = str(meta.get("voice_primary_agent_id") or "").strip().lower()
+        for username in bench:
+            if username == source:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{username} is this room's voice agent and can't be benched",
+                )
+            short = username[6:] if username.startswith("agent-") else username
+            if primary and primary not in _NO_COHOST and short.lower() == primary:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{username} is this room's co-host; choose another co-host first",
+                )
+        if bench:
+            meta[VOICE_BENCH_KEY] = bench
+        else:
+            meta.pop(VOICE_BENCH_KEY, None)
+    elif voices is not None and VOICE_BENCH_KEY in meta:
+        # A new cast forgets bench entries it no longer names.
+        kept = [u for u in relay_bench(meta) if u in voices]
+        if kept:
+            meta[VOICE_BENCH_KEY] = kept
+        else:
+            meta.pop(VOICE_BENCH_KEY, None)
     room.metadata_ = meta  # reassigned, not mutated, for JSONB change detection
     await db.commit()
 
@@ -1544,9 +1657,12 @@ async def update_voice_settings(
         }
         if mode == "window":
             frame["window_seconds"] = window_seconds
-        if voices is not None:
-            # The relay re-reads its cast from this frame, live.
-            frame["voices"] = voices
+        if voices is not None or bench is not None:
+            # The relay re-reads its cast from this frame, live — the STAGE
+            # cast, so benching a seat takes its tile out of a running call
+            # and bringing it back puts it in again.
+            frame["voices"] = stage_voices(meta) or {}
+            frame["bench"] = relay_bench(meta)
         if body.video is not None:
             frame["video"] = bool(body.video)
         if body.multi is not None:
@@ -1573,6 +1689,7 @@ async def update_voice_settings(
         voice_settings_updated_by=actor,
         live=live,
         voices=voices,
+        bench=bench,
     )
     return {
         "activation": mode,
@@ -1584,6 +1701,7 @@ async def update_voice_settings(
         **({"multi": _flag_on(meta.get("voice_relay_multi"))} if "voice_relay_multi" in meta else {}),
         **({"window_seconds": window_seconds} if mode == "window" else {}),
         **({"voices": voices} if voices is not None else {}),
+        **({"bench": relay_bench(meta)} if bench is not None else {}),
         **(
             {"primary_agent_id": meta.get("voice_primary_agent_id")}
             if body.primary_agent_id is not None

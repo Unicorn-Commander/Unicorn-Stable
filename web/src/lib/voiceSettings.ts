@@ -200,3 +200,27 @@ export function voiceSettingsSavedToast(
     body: `${option.label} — applies from the next call.`,
   };
 }
+
+/**
+ * The bench after one seat is switched — sorted and de-duplicated, the same
+ * shape the server stores, so an optimistic update matches what comes back.
+ */
+export function nextBench(
+  bench: readonly string[],
+  username: string,
+  onStage: boolean,
+): string[] {
+  const out = new Set(bench);
+  if (onStage) out.delete(username);
+  else out.add(username);
+  return [...out].sort();
+}
+
+/** Why a seat's switch is fixed, in words — or null when it can move. */
+export function castSeatLockReason(
+  locked: "voice_agent" | "co_host" | null | undefined,
+): string | null {
+  if (locked === "voice_agent") return "This room's voice agent — always on stage.";
+  if (locked === "co_host") return "Co-host — pick another co-host to bench this seat.";
+  return null;
+}

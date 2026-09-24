@@ -204,6 +204,25 @@ export interface VoiceSettingsResponse {
   video?: boolean;
   /** Every other sender in the cast gets its own LiveKit participant. */
   multi?: boolean;
+  /** Cast usernames currently off stage (only when the PATCH named `bench`). */
+  bench?: string[];
+}
+
+/** One seat of a room's voice cast (GET /rooms/{id}/voice-cast). */
+export interface VoiceCastSeat {
+  username: string;
+  /** The participant's display name — the character the room knows. */
+  display_name: string;
+  voice: string;
+  /** False = benched: keeps its voice, sits out the call. */
+  on_stage: boolean;
+  /** The two seats that cannot be benched: the room's voice agent, its co-host. */
+  locked: "voice_agent" | "co_host" | null;
+}
+
+export interface VoiceCast {
+  seats: VoiceCastSeat[];
+  bench: string[];
 }
 
 /**
@@ -217,6 +236,8 @@ export interface VoiceSettingsExtras {
   voices?: Record<string, string>;
   video?: boolean;
   multi?: boolean;
+  /** Cast usernames to keep off stage; `[]` brings everyone back. */
+  bench?: string[];
 }
 
 /** Verbs of POST /rooms/{id}/moderation — live-call moderation (owner/admin). */
@@ -1495,6 +1516,11 @@ class StableApiClient {
    * in the room switches immediately. Errors: 403 not owner/admin, 404 no
    * such room, 409 the room has no voice agent, 422 bad mode.
    */
+  /** The room's voice cast as seats — who is on stage, who is benched. */
+  async getVoiceCast(roomId: string): Promise<VoiceCast> {
+    return this.request<VoiceCast>("GET", `/api/v1/rooms/${roomId}/voice-cast`);
+  }
+
   async updateVoiceSettings(
     roomId: string,
     activation: VoiceActivationMode,
