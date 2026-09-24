@@ -35,19 +35,6 @@ const SURFACES: Array<{
     },
   },
   {
-    name: "SettingsAudio",
-    path: "/",
-    waitFor: '[data-testid="tile-name-mode"]',
-    setup: async (page) => {
-      await clickTestId(page, "open-settings");
-      await page
-        .locator('[data-testid="settings-pane-devices"]')
-        .locator("visible=true")
-        .first()
-        .click();
-    },
-  },
-  {
     name: "NewChat",
     path: "/",
     waitFor: '[data-testid="create-room-modal"]',
@@ -90,6 +77,19 @@ const SURFACES: Array<{
       // Ctrl+Shift+F is the same handler as Meta+Shift+F, and it fires in
       // headless Chromium on both macOS and the Linux CI container.
       await page.keyboard.press("Control+Shift+F");
+    },
+  },
+  {
+    name: "SettingsAudio",
+    path: "/",
+    waitFor: '[data-testid="tile-name-mode"]',
+    setup: async (page) => {
+      await clickTestId(page, "open-settings");
+      await page
+        .locator('[data-testid="settings-pane-devices"]')
+        .locator("visible=true")
+        .first()
+        .click();
     },
   },
 ];
@@ -454,45 +454,6 @@ test.describe("Call View variations", () => {
 // a settle loop drags it to the newest message; it now stays unpainted until
 // that lands. This guard reads the same flag the paint does: at the instant the
 // list is revealed it must already be on the newest message, not mid-drag.
-test.describe("Name plates and lower third", () => {
-  const scenes = [
-    { id: "names-on", expectName: true, expectStrip: false },
-    { id: "names-off", expectName: false, expectStrip: false },
-    { id: "lower-third", expectName: true, expectStrip: true },
-  ] as const;
-
-  for (const scene of scenes) {
-    for (const viewport of ["mobile", "desktop"] as const) {
-      test(`${scene.id} @ ${viewport}`, async ({ page }) => {
-        const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
-        await page.setViewportSize(vp);
-        await page.goto(`/fixtures/nameplate.html?scene=${scene.id}`);
-        await page.waitForSelector('[data-testid="nameplate-stage"]', {
-          timeout: 60_000,
-        });
-        if (scene.expectName) {
-          await expect(page.getByText("Aaron Stransky (you)")).toBeVisible();
-        } else {
-          await expect(page.getByTestId("tile-name-plate")).toHaveCount(0);
-          await expect(page.getByText("Aaron Stransky")).toHaveCount(0);
-        }
-        if (scene.expectStrip) {
-          const strip = page.getByTestId("lower-third");
-          await expect(strip).toBeVisible();
-          await expect(strip).toContainText("Majik");
-          await expect(strip).toContainText("Show host");
-        } else {
-          await expect(page.getByTestId("lower-third")).toHaveCount(0);
-        }
-        await page.screenshot({
-          path: `test-results/Nameplate-${scene.id}-${viewport}.png`,
-          fullPage: true,
-        });
-      });
-    }
-  }
-});
-
 test.describe("Chat opens on the newest message", () => {
   for (const viewport of ["mobile", "desktop"] as const) {
     test(`room opens pinned to the bottom @ ${viewport}`, async ({ page }) => {
@@ -530,9 +491,9 @@ test.describe("Chat opens on the newest message", () => {
         fullPage: false,
       });
 
-      // The room header is the only bar, so it carries the drawer toggle on a
-      // phone — the way back to the room list — and that toggle must stay on
-      // screen.
+      // On a phone the room's top bar carries the drawer toggle — the only way
+      // back to the room list — so it must stay on screen. (Desktop hides that
+      // button: the AppShell header owns the toggle there.)
       if (viewport === "mobile") {
         await expect(
           page.getByRole("button", { name: "Open sidebar" }),
@@ -545,87 +506,6 @@ test.describe("Chat opens on the newest message", () => {
       expect(pageScroll).toBe(0);
     });
   }
-});
-
-test.describe("Caption state", () => {
-  test("pinned mic says why captions are off", async ({ page }, testInfo) => {
-    await page.setViewportSize(DESKTOP_VIEWPORT);
-    await page.goto("/fixtures/captions.html");
-    await expect(page.getByTestId("caption-state-chip")).toHaveText("off");
-    await expect(page.getByTestId("caption-state-summary")).toContainText(
-      "you picked ZOOM AMS-44",
-    );
-    await expect(page.getByTestId("caption-use-default-mic")).toBeVisible();
-    await expect(page.getByTestId("caption-invite-agent")).toBeVisible();
-    await expect(page.getByTestId("caption-server-pref")).not.toBeChecked();
-    await page.screenshot({
-      path: `test-results/CaptionStateMicPinned-${testInfo.project.name}.png`,
-      fullPage: true,
-    });
-  });
-
-  test("agent captioner shows its line for the local human", async ({ page }, testInfo) => {
-    await page.setViewportSize(DESKTOP_VIEWPORT);
-    await page.goto("/fixtures/captions.html?lane=agent");
-    await expect(page.getByTestId("caption-state-chip")).toHaveText("agent");
-    await expect(page.getByTestId("caption-state-summary")).toContainText(
-      "Captions are coming from Persephone's mic feed",
-    );
-    await expect(page.getByText("the studio mic is live")).toBeVisible();
-    await page.screenshot({
-      path: `test-results/CaptionStateAgent-${testInfo.project.name}.png`,
-      fullPage: true,
-    });
-  });
-});
-
-test.describe("Room header is one row", () => {
-  for (const viewport of ["mobile", "desktop"] as const) {
-    test(`44px bar @ ${viewport}`, async ({ page }) => {
-      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
-      await page.setViewportSize(vp);
-      await stubHomeSummary(page);
-
-      await page.goto("/c/room-general");
-      await waitForAppReady(page);
-      const header = page.getByTestId("room-header");
-      await expect(header).toBeVisible();
-      await expect(header).toHaveCount(1);
-      await expect(page.getByTestId("app-header")).toHaveCount(0);
-      await expect(page.getByTestId("header-voice-call")).toHaveCount(0);
-      await expect(page.getByTestId("header-video-call")).toHaveCount(0);
-
-      const box = await header.boundingBox();
-      expect(box).not.toBeNull();
-      expect(Math.round(box!.height)).toBe(44);
-
-      await expect(
-        header.getByRole("button", { name: "Call", exact: true }),
-      ).toHaveCount(1);
-      await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
-      await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
-      await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
-      await expect(
-        header.getByRole("button", { name: "Switch model for this conversation" }),
-      ).toHaveCount(0);
-
-      await page.screenshot({
-        path: `test-results/RoomHeader-${viewport}.png`,
-        fullPage: false,
-      });
-
-      await header.getByRole("button", { name: "More room actions" }).click();
-      await expect(
-        page.getByRole("button", { name: "Switch model for this conversation" }),
-      ).toBeVisible();
-      await expect(
-        header.getByRole("button", { name: "Call", exact: true }),
-      ).toHaveCount(1);
-
-      await page.screenshot({
-        path: `test-results/RoomHeaderMenu-${viewport}.png`,
-        fullPage: false,
-      });
 });
 
 test.describe("Home inbox", () => {
@@ -755,5 +635,127 @@ test.describe("Accessibility sweep (report only)", () => {
       );
       expect(criticalSerious.length).toBeGreaterThanOrEqual(0);
     });
+  }
+});
+
+test.describe("Caption state", () => {
+  test("pinned mic says why captions are off", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/fixtures/captions.html");
+    await expect(page.getByTestId("caption-state-chip")).toHaveText("off");
+    await expect(page.getByTestId("caption-state-summary")).toContainText(
+      "you picked ZOOM AMS-44",
+    );
+    await expect(page.getByTestId("caption-use-default-mic")).toBeVisible();
+    await expect(page.getByTestId("caption-invite-agent")).toBeVisible();
+    await expect(page.getByTestId("caption-server-pref")).not.toBeChecked();
+    await page.screenshot({
+      path: `test-results/CaptionStateMicPinned-${testInfo.project.name}.png`,
+      fullPage: true,
+    });
+  });
+
+  test("agent captioner shows its line for the local human", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/fixtures/captions.html?lane=agent");
+    await expect(page.getByTestId("caption-state-chip")).toHaveText("agent");
+    await expect(page.getByTestId("caption-state-summary")).toContainText(
+      "Captions are coming from Persephone's mic feed",
+    );
+    await expect(page.getByText("the studio mic is live")).toBeVisible();
+    await page.screenshot({
+      path: `test-results/CaptionStateAgent-${testInfo.project.name}.png`,
+      fullPage: true,
+    });
+  });
+});
+
+test.describe("Room header is one row", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`44px bar @ ${viewport}`, async ({ page }) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+
+      await page.goto("/c/room-general");
+      await waitForAppReady(page);
+      const header = page.getByTestId("room-header");
+      await expect(header).toBeVisible();
+      await expect(header).toHaveCount(1);
+      await expect(page.getByTestId("app-header")).toHaveCount(0);
+      await expect(page.getByTestId("header-voice-call")).toHaveCount(0);
+      await expect(page.getByTestId("header-video-call")).toHaveCount(0);
+
+      const box = await header.boundingBox();
+      expect(box).not.toBeNull();
+      expect(Math.round(box!.height)).toBe(44);
+
+      await expect(
+        header.getByRole("button", { name: "Call", exact: true }),
+      ).toHaveCount(1);
+      await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
+      await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
+      await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
+      await expect(
+        header.getByRole("button", { name: "Switch model for this conversation" }),
+      ).toHaveCount(0);
+
+      await page.screenshot({
+        path: `test-results/RoomHeader-${viewport}.png`,
+        fullPage: false,
+      });
+
+      await header.getByRole("button", { name: "More room actions" }).click();
+      await expect(
+        page.getByRole("button", { name: "Switch model for this conversation" }),
+      ).toBeVisible();
+      await expect(
+        header.getByRole("button", { name: "Call", exact: true }),
+      ).toHaveCount(1);
+
+      await page.screenshot({
+        path: `test-results/RoomHeaderMenu-${viewport}.png`,
+        fullPage: false,
+      });
+    });
+  }
+});
+
+test.describe("Name plates and lower third", () => {
+  const scenes = [
+    { id: "names-on", expectName: true, expectStrip: false },
+    { id: "names-off", expectName: false, expectStrip: false },
+    { id: "lower-third", expectName: true, expectStrip: true },
+  ] as const;
+
+  for (const scene of scenes) {
+    for (const viewport of ["mobile", "desktop"] as const) {
+      test(`${scene.id} @ ${viewport}`, async ({ page }) => {
+        const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+        await page.setViewportSize(vp);
+        await page.goto(`/fixtures/nameplate.html?scene=${scene.id}`);
+        await page.waitForSelector('[data-testid="nameplate-stage"]', {
+          timeout: 60_000,
+        });
+        if (scene.expectName) {
+          await expect(page.getByText("Aaron Stransky (you)")).toBeVisible();
+        } else {
+          await expect(page.getByTestId("tile-name-plate")).toHaveCount(0);
+          await expect(page.getByText("Aaron Stransky")).toHaveCount(0);
+        }
+        if (scene.expectStrip) {
+          const strip = page.getByTestId("lower-third");
+          await expect(strip).toBeVisible();
+          await expect(strip).toContainText("Majik");
+          await expect(strip).toContainText("Show host");
+        } else {
+          await expect(page.getByTestId("lower-third")).toHaveCount(0);
+        }
+        await page.screenshot({
+          path: `test-results/Nameplate-${scene.id}-${viewport}.png`,
+          fullPage: true,
+        });
+      });
+    }
   }
 });

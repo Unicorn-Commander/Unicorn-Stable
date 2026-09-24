@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { decodeRoomData } from "@/lib/roomDataProtocol";
 import {
   CAPTION_IDLE_FACTS,
@@ -273,8 +273,41 @@ describe("voice history lines", () => {
 });
 
 describe("caption preference and toggle copy", () => {
+  /* The repo's unit suite runs without a Storage (see talkingFaceFlag.test.ts,
+   * which supplies its own for the same reason). The preference reads
+   * localStorage, so give this suite one rather than a whole DOM. */
+  const store = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
+    get length() {
+      return store.size;
+    },
+  } as unknown as Storage;
+  const hadStorage = "localStorage" in globalThis;
+  const previous = hadStorage ? globalThis.localStorage : undefined;
+
+  beforeAll(() => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: fakeStorage,
+    });
+  });
+  afterAll(() => {
+    if (hadStorage) {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: previous,
+      });
+    } else {
+      delete (globalThis as Record<string, unknown>).localStorage;
+    }
+  });
   beforeEach(() => {
-    localStorage.clear();
+    store.clear();
   });
 
   it("server captions default off and stay per user", () => {
