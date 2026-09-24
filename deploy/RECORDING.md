@@ -139,6 +139,42 @@ on every call. To move it:
 Candidate from the design: centerdeep (measured 92 % idle on 08-08) — verify
 before choosing.
 
+**Decision 2026-09-24 (N3):** the worker stays on bigboy for now, next to the
+SFU, with `EGRESS_CPUS=5.0` and the `cpu_cost` block above in its
+`egress.yaml`. Measured that morning: bigboy 24 cores, 75 % idle, CPU PSI
+0.00, 69 GB available; centerdeep 8 cores (a VM with ~6 % steal). Moving the
+worker means exposing the stack's redis over the LAN and sharing
+`/egress-out` by NFS, which is a project of its own; do it if the first
+composite proof shows jitter on calls (`docker stats stable-egress` during a
+call is the number to watch). ⚠️ Until the `cpu_cost` block existed, the
+egress logged `not enough cpu for some egress types … available: 2` at start
+and would have refused every video composite: its default cost for a room
+composite is 3–4 CPU, above a 2-CPU container.
+
+## When the hand-off has no session, and when the egress dies
+
+Measured on dogfood 2026-09-24: four of the last ten recordings sat as
+`handoff_status=no_session` — the call's Meeting-Ops session is created by a
+browser's transcript export, and when nobody exported (or the ±window missed)
+the finished file had nowhere to attach. Now, after
+`CALL_RECORDING_SESSION_WAIT_SECONDS` (default 30 min) with no matching
+export, the hand-off uploads the file to Meeting-Ops as `action=transcribe`:
+MO creates the session from the media and runs its own STT + summary, and the
+row records the session it landed in (`mo_session_id`) when MO has assigned
+it. `no_session` therefore no longer happens on a healthy MO; it remains in
+the vocabulary for old rows. (MO's transcript-ingest endpoint cannot do this:
+it refuses an export with zero lines.)
+
+An egress that ends with nothing captured ("Start signal not received",
+0 bytes, 1.2 s after StartEgress in the measured case) in a room whose policy
+is `always` is retried once automatically — only while a human is still in
+the LiveKit room, and at most two failures per room per three minutes so a
+broken egress cannot loop. The failed row's `error` names its replacement.
+A failure that is not retried is loud: a system line in the room
+("Recording failed: …") and an `agent_events` row (`recording_failed`).
+The 2-minute sweep asks LiveKit (`list_egress`) about a row whose
+`egress_ended` webhook never arrived before calling it lost.
+
 ## Storage and retention
 
 `RECORDING_S3_*` point at Garage / Studio Storage (path-style by default). One
@@ -182,6 +218,9 @@ marks the row `deleted`.
 ## What Persephone must provision before the first live proof
 
 1. **Keycloak**: realm role `stable-recorder`; grant to Aaron + Shafen.
+   ✅ 2026-09-24: role created in the uchub realm on auth.unicorncommander.ai
+   and granted to Aaron (Shafen when he says so). The role is mirrored onto
+   `participants.metadata` at sign-in, so a fresh sign-in is needed once.
 2. **Storage**: a Garage bucket (e.g. `stable-recordings`) and a key scoped to
    that bucket only (read/write/delete); store in Vaultwarden with owner + expiry;
    put endpoint/bucket/key/secret/region in the dogfood `.env`.
