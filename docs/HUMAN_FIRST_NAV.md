@@ -4,14 +4,16 @@ Branch work that re-orients Stable around people, standing meetings, and durable
 
 ## One conversation list (nav v2)
 
-Default **on**. One localStorage key restores today's five-view shell (Home / Direct / Channels / Meetings / Agents). Filters are not destinations.
+Default **on**. `stable_nav_v2` `"0"` restores the five-view shell (Home / Direct / Channels / Meetings / Agents). `stable_nav_v1` `"0"` restores the classic tree and turns this shell off too. Filters are not destinations.
 
 | Mechanism | Values | Effect |
 |-----------|--------|--------|
+| `localStorage.stable_nav_v1` | `"0"` / `"false"` | Opts out of nav v2 as well. Classic tree (People / Groups / Channels), even if `stable_nav_v2` is `"1"` |
+| `VITE_NAV_V1` | `"0"` / `"false"` | Same opt-out when `stable_nav_v1` is unset |
 | `localStorage.stable_nav_v2` | `"0"` / `"false"` | Five-view shell (nav v1). That shell still honours `stable_nav_v1` |
-| `localStorage.stable_nav_v2` | `"1"` / `"true"` | One Conversations list |
+| `localStorage.stable_nav_v2` | `"1"` / `"true"` | One Conversations list, unless nav v1 was explicitly turned off |
 | `VITE_NAV_V2` | `"0"` / `"false"` | Build-time default off (overridden by localStorage) |
-| (unset) | — | **Default on** |
+| (unset) | — | **Default on**, unless nav v1 is explicitly off |
 
 Console one-liner (reload after):
 
@@ -23,7 +25,7 @@ localStorage.removeItem("stable_nav_v2");  // fall through to env / default on
 
 Implementation: `web/src/stores/navStore.ts` → `isNavV2Enabled()`, `NAV_V2_FLAG_KEY`.
 
-The rail is Home · Conversations · Directory. The list is recency-ordered, unread first. Each row is a Direct (face of `room.counterpart`, including an agent hub), a Group (facepile, last speaker first), or a Channel (`#`, or a lock when private). All · Unread · People · Channels only narrow that list. The active workspace name sits at the top of it.
+The rail is Home · Conversations · Directory. The list is recency-ordered, unread first. The open room stays in that unread group until you leave it. Each row is a Direct (face of `room.counterpart`, including an agent hub), a Group (a facepile when two or more faces resolve, otherwise the group glyph), or a Channel (`#`, or a lock when private). All · Unread · People · Channels only narrow that list. A filter does not change the URL or the rail. The active workspace name sits at the top of it.
 
 | Old destination | Where it lives with nav v2 on |
 |-----------------|--------------------------------|
@@ -31,14 +33,18 @@ The rail is Home · Conversations · Directory. The list is recency-ordered, unr
 | Direct | Conversations, Direct mark. Filter: People |
 | Groups | Conversations, Group mark. Filter: People |
 | Channels | Conversations, `#` or lock. Filter: Channels |
-| Meetings | Not a destination. A standing room is a channel in the list. `metadata.conference` does not pick a rail button. `GET /rooms/conference/catalog` and enter-by-slug stay for Home and deep links. Flag off routes those rooms to Meetings again |
+| Meetings | Not a destination. A standing room is a Channel row. `metadata.conference` does not pick a rail button. Recordings for the active standing room — or any active room that already has recordings — sit under the list and collapse. Flag off, the Meetings body shows that same list the way it did before. `GET /rooms/conference/catalog` and enter-by-slug stay on Home. The list has no slug deep link |
 | Agents (as a conversation list) | Agent hubs are Direct rows in the same list |
-| Agents page | Rail: Directory, and Search → Open directory. Route `/agents` unchanged |
-| Threads | Inside the conversation. No nav presence |
+| Agents page | Rail: Directory, and Search → Open directory. Directory is the `/agents` URL, not a stored highlight that survives Back. Route `/agents` unchanged |
+| Threads | Nested under the parent row. A chevron expands them. Not their own destination |
+| Folders | Dropped. The one list is recency order. “Move to folder” is hidden |
+| Favorites strip | Dropped. It belonged to the Direct destination |
+| Focused / All | Dropped. All · Unread · People · Channels replace them. A saved Focused mode does not filter this list |
+| Browse channels | Channels filter header, that filter’s empty state, and New → Browse channels. Opens the existing channel browser |
 
 ## How to flag off view-based nav
 
-Default on this branch: **on**. Nav v2 off lands here.
+Default on this branch: **on**. Nav v2 off lands here. Setting `stable_nav_v1` to `"0"` / `"false"` (or `VITE_NAV_V1` the same way) also turns nav v2 off and restores the classic tree. Put `stable_nav_v1` back to unset or `"1"` before `stable_nav_v2` can turn the one list on.
 
 | Mechanism | Values | Effect |
 |-----------|--------|--------|
