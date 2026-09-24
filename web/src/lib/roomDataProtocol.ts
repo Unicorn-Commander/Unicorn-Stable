@@ -69,12 +69,12 @@ export interface TranscriptMessage {
   /** Optional STT segment id; lets a producer revise a specific segment. */
   segmentId?: string;
   /**
-   * Attribution provenance. `local_mic` is emitted by the human speaker's own
-   * browser, `agent_stt` is the linked-participant fallback from the in-room
-   * agent, and `agent` is the agent's spoken reply. Optional for compatibility
-   * with older producers.
+   * Attribution provenance. `local_mic` is the human speaker's own browser,
+   * `agent_stt` is the linked-participant fallback, `captioner` is the elected
+   * agent's per-track STT, `server` is an opted-in clip sent to the STT proxy,
+   * and `agent` is the agent's spoken reply. Optional for older producers.
    */
-  source?: "local_mic" | "agent_stt" | "agent";
+  source?: "local_mic" | "agent_stt" | "captioner" | "server" | "agent";
 }
 
 /* ------------------------------------------------------------------ *
@@ -376,6 +376,8 @@ export function isTranscriptMessage(v: unknown): v is TranscriptMessage {
     (m.source === undefined ||
       m.source === "local_mic" ||
       m.source === "agent_stt" ||
+      m.source === "captioner" ||
+      m.source === "server" ||
       m.source === "agent")
   );
 }
