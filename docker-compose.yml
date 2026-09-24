@@ -386,6 +386,12 @@ services:
       - INTERNAL_AGENT_SECRET=${INTERNAL_AGENT_SECRET:-}
       - STABLE_BACKEND_URL=http://stable-backend:8400
       - REDIS_URL=redis://:${REDIS_PASSWORD}@stable-redis:6379/1
+      # Voice floor (design §5): who may speak in a room right now. Empty =
+      # in-memory (one process only). `redis` shares the floor across every
+      # agent process on the stack's redis (VOICE_FLOOR_REDIS_URL overrides
+      # the URL). Set it wherever more than one agent can be on a call.
+      - VOICE_FLOOR_BACKEND=${VOICE_FLOOR_BACKEND:-}
+      - VOICE_FLOOR_REDIS_URL=${VOICE_FLOOR_REDIS_URL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
