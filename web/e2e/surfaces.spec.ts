@@ -16,7 +16,8 @@ const SURFACES: Array<{
     path: "/",
     waitFor: '[data-testid="conversations-card"]',
     setup: async (page) => {
-      await clickTestId(page, "nav-direct");
+      // Nav v2: Direct is a row shape inside the one list, not a rail button.
+      await clickTestId(page, "nav-conversations");
     },
   },
   { name: "AgentChat", path: "/c/room-general", waitFor: '[data-testid="room-view"]' },
@@ -39,9 +40,9 @@ const SURFACES: Array<{
     path: "/",
     waitFor: '[data-testid="create-room-modal"]',
     setup: async (page) => {
-      // Home hides New. Direct is the destination that shows it, and New
+      // Home hides New. Conversations is the list that shows it, and New
       // opens the sheet that replaced the old create-room modal.
-      await clickTestId(page, "nav-direct");
+      await clickTestId(page, "nav-conversations");
       await clickTestId(page, "new-room-button");
     },
   },
@@ -757,5 +758,258 @@ test.describe("Name plates and lower third", () => {
         });
       });
     }
+  }
+});
+
+/**
+ * Rooms the one-list capture needs: a Direct, a Group, a Channel (public and
+ * private), an agent hub (also a Direct), and a standing room (a channel, not
+ * a Meetings destination). The dev seed has no group, and Home's clear-day
+ * test counts those four seed rooms, so this fixture is only for this describe.
+ */
+function conversationFixture() {
+  const message = (
+    roomId: string,
+    at: string,
+    sender: { id: string; name: string; type: "human" | "agent" },
+    content: string,
+  ) => ({
+    id: `msg-${roomId}`,
+    room_id: roomId,
+    sender_id: sender.id,
+    sender_name: sender.name,
+    sender_type: sender.type,
+    sender_avatar: null,
+    content,
+    content_type: "text",
+    thread_id: null,
+    reply_count: 0,
+    edited: false,
+    created_at: at,
+    updated_at: at,
+    metadata: {},
+  });
+  const row = (
+    over: Record<string, unknown> & { id: string; room_type: string; updated_at: string },
+  ) => ({
+    name: over.id,
+    display_name: over.id,
+    description: "",
+    created_at: over.updated_at,
+    member_count: 2,
+    online_count: 1,
+    unread_count: 0,
+    is_archived: false,
+    visibility: "public",
+    parent_room_id: null,
+    metadata_: {},
+    last_message: null,
+    ...over,
+  });
+  return [
+    row({
+      id: "room-general",
+      room_type: "channel",
+      display_name: "general",
+      updated_at: "2026-09-24T12:00:00Z",
+      unread_count: 3,
+      last_message: message(
+        "room-general",
+        "2026-09-24T12:00:00Z",
+        { id: "user-jason", name: "Nate Ellison", type: "human" },
+        "Deploy is live",
+      ),
+    }),
+    row({
+      id: "room-dm-jason",
+      room_type: "dm",
+      display_name: "Nate Ellison",
+      updated_at: "2026-09-24T11:00:00Z",
+      unread_count: 1,
+      counterpart: {
+        participant_id: "user-jason",
+        kind: "human",
+        display_name: "Nate Ellison",
+      },
+      last_message: message(
+        "room-dm-jason",
+        "2026-09-24T11:00:00Z",
+        { id: "user-jason", name: "Nate Ellison", type: "human" },
+        "Thursday still works",
+      ),
+    }),
+    row({
+      id: "room-crew",
+      room_type: "group_dm",
+      display_name: "Crew",
+      updated_at: "2026-09-24T09:00:00Z",
+      member_count: 3,
+      last_message: message(
+        "room-crew",
+        "2026-09-24T09:00:00Z",
+        { id: "user-jason", name: "Nate Ellison", type: "human" },
+        "Standing by",
+      ),
+    }),
+    row({
+      id: "room-hub-triage",
+      room_type: "agent_hub",
+      display_name: "Triage Agent",
+      updated_at: "2026-09-24T10:00:00Z",
+      unread_count: 2,
+      metadata_: { brigade_agent_id: "agent-triage" },
+      counterpart: {
+        participant_id: "p-triage",
+        kind: "agent",
+        display_name: "Triage Agent",
+        agent_id: "agent-triage",
+      },
+      last_message: message(
+        "room-hub-triage",
+        "2026-09-24T10:00:00Z",
+        { id: "agent-triage", name: "Triage Agent", type: "agent" },
+        "Holding the floor",
+      ),
+    }),
+    row({
+      id: "room-leadership",
+      room_type: "channel",
+      display_name: "leadership",
+      visibility: "private",
+      updated_at: "2026-09-24T08:00:00Z",
+      last_message: message(
+        "room-leadership",
+        "2026-09-24T08:00:00Z",
+        { id: "dev-user-001", name: "Aaron Stransky", type: "human" },
+        "Quiet channel",
+      ),
+    }),
+    row({
+      id: "room-war",
+      room_type: "channel",
+      display_name: "war-room",
+      updated_at: "2026-09-24T07:00:00Z",
+      metadata_: { conference: true },
+      last_message: message(
+        "room-war",
+        "2026-09-24T07:00:00Z",
+        { id: "user-jason", name: "Nate Ellison", type: "human" },
+        "Room is open",
+      ),
+    }),
+  ];
+}
+
+/** List endpoint only. Archived and everything else falls through. */
+async function stubConversationRooms(page: Page) {
+  const rooms = conversationFixture();
+  await page.route("**/api/v1/rooms**", async (route) => {
+    const url = route.request().url();
+    if (!/\/api\/v1\/rooms(\?|$)/.test(url)) {
+      await route.fallback();
+      return;
+    }
+    const archived = url.includes("is_archived=true");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ rooms: archived ? [] : rooms, cursor: null }),
+    });
+  });
+}
+
+test.describe("One conversation list", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`single list, filters, shapes, workspace @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      await stubConversationRooms(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      await clickTestId(page, "nav-conversations");
+      await expect(page.getByTestId("conversations-card")).toBeVisible();
+      await expect(page.getByTestId("workspace-name")).toBeVisible();
+      await expect(page.getByTestId("workspace-name")).not.toHaveText("");
+      for (const id of ["all", "unread", "people", "channels"] as const) {
+        await expect(page.getByTestId(`conv-filter-${id}`)).toBeVisible();
+      }
+      await expect(page.locator('[data-shape="direct"]').first()).toBeVisible();
+      await expect(page.locator('[data-shape="group"]')).toBeVisible();
+      await expect(page.locator('[data-shape="channel"]').first()).toBeVisible();
+      await expect(page.getByText("Crew").first()).toBeVisible();
+      await expect(page.getByText("Nate Ellison").first()).toBeVisible();
+      // Old destinations are not rail buttons.
+      await expect(page.getByTestId("nav-direct")).toHaveCount(0);
+      await expect(page.getByTestId("nav-channels")).toHaveCount(0);
+      await expect(page.getByTestId("nav-meetings")).toHaveCount(0);
+      await expect(page.getByTestId("nav-agents")).toHaveCount(0);
+      await page.screenshot({
+        path: `test-results/ConversationList-all-${viewport}-${testInfo.project.name}.png`,
+        fullPage: true,
+      });
+
+      await page.getByTestId("conv-filter-unread").click();
+      await expect(page.locator('[data-shape="group"]')).toHaveCount(0);
+      await expect(page.locator('[data-shape="direct"]').first()).toBeVisible();
+      await page.screenshot({
+        path: `test-results/ConversationList-unread-${viewport}-${testInfo.project.name}.png`,
+        fullPage: true,
+      });
+
+      await page.getByTestId("conv-filter-people").click();
+      await expect(page.locator('[data-shape="channel"]')).toHaveCount(0);
+      await expect(page.locator('[data-shape="group"]')).toBeVisible();
+      await expect(page.locator('[data-shape="direct"]').first()).toBeVisible();
+      await page.screenshot({
+        path: `test-results/ConversationList-people-${viewport}-${testInfo.project.name}.png`,
+        fullPage: true,
+      });
+
+      await page.getByTestId("conv-filter-channels").click();
+      await expect(page.locator('[data-shape="group"]')).toHaveCount(0);
+      await expect(page.locator('[data-shape="direct"]')).toHaveCount(0);
+      await expect(page.locator('[data-shape="channel"]').first()).toBeVisible();
+      await expect(page.getByLabel("Private channel").first()).toBeVisible();
+      await page.screenshot({
+        path: `test-results/ConversationList-channels-${viewport}-${testInfo.project.name}.png`,
+        fullPage: true,
+      });
+
+      await clickTestId(page, "nav-directory");
+      await expect(page.getByTestId("agents-page")).toBeVisible();
+      await assertPageHealth(page, viewport);
+    });
+
+    test(`flag off restores the five-view shell @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.addInitScript(() => {
+        localStorage.setItem("stable_nav_v2", "0");
+      });
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+      }
+      // The phone rail scrolls; later icons can sit outside the 280px strip.
+      // Attached proves the five destinations are back. Direct is in view and
+      // is what the old shell opens.
+      for (const id of ["nav-home", "nav-direct", "nav-channels", "nav-meetings", "nav-agents"]) {
+        await expect(page.getByTestId(id).first()).toBeAttached();
+      }
+      await expect(page.getByTestId("nav-direct").locator("visible=true").first()).toBeVisible();
+      await expect(page.getByTestId("nav-conversations")).toHaveCount(0);
+      await expect(page.getByTestId("nav-directory")).toHaveCount(0);
+      await expect(page.getByTestId("conversation-filters")).toHaveCount(0);
+      await clickTestId(page, "nav-direct");
+      await expect(page.getByTestId("conversations-card")).toBeVisible();
+      await page.screenshot({
+        path: `test-results/NavV1Fallback-${viewport}-${testInfo.project.name}.png`,
+        fullPage: true,
+      });
+      await assertPageHealth(page, viewport);
+    });
   }
 });

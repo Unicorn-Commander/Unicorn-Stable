@@ -2,9 +2,43 @@
 
 Branch work that re-orients Stable around people, standing meetings, and durable call work objects — without rebuilding Meeting-Ops or inventing legal-hold chrome.
 
+## One conversation list (nav v2)
+
+Default **on**. One localStorage key restores today's five-view shell (Home / Direct / Channels / Meetings / Agents). Filters are not destinations.
+
+| Mechanism | Values | Effect |
+|-----------|--------|--------|
+| `localStorage.stable_nav_v2` | `"0"` / `"false"` | Five-view shell (nav v1). That shell still honours `stable_nav_v1` |
+| `localStorage.stable_nav_v2` | `"1"` / `"true"` | One Conversations list |
+| `VITE_NAV_V2` | `"0"` / `"false"` | Build-time default off (overridden by localStorage) |
+| (unset) | — | **Default on** |
+
+Console one-liner (reload after):
+
+```js
+localStorage.setItem("stable_nav_v2", "0"); // today's five-view shell
+localStorage.setItem("stable_nav_v2", "1"); // one list
+localStorage.removeItem("stable_nav_v2");  // fall through to env / default on
+```
+
+Implementation: `web/src/stores/navStore.ts` → `isNavV2Enabled()`, `NAV_V2_FLAG_KEY`.
+
+The rail is Home · Conversations · Directory. The list is recency-ordered, unread first. Each row is a Direct (face of `room.counterpart`, including an agent hub), a Group (facepile, last speaker first), or a Channel (`#`, or a lock when private). All · Unread · People · Channels only narrow that list. The active workspace name sits at the top of it.
+
+| Old destination | Where it lives with nav v2 on |
+|-----------------|--------------------------------|
+| Home | Rail: Home. Live calls stay on the dashboard |
+| Direct | Conversations, Direct mark. Filter: People |
+| Groups | Conversations, Group mark. Filter: People |
+| Channels | Conversations, `#` or lock. Filter: Channels |
+| Meetings | Not a destination. A standing room is a channel in the list. `metadata.conference` does not pick a rail button. `GET /rooms/conference/catalog` and enter-by-slug stay for Home and deep links. Flag off routes those rooms to Meetings again |
+| Agents (as a conversation list) | Agent hubs are Direct rows in the same list |
+| Agents page | Rail: Directory, and Search → Open directory. Route `/agents` unchanged |
+| Threads | Inside the conversation. No nav presence |
+
 ## How to flag off view-based nav
 
-Default on this branch: **on**.
+Default on this branch: **on**. Nav v2 off lands here.
 
 | Mechanism | Values | Effect |
 |-----------|--------|--------|
