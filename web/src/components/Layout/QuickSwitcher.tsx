@@ -26,6 +26,7 @@ import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import {
+  isDirectoryPath,
   isNavV1Enabled,
   isNavV2Enabled,
   type NavView,
@@ -178,7 +179,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
           icon: MessagesSquare,
           run: () => {
             nav.setV2Destination("conversations");
-            if (window.location.pathname === "/agents") navigate("/");
+            if (isDirectoryPath(window.location.pathname)) navigate("/");
           },
         },
         {

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronDown } from "lucide-react";
 import { api, type RecordingListItem, type RoomMember } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -89,8 +91,25 @@ export function RecordingsList({
   );
 }
 
-/** Meetings rail: the open room's recordings. */
-export function MeetingsRecordings({ roomId }: { roomId: string | null }) {
+/**
+ * Recordings for the open room.
+ *
+ * The Meetings body always shows the section. The one-list sidebar passes
+ * `relevantOnly` (standing room, or a room that already has recordings) and
+ * `collapsible`. Those props stay off on the flag-off path.
+ */
+export function MeetingsRecordings({
+  roomId,
+  collapsible = false,
+  relevantOnly = false,
+  standing = false,
+}: {
+  roomId: string | null;
+  collapsible?: boolean;
+  relevantOnly?: boolean;
+  standing?: boolean;
+}) {
+  const [open, setOpen] = useState(true);
   const members = useAppStore((s) => (roomId ? s.participants[roomId] : undefined));
   const myParticipantId = useAppStore((s) => s.currentParticipantId);
   const myRole = members?.find((member) => member.is_self)?.role ?? null;
@@ -100,13 +119,13 @@ export function MeetingsRecordings({ roomId }: { roomId: string | null }) {
     enabled: !!roomId,
     staleTime: 15_000,
   });
+  const rows = data ?? [];
+  if (relevantOnly) {
+    if (!roomId) return null;
+    if (!standing && rows.length === 0) return null;
+  }
 
-  return (
-    <section className="mx-2 mb-3" aria-label="Recordings">
-      <p className="mb-1.5 px-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-        Recordings
-      </p>
-      {!roomId ? (
+  const body = !roomId ? (
         <p className="px-1 text-[11px] leading-relaxed text-slate-500">
           Open a meeting to see its recordings.
         </p>
@@ -118,12 +137,40 @@ export function MeetingsRecordings({ roomId }: { roomId: string | null }) {
         </p>
       ) : (
         <RecordingsList
-          rows={data ?? []}
+          rows={rows}
           members={members}
           myRole={myRole}
           myParticipantId={myParticipantId}
         />
+      );
+
+  return (
+    <section
+      className="mx-2 mb-3"
+      aria-label="Recordings"
+      data-testid="room-recordings"
+    >
+      {collapsible ? (
+        <button
+          type="button"
+          className="focus-ring mb-1.5 flex w-full items-center gap-1 rounded-md px-0.5 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 hover:text-slate-300"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <ChevronDown
+            className={
+              "h-3 w-3 shrink-0 transition-transform" +
+              (open ? "" : " -rotate-90")
+            }
+          />
+          Recordings
+        </button>
+      ) : (
+        <p className="mb-1.5 px-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Recordings
+        </p>
       )}
+      {(!collapsible || open) && body}
     </section>
   );
 }

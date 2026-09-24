@@ -57,6 +57,7 @@ import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
   isNavV1Enabled,
   isNavV2Enabled,
+  shellDestinationForPath,
   useNavStore,
   viewForRoom,
   type ConversationFilter,
@@ -71,6 +72,7 @@ import { useLiveCalls } from "@/hooks/useLiveCalls";
 import {
   buildConversationRows,
   buildSidebarModel,
+  groupFaceRoom,
   isPrivateChannel,
   roomsForView,
   roomsOnConversationRow,
@@ -177,6 +179,7 @@ export function RoomList() {
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const participantsByRoom = useAppStore((s) => s.participants);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
+  const currentParticipantId = useAppStore((s) => s.currentParticipantId);
   const agents = useAppStore((s) => s.agents);
   const defaultAgentId = useAppStore((s) => s.defaultAgentId);
   const setDefaultAgentId = useAppStore((s) => s.setDefaultAgentId);
@@ -185,7 +188,12 @@ export function RoomList() {
   const navV2 = isNavV2Enabled();
   const navV1 = isNavV1Enabled();
   const activeView = useNavStore((s) => s.activeView);
-  const v2Destination = useNavStore((s) => s.v2Destination);
+  const storedV2Destination = useNavStore((s) => s.v2Destination);
+  // Directory follows the URL. A stored "directory" on any other path is Home.
+  const v2Destination = shellDestinationForPath(
+    location.pathname,
+    storedV2Destination,
+  );
   const conversationFilter = useNavStore((s) => s.conversationFilter);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rememberRoom = useNavStore((s) => s.rememberRoom);
@@ -218,6 +226,22 @@ export function RoomList() {
   const rawUnreadFor = (room: Room) =>
     unreadCounts[room.id] ?? room.unread_count ?? 0;
   const unreadFor = (room: Room) => badgeCount(room.id, rawUnreadFor(room));
+  // Same rooms the unread-first sort counts (parent + threads, hub included).
+  // Expanded rows badge only the room the row itself is; nested rows badge
+  // themselves. A collapsed channel or agent hub otherwise showed no badge
+  // while the sort still treated the row as unread.
+  const rowBadgeCount = (row: SidebarRow): number => {
+    const all = roomsOnConversationRow(row);
+    if (row.kind === "person") {
+      if (!row.expanded) return all.reduce((n, item) => n + unreadFor(item), 0);
+      const hubListed = row.entry.threads.some(
+        (thread) => thread.id === row.entry.hub.id,
+      );
+      return hubListed ? 0 : unreadFor(row.entry.hub);
+    }
+    if (row.expanded) return unreadFor(row.room);
+    return all.reduce((n, item) => n + unreadFor(item), 0);
+  };
 
   // Open a room by navigating; the route param drives activeRoomId (see
   // AppShell). We still clear unread locally for snappy badge feedback.
@@ -307,9 +331,24 @@ export function RoomList() {
   const [archivedRooms, setArchivedRooms] = useState<Room[]>([]);
   const [showArchived, setShowArchived] = useState(false);
 
+  // The archived list is per server. Clear it on switch so A's rooms cannot
+  // be opened while B is the active instance, then refetch.
   useEffect(() => {
-    api.getArchivedRooms().then((rooms) => setArchivedRooms(rooms)).catch(() => {});
-  }, []);
+    let cancelled = false;
+    setArchivedRooms([]);
+    setShowArchived(false);
+    if (scope) {
+      api
+        .getArchivedRooms()
+        .then((next) => {
+          if (!cancelled) setArchivedRooms(next);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [scope]);
 
   async function handleArchiveRoom(room: Room) {
     try {
@@ -482,10 +521,11 @@ export function RoomList() {
   useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
   // Focused mode filter/sort (slice 3) before view filter so classic + nav-v1
-  // share the same attention rules. AppShell mirrors this for Alt+↑/↓.
+  // share the same attention rules. The one list hides that toggle, so a
+  // saved Focused mode must not narrow it. AppShell mirrors this for Alt+↑/↓.
   const preparedRooms = useMemo(
     () =>
-      prepareRoomsForSidebar(rooms, focusMode, (room) => ({
+      prepareRoomsForSidebar(rooms, navV2 ? "all" : focusMode, (room) => ({
         unread: unreadCounts[room.id] ?? room.unread_count ?? 0,
         hasMention: mentionUnreads[room.id] === true,
         notifyLevel: getNotifyLevel(room.id),
@@ -495,6 +535,7 @@ export function RoomList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
     [
       rooms,
+      navV2,
       focusMode,
       unreadCounts,
       mentionUnreads,
@@ -551,6 +592,7 @@ export function RoomList() {
             expandedPeople,
             filter: conversationFilter,
             isUnread: roomIsUnread,
+            activeRoomId,
           })
         : [],
     // mutedVersion recomputes badges when a mute lands outside React.
@@ -566,10 +608,20 @@ export function RoomList() {
       folderDefs,
       expandedPeople,
       conversationFilter,
+      activeRoomId,
       unreadCounts,
       mentionUnreads,
       mutedVersion,
     ],
+  );
+
+  // The mark-read label and the click use this same list. Under v2 that is
+  // the filtered, searched rows on screen — not every room in the server.
+  const visibleUnreadTargets = roomsNeedingMarkRead(
+    navV2
+      ? conversationRows.flatMap((row) => roomsOnConversationRow(row))
+      : roomsForView(preparedRooms, modelView),
+    rawUnreadFor,
   );
 
   // Standing conference catalog for the Meetings empty state / entry points.
@@ -710,17 +762,13 @@ export function RoomList() {
   }
 
   /**
-   * Mark every room in the current Focused/All + view slice as read.
-   * Uses sequential mark_read WS frames (no batch API yet) + local clear.
+   * Mark the rooms the label counted. Under v2 that is the filtered list
+   * (search included), not every room on the server. Focused mode does not
+   * apply there. Sequential mark_read frames — there is no batch API yet.
    */
   function markVisibleSectionRead() {
     if (markingAllRead) return;
-    // preparedRooms already applies Focused; roomsForView matches the on-screen
-    // destination so we never clear unreads for rooms another view is hiding.
-    const targets = roomsNeedingMarkRead(
-      roomsForView(preparedRooms, modelView),
-      rawUnreadFor,
-    );
+    const targets = visibleUnreadTargets;
     if (targets.length === 0) return;
     setMarkingAllRead(true);
     try {
@@ -747,6 +795,9 @@ export function RoomList() {
     currentCat: string | undefined,
     section: FolderSection,
   ) {
+    // The one list ignores folders. Filing a row there would hide it from
+    // the order the user is looking at.
+    if (navV2) return null;
     const names = section === "channels" ? channelFolders : peopleFolders;
     return (
       <>
@@ -926,7 +977,14 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
-    const unread = unreadFor(room);
+    const unread = rowBadgeCount({
+      kind: "channel",
+      id: room.id,
+      room,
+      threads,
+      expanded,
+      archivedCount,
+    });
     const cat = channelsFiled?.[room.id];
     const menuOpen = menuKey === room.id;
     const muted = isMuted(room.id);
@@ -1173,7 +1231,12 @@ export function RoomList() {
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
     const hasActive = threads.some((r) => r.id === activeRoomId);
-    const unreadTotal = threads.reduce((n, r) => n + unreadFor(r), 0);
+    const unreadTotal = rowBadgeCount({
+      kind: "person",
+      id: entry.key,
+      entry,
+      expanded,
+    });
     // A live call in ANY thread with this person badges the collapsed row;
     // the expanded thread rows carry their own badge.
     const liveThread = threads.find((r) => liveCallByRoomId[r.id]);
@@ -1335,7 +1398,7 @@ export function RoomList() {
                       {formatTimestamp(latest.last_message.created_at)}
                     </span>
                   )}
-                  {!expanded && unreadTotal > 0 && (
+                  {unreadTotal > 0 && (
                     <span className="gradient-bg grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
                       {unreadTotal > 99 ? "99+" : unreadTotal}
                     </span>
@@ -1429,23 +1492,39 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
-    const unread = unreadFor(room);
+    const unread = rowBadgeCount({
+      kind: "group",
+      id: room.id,
+      room,
+      threads,
+      expanded,
+      archivedCount,
+    });
     const menuOpen = menuKey === room.id;
     const others = (participantsByRoom[room.id] ?? []).filter(
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
     const badge = humanPresence(others.some((p) => p.is_online));
     const loadedMembers = participantsByRoom[room.id];
-    const groupFace = navV2
-      ? resolveIdentity(room, {
-          selfId: currentUserId,
-          members:
-            loadedMembers && loadedMembers.length > 0
-              ? loadedMembers
-              : room.members,
-          agents,
-        })
+    const groupIdentity = navV2
+      ? resolveIdentity(
+          groupFaceRoom(room, [currentUserId, currentParticipantId]),
+          {
+            selfId: currentUserId,
+            members:
+              loadedMembers && loadedMembers.length > 0
+                ? loadedMembers
+                : room.members,
+            agents,
+          },
+        )
       : null;
+    // One resolved face is the last-sender fallback (members come back empty
+    // on the list). A group mark is the stack glyph until two faces exist.
+    const groupPile =
+      groupIdentity?.faces && groupIdentity.faces.length >= 2
+        ? groupIdentity
+        : null;
     return (
       <li
         key={room.id}
@@ -1482,13 +1561,13 @@ export function RoomList() {
                 navV2 ? "h-7 w-7" : "h-4 w-4",
               )}
             >
-              {groupFace ? (
-                <Identity {...groupFace} presence={null} size={28} />
+              {groupPile ? (
+                <Identity {...groupPile} presence={null} size={28} />
               ) : (
-              <Users
-                className="h-4 w-4 text-amber-300/70"
-                aria-label="Private group — invite only"
-              />
+                <Users
+                  className="h-4 w-4 text-amber-300/70"
+                  aria-label="Private group — invite only"
+                />
               )}
               {badge && (
                 <span
@@ -2024,63 +2103,61 @@ export function RoomList() {
         {collapsed && (
           <ul role="list" className="ml-1.5 border-l border-line pl-1">
             {archivedRooms.map((room) => (
-              <li key={room.id}>
-                <button
-                  onClick={() => {
-                    openRoom(room.id);
-                    setShowArchived(false);
-                  }}
-                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-[13px]">
-                        {room.last_message ? (
-                          <>
-                            <span className="font-medium">
-                              {room.last_message.sender_name}:
-                            </span>{" "}
-                            {formatLastMessage(room.last_message.content)}
-                          </>
-                        ) : (
-                          <span className="italic text-slate-500">
-                            New conversation
-                          </span>
-                        )}
-                      </span>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        {room.last_message && (
-                          <span className="text-[10px] tabular-nums text-slate-500">
-                            {formatTimestamp(room.last_message.created_at)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+              <li key={room.id} className="relative">
+                <div className="flex items-center gap-1">
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuKey(room.id);
+                    type="button"
+                    onClick={() => {
+                      openRoom(room.id);
+                      setShowArchived(false);
                     }}
-                    className="shrink-0 rounded-md p-1 text-slate-500 hover:text-slate-200"
+                    className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                      {room.last_message ? (
+                        <>
+                          <span className="font-medium">
+                            {room.last_message.sender_name}:
+                          </span>{" "}
+                          {formatLastMessage(room.last_message.content)}
+                        </>
+                      ) : (
+                        <span className="italic text-slate-500">
+                          New conversation
+                        </span>
+                      )}
+                    </span>
+                    {room.last_message && (
+                      <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
+                        {formatTimestamp(room.last_message.created_at)}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMenuKey(menuKey === room.id ? null : room.id)
+                    }
+                    className="focus-ring shrink-0 rounded-md p-1 text-slate-500 hover:text-slate-200"
+                    aria-label={`Options for ${room.name}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuKey === room.id}
                   >
                     <MoreVertical className="h-3.5 w-3.5" />
                   </button>
-                  {menuKey === room.id &&
-                    renderMenuShell(
-                      <>
-                        <div className="my-0.5 border-t border-line" />
-                        <button
-                          role="menuitem"
-                          onClick={() => handleUnarchiveRoom(room)}
-                          className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
-                        >
-                          <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                          Unarchive chat
-                        </button>
-                      </>,
-                    )}
-                </button>
+                </div>
+                {menuKey === room.id &&
+                  renderMenuShell(
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => handleUnarchiveRoom(room)}
+                      className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06]"
+                    >
+                      <Archive className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                      Unarchive chat
+                    </button>,
+                  )}
               </li>
             ))}
           </ul>
@@ -2268,17 +2345,59 @@ export function RoomList() {
 
   /** One recency list. Shape is the mark on the row, not a tab. */
   function renderConversationBody() {
-    const copy = EMPTY_COPY[conversationFilter];
+    const q = searchQuery.trim();
+    const copy = q
+      ? {
+          title: `No conversations match “${q}”`,
+          hint: "Try another name, or clear the search.",
+        }
+      : EMPTY_COPY[conversationFilter];
+    const activeRoom = activeRoomId
+      ? rooms.find((room) => room.id === activeRoomId)
+      : undefined;
     return (
       <section data-testid="conversations-card" aria-label="Conversations">
+        {conversationFilter === "channels" && (
+          <div className="flex items-center justify-between px-2.5 pb-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Channels
+            </h3>
+            <button
+              type="button"
+              onClick={() => setBrowseOpen(true)}
+              className="focus-ring rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200"
+              aria-label="Browse channels"
+              title="Browse channels you can join"
+              data-testid="browse-channels"
+            >
+              Browse
+            </button>
+          </div>
+        )}
         {roomsLoaded && conversationRows.length === 0 && (
           <div className="mx-2 mb-2 rounded-lg border border-dashed border-line-strong px-3 py-3 text-xs text-slate-500">
             <p className="font-medium text-slate-400">{copy.title}</p>
             <p className="mt-1 leading-relaxed">{copy.hint}</p>
+            {conversationFilter === "channels" && (
+              <button
+                type="button"
+                onClick={() => setBrowseOpen(true)}
+                className="focus-ring mt-2 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stable-cyan transition-colors hover:bg-stable-cyan/10"
+                aria-label="Browse channels"
+              >
+                Browse channels
+              </button>
+            )}
           </div>
         )}
         <ul role="list">{conversationRows.map(renderRow)}</ul>
         {renderArchivedSection()}
+        <MeetingsRecordings
+          roomId={activeRoomId}
+          collapsible
+          relevantOnly
+          standing={activeRoom?.is_conference === true}
+        />
       </section>
     );
   }
@@ -2418,12 +2537,6 @@ export function RoomList() {
             ? "Search direct…"
             : "Search rooms…";
 
-  const visibleUnreadTargets = roomsNeedingMarkRead(
-    navV2
-      ? conversationRows.flatMap((row) => roomsOnConversationRow(row))
-      : roomsForView(preparedRooms, modelView),
-    rawUnreadFor,
-  );
   const focusedEmpty =
     !navV2 &&
     focusMode === "focused" &&

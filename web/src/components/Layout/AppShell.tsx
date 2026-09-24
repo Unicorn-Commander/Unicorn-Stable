@@ -20,8 +20,10 @@ import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
+  isDirectoryPath,
   isNavV1Enabled,
   isNavV2Enabled,
+  shellDestinationForPath,
   useNavStore,
   viewForRoom,
 } from "@/stores/navStore";
@@ -139,7 +141,11 @@ function sidebarRoomOrder(): string[][] {
   // One list: same filter and order RoomList renders. Focused mode is a
   // five-view control and must not hide rows the Unread filter would show.
   if (isNavV2Enabled()) {
-    if (useNavStore.getState().v2Destination !== "conversations") return [];
+    const destination = shellDestinationForPath(
+      window.location.pathname,
+      useNavStore.getState().v2Destination,
+    );
+    if (destination !== "conversations") return [];
     return flattenConversationRows(
       buildConversationRows({
         rooms,
@@ -151,6 +157,7 @@ function sidebarRoomOrder(): string[][] {
         expandedPeople,
         filter: useNavStore.getState().conversationFilter,
         isUnread,
+        activeRoomId,
       }),
     );
   }
@@ -590,13 +597,21 @@ export function AppShell() {
     // steer the rail from metadata.conference. Remember the v1 view anyway so
     // turning the flag off still restores Meetings / Direct / Channels.
     if (isNavV2Enabled()) {
-      if (location.pathname === "/agents") {
-        nav.setV2Destination("directory");
+      if (isDirectoryPath(location.pathname)) {
+        if (nav.v2Destination !== "directory") nav.setV2Destination("directory");
         return;
       }
-      if (!routeRoomId) return;
+      // Back from /agents used to leave "directory" selected on Home, which
+      // replaced the list with the directory note. Directory is the URL.
+      if (!routeRoomId) {
+        if (nav.v2Destination === "directory") nav.setV2Destination("home");
+        return;
+      }
       const room = storeRooms.find((r) => r.id === routeRoomId);
-      if (!room) return;
+      if (!room) {
+        if (nav.v2Destination === "directory") nav.setV2Destination("home");
+        return;
+      }
       nav.setV2Destination("conversations");
       if (activeInstanceId) {
         nav.rememberRoom(activeInstanceId, viewForRoom(room), routeRoomId);

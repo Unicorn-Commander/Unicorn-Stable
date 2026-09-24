@@ -616,8 +616,34 @@ export function conversationRecency(row: SidebarRow): number {
 function rowHasUnread(
   row: SidebarRow,
   isUnread: (room: Room) => boolean,
+  activeRoomId?: string | null,
 ): boolean {
-  return roomsOnConversationRow(row).some(isUnread);
+  const onRow = roomsOnConversationRow(row);
+  // Opening a room clears its unread before the route catches up, which used
+  // to drop it out of the unread group and make Alt+↓ skip the rows above it.
+  // While it is the open room it stays in that group (same idea as Focused
+  // mode's isActive). A read room you are simply looking at stays visible in
+  // the Unread filter for the same reason.
+  if (activeRoomId && onRow.some((room) => room.id === activeRoomId)) return true;
+  return onRow.some(isUnread);
+}
+
+/**
+ * Group rows ask identity for a facepile. The list payload's `members` is
+ * empty, so the resolver falls through to the last sender and does not check
+ * whether that sender is you. Drop that fallback here. Callers still render
+ * the group glyph when fewer than two faces come back.
+ */
+export function groupFaceRoom(
+  room: Room,
+  selfIds: readonly (string | null | undefined)[],
+): Room {
+  const sender = room.last_message?.sender_id;
+  if (!sender) return room;
+  for (const id of selfIds) {
+    if (id && id === sender) return { ...room, last_message: null };
+  }
+  return room;
 }
 
 export interface ConversationListInput {
@@ -630,6 +656,8 @@ export interface ConversationListInput {
   expandedPeople: Record<string, boolean>;
   filter: ConversationFilter;
   isUnread: (room: Room) => boolean;
+  /** Open room. Stays in the unread group until the user leaves it. */
+  activeRoomId?: string | null;
 }
 
 /**
@@ -657,17 +685,17 @@ export function buildConversationRows(input: ConversationListInput): SidebarRow[
   for (const section of model.sections) {
     for (const group of section.groups) rows.push(...group.rows);
   }
-  const { filter, isUnread } = input;
+  const { filter, isUnread, activeRoomId = null } = input;
+  const unread = (row: SidebarRow) => rowHasUnread(row, isUnread, activeRoomId);
   const visible = rows.filter((row) => {
     const shape = conversationShape(row);
     if (filter === "people" && shape === "channel") return false;
     if (filter === "channels" && shape !== "channel") return false;
-    if (filter === "unread" && !rowHasUnread(row, isUnread)) return false;
+    if (filter === "unread" && !unread(row)) return false;
     return true;
   });
   visible.sort((a, b) => {
-    const unreadDelta =
-      Number(rowHasUnread(b, isUnread)) - Number(rowHasUnread(a, isUnread));
+    const unreadDelta = Number(unread(b)) - Number(unread(a));
     if (unreadDelta !== 0) return unreadDelta;
     const recentDelta = conversationRecency(b) - conversationRecency(a);
     if (recentDelta !== 0) return recentDelta;

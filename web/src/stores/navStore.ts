@@ -69,15 +69,21 @@ export const NAV_V2_FLAG_KEY = "stable_nav_v2";
 /**
  * Whether the one Conversations list is on.
  *
- * Priority matches nav v1:
+ * An explicit nav-v1 opt-out wins first. `stable_nav_v1` `"0"` / `"false"`,
+ * or `VITE_NAV_V1` `"0"` / `"false"`, restores the classic tree and keeps
+ * this shell off even when `stable_nav_v2` is `"1"`. Otherwise v2's default
+ * would swallow that choice.
+ *
+ * Then:
  *   1. localStorage `stable_nav_v2` — "0"/"false" off, "1"/"true" on
  *   2. `import.meta.env.VITE_NAV_V2` — "0"/"false" off
  *   3. default **on**
  *
- * Off means today's five-view shell (Home / Direct / Channels / Meetings /
- * Agents), which itself still honours `stable_nav_v1`.
+ * Off with nav v1 still on is the five-view shell (Home / Direct / Channels /
+ * Meetings / Agents). Off because nav v1 is off is the classic tree.
  */
 export function isNavV2Enabled(): boolean {
+  if (!isNavV1Enabled()) return false;
   if (typeof window !== "undefined") {
     try {
       const raw = localStorage.getItem(NAV_V2_FLAG_KEY);
@@ -92,12 +98,31 @@ export function isNavV2Enabled(): boolean {
   return true;
 }
 
+/** `/agents` and anything under it. Not a stored rail choice. */
+export function isDirectoryPath(pathname: string): boolean {
+  return pathname === "/agents" || pathname.startsWith("/agents/");
+}
+
+/**
+ * Rail selection for a URL.
+ *
+ * Directory is the agents route. A room URL is Conversations. Anywhere else,
+ * a stored "directory" is stale (back from /agents used to leave it selected
+ * on Home) and reads as Home. Conversations can still sit on `/` with no room.
+ */
+export function shellDestinationForPath(
+  pathname: string,
+  stored: ShellDestination,
+): ShellDestination {
+  if (isDirectoryPath(pathname)) return "directory";
+  if (pathname.startsWith("/c/")) return "conversations";
+  if (stored === "directory") return "home";
+  return stored;
+}
+
 function initialShellDestination(): ShellDestination {
   if (typeof window === "undefined") return "home";
-  const path = window.location.pathname;
-  if (path === "/agents") return "directory";
-  if (path.startsWith("/c/")) return "conversations";
-  return "home";
+  return shellDestinationForPath(window.location.pathname, "home");
 }
 
 /**

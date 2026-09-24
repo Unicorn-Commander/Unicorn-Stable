@@ -1,10 +1,22 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Room } from "@/services/api";
 import {
   isNavV2Enabled,
+  NAV_V1_FLAG_KEY,
   NAV_V2_FLAG_KEY,
+  shellDestinationForPath,
   viewForRoom,
 } from "./navStore";
+
+function memoryStorage() {
+  const store = new Map<string, string>();
+  return {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+  };
+}
 
 function room(over: Partial<Room> = {}): Room {
   return {
@@ -25,7 +37,7 @@ function room(over: Partial<Room> = {}): Room {
 
 describe("nav v2 flag", () => {
   beforeEach(() => {
-    localStorage.clear();
+    vi.stubGlobal("localStorage", memoryStorage());
   });
 
   it("defaults on", () => {
@@ -47,6 +59,16 @@ describe("nav v2 flag", () => {
     expect(isNavV2Enabled()).toBe(true);
   });
 
+  it("treats an explicit nav v1 opt-out as nav v2 off", () => {
+    localStorage.setItem(NAV_V1_FLAG_KEY, "0");
+    expect(isNavV2Enabled()).toBe(false);
+    localStorage.setItem(NAV_V2_FLAG_KEY, "1");
+    expect(isNavV2Enabled()).toBe(false);
+    localStorage.setItem(NAV_V1_FLAG_KEY, "false");
+    localStorage.removeItem(NAV_V2_FLAG_KEY);
+    expect(isNavV2Enabled()).toBe(false);
+  });
+
   it("keeps standing rooms on Meetings for the five-view fallback", () => {
     expect(viewForRoom(room({ is_conference: true, type: "channel" }))).toBe(
       "meetings",
@@ -55,5 +77,18 @@ describe("nav v2 flag", () => {
       "direct",
     );
     expect(viewForRoom(room({ type: "channel" }))).toBe("channels");
+  });
+
+  it("derives directory from the agents path and drops it off that path", () => {
+    expect(shellDestinationForPath("/agents", "home")).toBe("directory");
+    expect(shellDestinationForPath("/agents/org", "conversations")).toBe(
+      "directory",
+    );
+    expect(shellDestinationForPath("/", "directory")).toBe("home");
+    expect(shellDestinationForPath("/", "conversations")).toBe("conversations");
+    expect(shellDestinationForPath("/c/room-1", "directory")).toBe(
+      "conversations",
+    );
+    expect(shellDestinationForPath("/c/room-1", "home")).toBe("conversations");
   });
 });

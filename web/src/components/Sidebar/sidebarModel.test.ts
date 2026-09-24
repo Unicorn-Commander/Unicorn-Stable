@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { Room } from "@/services/api";
+import type { Message, Room } from "@/services/api";
 import {
   buildConversationRows,
   buildSidebarModel,
   conversationShape,
+  flattenConversationRows,
   flattenSidebarOrder,
+  groupFaceRoom,
   isPrivateChannel,
   roomsForView,
+  roomsOnConversationRow,
   type SidebarRow,
 } from "./sidebarModel";
 
@@ -136,6 +139,13 @@ describe("sidebar nesting", () => {
     );
     if (hubRow?.kind === "person" && hubRow.entry.kind === "agent") {
       expect(hubRow.entry.threads.map((t) => t.id)).toEqual(["t-new", "t-old"]);
+      // The row badge uses this set: the hub plus the threads, even when the
+      // expanded list is only the children.
+      expect(roomsOnConversationRow(hubRow).map((t) => t.id)).toEqual([
+        "hub",
+        "t-new",
+        "t-old",
+      ]);
       expect(hubRow.entry.archivedCount).toBe(1);
       expect(hubRow.entry.mode).toBe("answers_all");
       expect(hubRow.entry.hub.id).toBe("hub");
@@ -343,5 +353,101 @@ describe("one conversation list", () => {
       isUnread,
     }).map(rowId);
     expect(unread).toEqual(["hub-p", "dm-old"]);
+  });
+
+  it("keeps the open room in the unread group so Alt+Down reaches the next unread", () => {
+    // U1 was unread and is now open, so its badge is already cleared.
+    // Without the pin it falls out of the unread group and Alt+↓ skips U2.
+    const opened = [
+      room({
+        id: "U1",
+        name: "U1",
+        type: "dm",
+        unread_count: 0,
+        updated_at: "2026-09-24T05:00:00Z",
+      }),
+      room({
+        id: "U2",
+        name: "U2",
+        type: "dm",
+        unread_count: 2,
+        updated_at: "2026-09-24T04:00:00Z",
+      }),
+      room({
+        id: "R1",
+        name: "R1",
+        type: "channel",
+        unread_count: 0,
+        updated_at: "2026-09-24T03:00:00Z",
+      }),
+      room({
+        id: "R2",
+        name: "R2",
+        type: "channel",
+        unread_count: 0,
+        updated_at: "2026-09-24T02:00:00Z",
+      }),
+      room({
+        id: "R3",
+        name: "R3",
+        type: "channel",
+        unread_count: 0,
+        updated_at: "2026-09-24T01:00:00Z",
+      }),
+    ];
+    const stillUnread = (candidate: { unread_count?: number }) =>
+      (candidate.unread_count ?? 0) > 0;
+    const dropped = buildConversationRows({
+      ...base,
+      rooms: opened,
+      filter: "all",
+      isUnread: stillUnread,
+    }).map(rowId);
+    expect(dropped).toEqual(["U2", "U1", "R1", "R2", "R3"]);
+
+    const pinned = buildConversationRows({
+      ...base,
+      rooms: opened,
+      filter: "all",
+      isUnread: stillUnread,
+      activeRoomId: "U1",
+    });
+    expect(pinned.map(rowId)).toEqual(["U1", "U2", "R1", "R2", "R3"]);
+    const order = flattenConversationRows(pinned);
+    const at = order.findIndex((ids) => ids.includes("U1"));
+    expect(at).toBe(0);
+    expect(order[at + 1]?.[0]).toBe("U2");
+
+    const unreadFilter = buildConversationRows({
+      ...base,
+      rooms: opened,
+      filter: "unread",
+      isUnread: stillUnread,
+      activeRoomId: "U1",
+    }).map(rowId);
+    expect(unreadFilter).toEqual(["U1", "U2"]);
+  });
+
+  it("does not use the current user as a group's last-sender fallback", () => {
+    const last: Message = {
+      id: "m",
+      room_id: "g",
+      sender_id: "me",
+      sender_type: "human",
+      sender_name: "Me",
+      sender_avatar: null,
+      content: "hi",
+      content_type: "text",
+      thread_id: null,
+      reply_count: 0,
+      edited: false,
+      created_at: "2026-09-24T00:00:00Z",
+      updated_at: "2026-09-24T00:00:00Z",
+      metadata: {},
+    };
+    const crew = room({ id: "g", type: "group_dm", last_message: last });
+    expect(groupFaceRoom(crew, ["me"]).last_message).toBeNull();
+    expect(groupFaceRoom(crew, ["someone-else"]).last_message).toBe(last);
+    expect(groupFaceRoom(crew, [null, undefined]).last_message).toBe(last);
   });
 });

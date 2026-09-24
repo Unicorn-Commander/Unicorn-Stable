@@ -10,6 +10,8 @@ interface ImportMetaEnv {
   /**
    * One Conversations list (nav v2). Default on; set "0"/"false" to restore
    * the five-view shell. Overridden by localStorage `stable_nav_v2`.
+   * An explicit `stable_nav_v1=0` (or `VITE_NAV_V1=0`) opts out of this shell
+   * too and restores the classic tree.
    */
   readonly VITE_NAV_V2?: string;
   /**

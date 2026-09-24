@@ -28,8 +28,10 @@ import { countNeedsYou } from "@/lib/conversation";
 import { getNotifyLevel } from "@/utils/mute";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
 import {
+  isDirectoryPath,
   isNavV1Enabled,
   isNavV2Enabled,
+  shellDestinationForPath,
   useNavStore,
   type NavView,
 } from "@/stores/navStore";
@@ -134,11 +136,7 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
     is_self: !!currentUser,
   });
 
-  function v2Active(id: string): boolean {
-    if (path === "/agents") return id === "directory";
-    if (path.startsWith("/c/")) return id === "conversations";
-    return v2Destination === id;
-  }
+  const destination = shellDestinationForPath(path, v2Destination);
 
   function select(id: string) {
     if (navV2) {
@@ -155,7 +153,7 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
         return;
       }
       setV2Destination("conversations");
-      if (path === "/agents") navigate("/");
+      if (isDirectoryPath(path)) navigate("/");
       return;
     }
     const view = id as NavView;
@@ -185,7 +183,7 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
     >
       {destinations.map(({ id, label, Icon, testId }) => {
         const badge = badges[id] ?? 0;
-        const active = navV2 ? v2Active(id) : activeView === id;
+        const active = navV2 ? destination === id : activeView === id;
         return (
           <Tooltip key={id} content={badge > 0 ? `${label} · ${badge} need you` : label}>
             <button
@@ -253,8 +251,9 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
 }
 
 export function ServerRail({ mobile = false }: { mobile?: boolean }) {
-  // v2 is the one-list shell. v2 off falls through to today's five-view rail
-  // (or the classic server rail when nav v1 is also off).
+  // v2 is the one-list shell. An explicit stable_nav_v1=0 opts out of v2
+  // too (isNavV2Enabled is false) and lands on the classic rail. v2 off with
+  // v1 still on is the five-view rail.
   if (isNavV2Enabled() || isNavV1Enabled()) return <DestinationRail mobile={mobile} />;
   return <FederationRail mobile={mobile} />;
 }
