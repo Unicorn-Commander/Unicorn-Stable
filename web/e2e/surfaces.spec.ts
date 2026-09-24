@@ -927,12 +927,83 @@ test.describe("One conversation list", () => {
       await stubConversationRooms(page);
       await page.goto("/");
       await waitForAppReady(page);
+      await page.route("**/api/v1/rooms/*/recordings**", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "[]",
+        });
+      });
+      await page.route("**/api/v1/rooms/browse**", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "[]",
+        });
+      });
+      await page.route("**/api/v1/rooms/*/members**", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "[]",
+        });
+      });
+      await page.route("**/api/v1/rooms/*/messages**", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ messages: [], cursor: null, has_more: false }),
+        });
+      });
+      await page.route("**/api/v1/rooms/*", async (route) => {
+        const url = new URL(route.request().url());
+        const parts = url.pathname.split("/").filter(Boolean);
+        if (parts.length !== 4 || parts[3] === "browse") {
+          await route.fallback();
+          return;
+        }
+        const id = parts[3]!;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            id,
+            name: id,
+            display_name: id,
+            description: "",
+            room_type: "channel",
+            created_at: "2026-09-24T12:00:00Z",
+            updated_at: "2026-09-24T12:00:00Z",
+            member_count: 1,
+            unread_count: 0,
+            is_archived: false,
+            visibility: "public",
+            metadata_: id === "room-war" ? { conference: true } : {},
+          }),
+        });
+      });
       await clickTestId(page, "nav-conversations");
       await expect(page.getByTestId("conversations-card")).toBeVisible();
       await expect(page.getByTestId("workspace-name")).toBeVisible();
       await expect(page.getByTestId("workspace-name")).not.toHaveText("");
       for (const id of ["all", "unread", "people", "channels"] as const) {
         await expect(page.getByTestId(`conv-filter-${id}`)).toBeVisible();
+      }
+      // Unread first (newest unread at the top), then recency. war-room is a
+      // standing room and still a Channel row.
+      const rows = page.getByTestId("conversation-row");
+      await expect(rows).toHaveCount(6);
+      const order: { name: string; shape: string }[] = [
+        { name: "general", shape: "channel" },
+        { name: "Nate Ellison", shape: "direct" },
+        { name: "Triage Agent", shape: "direct" },
+        { name: "Crew", shape: "group" },
+        { name: "leadership", shape: "channel" },
+        { name: "war-room", shape: "channel" },
+      ];
+      for (let i = 0; i < order.length; i++) {
+        await expect(rows.nth(i)).toContainText(order[i]!.name);
+        await expect(rows.nth(i)).toHaveAttribute("data-shape", order[i]!.shape);
       }
       await expect(page.locator('[data-shape="direct"]').first()).toBeVisible();
       await expect(page.locator('[data-shape="group"]')).toBeVisible();
@@ -949,7 +1020,23 @@ test.describe("One conversation list", () => {
         fullPage: true,
       });
 
+      const listUrl = () => new URL(page.url()).pathname;
+      const pathBeforeFilters = listUrl();
+      async function expectRailUnchanged() {
+        expect(listUrl()).toBe(pathBeforeFilters);
+        await expect(
+          page.getByTestId("nav-conversations").locator("visible=true").first(),
+        ).toHaveAttribute("aria-current", "page");
+        await expect(
+          page.getByTestId("nav-home").locator("visible=true").first(),
+        ).not.toHaveAttribute("aria-current", "page");
+        await expect(
+          page.getByTestId("nav-directory").locator("visible=true").first(),
+        ).not.toHaveAttribute("aria-current", "page");
+      }
+
       await page.getByTestId("conv-filter-unread").click();
+      await expectRailUnchanged();
       await expect(page.locator('[data-shape="group"]')).toHaveCount(0);
       await expect(page.locator('[data-shape="direct"]').first()).toBeVisible();
       await page.screenshot({
@@ -958,6 +1045,7 @@ test.describe("One conversation list", () => {
       });
 
       await page.getByTestId("conv-filter-people").click();
+      await expectRailUnchanged();
       await expect(page.locator('[data-shape="channel"]')).toHaveCount(0);
       await expect(page.locator('[data-shape="group"]')).toBeVisible();
       await expect(page.locator('[data-shape="direct"]').first()).toBeVisible();
@@ -967,10 +1055,40 @@ test.describe("One conversation list", () => {
       });
 
       await page.getByTestId("conv-filter-channels").click();
+      await expectRailUnchanged();
       await expect(page.locator('[data-shape="group"]')).toHaveCount(0);
       await expect(page.locator('[data-shape="direct"]')).toHaveCount(0);
       await expect(page.locator('[data-shape="channel"]').first()).toBeVisible();
       await expect(page.getByLabel("Private channel").first()).toBeVisible();
+      await page.getByTestId("browse-channels").click();
+      const browser = page.getByRole("dialog", { name: "Browse channels" });
+      await expect(browser).toBeVisible();
+      await browser.getByRole("button", { name: "Close" }).click();
+      await expect(browser).toHaveCount(0);
+
+      await page.getByTestId("conv-filter-all").click();
+      await expectRailUnchanged();
+      const general = page.getByTestId("conversation-row").filter({ hasText: "general" }).first();
+      await general.getByRole("button").first().click();
+      await expect(page).toHaveURL(/\/c\/room-general/);
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+      }
+      const afterOpen = page.getByTestId("conversation-row");
+      await expect(afterOpen.nth(0)).toContainText("general");
+      await expect(afterOpen.nth(0).getByRole("button").first()).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      await expect(afterOpen.nth(1)).toContainText("Nate Ellison");
+      await expect(afterOpen.nth(1)).toHaveAttribute("data-shape", "direct");
+
+      await page.getByTestId("conversation-row").filter({ hasText: "war-room" }).getByRole("button").first().click();
+      await expect(page).toHaveURL(/\/c\/room-war/);
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+      }
+      await expect(page.getByTestId("room-recordings").locator("visible=true")).toBeVisible();
       await page.screenshot({
         path: `test-results/ConversationList-channels-${viewport}-${testInfo.project.name}.png`,
         fullPage: true,
