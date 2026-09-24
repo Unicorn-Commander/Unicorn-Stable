@@ -64,12 +64,13 @@ from typing import Any
 
 import httpx
 import structlog
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.models.call_egress import ACTIVE_EGRESS_STATUSES, CallEgress
+from app.models.agent import AgentEvent
 from app.models.message import ContentType, Message
 from app.models.participant import Participant
 from app.models.room import Room, TranscriptExport
@@ -340,6 +341,33 @@ async def _post_system_message(
         )
     except Exception:
         logger.warning("recording_system_message_fanout_failed", exc_info=True)
+
+
+async def _announce_recording_failure(db: AsyncSession, row: CallEgress, reason: str) -> None:
+    """Make a failed/orphaned recording visible to people and agents."""
+    if row.room_id is None:
+        return
+    await _post_system_message(
+        db, row.room_id, f"Recording failed: {reason[:500]}",
+        {"kind": "recording", "event": "failed", "recording_id": str(row.id),
+         "egress_id": row.egress_id, "reason": reason[:2000]},
+    )
+    try:
+        db.add(AgentEvent(
+            agent_identity="stable-recording", agent_type="system",
+            event_type="recording_failed", room_ref=str(row.room_id),
+            correlation_id=str(row.id),
+            event_data={"recording_id": str(row.id), "egress_id": row.egress_id,
+                        "reason": reason[:2000]},
+            occurred_at=_now(),
+        ))
+        await db.commit()
+    except Exception:
+        logger.warning("recording_failure_agent_event_failed", room_id=str(row.room_id), exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 async def announce_recording(
@@ -634,6 +662,7 @@ async def start_recording(
             kind=kind,
             error=str(exc),
         )
+        await _announce_recording_failure(db, row, row.error or "egress start failed")
         raise RecordingError(
             "egress_unavailable",
             503,
@@ -902,11 +931,120 @@ async def handle_egress_event(
     await db.commit()
 
     room = await db.get(Room, row.room_id) if row.room_id is not None else None
-    if owes_stop_receipt and room is not None:
-        await announce_recording(
-            db, room, row, active=False, reason="ended" if completed else "failed"
-        )
     await _finish_row_side_effects(db, livekit, redis, row, room_name or None)
+
+    if completed:
+        if owes_stop_receipt and room is not None:
+            await announce_recording(db, room, row, active=False, reason="ended")
+        return
+
+    replacement = await _retry_failed_start(db, settings, livekit, redis, room, row)
+    if replacement is not None:
+        # The replacement posted its own "started" receipt and the failed
+        # row names it, so this no longer reads as a lost recording.
+        return
+    if owes_stop_receipt and room is not None:
+        await announce_recording(db, room, row, active=False, reason="failed")
+    await _announce_recording_failure(db, row, row.error or "egress failed")
+
+
+_START_RETRY_WINDOW = timedelta(minutes=3)
+_START_RETRY_MAX_FAILED = 2
+
+
+async def _retry_failed_start(
+    db: AsyncSession,
+    settings: Settings,
+    livekit: Any,
+    redis: Any,
+    room: Room | None,
+    failed: CallEgress,
+) -> CallEgress | None:
+    """One bounded replacement for an egress that died before it recorded.
+
+    Measured on dogfood 2026-09-24 (build-in-public-live): ``egress_ended``
+    with "Start signal not received" 1.2 s after StartEgress, 0 bytes. The
+    lease had released correctly (the row was already ``failed``) and a
+    second person's join six seconds later started a recording that
+    completed — so a call with ONE human would simply not have been
+    recorded. Retry here when the room asked for every call (``always``),
+    nothing was captured, a human is still in the LiveKit room, and fewer
+    than two rows failed for the room in the last three minutes (a broken
+    egress must not loop). Returns the replacement row, or None when no
+    retry happened. Never raises.
+    """
+    if room is None or livekit is None:
+        return None
+    if (failed.file_size_bytes or 0) > 0:
+        return None
+    if normalize_policy(getattr(room, "recording_policy", "off")) != "always":
+        return None
+    try:
+        recent = (
+            await db.execute(
+                select(func.count())
+                .select_from(CallEgress)
+                .where(
+                    CallEgress.room_id == room.id,
+                    CallEgress.status == "failed",
+                    CallEgress.created_at >= _now() - _START_RETRY_WINDOW,
+                )
+            )
+        ).scalar_one()
+        if int(recent or 0) >= _START_RETRY_MAX_FAILED:
+            logger.error(
+                "call_recording_retry_exhausted",
+                room_id=str(room.id),
+                recent_failures=int(recent or 0),
+            )
+            return None
+        info = await livekit.get_room(room.livekit_room_name)
+        participants = info.get("participants", []) if isinstance(info, dict) else []
+        humans = [
+            p
+            for p in participants
+            if not is_service_identity(getattr(p, "identity", ""))
+            and not _is_agent_identity(getattr(p, "identity", ""))
+        ]
+        if not humans:
+            return None
+    except Exception:
+        logger.warning("call_recording_retry_probe_failed", room_id=str(room.id), exc_info=True)
+        return None
+
+    replacement: CallEgress | None
+    try:
+        replacement = await start_recording(
+            db,
+            settings,
+            livekit,
+            room,
+            kind=failed.kind or KIND_AUDIO,
+            started_by=failed.started_by,
+            redis=redis,
+            trigger="policy always",
+        )
+    except RecordingError as exc:
+        if exc.code != "already_active":
+            logger.warning("call_recording_retry_refused", room_id=str(room.id), code=exc.code)
+            return None
+        replacement = await active_recording(db, room.id)
+    except Exception:
+        logger.warning("call_recording_retry_failed", room_id=str(room.id), exc_info=True)
+        return None
+    if replacement is None:
+        return None
+    failed.error = (
+        f"{failed.error or 'egress failed'} — retried automatically as recording {replacement.id}"
+    )[:2000]
+    await db.commit()
+    logger.info(
+        "call_recording_retried",
+        room_id=str(room.id),
+        failed_id=str(failed.id),
+        replacement_id=str(replacement.id),
+    )
+    return replacement
 
 
 # ---------------------------------------------------------------------------
@@ -1018,11 +1156,19 @@ async def upload_audio_to_meeting_ops(
     settings: Settings,
     *,
     file_path: Path,
-    target_session_id: str,
+    target_session_id: str | None,
     filename: str,
     content_type: str = "audio/ogg",
 ) -> dict[str, Any]:
-    """Attach one media file to an existing MO session via MO's upload API.
+    """Deliver one media file to Meeting-Ops through MO's upload API.
+
+    ``target_session_id`` set → ``action=attach`` onto that session (the one
+    the call's transcript export created). None → ``action=transcribe``: MO
+    creates a NEW session from the media and runs its own STT + summary, so
+    a call nobody exported a transcript for still lands. (Dogfood
+    2026-09-24: four of the last ten recordings sat as ``no_session``.)
+    MO's transcript-ingest endpoint cannot do this — it refuses an export
+    with no lines — which is why the media upload is the door.
 
     start → chunk* → finalize, honoring the server-assigned chunk size.
     Returns a status dict; never raises. Composite MP4s ride the same path
@@ -1050,15 +1196,17 @@ async def upload_audio_to_meeting_ops(
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(180.0, connect=10.0)
         ) as client:
+            start_json: dict[str, Any] = {
+                "filename": filename,
+                "total_size": total_size,
+                "content_type": content_type,
+                "action": "attach" if target_session_id else "transcribe",
+            }
+            if target_session_id:
+                start_json["target_session_id"] = target_session_id
             start_resp = await client.post(
                 f"{base}/api/uploads/start",
-                json={
-                    "filename": filename,
-                    "total_size": total_size,
-                    "content_type": content_type,
-                    "action": "attach",
-                    "target_session_id": target_session_id,
-                },
+                json=start_json,
                 headers=headers,
             )
             if start_resp.status_code >= 400:
@@ -1114,10 +1262,27 @@ async def upload_audio_to_meeting_ops(
                     "http_status": finalize_resp.status_code,
                     "detail": f"MO finalize returned HTTP {finalize_resp.status_code}",
                 }
+            session_id: str | None = None
+            try:
+                fin = finalize_resp.json() if finalize_resp.content else {}
+                if isinstance(fin, dict) and fin.get("session_id") is not None:
+                    session_id = str(fin["session_id"])
+            except Exception:
+                session_id = None
+            if session_id is None and not target_session_id:
+                # A transcribe upload's session is created by MO's pipeline
+                # worker moments after finalize; give it a few seconds so the
+                # row can carry the session it landed in.
+                session_id = await _poll_upload_session_id(client, base, upload_id, headers)
             return {
                 "ok": True,
                 "upload_id": upload_id,
-                "detail": "audio attached to Meeting-Ops session",
+                "session_id": session_id,
+                "detail": (
+                    "audio attached to Meeting-Ops session"
+                    if target_session_id
+                    else "Meeting-Ops session created from the recording"
+                ),
             }
     except Exception as exc:
         return {
@@ -1127,10 +1292,35 @@ async def upload_audio_to_meeting_ops(
         }
 
 
+async def _poll_upload_session_id(
+    client: Any,
+    base: str,
+    upload_id: str,
+    headers: dict[str, str],
+    *,
+    attempts: int = 4,
+    delay_seconds: float = 2.0,
+) -> str | None:
+    """The session MO's pipeline created for a transcribe upload, if it has yet."""
+    for _ in range(max(0, attempts)):
+        await asyncio.sleep(delay_seconds)
+        try:
+            resp = await client.get(f"{base}/api/uploads/{upload_id}", headers=headers)
+            if resp.status_code >= 400:
+                return None
+            body = resp.json()
+            if isinstance(body, dict) and body.get("session_id") is not None:
+                return str(body["session_id"])
+        except Exception:
+            return None
+    return None
+
+
 async def _sweep_stale_rows(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings | None = None,
     redis: Any = None,
+    livekit: Any = None,
 ) -> None:
     """Terminalize rows whose owner died, so room leases free up loudly."""
     now = _now()
@@ -1166,12 +1356,32 @@ async def _sweep_stale_rows(
             .scalars()
             .all()
         )
+        reconciled: list[CallEgress] = []
+        for row in stale_starting + stale_running:
+            if livekit is None or not hasattr(livekit, "list_egress"):
+                continue
+            try:
+                records = await livekit.list_egress(row.livekit_room_name)
+                remote = next(
+                    (item for item in records if getattr(item, "egress_id", None) == row.egress_id),
+                    None,
+                )
+                if remote is not None and int(getattr(remote, "status", 0) or 0) in (3, 4, 5, 6):
+                    await handle_egress_event(
+                        db, settings or Settings(), "egress_ended", remote,
+                        redis=redis, livekit=livekit,
+                    )
+                    reconciled.append(row)
+            except Exception:
+                logger.warning("call_recording_livekit_reconcile_failed", recording_id=str(row.id), exc_info=True)
+        stale_starting = [row for row in stale_starting if row not in reconciled]
+        stale_running = [row for row in stale_running if row not in reconciled]
         for row in stale_starting:
             row.status = "failed"
             row.error = "abandoned before StartEgress completed (worker died?)"
         for row in stale_running:
             row.status = "failed"
-            row.error = "no egress_ended webhook received; recording state lost"
+            row.error = "no egress_ended webhook received; LiveKit egress was not found"
         if stale_starting or stale_running:
             await db.commit()
             logger.error(
@@ -1181,6 +1391,7 @@ async def _sweep_stale_rows(
             )
             for row in list(stale_starting) + list(stale_running):
                 await _finish_row_side_effects(db, None, redis, row, row.livekit_room_name)
+                await _announce_recording_failure(db, row, row.error or "recording lost")
 
 
 async def _sweep_retention(
@@ -1298,10 +1509,11 @@ async def run_maintenance_sweep(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     redis: Any = None,
+    livekit: Any = None,
 ) -> None:
     """Everything the 2-minute sweep does; each step fails independently."""
     for step in (
-        lambda: _sweep_stale_rows(session_factory, settings, redis),
+        lambda: _sweep_stale_rows(session_factory, settings, redis, livekit),
         lambda: _sweep_retention(session_factory, settings),
         lambda: _sweep_local_files_after_delivery(session_factory),
         lambda: _sweep_composite_slots(session_factory, redis),
@@ -1453,31 +1665,27 @@ async def _deliver_claimed_handoff(
 
         if session_id is None:
             waited = (_now() - ended_at).total_seconds()
-            if waited > settings.call_recording_session_wait_seconds:
-                row.handoff_status = "no_session"
-                row.handoff_error = (
-                    "no delivered Meeting-Ops transcript session matched this "
-                    "call's recording window"
-                )
-                await db.commit()
-                logger.error(
-                    "call_recording_handoff_no_session",
-                    egress_id=row.egress_id,
-                    room_id=str(room_id),
-                    waited_seconds=int(waited),
-                )
-            else:
+            if waited <= settings.call_recording_session_wait_seconds:
                 row.handoff_status = "pending"
                 row.handoff_error = "waiting for the call's Meeting-Ops session"
                 row.handoff_next_attempt_at = _now() + timedelta(
                     seconds=_backoff_seconds(settings, attempts)
                 )
                 await db.commit()
-            return
-
-        # Remember the target before the network call so retries stay sticky.
-        row.mo_session_id = session_id
-        await db.commit()
+                return
+            # Nobody exported a transcript for this call (or the window
+            # missed). The file is not orphaned: MO's transcribe upload makes
+            # the session from the media itself.
+            logger.warning(
+                "call_recording_handoff_session_from_media",
+                egress_id=row.egress_id,
+                room_id=str(room_id),
+                waited_seconds=int(waited),
+            )
+        else:
+            # Remember the target before the network call so retries stay sticky.
+            row.mo_session_id = session_id
+            await db.commit()
         filename = file_path.name
 
     result = await upload_audio_to_meeting_ops(
@@ -1495,6 +1703,8 @@ async def _deliver_claimed_handoff(
         if result.get("ok"):
             row.handoff_status = "delivered"
             row.mo_upload_id = str(result.get("upload_id") or "") or None
+            if not row.mo_session_id and result.get("session_id"):
+                row.mo_session_id = str(result["session_id"])
             row.handoff_error = None
             logger.info(
                 "call_recording_handoff_delivered",
@@ -1562,6 +1772,7 @@ async def run_call_recording_handoff(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     redis: Any = None,
+    livekit: Any = None,
 ) -> None:
     """Continuously drain hand-off rows; safe in every uvicorn worker."""
     poll = max(0.5, settings.call_recording_handoff_poll_seconds)
@@ -1569,7 +1780,7 @@ async def run_call_recording_handoff(
     while True:
         try:
             if _now() >= next_sweep:
-                await run_maintenance_sweep(session_factory, settings, redis)
+                await run_maintenance_sweep(session_factory, settings, redis, livekit)
                 next_sweep = _now() + timedelta(minutes=2)
             worked = await deliver_handoff_now(session_factory, settings)
             if not worked:

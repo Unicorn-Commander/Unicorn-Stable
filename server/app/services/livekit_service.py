@@ -7,6 +7,7 @@ from typing import Any
 import structlog
 from livekit.api import AccessToken, LiveKitAPI, VideoGrants
 from livekit.api.room_service import CreateRoomRequest, DeleteRoomRequest, ListRoomsRequest
+from livekit.api.egress_service import ListEgressRequest
 from livekit.api.room_service import MuteRoomTrackRequest, RoomParticipantIdentity
 from livekit.api.room_service import SendDataRequest, UpdateParticipantRequest
 from livekit.api.room_service import UpdateRoomMetadataRequest
@@ -160,6 +161,11 @@ class LiveKitService:
         info = await self._api.egress.stop_egress(request)
         logger.info("livekit_egress_stop_requested", egress_id=egress_id)
         return info
+
+    async def list_egress(self, room_name: str) -> list[Any]:
+        """Return LiveKit's current/finished egress records for a room."""
+        response = await self._api.egress.list_egress(ListEgressRequest(room_name=room_name))
+        return list(response.items)
 
     def generate_token(
         self,
