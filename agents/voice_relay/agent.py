@@ -1670,7 +1670,10 @@ class VoiceRelayAgent(StableAgent):
         )
         if not decision.respond:
             return None
-        self._publisher.persist_user_utterance(speaker, f"@{candidate} {text}")
+        # The responder matches ``@<brigade id>`` / ``@<display name>``, not
+        # the ``agent-`` username (measured: "@agent-grok …" got no reply).
+        mention = candidate[6:] if candidate.startswith("agent-") else candidate
+        self._publisher.persist_user_utterance(speaker, f"@{mention} {text}", reply=True)
         logger.info(
             "voice_relay_heard_addressed",
             speaker=speaker,

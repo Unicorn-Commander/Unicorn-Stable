@@ -752,6 +752,11 @@ class VoiceUserMessageBody(BaseModel):
     livekit_room_name: str
     speaker_identity: str
     content: str
+    #: The relay routed this line to ANOTHER agent (``@<brigade id> …``) and
+    #: wants the normal text responder to answer it — the cast speaks that
+    #: reply. False (default) keeps the persona case: the voice agent already
+    #: answers over TTS, a text reply would double-respond.
+    reply_to_mention: bool = False
 
 
 class AgentMessageUpdateBody(BaseModel):
@@ -1230,9 +1235,13 @@ async def post_voice_user_message(
     internal agent routes.
 
     Attributed to the resolved human participant and tagged ``via=voice``.
-    Crucially we pass ``request=None`` into ``send_message`` so this does NOT
+    By default we pass ``request=None`` into ``send_message`` so this does NOT
     schedule a *text* agent reply — the voice agent already answers over TTS;
-    a text reply here would double-respond.
+    a text reply here would double-respond. ``reply_to_mention`` is the relay
+    saying the line was for a DIFFERENT agent (persisted as ``@<id> …``): then
+    the responder is scheduled exactly as for a typed message, and the cast
+    speaks its reply. (N4 rehearsal 2026-09-24: routed lines landed in chat
+    and nobody answered them.)
     """
     from sqlalchemy import select as _select
 
@@ -1299,7 +1308,7 @@ async def post_voice_user_message(
         user=fake_user,
         db=db,
         livekit=livekit,
-        request=None,
+        request=request if body.reply_to_mention else None,
     )
 
 

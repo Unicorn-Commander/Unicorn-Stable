@@ -270,8 +270,13 @@ class PersisterWiringTests(TestCase):
         # The call shape must match the real signature.
         sig = inspect.signature(VoiceHistoryPersister.persist_user_utterance)
         self.assertEqual(
-            [p for p in sig.parameters if p != "self"], ["speaker_identity", "text"]
+            [p for p in sig.parameters if p != "self"], ["speaker_identity", "text", "reply"]
         )
+        # `reply` is the cast-routing flag: keyword-only, off by default, so
+        # every existing positional call keeps the reply-suppressing default.
+        reply = sig.parameters["reply"]
+        self.assertEqual(reply.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(reply.default, False)
 
 
 class PlayoutTimeoutTests(TestCase):
@@ -1024,18 +1029,25 @@ class CastDispatchTests(TestCase):
     def test_a_line_naming_a_cast_member_is_handed_to_that_agent(self) -> None:
         agent = self._agent()
         self.assertTrue(agent._maybe_persist(self.AARON, "zen, tell me one thing", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@agent-zen zen, tell me one thing"])
+        self.assertEqual(self._persisted(agent), ["@zen zen, tell me one thing"])
+        # the server must schedule Zen's text reply (the cast speaks it)
+        self.assertTrue(agent._publisher.persist_user_utterance.call_args.kwargs.get("reply"))
+
+    def test_a_line_for_the_persona_never_asks_for_a_text_reply(self) -> None:
+        agent = self._agent()
+        self.assertTrue(agent._maybe_persist(self.AARON, "rook, status?", ear="stt"))
+        self.assertFalse(agent._publisher.persist_user_utterance.call_args.kwargs.get("reply", False))
 
     def test_grok_is_not_swallowed_as_a_near_miss_of_rook(self) -> None:
         agent = self._agent()
         self.assertTrue(agent._maybe_persist(self.AARON, "grok, what is the point", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@agent-grok grok, what is the point"])
+        self.assertEqual(self._persisted(agent), ["@grok grok, what is the point"])
 
     def test_an_unnamed_follow_up_sticks_with_the_agent_last_addressed(self) -> None:
         agent = self._agent()
         agent._maybe_persist(self.AARON, "grok, in one sentence, why rehearse?", ear="stt")
         self.assertTrue(agent._maybe_persist(self.AARON, "and why does that matter live?", ear="stt"))
-        self.assertEqual(self._persisted(agent)[-1], "@agent-grok and why does that matter live?")
+        self.assertEqual(self._persisted(agent)[-1], "@grok and why does that matter live?")
 
     def test_a_follow_up_to_the_persona_does_not_drift_to_the_cohost(self) -> None:
         """Name mode stays strict for the persona's own follow-ups (window mode
@@ -1048,7 +1060,7 @@ class CastDispatchTests(TestCase):
     def test_unaddressed_talk_goes_to_the_cohost_only_with_one_human(self) -> None:
         agent = self._agent(primary="zen")
         self.assertTrue(agent._maybe_persist(self.AARON, "does anyone know what time it is", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@agent-zen does anyone know what time it is"])
+        self.assertEqual(self._persisted(agent), ["@zen does anyone know what time it is"])
         two = self._agent(primary="zen", humans=(self.AARON, self.SHAFEN))
         self.assertFalse(two._maybe_persist(self.AARON, "does anyone know what time it is", ear="stt"))
         two._publisher.persist_user_utterance.assert_not_called()
@@ -1078,13 +1090,13 @@ class CastDispatchTests(TestCase):
         floor = agent._floor()
         self.assertTrue(floor.take_floor("agent-grok", now=time.monotonic()))
         self.assertTrue(agent._maybe_persist(self.AARON, "zen, go ahead", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@agent-zen zen, go ahead"])
+        self.assertEqual(self._persisted(agent), ["@zen zen, go ahead"])
         self.assertEqual(floor.floor_holder(now=time.monotonic()), "agent-zen")
 
     def test_a_display_name_word_addresses_the_cast_member(self) -> None:
         agent = self._agent()
         self.assertTrue(agent._maybe_persist(self.AARON, "majik, play the intro", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@agent-majik majik, play the intro"])
+        self.assertEqual(self._persisted(agent), ["@majik majik, play the intro"])
 
     def test_off_and_always_modes_do_not_route(self) -> None:
         agent = self._agent()

@@ -573,26 +573,30 @@ class VoiceHistoryPersister:
         except Exception:
             logger.debug("voice_history_agent_failed", exc_info=True)
 
-    def persist_user_utterance(self, speaker_identity: str, text: str) -> None:
+    def persist_user_utterance(
+        self, speaker_identity: str, text: str, *, reply: bool = False
+    ) -> None:
         """Persist a human turn whose text arrived OUTSIDE ``user_input_transcribed``.
 
         Used by the browser-STT fallback (voice_transcripts.py): the browser
         already attributed the line to its own signed-in speaker, so no
         resolve_human pass — same endpoint, same reply-suppressing semantics,
-        same fire-and-forget contract as on_user_transcript.
+        same fire-and-forget contract as on_user_transcript. ``reply=True``
+        is the relay handing a line to ANOTHER agent (``@<id> …``): the
+        server then schedules that agent's text reply, which the cast speaks.
         """
         try:
             content = (text or "").strip()
             if not content or not speaker_identity:
                 return
-            self._fire(
-                api_path("internal/voice-user-message"),
-                {
-                    "livekit_room_name": self._lk_room_name,
-                    "speaker_identity": speaker_identity,
-                    "content": content,
-                },
-            )
+            body: dict[str, Any] = {
+                "livekit_room_name": self._lk_room_name,
+                "speaker_identity": speaker_identity,
+                "content": content,
+            }
+            if reply:
+                body["reply_to_mention"] = True
+            self._fire(api_path("internal/voice-user-message"), body)
         except Exception:
             logger.debug("voice_history_user_failed", exc_info=True)
 
