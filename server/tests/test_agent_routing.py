@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from app.api.brigade import router
-from app.deps import get_current_user, get_db
+from app.deps import get_current_user, get_db, get_livekit, get_presence, get_settings_dep
 from app.services.agent_routing import participant_backend
 
 
@@ -24,27 +24,34 @@ def test_backend_is_participant_owned():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure,status', [(None,200), ('no_room',409), ('archived',409), ('no_member',404), ('no_key',409), ('wrong_scope',409)])
-async def test_runner_route_never_creates_or_calls_brigade(failure,status):
-    room = SimpleNamespace(id=uuid.uuid4(), name='seat-dm', livekit_room_name='lk-seat', is_archived=failure=='archived')
-    participant = SimpleNamespace(metadata_={'backend':'runner','canonical_dm_room':'seat-dm'})
-    values = [participant, None if failure=='no_room' else room]
-    if failure not in ('no_room','archived'):
-        values += [None if failure=='no_member' else object()]
-        if failure!='no_member': values += [[] if failure=='no_key' else [['other'] if failure=='wrong_scope' else ['seat-dm']]]
+async def test_runner_route_ensures_canonical_hub_and_never_calls_brigade():
+    room = SimpleNamespace(id=uuid.uuid4())
+    participant = SimpleNamespace(metadata_={'backend':'runner'})
     db = AsyncMock()
-    db.execute.side_effect = [result(v) for v in values]
+    service = SimpleNamespace(
+        ensure_agent_hub=AsyncMock(return_value=(room, True)),
+    )
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
-    app.dependency_overrides[get_current_user] = lambda: {'participant_id':uuid.uuid4()}
+    human_id = uuid.uuid4()
+    app.dependency_overrides[get_current_user] = lambda: {'participant_id':human_id}
     app.dependency_overrides[get_db] = lambda: db
-    with patch('app.api.brigade.ensure_agent_access', new=AsyncMock()), patch('app.api.brigade._fetch_invitable_agents', new=AsyncMock()) as brigade:
+    app.dependency_overrides[get_settings_dep] = lambda: SimpleNamespace(instance_org_id=None)
+    app.dependency_overrides[get_livekit] = lambda: AsyncMock()
+    app.dependency_overrides[get_presence] = lambda: AsyncMock()
+    db.execute.side_effect = [result(participant)]
+    with patch('app.api.brigade.ensure_agent_access', new=AsyncMock()), \
+         patch('app.api.brigade._build_room_service', return_value=service) as build, \
+         patch('app.api.brigade._fetch_invitable_agents', new=AsyncMock()) as brigade:
         async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
             response = await client.get('/api/v1/brigade/agents/seat/chat-route')
-        assert response.status_code == status, response.text
-        if status==200: assert response.json()=={'backend':'runner','room_id':str(room.id)}
+        assert response.status_code == 200, response.text
+        assert response.json()=={'backend':'runner','room_id':str(room.id)}
+        build.assert_called_once()
+        service.ensure_agent_hub.assert_awaited_once_with(
+            human_id=human_id, agent_id='seat', org_id=None
+        )
         brigade.assert_not_awaited()
-        db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -54,6 +61,9 @@ async def test_brigade_route_keeps_current_backend():
     app=FastAPI(); app.include_router(router,prefix='/api/v1')
     app.dependency_overrides[get_current_user]=lambda:{'participant_id':uuid.uuid4()}
     app.dependency_overrides[get_db]=lambda:db
+    app.dependency_overrides[get_settings_dep]=lambda:SimpleNamespace(instance_org_id=None)
+    app.dependency_overrides[get_livekit]=lambda:AsyncMock()
+    app.dependency_overrides[get_presence]=lambda:AsyncMock()
     with patch('app.api.brigade.ensure_agent_access',new=AsyncMock()):
         async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
             response=await client.get('/api/v1/brigade/agents/majik/chat-route')
