@@ -106,31 +106,115 @@ async function setCallView(page: Page, chatCollapsed: boolean) {
  * Deep links skip the landing. Vite's HMR socket never goes idle, so this does
  * not wait for `networkidle`.
  */
-/** Home v3 will not leave its error state unless this request succeeds.
- *  The dev server has no API, so the harness fulfills the v3 contract with
- *  an empty inbox. That is the loaded dashboard, not a login. */
-async function stubHomeSummary(page: Page) {
+/** v3 inbox the dev server cannot produce. Extra fields are ignored by the
+ *  v1 live-call poll, which hits the same URL. */
+function emptyHomeSummary() {
+  return {
+    generated_at: new Date().toISOString(),
+    live_calls: [],
+    counts: {
+      unread_rooms: 0,
+      mention_rooms: 0,
+      approvals_pending: 0,
+      agents_available: 0,
+      people_online: 0,
+      worker_last_seen_at: null,
+    },
+    needs_you: [],
+    crew: [],
+    today: null,
+  };
+}
+
+function busyHomeSummary() {
+  return {
+    generated_at: new Date().toISOString(),
+    live_calls: [
+      {
+        room_id: "room-ops",
+        display_name: "ops",
+        room_type: "channel",
+        participant_count: 3,
+        has_agent: true,
+        recording: false,
+      },
+    ],
+    counts: {
+      unread_rooms: 1,
+      mention_rooms: 0,
+      approvals_pending: 1,
+      agents_available: 1,
+      people_online: 2,
+      worker_last_seen_at: null,
+    },
+    needs_you: [
+      {
+        kind: "approval",
+        actor: {
+          participant_id: "p-persephone",
+          kind: "agent",
+          display_name: "Persephone",
+          avatar_url: null,
+          agent_id: "persephone",
+        },
+        room: {
+          id: "room-general",
+          display_name: "general",
+          room_type: "channel",
+          parent_room_id: null,
+        },
+        preview: "Approve the deploy",
+        created_at: new Date().toISOString(),
+        action: "approve",
+        stale: false,
+        message_id: "msg-approve-1",
+      },
+    ],
+    crew: [
+      {
+        agent_id: "persephone",
+        participant_id: "p-persephone",
+        display_name: "Persephone",
+        avatar_url: null,
+        status: "available",
+        agent_mode: "when_named",
+        current_task: null,
+        last_line: "Holding the floor.",
+        since: null,
+        hub_room_id: "room-hub-persephone",
+      },
+    ],
+    today: {
+      po_tasks: [
+        {
+          id: "task-1",
+          title: "Ship the north star",
+          due_date: "2026-09-24",
+          status: "PENDING",
+          project_number: "P-00115",
+          url: null,
+        },
+      ],
+      meetings: [],
+    },
+  };
+}
+
+async function fulfillSummary(page: Page, body: unknown) {
   await page.route("**/api/v1/home/summary**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        generated_at: new Date().toISOString(),
-        live_calls: [],
-        counts: {
-          unread_rooms: 0,
-          mention_rooms: 0,
-          approvals_pending: 0,
-          agents_available: 0,
-          people_online: 0,
-          worker_last_seen_at: null,
-        },
-        needs_you: [],
-        crew: [],
-        today: null,
-      }),
+      body: JSON.stringify(body),
     });
   });
+}
+
+/** Home v3 will not leave its error state unless this request succeeds.
+ *  The dev server has no API, so the harness fulfills the v3 contract with
+ *  an empty inbox. That is the loaded dashboard, not a login. */
+async function stubHomeSummary(page: Page) {
+  await fulfillSummary(page, emptyHomeSummary());
 }
 
 /**
@@ -490,6 +574,104 @@ test.describe("Room header is one row", () => {
         path: `test-results/RoomHeaderMenu-${viewport}.png`,
         fullPage: false,
       });
+});
+
+test.describe("Home inbox", () => {
+  test("does not call the day clear before the summary resolves", async ({ page }) => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/v1/home/summary**", async (route) => {
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(emptyHomeSummary()),
+      });
+    });
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("home-skeleton")).toBeVisible();
+    await expect(page.getByTestId("home-all-clear")).toHaveCount(0);
+    release();
+    await expect(page.getByTestId("home-all-clear")).toBeVisible();
+    await expect(page.locator("#home-needs_you-heading")).toHaveCount(0);
+  });
+
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`clear day is one line @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      await expect(page.getByTestId("home-all-clear")).toHaveText("You're all clear");
+      await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
+      await expect(page.locator("#home-needs_you-heading")).toHaveCount(0);
+      await expect(page.locator("#home-live_now-heading")).toHaveCount(0);
+      await expect(page.locator("#home-crew-heading")).toHaveCount(0);
+      await expect(page.locator("#home-today-heading")).toHaveCount(0);
+      await expect(page.locator("#home-recent-heading")).toBeVisible();
+      await expect(page.getByTestId("home-count")).toHaveText("4");
+
+      const capture = `HomeClear-${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/${capture}.png`, fullPage: true });
+
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+      }
+      await expect(page.getByTestId("home-rail")).toBeVisible();
+      await expect(page.getByTestId("home-rail-recent")).toBeVisible();
+      await expect(page.getByTestId("home-rail-crew")).toHaveCount(0);
+      await expect(page.getByTestId("home-rail-pinned")).toHaveCount(0);
+      if (viewport === "mobile") {
+        await page.screenshot({
+          path: `test-results/HomeClear-rail-${viewport}-${testInfo.project.name}.png`,
+          fullPage: true,
+        });
+      }
+      await assertPageHealth(page, viewport);
+    });
+
+    test(`busy day keeps the sections that have rows @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await fulfillSummary(page, busyHomeSummary());
+      await page.goto("/");
+      await waitForAppReady(page);
+      await expect(page.getByTestId("home-all-clear")).toHaveCount(0);
+      await expect(page.getByTestId("home-section-needs_you")).toBeVisible();
+      await expect(page.getByTestId("home-section-live_now")).toBeVisible();
+      await expect(page.getByTestId("home-section-crew")).toBeVisible();
+      await expect(page.getByTestId("home-section-recent")).toBeVisible();
+      await expect(page.getByTestId("home-section-today")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Join" })).toBeVisible();
+      await expect(page.getByText("When named").first()).toBeVisible();
+      await expect(page.getByText("Ship the north star")).toBeVisible();
+      await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
+      const counts = await page.getByTestId("home-count").allTextContents();
+      expect(counts).not.toContain("0");
+
+      await page.screenshot({
+        path: `test-results/HomeBusy-${viewport}-${testInfo.project.name}.png`,
+        fullPage: true,
+      });
+
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+      }
+      await expect(page.getByTestId("home-rail-crew-persephone")).toBeVisible();
+      await expect(page.getByTestId("home-rail-recent")).toBeVisible();
+      if (viewport === "mobile") {
+        await page.screenshot({
+          path: `test-results/HomeBusy-rail-${viewport}-${testInfo.project.name}.png`,
+          fullPage: true,
+        });
+      }
+      await assertPageHealth(page, viewport);
     });
   }
 });

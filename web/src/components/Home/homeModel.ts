@@ -668,6 +668,100 @@ export function modeLabel(mode: string | null | undefined): string {
 }
 
 /**
+ * How Home draws a section once the summary has resolved.
+ *
+ * `content` — rows, header, and a count. Same as a section that already has work.
+ * `line` — the section exists and is empty right now: one quiet sentence.
+ * `omit` — it has never had content: no header and no zero.
+ *
+ * When nothing needs you, those quiet lines fold into one "You're all clear".
+ * A live call, a crew card, a recent room, or a today row still renders.
+ */
+export type SectionChrome = "content" | "line" | "omit";
+
+export interface HomeInboxFacts {
+  /** Fresh and stale needs-you rows. Stale still counts as content. */
+  needsCount: number;
+  liveCount: number;
+  crewCount: number;
+  recentCount: number;
+  /** The user has rooms, including ones recentConversations hides as archived. */
+  hadConversations: boolean;
+  todayCount: number;
+  /** False when Today is unreachable and nothing local stands in. */
+  todayKnown: boolean;
+}
+
+export interface HomeEmptyPolicy {
+  allClear: boolean;
+  sections: Record<HomeSectionId, SectionChrome>;
+}
+
+export function homeEmptyPolicy(facts: HomeInboxFacts): HomeEmptyPolicy {
+  const sections: Record<HomeSectionId, SectionChrome> = {
+    needs_you: facts.needsCount > 0 ? "content" : "line",
+    live_now: facts.liveCount > 0 ? "content" : "line",
+    // No crew cards means the section has never had content.
+    crew: facts.crewCount > 0 ? "content" : "omit",
+    recent:
+      facts.recentCount > 0 ? "content" : facts.hadConversations ? "line" : "omit",
+    today: facts.todayCount > 0 ? "content" : facts.todayKnown ? "line" : "omit",
+  };
+
+  const allClear = facts.needsCount === 0;
+  if (allClear) {
+    sections.needs_you = "omit";
+    if (sections.live_now === "line") sections.live_now = "omit";
+    if (sections.recent === "line") sections.recent = "omit";
+    if (sections.today === "line") sections.today = "omit";
+  }
+  return { allClear, sections };
+}
+
+/** Human DMs starred in People, in that order, then the other recent rooms. */
+export function homeRailConversations(
+  rooms: Room[],
+  favoriteIds: readonly string[],
+  cap = 8,
+): { pinned: Room[]; recent: Room[] } {
+  const pinned: Room[] = [];
+  const seen = new Set<string>();
+  const dms = rooms.filter(
+    (room) =>
+      !room.is_archived &&
+      !room.parent_room_id &&
+      isHumanConversation(room),
+  );
+  for (const id of favoriteIds) {
+    if (!id) continue;
+    const room = dms.find(
+      (candidate) => !seen.has(candidate.id) && roomParticipantIds(candidate).includes(id),
+    );
+    if (!room) continue;
+    seen.add(room.id);
+    pinned.push(room);
+  }
+  return {
+    pinned,
+    recent: recentConversations(
+      rooms.filter((room) => !seen.has(room.id)),
+      cap,
+    ),
+  };
+}
+
+function roomParticipantIds(room: Room): string[] {
+  const ids: string[] = [];
+  if (room.counterpart?.participant_id) ids.push(room.counterpart.participant_id);
+  for (const member of room.members) {
+    if (member.participant_id) ids.push(member.participant_id);
+    if (member.user_id) ids.push(member.user_id);
+    if (member.id) ids.push(member.id);
+  }
+  return ids;
+}
+
+/**
  * Hide Today only when both federated blocks are null and there is no local
  * standing-room catalog to show instead. An empty list is a real answer.
  */

@@ -15,7 +15,6 @@ import {
   FolderPlus,
   Hash,
   Lock,
-  MessageSquare,
   MoreVertical,
   Pencil,
   Phone,
@@ -89,6 +88,7 @@ import { usePresenceStore } from "@/stores/presenceStore";
 import type { PeopleDirectoryEntry } from "@/services/api";
 
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
+import { HomeRail } from "@/components/Home/HomeRail";
 
 /**
  * Bump-version subscription to the draft store. localStorage is not reactive,
@@ -1704,14 +1704,6 @@ export function RoomList() {
   );
   const groupCount = groupsSection.groups.reduce((n, g) => n + g.rows.length, 0);
 
-  // Online favorites hint for the Home rail (best-effort count of human DMs
-  // with recent activity — not a second presence system).
-  const humanDmCount = useMemo(
-    () =>
-      rooms.filter((r) => r.type === "dm" && !r.brigade_agent_id).length,
-    [rooms],
-  );
-
   function closeMobileSidebar() {
     if (
       window.matchMedia("(max-width: 767px)").matches &&
@@ -2117,38 +2109,9 @@ export function RoomList() {
     );
   }
 
-  /** Home: no conversation tree — short jumps only. */
+  /** Home: crew and conversations. The destination switcher stays on the rail. */
   function renderHomeBody() {
-    return (
-      <div className="mx-2 space-y-2">
-        <p className="px-0.5 text-xs leading-relaxed text-slate-500">
-          Pick a destination above. Your conversations live under Chats,
-          Channels, Meetings, and Agents — not in one long list.
-        </p>
-        <button
-          type="button"
-          onClick={() => {
-            setActiveView("direct");
-            closeMobileSidebar();
-          }}
-          className="focus-ring flex w-full items-center gap-2.5 rounded-lg border border-line px-3 py-2.5 text-left transition-colors hover:border-stable-purple/40 hover:bg-white/[0.04]"
-        >
-          <MessageSquare className="h-4 w-4 shrink-0 text-stable-purple-light" />
-          <span className="min-w-0">
-            <span className="block text-sm font-medium text-slate-100">
-              Go to Chats
-            </span>
-            <span className="block text-[11px] text-slate-500">
-              {humanDmCount > 0
-                ? `${humanDmCount} direct message${humanDmCount === 1 ? "" : "s"}`
-                : "People and private groups"}
-            </span>
-          </span>
-        </button>
-        {renderBrowseAgentsLink()}
-        {renderBridgeLink()}
-      </div>
-    );
+    return <HomeRail onOpenRoom={openRoom} />;
   }
 
   /** First-load placeholder: the rooms payload hasn't landed yet, so the
