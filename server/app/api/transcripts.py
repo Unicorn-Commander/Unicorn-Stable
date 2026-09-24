@@ -130,6 +130,18 @@ def _response(
     )
 
 
+def _merge_transcript_lines(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge browser buffers for one LiveKit call; segment IDs are identity."""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for line in existing + incoming:
+        segment = str(line.get("segment_id") or "")
+        key = ("segment", segment) if segment else (
+            "line", f"{line.get('participant_id')}:{line.get('ts')}:{line.get('text')}"
+        )
+        merged[key] = line
+    return sorted(merged.values(), key=lambda line: (line.get("ts") or 0, line.get("name") or ""))
+
+
 @router.post(
     "/rooms/{room_id}/transcripts/export",
     response_model=TranscriptExportResponse,
@@ -227,9 +239,12 @@ async def export_room_transcript(
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    caller_idempotency_key = body.idempotency_key or f"stable-{payload_sha256}"
+    # A call is a LiveKit room incarnation, not a browser tab. This lets the
+    # audio lane and every transcript exporter converge on one MO session.
+    caller_idempotency_key = f"call:{getattr(room, 'livekit_sid', None) or room.livekit_room_name}"
     idempotency_key = scoped_idempotency_key(room_id, caller_idempotency_key)
     export_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"unicorn-stable:{idempotency_key}")
+    configured = meeting_ops_configured(settings)
 
     existing = (
         await db.execute(
@@ -240,10 +255,21 @@ async def export_room_transcript(
     ).scalar_one_or_none()
     if existing is not None:
         if existing.payload_sha256 != payload_sha256:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Idempotency key was already used for different transcript content",
-            )
+            old_lines = list((existing.payload or {}).get("lines") or [])
+            merged_lines = _merge_transcript_lines(old_lines, lines_out)
+            merged_payload = dict(existing.payload or {})
+            merged_payload["lines"] = merged_lines
+            merged_payload["line_count"] = len(merged_lines)
+            existing.payload = merged_payload
+            existing.line_count = len(merged_lines)
+            existing.payload_sha256 = hashlib.sha256(
+                json.dumps(merged_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest()
+            if configured and body.send_to_meeting_ops:
+                existing.status = "pending"
+                existing.next_attempt_at = None
+                existing.last_error = None
+            await db.commit()
         return _response(
             existing,
             configured=meeting_ops_configured(settings),
@@ -278,7 +304,6 @@ async def export_room_transcript(
         },
     }
 
-    configured = meeting_ops_configured(settings)
     initial_status = (
         "pending"
         if body.send_to_meeting_ops and configured

@@ -230,3 +230,40 @@ async def forward_transcript_to_meeting_ops(
             "detail": "Meeting-Ops request failed",
             "retryable": True,
         }
+
+
+async def create_session(
+    settings: Settings,
+    *,
+    call_key: str,
+    room_name: str,
+    started_at: Any,
+    ended_at: Any,
+) -> dict[str, Any]:
+    """Create a Meeting-Ops session for a recording with no transcript export."""
+    base = upload_base_url(settings)
+    if not base or not (settings.meeting_ops_upload_pat or "").strip():
+        return {"ok": False, "detail": "Meeting-Ops upload is not configured"}
+    payload = {
+        "source": "unicorn-stable-recording",
+        "export_id": f"stable-recording:{call_key}",
+        "room_name": room_name,
+        "call_started_at": started_at.isoformat() if started_at else None,
+        "call_ended_at": ended_at.isoformat() if ended_at else None,
+        "lines": [], "line_count": 0,
+        "metadata": {"call_key": call_key, "session_created_by": "audio_lane"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+            response = await client.post(
+                f"{base}/api/v1/sessions/ingest", json=payload,
+                headers={**_handoff_headers(settings), "Content-Type": "application/json"},
+            )
+        if response.status_code >= 400:
+            return {"ok": False, "detail": f"Meeting-Ops returned HTTP {response.status_code}"}
+        body = response.json() if response.content else {}
+        remote_id = body.get("session_id") or body.get("id") or body.get("meeting_session_id")
+        return {"ok": bool(remote_id), "remote_session_id": str(remote_id) if remote_id else None,
+                "detail": "Meeting-Ops session created"}
+    except Exception as exc:
+        return {"ok": False, "detail": f"Meeting-Ops session creation failed: {type(exc).__name__}"}

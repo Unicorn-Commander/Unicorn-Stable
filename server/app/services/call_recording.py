@@ -70,6 +70,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.models.call_egress import ACTIVE_EGRESS_STATUSES, CallEgress
+from app.models.agent import AgentEvent
 from app.models.message import ContentType, Message
 from app.models.participant import Participant
 from app.models.room import Room, TranscriptExport
@@ -340,6 +341,33 @@ async def _post_system_message(
         )
     except Exception:
         logger.warning("recording_system_message_fanout_failed", exc_info=True)
+
+
+async def _announce_recording_failure(db: AsyncSession, row: CallEgress, reason: str) -> None:
+    """Make a failed/orphaned recording visible to people and agents."""
+    if row.room_id is None:
+        return
+    await _post_system_message(
+        db, row.room_id, f"Recording failed: {reason[:500]}",
+        {"kind": "recording", "event": "failed", "recording_id": str(row.id),
+         "egress_id": row.egress_id, "reason": reason[:2000]},
+    )
+    try:
+        db.add(AgentEvent(
+            agent_identity="stable-recording", agent_type="system",
+            event_type="recording_failed", room_ref=str(row.room_id),
+            correlation_id=str(row.id),
+            event_data={"recording_id": str(row.id), "egress_id": row.egress_id,
+                        "reason": reason[:2000]},
+            occurred_at=_now(),
+        ))
+        await db.commit()
+    except Exception:
+        logger.warning("recording_failure_agent_event_failed", room_id=str(row.room_id), exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 async def announce_recording(
@@ -634,6 +662,7 @@ async def start_recording(
             kind=kind,
             error=str(exc),
         )
+        await _announce_recording_failure(db, row, row.error or "egress start failed")
         raise RecordingError(
             "egress_unavailable",
             503,
@@ -901,6 +930,9 @@ async def handle_egress_event(
         )
     await db.commit()
 
+    if not completed:
+        await _announce_recording_failure(db, row, row.error or "egress failed")
+
     room = await db.get(Room, row.room_id) if row.room_id is not None else None
     if owes_stop_receipt and room is not None:
         await announce_recording(
@@ -1012,6 +1044,24 @@ async def _find_meeting_ops_session(
     if export is None:
         return None
     return export.remote_session_id
+
+
+async def _create_meeting_ops_session(
+    settings: Settings, row: CallEgress, room: Room | None = None
+) -> str | None:
+    """Create the call session from the audio lane when no browser exported."""
+    if not handoff_configured(settings) or row.room_id is None:
+        return None
+    from app.services.meeting_ops import create_session
+
+    result = await create_session(
+        settings,
+        call_key=f"{row.room_id}:{getattr(room, 'livekit_sid', None) or row.livekit_room_name}",
+        room_name=getattr(room, "display_name", None) or row.livekit_room_name,
+        started_at=row.started_at or row.created_at,
+        ended_at=row.ended_at or _now(),
+    )
+    return result.get("remote_session_id") if result.get("ok") else None
 
 
 async def upload_audio_to_meeting_ops(
@@ -1131,6 +1181,7 @@ async def _sweep_stale_rows(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings | None = None,
     redis: Any = None,
+    livekit: Any = None,
 ) -> None:
     """Terminalize rows whose owner died, so room leases free up loudly."""
     now = _now()
@@ -1166,12 +1217,32 @@ async def _sweep_stale_rows(
             .scalars()
             .all()
         )
+        reconciled: list[CallEgress] = []
+        for row in stale_starting + stale_running:
+            if livekit is None or not hasattr(livekit, "list_egress"):
+                continue
+            try:
+                records = await livekit.list_egress(row.livekit_room_name)
+                remote = next(
+                    (item for item in records if getattr(item, "egress_id", None) == row.egress_id),
+                    None,
+                )
+                if remote is not None and int(getattr(remote, "status", 0) or 0) in (3, 4, 5, 6):
+                    await handle_egress_event(
+                        db, settings or Settings(), "egress_ended", remote,
+                        redis=redis, livekit=livekit,
+                    )
+                    reconciled.append(row)
+            except Exception:
+                logger.warning("call_recording_livekit_reconcile_failed", recording_id=str(row.id), exc_info=True)
+        stale_starting = [row for row in stale_starting if row not in reconciled]
+        stale_running = [row for row in stale_running if row not in reconciled]
         for row in stale_starting:
             row.status = "failed"
             row.error = "abandoned before StartEgress completed (worker died?)"
         for row in stale_running:
             row.status = "failed"
-            row.error = "no egress_ended webhook received; recording state lost"
+            row.error = "no egress_ended webhook received; LiveKit egress was not found"
         if stale_starting or stale_running:
             await db.commit()
             logger.error(
@@ -1181,6 +1252,7 @@ async def _sweep_stale_rows(
             )
             for row in list(stale_starting) + list(stale_running):
                 await _finish_row_side_effects(db, None, redis, row, row.livekit_room_name)
+                await _announce_recording_failure(db, row, row.error or "recording lost")
 
 
 async def _sweep_retention(
@@ -1298,10 +1370,11 @@ async def run_maintenance_sweep(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     redis: Any = None,
+    livekit: Any = None,
 ) -> None:
     """Everything the 2-minute sweep does; each step fails independently."""
     for step in (
-        lambda: _sweep_stale_rows(session_factory, settings, redis),
+        lambda: _sweep_stale_rows(session_factory, settings, redis, livekit),
         lambda: _sweep_retention(session_factory, settings),
         lambda: _sweep_local_files_after_delivery(session_factory),
         lambda: _sweep_composite_slots(session_factory, redis),
@@ -1366,6 +1439,7 @@ async def _deliver_claimed_handoff(
             return
         attempts = row.handoff_attempts
         file_path = Path(row.file_path) if row.file_path else None
+        room = await db.get(Room, row.room_id) if row.room_id is not None else None
         session_id = row.mo_session_id or await _find_meeting_ops_session(db, row)
         ended_at = row.ended_at or row.created_at
         room_id = row.room_id
@@ -1452,6 +1526,8 @@ async def _deliver_claimed_handoff(
                 return
 
         if session_id is None:
+            session_id = await _create_meeting_ops_session(settings, row, room)
+        if session_id is None:
             waited = (_now() - ended_at).total_seconds()
             if waited > settings.call_recording_session_wait_seconds:
                 row.handoff_status = "no_session"
@@ -1465,6 +1541,9 @@ async def _deliver_claimed_handoff(
                     egress_id=row.egress_id,
                     room_id=str(room_id),
                     waited_seconds=int(waited),
+                )
+                await _announce_recording_failure(
+                    db, row, row.handoff_error or "no Meeting-Ops session was created"
                 )
             else:
                 row.handoff_status = "pending"
@@ -1562,6 +1641,7 @@ async def run_call_recording_handoff(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     redis: Any = None,
+    livekit: Any = None,
 ) -> None:
     """Continuously drain hand-off rows; safe in every uvicorn worker."""
     poll = max(0.5, settings.call_recording_handoff_poll_seconds)
@@ -1569,7 +1649,7 @@ async def run_call_recording_handoff(
     while True:
         try:
             if _now() >= next_sweep:
-                await run_maintenance_sweep(session_factory, settings, redis)
+                await run_maintenance_sweep(session_factory, settings, redis, livekit)
                 next_sweep = _now() + timedelta(minutes=2)
             worked = await deliver_handoff_now(session_factory, settings)
             if not worked:
