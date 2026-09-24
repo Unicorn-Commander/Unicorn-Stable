@@ -4,16 +4,18 @@ import {
   Home,
   LoaderCircle,
   MessageSquare,
+  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Search,
+  Users,
   Video,
   type LucideIcon,
 } from "lucide-react";
 import clsx from "clsx";
 import { useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useFederationStore } from "@/stores/federationStore";
 import { displayName, instanceHost } from "@/lib/instances";
 import { ServerLogo } from "./ServerLogo";
@@ -25,7 +27,12 @@ import { resolveIdentity } from "@/lib/identity";
 import { countNeedsYou } from "@/lib/conversation";
 import { getNotifyLevel } from "@/utils/mute";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
-import { isNavV1Enabled, useNavStore, type NavView } from "@/stores/navStore";
+import {
+  isNavV1Enabled,
+  isNavV2Enabled,
+  useNavStore,
+  type NavView,
+} from "@/stores/navStore";
 import { useAppStore } from "@/stores/appStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
 
@@ -45,24 +52,44 @@ import { useConversationUi } from "@/stores/conversationUiStore";
  * reach one server or fewer, which is the shipped behaviour when instances.json
  * is not mounted.
  */
-const DESTINATIONS: { id: NavView; label: string; Icon: LucideIcon }[] = [
-  { id: "home", label: "Home", Icon: Home },
-  { id: "direct", label: "Direct", Icon: MessageSquare },
-  { id: "channels", label: "Channels", Icon: Hash },
-  { id: "meetings", label: "Meetings", Icon: Video },
-  { id: "agents", label: "Agents", Icon: Bot },
+const V1_DESTINATIONS: { id: NavView; label: string; Icon: LucideIcon; testId: string }[] = [
+  { id: "home", label: "Home", Icon: Home, testId: "nav-home" },
+  { id: "direct", label: "Direct", Icon: MessageSquare, testId: "nav-direct" },
+  { id: "channels", label: "Channels", Icon: Hash, testId: "nav-channels" },
+  { id: "meetings", label: "Meetings", Icon: Video, testId: "nav-meetings" },
+  { id: "agents", label: "Agents", Icon: Bot, testId: "nav-agents" },
+];
+
+/** Home, the one list, and the crew directory. Filters are not on this rail. */
+const V2_DESTINATIONS: { id: string; label: string; Icon: LucideIcon; testId: string }[] = [
+  { id: "home", label: "Home", Icon: Home, testId: "nav-home" },
+  { id: "conversations", label: "Conversations", Icon: MessagesSquare, testId: "nav-conversations" },
+  { id: "directory", label: "Directory", Icon: Users, testId: "nav-directory" },
 ];
 
 /**
- * Primary rail when the conversation shell is on: Home, Direct, Channels,
- * Meetings, Agents, Search, and You. Badges count rooms that need you
+ * Primary rail. Nav v2: Home, Conversations, Directory. Nav v1 (the fallback):
+ * Home, Direct, Channels, Meetings, Agents. Badges count rooms that need you
  * (unread DMs and @-mentions), not every unread channel message.
  * Federated servers stay one tap away when there is more than one.
  */
+function closePhoneSidebar() {
+  if (
+    window.matchMedia("(max-width: 767px)").matches &&
+    useAppStore.getState().ui.sidebarOpen
+  ) {
+    useAppStore.getState().toggleSidebar();
+  }
+}
+
 function DestinationRail({ mobile = false }: { mobile?: boolean }) {
   const navigate = useNavigate();
+  const path = useLocation().pathname;
+  const navV2 = isNavV2Enabled();
   const activeView = useNavStore((s) => s.activeView);
   const setActiveView = useNavStore((s) => s.setActiveView);
+  const v2Destination = useNavStore((s) => s.v2Destination);
+  const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rooms = useAppStore((s) => s.rooms);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
@@ -75,18 +102,28 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
   const serverId = useFederationStore((s) => s.activeInstanceId);
   const lastRoomFor = useNavStore((s) => s.lastRoomFor);
   const multi = instances.length > 1;
+  const destinations = navV2 ? V2_DESTINATIONS : V1_DESTINATIONS;
 
   const badges = useMemo(() => {
-    const out: Partial<Record<NavView, number>> = {};
+    const muted = (roomId: string) => getNotifyLevel(roomId) === "muted";
+    const out: Record<string, number> = {};
+    if (navV2) {
+      const list = rooms.filter((room) => !room.parent_room_id);
+      const n = countNeedsYou(list, unreadCounts, mentionUnreads, muted);
+      if (n > 0) out.conversations = n;
+      const home = n + pendingInvites.length;
+      if (home > 0) out.home = home;
+      return out;
+    }
     for (const id of ["direct", "channels", "meetings", "agents"] as const) {
       const list = roomsForView(rooms, id).filter((room) => !room.parent_room_id);
-      const n = countNeedsYou(list, unreadCounts, mentionUnreads, (roomId) => getNotifyLevel(roomId) === "muted");
+      const n = countNeedsYou(list, unreadCounts, mentionUnreads, muted);
       if (n > 0) out[id] = n;
     }
     const home = (out.direct ?? 0) + (out.channels ?? 0) + (out.meetings ?? 0) + (out.agents ?? 0) + pendingInvites.length;
     if (home > 0) out.home = home;
     return out;
-  }, [rooms, unreadCounts, mentionUnreads, pendingInvites.length]);
+  }, [navV2, rooms, unreadCounts, mentionUnreads, pendingInvites.length]);
 
   const you = resolveIdentity({
     id: currentUser?.id,
@@ -97,7 +134,31 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
     is_self: !!currentUser,
   });
 
-  function select(view: NavView) {
+  function v2Active(id: string): boolean {
+    if (path === "/agents") return id === "directory";
+    if (path.startsWith("/c/")) return id === "conversations";
+    return v2Destination === id;
+  }
+
+  function select(id: string) {
+    if (navV2) {
+      if (id === "home") {
+        setV2Destination("home");
+        navigate("/");
+        closePhoneSidebar();
+        return;
+      }
+      if (id === "directory") {
+        setV2Destination("directory");
+        navigate("/agents");
+        closePhoneSidebar();
+        return;
+      }
+      setV2Destination("conversations");
+      if (path === "/agents") navigate("/");
+      return;
+    }
+    const view = id as NavView;
     setActiveView(view);
     if (view === "home") {
       navigate("/");
@@ -122,16 +183,9 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
       )}
       aria-label="Primary"
     >
-      {DESTINATIONS.map(({ id, label, Icon }) => {
+      {destinations.map(({ id, label, Icon, testId }) => {
         const badge = badges[id] ?? 0;
-        const active = activeView === id;
-        const testIds: Record<NavView, string> = {
-          home: "nav-home",
-          direct: "nav-direct",
-          channels: "nav-channels",
-          meetings: "nav-meetings",
-          agents: "nav-agents",
-        };
+        const active = navV2 ? v2Active(id) : activeView === id;
         return (
           <Tooltip key={id} content={badge > 0 ? `${label} · ${badge} need you` : label}>
             <button
@@ -139,7 +193,7 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
               onClick={() => select(id)}
               aria-current={active ? "page" : undefined}
               aria-label={badge > 0 ? `${label}, ${badge} need you` : label}
-              data-testid={testIds[id]}
+              data-testid={testId}
               className={clsx(
                 "focus-ring relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-colors",
                 active ? "bg-white/[0.1] text-slate-50" : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
@@ -199,7 +253,9 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
 }
 
 export function ServerRail({ mobile = false }: { mobile?: boolean }) {
-  if (isNavV1Enabled()) return <DestinationRail mobile={mobile} />;
+  // v2 is the one-list shell. v2 off falls through to today's five-view rail
+  // (or the classic server rail when nav v1 is also off).
+  if (isNavV2Enabled() || isNavV1Enabled()) return <DestinationRail mobile={mobile} />;
   return <FederationRail mobile={mobile} />;
 }
 

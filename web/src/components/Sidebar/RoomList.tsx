@@ -45,6 +45,7 @@ import {
 } from "@/utils/unreadModel";
 import { exportRoomToMarkdown } from "@/utils/exportRoom";
 import { stripMarkdown } from "@/utils/messagePreview";
+import { displayName } from "@/lib/instances";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { MeetingsRecordings } from "@/components/Meetings/RecordingsList";
@@ -55,8 +56,10 @@ import { useFederationStore } from "@/stores/federationStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import {
   isNavV1Enabled,
+  isNavV2Enabled,
   useNavStore,
   viewForRoom,
+  type ConversationFilter,
 } from "@/stores/navStore";
 import {
   useChannelCategories,
@@ -66,15 +69,18 @@ import {
 import { useVoice } from "@/contexts/VoiceProvider";
 import { useLiveCalls } from "@/hooks/useLiveCalls";
 import {
+  buildConversationRows,
   buildSidebarModel,
   isPrivateChannel,
   roomsForView,
+  roomsOnConversationRow,
   SECTION_KEYS,
   type PersonEntry,
   type SidebarGroup,
   type SidebarRow,
   type SidebarView,
 } from "./sidebarModel";
+import { ViewSwitcher } from "./ViewSwitcher";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
@@ -89,6 +95,32 @@ import type { PeopleDirectoryEntry } from "@/services/api";
 
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { HomeRail } from "@/components/Home/HomeRail";
+
+/** Active workspace, pinned above the one Conversations list. */
+function WorkspaceTitle() {
+  const activeId = useFederationStore((s) => s.activeInstanceId);
+  const instances = useFederationStore((s) => s.instances);
+  const accessible = useFederationStore((s) => s.accessibleInstances);
+  const metaByInstance = useFederationStore((s) => s.metaByInstance);
+  const pool = accessible.length > 0 ? accessible : instances;
+  const instance = pool.find((item) => item.id === activeId) ?? pool[0];
+  const name = instance
+    ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
+    : "Stable";
+  return (
+    <div className="shrink-0 px-3 pt-2" data-testid="conversation-list-header">
+      <p
+        data-testid="workspace-name"
+        className="truncate text-sm font-semibold text-slate-50"
+      >
+        {name}
+      </p>
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+        Conversations
+      </h2>
+    </div>
+  );
+}
 
 /**
  * Bump-version subscription to the draft store. localStorage is not reactive,
@@ -148,9 +180,14 @@ export function RoomList() {
   const agents = useAppStore((s) => s.agents);
   const defaultAgentId = useAppStore((s) => s.defaultAgentId);
   const setDefaultAgentId = useAppStore((s) => s.setDefaultAgentId);
-  // View-based shell (Slice 2). Flag defaults on; classic list when off.
+  // Nav v2 (default on) is one Conversations list. Off restores the five-view
+  // shell, which itself falls back to the classic tree when nav v1 is off.
+  const navV2 = isNavV2Enabled();
   const navV1 = isNavV1Enabled();
   const activeView = useNavStore((s) => s.activeView);
+  const v2Destination = useNavStore((s) => s.v2Destination);
+  const conversationFilter = useNavStore((s) => s.conversationFilter);
+  const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rememberRoom = useNavStore((s) => s.rememberRoom);
   const setActiveView = useNavStore((s) => s.setActiveView);
   const scope = useFederationStore((s) => s.activeInstanceId);
@@ -163,8 +200,9 @@ export function RoomList() {
   const { byRoomId: liveCallByRoomId } = useLiveCalls();
   // Draft pencils: bump on every draft save/clear so rows stay truthful.
   useDraftVersion();
-  // Model view: classic mode always builds the full tree.
-  const modelView: SidebarView = navV1 ? activeView : "all";
+  // Model view: classic mode always builds the full tree. The one list builds
+  // its own rows (view "all") so a Meetings/Direct activeView cannot hide them.
+  const modelView: SidebarView = navV2 ? "all" : navV1 ? activeView : "all";
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
@@ -191,7 +229,10 @@ export function RoomList() {
     if (room && scope) {
       const view = viewForRoom(room);
       rememberRoom(scope, view, id);
-      if (navV1) setActiveView(view);
+      // Standing rooms stay channels in the one list. viewForRoom still
+      // records the v1 slot so the five-view fallback can restore Meetings.
+      if (navV2) setV2Destination("conversations");
+      else if (navV1) setActiveView(view);
     }
     navigate(`/c/${id}`);
     // On mobile the sidebar is an overlay drawer; close it after selecting a
@@ -222,13 +263,13 @@ export function RoomList() {
     queryKey: ["my-preferences", scope],
     queryFn: () => api.getMyPreferences(),
     staleTime: 60_000,
-    enabled: navV1 && activeView === "direct",
+    enabled: !navV2 && navV1 && activeView === "direct",
   });
   const { data: peopleDirectory = [] } = useQuery({
     queryKey: ["people-directory", scope, ""],
     queryFn: () => api.getPeopleDirectory(""),
     staleTime: 30_000,
-    enabled: navV1 && activeView === "direct",
+    enabled: !navV2 && navV1 && activeView === "direct",
   });
   const favoritePeople: PeopleDirectoryEntry[] = (() => {
     const ids = myPreferences?.favorite_people_ids ?? [];
@@ -491,12 +532,52 @@ export function RoomList() {
     ],
   );
 
+  const roomIsUnread = (room: Room) => {
+    const raw = unreadCounts[room.id] ?? room.unread_count ?? 0;
+    return badgeCount(room.id, raw) > 0 || mentionUnreads[room.id] === true;
+  };
+  // One list. Raw rooms, not the Focused subset: All / Unread / People /
+  // Channels is the only narrowing, and it is not a destination.
+  const conversationRows = useMemo(
+    () =>
+      navV2 && v2Destination === "conversations"
+        ? buildConversationRows({
+            rooms,
+            searchQuery,
+            scope,
+            categories,
+            people: peopleByScope,
+            folders: folderDefs,
+            expandedPeople,
+            filter: conversationFilter,
+            isUnread: roomIsUnread,
+          })
+        : [],
+    // mutedVersion recomputes badges when a mute lands outside React.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- roomIsUnread closes over the maps above
+    [
+      navV2,
+      v2Destination,
+      rooms,
+      searchQuery,
+      scope,
+      categories,
+      peopleByScope,
+      folderDefs,
+      expandedPeople,
+      conversationFilter,
+      unreadCounts,
+      mentionUnreads,
+      mutedVersion,
+    ],
+  );
+
   // Standing conference catalog for the Meetings empty state / entry points.
   const { data: conferenceCatalog = [] } = useQuery({
     queryKey: ["conference-catalog", scope],
     queryFn: () => api.getConferenceCatalog(),
     staleTime: 5 * 60_000,
-    enabled: navV1 && activeView === "meetings",
+    enabled: !navV2 && navV1 && activeView === "meetings",
   });
   // Hide catalog entries the user already joined (matched by display label).
   const unjoinedConferenceCatalog = useMemo(() => {
@@ -852,7 +933,12 @@ export function RoomList() {
     const priv = isPrivateChannel(room);
     const Icon = priv ? Lock : Hash;
     return (
-      <li key={room.id} className="relative">
+      <li
+        key={room.id}
+        className="relative"
+        data-shape="channel"
+        data-testid="conversation-row"
+      >
         <div
           className={clsx(
             "group relative flex items-center rounded-lg transition-colors",
@@ -875,6 +961,7 @@ export function RoomList() {
             )}
             aria-current={isActive ? "page" : undefined}
           >
+            {navV2 && <span className="sr-only">Channel. </span>}
             <Icon
               className={clsx(
                 "h-4 w-4 shrink-0",
@@ -1126,8 +1213,20 @@ export function RoomList() {
         ? Math.max(0, nested.length - 1)
         : nested.length;
     const threadHint = olderArchivedLabel(older, expanded ? 0 : entry.archivedCount);
+    const directFace = navV2
+      ? resolveIdentity(entry.hub, {
+          selfId: currentUserId,
+          agents,
+          members: participantsByRoom[entry.hub.id],
+        })
+      : null;
     return (
-      <li key={entry.key} className="relative">
+      <li
+        key={entry.key}
+        className="relative"
+        data-shape="direct"
+        data-testid="conversation-row"
+      >
         <div
           className={clsx(
             "group relative flex w-full items-center rounded-lg pr-1 transition-colors",
@@ -1156,8 +1255,16 @@ export function RoomList() {
             className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-slate-300 transition-colors hover:text-slate-100 md:py-1.5"
             title={`Open your latest conversation with ${name}`}
           >
-            <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
-              {isAgent ? (
+            {navV2 && <span className="sr-only">Direct. </span>}
+            <span
+              className={clsx(
+                "relative flex shrink-0 items-center justify-center",
+                navV2 ? "h-7 w-7" : "h-6 w-6",
+              )}
+            >
+              {navV2 && directFace ? (
+                <Identity {...directFace} presence={null} size={28} />
+              ) : isAgent ? (
                 <Identity
                   {...resolveIdentity(
                     rosterAgent
@@ -1328,8 +1435,24 @@ export function RoomList() {
       (p) => (p.participant_id || p.user_id) !== currentUserId,
     );
     const badge = humanPresence(others.some((p) => p.is_online));
+    const loadedMembers = participantsByRoom[room.id];
+    const groupFace = navV2
+      ? resolveIdentity(room, {
+          selfId: currentUserId,
+          members:
+            loadedMembers && loadedMembers.length > 0
+              ? loadedMembers
+              : room.members,
+          agents,
+        })
+      : null;
     return (
-      <li key={room.id} className="relative">
+      <li
+        key={room.id}
+        className="relative"
+        data-shape="group"
+        data-testid="conversation-row"
+      >
         <div
           className={clsx(
             "group relative flex items-center rounded-lg transition-colors",
@@ -1352,11 +1475,21 @@ export function RoomList() {
             )}
             aria-current={isActive ? "page" : undefined}
           >
-            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+            {navV2 && <span className="sr-only">Group. </span>}
+            <span
+              className={clsx(
+                "relative flex shrink-0 items-center justify-center",
+                navV2 ? "h-7 w-7" : "h-4 w-4",
+              )}
+            >
+              {groupFace ? (
+                <Identity {...groupFace} presence={null} size={28} />
+              ) : (
               <Users
                 className="h-4 w-4 text-amber-300/70"
                 aria-label="Private group — invite only"
               />
+              )}
               {badge && (
                 <span
                   className={clsx(
@@ -2114,6 +2247,55 @@ export function RoomList() {
     return <HomeRail onOpenRoom={openRoom} />;
   }
 
+  const EMPTY_COPY: Record<ConversationFilter, { title: string; hint: string }> = {
+    all: {
+      title: "No conversations yet",
+      hint: "Message a person, talk to an agent, or open a channel.",
+    },
+    unread: {
+      title: "Nothing unread",
+      hint: "Directs with new messages and rooms where you were mentioned show up here.",
+    },
+    people: {
+      title: "No people yet",
+      hint: "Directs and groups live here. Channels stay under the Channels filter.",
+    },
+    channels: {
+      title: "No channels yet",
+      hint: "Named places, including standing rooms you call into, show up here.",
+    },
+  };
+
+  /** One recency list. Shape is the mark on the row, not a tab. */
+  function renderConversationBody() {
+    const copy = EMPTY_COPY[conversationFilter];
+    return (
+      <section data-testid="conversations-card" aria-label="Conversations">
+        {roomsLoaded && conversationRows.length === 0 && (
+          <div className="mx-2 mb-2 rounded-lg border border-dashed border-line-strong px-3 py-3 text-xs text-slate-500">
+            <p className="font-medium text-slate-400">{copy.title}</p>
+            <p className="mt-1 leading-relaxed">{copy.hint}</p>
+          </div>
+        )}
+        <ul role="list">{conversationRows.map(renderRow)}</ul>
+        {renderArchivedSection()}
+      </section>
+    );
+  }
+
+  /** Directory is the Agents page in the main pane, not a second conversation list. */
+  function renderDirectoryBody() {
+    return (
+      <div className="px-3 py-3" data-testid="directory-sidebar-note">
+        <p className="text-sm font-semibold text-slate-100">Directory</p>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">
+          Roster and org chart are open in the main pane. Agent hubs stay in
+          Conversations, with everyone else.
+        </p>
+      </div>
+    );
+  }
+
   /** First-load placeholder: the rooms payload hasn't landed yet, so the
    *  sidebar must not flash "No conversations yet" / "No channels yet"
    *  empty states or a stub list. Shimmer rows match the ChatPanel skeleton
@@ -2145,9 +2327,14 @@ export function RoomList() {
     );
   }
 
-  /** Classic (flag off) or view-filtered (flag on) body. */
+  /** Classic tree, five-view shell, or the one Conversations list. */
   function renderNavBody() {
     if (!roomsLoaded) return renderNavSkeleton();
+    if (navV2) {
+      if (v2Destination === "home") return renderHomeBody();
+      if (v2Destination === "directory") return renderDirectoryBody();
+      return renderConversationBody();
+    }
     if (!navV1) {
       return (
         <>
@@ -2215,10 +2402,13 @@ export function RoomList() {
     }
   }
 
-  // Search + New chat: hide on Home (minimal rail). Show on other views and classic.
-  const showToolbar = !navV1 || activeView !== "home";
-  const searchPlaceholder =
-    activeView === "agents"
+  // Search + New chat: hide on Home. The one list shows them; Directory does not.
+  const showToolbar = navV2
+    ? v2Destination === "conversations"
+    : !navV1 || activeView !== "home";
+  const searchPlaceholder = navV2
+    ? "Search conversations…"
+    : activeView === "agents"
       ? "Search agents…"
       : activeView === "channels"
         ? "Search channels…"
@@ -2229,10 +2419,13 @@ export function RoomList() {
             : "Search rooms…";
 
   const visibleUnreadTargets = roomsNeedingMarkRead(
-    roomsForView(preparedRooms, modelView),
+    navV2
+      ? conversationRows.flatMap((row) => roomsOnConversationRow(row))
+      : roomsForView(preparedRooms, modelView),
     rawUnreadFor,
   );
   const focusedEmpty =
+    !navV2 &&
     focusMode === "focused" &&
     showToolbar &&
     peopleCount === 0 &&
@@ -2265,8 +2458,9 @@ export function RoomList() {
               aria-label={searchPlaceholder}
             />
           </div>
-          {/* Slice 3: Focused (mentions + DM unreads) vs All + mark section read. */}
+          {/* Five-view shell keeps Focused / All. The one list uses the filters under the workspace name. */}
           <div className="flex items-center gap-1.5">
+            {!navV2 && (
             <div
               role="group"
               aria-label="Unread filter"
@@ -2301,6 +2495,7 @@ export function RoomList() {
                 All
               </button>
             </div>
+            )}
             <button
               type="button"
               onClick={markVisibleSectionRead}
@@ -2320,6 +2515,13 @@ export function RoomList() {
             </button>
           </div>
         </div>
+      )}
+
+      {navV2 && v2Destination === "conversations" && (
+        <>
+          <WorkspaceTitle />
+          <ViewSwitcher />
+        </>
       )}
 
       <nav

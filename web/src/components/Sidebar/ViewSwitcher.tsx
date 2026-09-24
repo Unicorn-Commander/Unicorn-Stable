@@ -11,7 +11,13 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
-import { type NavView, useNavStore } from "@/stores/navStore";
+import {
+  CONVERSATION_FILTERS,
+  isNavV2Enabled,
+  type ConversationFilter,
+  type NavView,
+  useNavStore,
+} from "@/stores/navStore";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
 import { countNeedsYou } from "@/lib/conversation";
 import { getNotifyLevel } from "@/utils/mute";
@@ -29,11 +35,60 @@ const DESTINATIONS: {
   { id: "agents", label: "Agents", short: "Agents", Icon: Bot },
 ];
 
+const FILTER_LABEL: Record<ConversationFilter, string> = {
+  all: "All",
+  unread: "Unread",
+  people: "People",
+  channels: "Channels",
+};
+
 /**
- * Primary destination switcher for the view-based sidebar (Slice 2).
- * Shows per-view unread badges so noise is scannable without opening each list.
+ * Narrows the one Conversations list. These are filters, not destinations:
+ * clicking one does not navigate and does not change the rail.
  */
-export function ViewSwitcher() {
+function ConversationFilters() {
+  const filter = useNavStore((s) => s.conversationFilter);
+  const setFilter = useNavStore((s) => s.setConversationFilter);
+  return (
+    <div
+      role="group"
+      aria-label="Filter conversations"
+      data-testid="conversation-filters"
+      className="grid grid-cols-4 gap-0.5 px-2 pb-2"
+    >
+      {CONVERSATION_FILTERS.map((id) => {
+        const on = filter === id;
+        const label = FILTER_LABEL[id];
+        return (
+          <button
+            key={id}
+            type="button"
+            data-testid={`conv-filter-${id}`}
+            aria-pressed={on}
+            aria-label={`Show ${label.toLowerCase()} conversations`}
+            onClick={() => setFilter(id)}
+            className={clsx(
+              "focus-ring min-w-0 truncate rounded-lg px-1 py-1.5 text-[11px] font-medium",
+              on
+                ? "bg-white/[0.08] text-slate-50"
+                : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200",
+            )}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Primary destination switcher for the five-view shell (nav v1).
+ * Shows per-view unread badges so noise is scannable without opening each list.
+ * Not mounted while nav v2 is on — the rail owns Home / Conversations / Directory,
+ * and this file's filters narrow the one list instead.
+ */
+function LegacyViewSwitcher() {
   const navigate = useNavigate();
   const activeView = useNavStore((s) => s.activeView);
   const setActiveView = useNavStore((s) => s.setActiveView);
@@ -138,4 +193,10 @@ export function ViewSwitcher() {
       </ul>
     </nav>
   );
+}
+
+/** Filters on the one list; the five destination pills when that shell is restored. */
+export function ViewSwitcher() {
+  if (isNavV2Enabled()) return <ConversationFilters />;
+  return <LegacyViewSwitcher />;
 }
