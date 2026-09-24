@@ -1,8 +1,14 @@
 import { useState } from "react";
-import { Camera, Circle, Mic, Volume2, ShieldCheck } from "lucide-react";
+import { Camera, Circle, Mic, Volume2, ShieldCheck, Captions } from "lucide-react";
+import clsx from "clsx";
 import { useVoice } from "@/contexts/VoiceProvider";
 import type { StableDeviceKind } from "@/lib/mediaDevices";
 import { loadRecordMyCalls, saveRecordMyCalls } from "@/lib/recordMyCalls";
+import type { TileNameMode } from "@/lib/tileChrome";
+import {
+  useSetTileChromePrefs,
+  useTileChromePrefs,
+} from "@/lib/tileChromePrefs";
 
 export function AudioVideoSection() {
   const {
@@ -16,6 +22,13 @@ export function AudioVideoSection() {
   } = useVoice();
   const [saving, setSaving] = useState(false);
   const [recordMine, setRecordMine] = useState(() => loadRecordMyCalls());
+  const tileChrome = useTileChromePrefs();
+  const setTileChrome = useSetTileChromePrefs();
+  const nameModes: { id: TileNameMode; label: string }[] = [
+    { id: "always", label: "Always" },
+    { id: "hover", label: "On hover" },
+    { id: "off", label: "Off" },
+  ];
   function toggleVideoCheck(next: boolean) {
     setSaving(true);
     void setCallPrefs({ checkDevicesBeforeVideo: next }).finally(() =>
@@ -108,6 +121,74 @@ export function AudioVideoSection() {
             When you start a call in a room set to Ask, and you have the
             recorder role, the call is recorded. Off rooms never record.
             Always rooms record every call. This choice stays on this device.
+          </span>
+        </span>
+      </label>
+      <div className="mb-3 space-y-2 rounded-xl border border-line bg-surface-2/40 p-3">
+        <span className="flex items-center gap-2 text-sm font-medium text-slate-200">
+          <Captions className="h-4 w-4 text-stable-purple-light" />
+          Show names on tiles
+        </span>
+        <span className="block text-xs text-slate-400">
+          The name this app draws on every call tile, including agents. Always,
+          only while the pointer is over the tile, or off. An agent&apos;s video
+          can still carry a name burned into the picture by the room — that is
+          the room&apos;s voice-relay face plate, and this choice leaves it
+          alone. Stays on this device for your account. The compact audio bar
+          keeps a name beside each face so a voice call stays readable.
+        </span>
+        <div
+          role="radiogroup"
+          aria-label="Show names on tiles"
+          data-testid="tile-name-mode"
+          className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-surface-1 p-1"
+        >
+          {nameModes.map((mode) => {
+            const active = tileChrome.tileNames === mode.id;
+            return (
+              <button
+                key={mode.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                data-testid={`tile-name-mode-${mode.id}`}
+                onClick={() => setTileChrome({ tileNames: mode.id })}
+                className={clsx(
+                  "focus-ring min-h-11 rounded-md px-2 text-sm transition-colors",
+                  active
+                    ? "bg-stable-purple/20 font-medium text-slate-100"
+                    : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200",
+                )}
+              >
+                {mode.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <label className="mb-3 flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-surface-2/40 p-3">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 accent-stable-purple"
+          checked={tileChrome.lowerThird}
+          onChange={(event) =>
+            setTileChrome({ lowerThird: event.target.checked })
+          }
+          data-testid="lower-third-opt-in"
+        />
+        <span className="min-w-0">
+          <span className="flex items-center gap-2 text-sm font-medium text-slate-200">
+            <Captions className="h-4 w-4 text-stable-cyan" />
+            Lower third for the active speaker
+          </span>
+          <span className="mt-0.5 block text-xs text-slate-400">
+            A name strip at the bottom left of the stage while someone is
+            speaking. Agents show their roster role under the name when they
+            have one. The strip steps aside after about four seconds, and it
+            does not appear on the compact bar or the filmstrip. A broadcast
+            link you copy while this is on includes the strip for OBS. A link
+            copied while this is off stays a bare camera. Off by default. Stays
+            on this device.
           </span>
         </span>
       </label>

@@ -35,6 +35,19 @@ const SURFACES: Array<{
     },
   },
   {
+    name: "SettingsAudio",
+    path: "/",
+    waitFor: '[data-testid="tile-name-mode"]',
+    setup: async (page) => {
+      await clickTestId(page, "open-settings");
+      await page
+        .locator('[data-testid="settings-pane-devices"]')
+        .locator("visible=true")
+        .first()
+        .click();
+    },
+  },
+  {
     name: "NewChat",
     path: "/",
     waitFor: '[data-testid="create-room-modal"]',
@@ -357,6 +370,45 @@ test.describe("Call View variations", () => {
 // a settle loop drags it to the newest message; it now stays unpainted until
 // that lands. This guard reads the same flag the paint does: at the instant the
 // list is revealed it must already be on the newest message, not mid-drag.
+test.describe("Name plates and lower third", () => {
+  const scenes = [
+    { id: "names-on", expectName: true, expectStrip: false },
+    { id: "names-off", expectName: false, expectStrip: false },
+    { id: "lower-third", expectName: true, expectStrip: true },
+  ] as const;
+
+  for (const scene of scenes) {
+    for (const viewport of ["mobile", "desktop"] as const) {
+      test(`${scene.id} @ ${viewport}`, async ({ page }) => {
+        const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+        await page.setViewportSize(vp);
+        await page.goto(`/fixtures/nameplate.html?scene=${scene.id}`);
+        await page.waitForSelector('[data-testid="nameplate-stage"]', {
+          timeout: 60_000,
+        });
+        if (scene.expectName) {
+          await expect(page.getByText("Aaron Stransky (you)")).toBeVisible();
+        } else {
+          await expect(page.getByTestId("tile-name-plate")).toHaveCount(0);
+          await expect(page.getByText("Aaron Stransky")).toHaveCount(0);
+        }
+        if (scene.expectStrip) {
+          const strip = page.getByTestId("lower-third");
+          await expect(strip).toBeVisible();
+          await expect(strip).toContainText("Majik");
+          await expect(strip).toContainText("Show host");
+        } else {
+          await expect(page.getByTestId("lower-third")).toHaveCount(0);
+        }
+        await page.screenshot({
+          path: `test-results/Nameplate-${scene.id}-${viewport}.png`,
+          fullPage: true,
+        });
+      });
+    }
+  }
+});
+
 test.describe("Chat opens on the newest message", () => {
   for (const viewport of ["mobile", "desktop"] as const) {
     test(`room opens pinned to the bottom @ ${viewport}`, async ({ page }) => {

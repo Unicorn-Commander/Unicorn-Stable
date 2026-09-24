@@ -64,6 +64,22 @@ import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
 import { useIsDesktop } from "@/hooks/usePanelResize";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
 import { buildBroadcastUrl } from "@/lib/broadcast";
+import {
+  agentRosterRole,
+  humanTitleFromMember,
+  localTilePlate,
+  lowerThirdLayoutForCall,
+  resolveLocalDisplayName,
+  resolveLowerThirdSubtitle,
+  roomLowerThirdOptIn,
+  withLowerThirdParam,
+} from "@/lib/tileChrome";
+import {
+  readTileChromePrefs,
+  useTileChromePrefs,
+} from "@/lib/tileChromePrefs";
+import { StageLowerThird } from "./LowerThird";
+import { CallTileName, TileNamePlate } from "./TileNamePlate";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   useCallUiStore,
@@ -195,6 +211,8 @@ interface CallParticipant {
   isMuted: boolean;
   /** Camera track if publishing one, else null. */
   videoTrack: LocalTrack | RemoteTrack | null;
+  /** LiveKit participant metadata, when the publisher sent any. */
+  metadata: string;
 }
 
 /** Resolved screen-share tile model: video + its sibling screen audio (if any). */
@@ -784,6 +802,7 @@ function ParticipantTile({
       ? s.agents.find((candidate) => candidate.id === persona.slug)
       : undefined,
   );
+  const tileNameMode = useTileChromePrefs().tileNames;
 
   // Compose the LiveKit attach ref with the PiP ref on ONE <video> (audit §4a).
   // useMergedVideoRef memoizes internally (CONTRACT §3.1) so the track isn't
@@ -985,12 +1004,31 @@ function ParticipantTile({
         />
       )}
 
-      {/* Name plate — the persona for agents ("Majik", not "stable-brigade"). */}
-      <span className={clsx("glass absolute flex items-center gap-1.5 truncate rounded-md px-2 text-xs font-medium text-slate-100", immersive ? "py-1 left-3 top-14 max-w-[calc(100%-9rem)]" : "py-0.5 bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)]")}>
-        <span className="truncate">{isAgentTile ? persona.name : p.name}</span>
-        {immersive && p.isMuted && <MicOff className="h-3 w-3 shrink-0" />}
-        {isGuestTile && <GuestBadge />}
-      </span>
+      {/* Client name plate. The relay may also burn a name into an agent's
+          video (voice_relay_face_plate); that one is the room's, and this
+          setting does not remove it. The guest badge and the immersive mute
+          mark stay when the name hides. */}
+      {(tileNameMode !== "off" || isGuestTile || (immersive && p.isMuted)) && (
+        <span
+          className={clsx(
+            "absolute flex max-w-[calc(100%-0.75rem)] items-center gap-1.5",
+            immersive
+              ? "left-3 top-14 max-w-[calc(100%-9rem)]"
+              : "bottom-1.5 left-1.5",
+          )}
+        >
+          <CallTileName
+            name={isAgentTile ? persona.name : p.name}
+            isLocal={p.isLocal && !isAgentTile}
+            mode={tileNameMode}
+            className={immersive ? "py-1" : "py-0.5"}
+          />
+          {immersive && p.isMuted && (
+            <MicOff className="h-3 w-3 shrink-0 text-slate-100" />
+          )}
+          {isGuestTile && <GuestBadge />}
+        </span>
+      )}
 
       {/* Transient confirmation of a face-style cycle. aria-live so the mode
           change is announced, pointer-events-none so it never eats a click. */}
@@ -1259,6 +1297,7 @@ function ScreenShareTile({
 }: ScreenShareTileProps) {
   const pip = usePipTile();
   const fs = useTileFullscreen();
+  const tileNameMode = useTileChromePrefs().tileNames;
   // fs.videoRef registers the <video> for the iPhone fullscreen rung.
   const composedVideoRef = useMergedVideoRef(
     videoRef,
@@ -1288,10 +1327,13 @@ function ScreenShareTile({
           the MAIN document so it never rides a portal into a child window (see
           that component). The video above stays `muted`, as it always has. */}
 
-      <div className="glass absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-stable-cyan">
+      <TileNamePlate
+        mode={tileNameMode}
+        className="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] py-0.5 text-stable-cyan"
+      >
         <MonitorUp className="h-3 w-3 shrink-0" />
         <span className="truncate">{label}</span>
-      </div>
+      </TileNamePlate>
 
       {/* Controls: always visible in a pop-out (frozen frame / no reliable hover);
           hover-reveal on the main stage. */}
@@ -1456,7 +1498,7 @@ function AudioChip({
         className={clsx(isSpeaking && !isMuted && "animate-pulse-soft")}
       />
       <span className="max-w-[10ch] truncate text-xs font-medium text-slate-200">
-        {persona.name}
+        {id === "local" ? localTilePlate(persona.name) : persona.name}
       </span>
       {isGuestChip && <GuestBadge />}
       {isMuted && <MicOff className="h-3.5 w-3.5 shrink-0 text-rose-400" />}
@@ -1535,6 +1577,29 @@ function PoppedOutPlaceholder({ onBringBack }: { onBringBack: () => void }) {
   );
 }
 
+/** Stage region that can host the lower third without joining the filmstrip. */
+function StageFrame({
+  children,
+  chrome,
+  className,
+}: {
+  children: ReactNode;
+  chrome?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={clsx(
+        "relative flex min-h-0 min-w-0 flex-1 flex-col",
+        className,
+      )}
+    >
+      {children}
+      {chrome}
+    </div>
+  );
+}
+
 /* ================================================================== *
  * VoiceVideoBar — the call stage.
  * ================================================================== */
@@ -1591,6 +1656,23 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     },
     [brigadeAgents],
   );
+
+  const accountDisplayName = useAppStore(
+    (s) => s.currentUser?.displayName ?? null,
+  );
+  const accountUsername = useAppStore((s) => s.currentUser?.username ?? null);
+  const roster = useAppStore((s) => s.agents);
+  const callRoom = useAppStore(
+    (s) => s.rooms.find((r) => r.id === roomId) ?? null,
+  );
+  const tileChrome = useTileChromePrefs();
+  // The local tile used to hardcode "You". Everyone else already sees the
+  // display name LiveKit was minted with; this is that same name.
+  const localName = resolveLocalDisplayName({
+    displayName: accountDisplayName,
+    liveKitName: localParticipant?.name,
+    username: accountUsername,
+  });
 
   /* ---------------------------------------------------------------- *
    * Broadcast feeds (OBS)
@@ -1686,12 +1768,19 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
           participant_label: label,
           label: `OBS · ${label}`,
         });
-        const url = buildBroadcastUrl({
-          origin: window.location.origin,
-          roomId: minted.room_id,
-          participantIdentity: minted.participant_identity,
-          token: minted.token,
-        });
+        const userId = useAppStore.getState().currentUser?.id;
+        const roomMeta =
+          useAppStore.getState().rooms.find((r) => r.id === roomId)?.metadata_ ??
+          null;
+        const url = withLowerThirdParam(
+          buildBroadcastUrl({
+            origin: window.location.origin,
+            roomId: minted.room_id,
+            participantIdentity: minted.participant_identity,
+            token: minted.token,
+          }),
+          readTileChromePrefs(userId).lowerThird || roomLowerThirdOptIn(roomMeta),
+        );
         const copied = await copyTextToClipboard(url);
         refreshBroadcasts();
         useAppStore.getState().pushToast(
@@ -1753,7 +1842,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       out.push({
         id: "local",
         sid: localParticipant.sid,
-        name: "You",
+        name: localName || "You",
         isAgent: false,
         isAgentKind: false,
         isLocal: true,
@@ -1762,6 +1851,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         videoTrack: getCameraTrack(
           Array.from(localParticipant.trackPublications.values()),
         ),
+        metadata: localParticipant.metadata ?? "",
       });
     }
     for (const p of remoteParticipants) {
@@ -1776,6 +1866,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         isSpeaking: p.isSpeaking,
         isMuted: !p.isMicrophoneEnabled,
         videoTrack: getCameraTrack(Array.from(p.trackPublications.values())),
+        metadata: p.metadata ?? "",
       });
     }
     return out;
@@ -1786,6 +1877,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     version,
     matchAgent,
     getCameraTrack,
+    localName,
   ]);
 
   // Event-driven active-speaker signal. LiveKit's `isSpeaking` flips WITHOUT a
@@ -1842,10 +1934,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         if (!v.track) return;
         const trackSid = v.trackSid || v.track.sid || String(i);
         const multi = localVideos.length > 1;
+        const screenName = localName || "You";
         out.push({
           sid: multi ? `local-screen:${trackSid}` : "local-screen",
           feedId: multi ? `local-screen:${trackSid}` : "local-screen",
-          label: multi ? `You — screen ${i + 1}` : "You — screen",
+          label: multi
+            ? `${screenName} — screen ${i + 1}`
+            : `${screenName} — screen`,
           videoTrack: v.track,
           // Local screen audio isn't looped back to self.
           audioTrack: null,
@@ -1883,7 +1978,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localParticipant, remoteParticipants, version, matchAgent]);
+  }, [localParticipant, remoteParticipants, version, matchAgent, localName]);
 
   const hasAnyVideo = useMemo(
     () => participants.some((p) => p.videoTrack) || screenShares.length > 0,
@@ -2339,8 +2434,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // broadcast token is scoped to the REAL identity ("<username>_<pid>"), so
     // minting one against "local" would produce a URL that renders nobody.
     const lkIdentity = p.isLocal ? (localParticipant?.identity ?? null) : p.id;
-    // "You" is likewise a UI label; the token's participant_label is what the
-    // owner reads back in the token list, so it has to name a person.
+    // The tile may read "Aaron (you)"; the token list should say the name.
     const lkLabel = p.isLocal ? localParticipant?.name || p.name : p.name;
     return (
       <ParticipantTile
@@ -2524,40 +2618,91 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     view: viewMode, chips: showChips,
   });
 
+  const lowerOptIn =
+    tileChrome.lowerThird || roomLowerThirdOptIn(callRoom?.metadata_ ?? null);
+  const activeSpeaker =
+    participants.find((p) => p.id === liveSpeakerId) ?? null;
+  const speakerIdentity = activeSpeaker
+    ? activeSpeaker.isLocal
+      ? (localParticipant?.identity ?? "")
+      : activeSpeaker.id
+    : "";
+  const speakerMember = speakerIdentity
+    ? roomMembers?.find((m) => memberMatchesCallIdentity(m, speakerIdentity))
+    : undefined;
+  const speakerName = activeSpeaker
+    ? activeSpeaker.isLocal
+      ? localName || "You"
+      : activeSpeaker.name
+    : "";
+  const speakerSubtitle = activeSpeaker
+    ? resolveLowerThirdSubtitle({
+        isAgent:
+          activeSpeaker.isAgent ||
+          activeSpeaker.isAgentKind ||
+          isAgentIdentity(activeSpeaker.id),
+        agentRole: agentRosterRole(
+          activeSpeaker.id,
+          activeSpeaker.name,
+          roster,
+          callRoom?.brigade_agent_id,
+        ),
+        humanTitle: humanTitleFromMember(speakerMember),
+        metadata: activeSpeaker.metadata,
+      })
+    : null;
+  const stageLowerThird = (region: "stage" | "filmstrip" = "stage") => (
+    <StageLowerThird
+      optedIn={lowerOptIn}
+      layout={lowerThirdLayoutForCall({ viewMode, showChips, region })}
+      speakerId={activeSpeaker?.id ?? null}
+      name={speakerName}
+      subtitle={speakerSubtitle}
+      className={portraitOneToOne ? "bottom-28" : undefined}
+    />
+  );
+
   // ---- The stage surface (the pop-out-able tiles), per mode -----------------
 
   let stageSurface: ReactNode = null;
   if (!showChips) {
     if (portraitOneToOne) {
-      stageSurface = <PortraitCallStage
-        remote={renderTile(remotes[0]!, { fill: true, size: "large", immersive: true })}
-        self={self ? renderTile(self, { fill: true }) : undefined}
-      />;
+      stageSurface = (
+        <StageFrame chrome={stageLowerThird("stage")}>
+          <PortraitCallStage
+            remote={renderTile(remotes[0]!, { fill: true, size: "large", immersive: true })}
+            self={self ? renderTile(self, { fill: true }) : undefined}
+          />
+        </StageFrame>
+      );
     } else if (viewMode === "grid") {
       // Gallery: equal, paginated, drag-to-reorder tiles.
       stageSurface = (
-        <VideoGrid
-          onReorder={reorder}
-          items={[
-            ...orderedParticipants.map((p) => ({
-              key: p.id,
-              draggable: true,
-              node: renderTile(p, { grip: true }),
-            })),
-            ...screenShares.map((s) => ({
-              key: `screen:${s.sid}`,
-              node: renderScreen(s),
-            })),
-          ]}
-        />
+        <StageFrame chrome={stageLowerThird("stage")}>
+          <VideoGrid
+            onReorder={reorder}
+            items={[
+              ...orderedParticipants.map((p) => ({
+                key: p.id,
+                draggable: true,
+                node: renderTile(p, { grip: true }),
+              })),
+              ...screenShares.map((s) => ({
+                key: `screen:${s.sid}`,
+                node: renderScreen(s),
+              })),
+            ]}
+          />
+        </StageFrame>
       );
     } else if (viewMode === "focus" || viewMode === "spotlight") {
       // Speaker / Spotlight: one big tile + a filmstrip of the rest.
+      // The lower third sits on the stage, never in the filmstrip.
       stageSurface = (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
-          <div className="min-h-0 flex-1">
+          <StageFrame chrome={stageLowerThird("stage")}>
             {focused && renderTile(focused, { size: "large", fill: true })}
-          </div>
+          </StageFrame>
           <div className="flex shrink-0 gap-2 overflow-x-auto pb-1">
             {screenShares.map((s) => (
               <div key={s.sid} className="w-40 shrink-0">
@@ -2584,18 +2729,20 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     } else if (viewMode === "sidebar") {
       // Co-working dock: a single vertical column of tiles.
       stageSurface = (
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        <div className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
           {screenShares.map((s) => renderScreen(s))}
           {orderedParticipants.map((p) => renderTile(p))}
+          {stageLowerThird("stage")}
         </div>
       );
     } else if (viewMode === "screen") {
       // Presentation: a screen share fills the stage + a people filmstrip.
+      // The lower third sits on the shared screen, never in the filmstrip.
       stageSurface = stageScreen ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
-          <div className="min-h-0 flex-1">
+          <StageFrame chrome={stageLowerThird("stage")}>
             {renderScreen(stageScreen, { fill: true })}
-          </div>
+          </StageFrame>
           <div className="flex shrink-0 gap-2 overflow-x-auto pb-1">
             {screenShares
               .filter((s) => s.sid !== stageScreen.sid)
@@ -2618,12 +2765,14 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             <MonitorUp className="h-3.5 w-3.5 text-stable-cyan" />
             No one is sharing a screen yet — start one from the controls.
           </div>
-          <VideoGrid
-            items={orderedParticipants.map((p) => ({
-              key: p.id,
-              node: renderTile(p),
-            }))}
-          />
+          <StageFrame chrome={stageLowerThird("stage")}>
+            <VideoGrid
+              items={orderedParticipants.map((p) => ({
+                key: p.id,
+                node: renderTile(p),
+              }))}
+            />
+          </StageFrame>
         </div>
       );
     }

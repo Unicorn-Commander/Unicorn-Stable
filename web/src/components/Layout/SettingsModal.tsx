@@ -187,6 +187,7 @@ export function SettingsModal({
               <button
                 key={p.id}
                 type="button"
+                data-testid={`settings-pane-${p.id}`}
                 aria-current={pane === p.id ? "page" : undefined}
                 onClick={() => setPane(p.id)}
                 className={clsx(

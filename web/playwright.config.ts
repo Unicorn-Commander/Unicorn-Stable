@@ -8,7 +8,7 @@ import { defineConfig, devices } from "@playwright/test";
  * Vite's own default in this repo is port 3000. The harness pins 5173 so a
  * long-running app on 3000 is not the thing under test.
  */
-const PORT = 5173;
+const PORT = Number(process.env.PLAYWRIGHT_PORT) || 5173;
 const baseURL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
