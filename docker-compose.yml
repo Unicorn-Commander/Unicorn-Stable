@@ -177,10 +177,15 @@ services:
     volumes:
       - ./server:/app
       - backend_uploads:/home/stable/server/uploads
-      # Finished call-audio recordings, written by the egress service. Read-
-      # only here: the backend only picks files up for the Meeting-Ops
-      # hand-off; it never writes or deletes them.
-      - egress_out:/egress-out:ro
+      # Finished recordings, written by the egress service. READ-WRITE: the
+      # backend hands each file to Meeting-Ops, copies it to storage, and then
+      # deletes the local file (after delivery once a durable copy exists, and
+      # at retention). Mounted :ro until 2026-09-24, which made every one of
+      # those deletes fail with EROFS — invisible until storage was configured
+      # and the post-delivery sweep had rows to free. The volume directory is
+      # 2775 with group 1000 (the backend's `stable` group), so unlink works
+      # without any ownership change.
+      - egress_out:/egress-out
     environment:
       # production => SQLAlchemy echo OFF (dev leaked every SQL statement +
       # message body to stdout) and JSON structured logs.
