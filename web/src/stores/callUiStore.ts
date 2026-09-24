@@ -6,6 +6,13 @@ import type {
   UiCommandMessage,
 } from "@/lib/roomDataProtocol";
 import { getSendByDefault } from "@/lib/meetingOpsPrefs";
+import {
+  CAPTION_IDLE_FACTS,
+  reduceCaptionState,
+  writeServerCaptionEnabled,
+  type CaptionFacts,
+  type CaptionState,
+} from "@/lib/captionState";
 
 /**
  * Mobile intent modes for in-call layout (phones / narrow viewports).
@@ -136,6 +143,12 @@ function transcriptWords(text: string): Set<string> {
  * lines as the same speech when one normalized string contains the other, or
  * when most words in the shorter line overlap.
  */
+function isAgentEar(source: TranscriptMessage["source"] | undefined): boolean {
+  return source === "agent_stt" || source === "captioner";
+}
+
+let lastCaptionFacts: CaptionFacts = { ...CAPTION_IDLE_FACTS };
+
 function sameUtterance(a: string, b: string): boolean {
   const na = Array.from(transcriptWords(a)).join(" ");
   const nb = Array.from(transcriptWords(b)).join(" ");
@@ -240,6 +253,12 @@ interface CallUiState {
   talkGate: TalkGateState;
   /** Transcript buffer (final + the current interim line per speaker). */
   transcript: TranscriptLine[];
+  /** Which caption lane is live, and why it is off. */
+  caption: CaptionState;
+  /** Per-user "Caption my microphone (server)". Default off. Not a recording. */
+  serverCaptionEnabled: boolean;
+  /** Registered by VoiceProvider so the panel can select the default input. */
+  useDefaultMic: (() => void) | null;
   /**
    * Per-session: when true, hang-up (and the manual Send control) will POST the
    * call transcript to Stable's export endpoint, which may forward it to
@@ -291,6 +310,10 @@ interface CallUiState {
 
   ingestTranscript: (msg: TranscriptMessage) => void;
   clearTranscript: () => void;
+  setCaptionFacts: (facts: CaptionFacts) => void;
+  setServerCaptionEnabled: (on: boolean, userId?: string | null) => void;
+  hydrateServerCaptionEnabled: (on: boolean) => void;
+  setUseDefaultMic: (fn: (() => void) | null) => void;
   resetForServer: () => void;
 }
 
@@ -315,6 +338,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   audioHoldConsumed: false,
   talkGate: TALK_GATE_CLOSED,
   transcript: [],
+  caption: reduceCaptionState(CAPTION_IDLE_FACTS),
+  serverCaptionEnabled: false,
+  useDefaultMic: null,
   sendToMeetingOps:
     typeof window !== "undefined" ? getSendByDefault() : true,
   callStartedAt: null,
@@ -449,8 +475,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   ingestTranscript: (msg) =>
     set((state) => {
       // Drop agent STT that could not name a real LiveKit participant.
+      const ear = isAgentEar(msg.source);
       if (
-        msg.source === "agent_stt" &&
+        ear &&
         (msg.participantId === "human" ||
           msg.name === "Unidentified speaker" ||
           msg.name === "Speaker")
@@ -479,73 +506,60 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
 
       // ── Authority rules ─────────────────────────────────────────────
       // 1. local_mic is authoritative for WHO spoke (browser owns its mic).
-      // 2. agent_stt is fallback only — never override or re-label a matching
-      //    local_mic line, even when the agent guessed a DIFFERENT speaker
-      //    (linked-session / no-diarization dump is the classic failure).
-      // 3. Acoustic echo: Web Speech often captions far-end audio as "local".
-      //    If another participant already published the same local_mic words,
-      //    drop the later echo copy.
+      // 2. server clips are the same mic when Web Speech cannot follow it.
+      //    A matching local_mic line still wins.
+      // 3. agent_stt and captioner are fallbacks — never override a matching
+      //    local_mic or server line, even with a different speaker guess.
+      // 4. Acoustic echo: Web Speech often captions far-end audio as "local".
+      //    If another participant already published the same words, drop the
+      //    later echo copy.
 
-      if (msg.source === "agent_stt") {
-        const localWins = lines.some(
-          (c) =>
-            c.source === "local_mic" &&
-            within(c.ts, msg.ts) &&
-            sameUtterance(c.text, msg.text),
+      const matches = (candidate: TranscriptLine) =>
+        within(candidate.ts, msg.ts) && sameUtterance(candidate.text, msg.text);
+
+      if (ear) {
+        const humanWins = lines.some(
+          (candidate) =>
+            (candidate.source === "local_mic" || candidate.source === "server") &&
+            matches(candidate),
         );
-        if (localWins) return state;
+        if (humanWins) return state;
+      }
+
+      if (msg.source === "server") {
+        const browserWins = lines.some(
+          (candidate) => candidate.source === "local_mic" && matches(candidate),
+        );
+        if (browserWins) return state;
+        lines = lines.filter(
+          (candidate) => !(isAgentEar(candidate.source) && matches(candidate)),
+        );
+        const earlierRemote = lines.find(
+          (candidate) =>
+            (candidate.source === "local_mic" || candidate.source === "server") &&
+            candidate.participantId !== msg.participantId &&
+            matches(candidate) &&
+            candidate.ts <= msg.ts,
+        );
+        if (earlierRemote) return state;
       }
 
       if (msg.source === "local_mic") {
-        // Strip matching agent_stt from ANY speaker (wrong diarization).
         lines = lines.filter(
-          (c) =>
+          (candidate) =>
             !(
-              c.source === "agent_stt" &&
-              within(c.ts, msg.ts) &&
-              sameUtterance(c.text, msg.text)
+              (isAgentEar(candidate.source) || candidate.source === "server") &&
+              matches(candidate)
             ),
         );
-        // Echo: another human's local_mic already claimed this utterance.
         const earlierRemote = lines.find(
-          (c) =>
-            c.source === "local_mic" &&
-            c.participantId !== msg.participantId &&
-            within(c.ts, msg.ts) &&
-            sameUtterance(c.text, msg.text) &&
-            c.ts <= msg.ts,
+          (candidate) =>
+            candidate.source === "local_mic" &&
+            candidate.participantId !== msg.participantId &&
+            matches(candidate) &&
+            candidate.ts <= msg.ts,
         );
         if (earlierRemote) return state;
-        // Echo late-comer: we already have this as local_mic for us; if a
-        // later remote copy arrives it is handled when THEY ingest. If we
-        // already have our own line and remote tries... handled on their
-        // client. Locally, drop our echo when remote's line arrived first.
-      }
-
-      // Same-participant counterpart dedupe (local_mic ↔ agent_stt).
-      const counterpartSource =
-        msg.source === "agent_stt"
-          ? "local_mic"
-          : msg.source === "local_mic"
-            ? "agent_stt"
-            : null;
-      if (counterpartSource) {
-        const duplicateIndexes = lines
-          .map((candidate, index) => ({ candidate, index }))
-          .filter(
-            ({ candidate }) =>
-              candidate.participantId === msg.participantId &&
-              candidate.source === counterpartSource &&
-              within(candidate.ts, msg.ts) &&
-              sameUtterance(candidate.text, msg.text),
-          )
-          .map(({ index }) => index);
-
-        if (duplicateIndexes.length > 0) {
-          if (msg.source === "agent_stt") return state;
-          const duplicateSet = new Set(duplicateIndexes);
-          lines = lines.filter((_, index) => !duplicateSet.has(index));
-        }
       }
       const interimIdx = lines.findIndex(
         (l) => !l.isFinal && l.participantId === msg.participantId,
@@ -570,12 +584,38 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
     }),
 
   clearTranscript: () => set({ transcript: [] }),
+
+  setCaptionFacts: (facts) => {
+    lastCaptionFacts = facts;
+    set({ caption: reduceCaptionState(facts) });
+  },
+
+  setServerCaptionEnabled: (on, userId) => {
+    writeServerCaptionEnabled(userId, on);
+    lastCaptionFacts = { ...lastCaptionFacts, serverCaptionEnabled: on };
+    set({
+      serverCaptionEnabled: on,
+      caption: reduceCaptionState(lastCaptionFacts),
+    });
+  },
+
+  hydrateServerCaptionEnabled: (on) => {
+    lastCaptionFacts = { ...lastCaptionFacts, serverCaptionEnabled: on };
+    set({
+      serverCaptionEnabled: on,
+      caption: reduceCaptionState(lastCaptionFacts),
+    });
+  },
+
+  setUseDefaultMic: (fn) => set({ useDefaultMic: fn }),
   // Drop per-call visual state on a server switch. View-mode prefs and the
   // show-video/show-transcript toggles are user preferences, so they're kept.
   // Pins are cleared (a pinned identity from another server is meaningless) and
   // the transient pop-out state is reset.
   resetForServer: () => {
     clearTalkGateSafetyTimer();
+    const serverCaptionEnabled = get().serverCaptionEnabled;
+    lastCaptionFacts = { ...CAPTION_IDLE_FACTS, serverCaptionEnabled };
     set({
       pinnedParticipantId: {},
       hiddenTileIds: new Set(),
@@ -587,6 +627,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       audioHoldConsumed: false,
       talkGate: TALK_GATE_CLOSED,
       transcript: [],
+      caption: reduceCaptionState(lastCaptionFacts),
       callStartedAt: null,
       sendToMeetingOps: getSendByDefault(),
       mobileCallMode: "split",
@@ -630,6 +671,12 @@ export function setActiveCallRoom(roomId: string | null): void {
       };
     });
     useCallUiStore.getState().resetMobileCallUi();
+    // A new call (or hang-up) must not keep the previous lane's explanation.
+    const enabled = useCallUiStore.getState().serverCaptionEnabled;
+    useCallUiStore.getState().setCaptionFacts({
+      ...CAPTION_IDLE_FACTS,
+      serverCaptionEnabled: enabled,
+    });
   }
 }
 

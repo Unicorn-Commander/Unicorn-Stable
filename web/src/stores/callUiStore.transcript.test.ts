@@ -58,6 +58,72 @@ describe("ingestTranscript speaker authority", () => {
     expect(lines[0]?.participantId).toBe("shafen");
   });
 
+  it("keeps an agent captioner line when the browser lane has nothing", () => {
+    useCallUiStore.getState().ingestTranscript({
+      type: "transcript",
+      participantId: "aaron",
+      name: "Aaron",
+      text: "the studio mic is live",
+      isFinal: true,
+      ts: 4000,
+      source: "captioner",
+    });
+    const lines = useCallUiStore.getState().transcript;
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.source).toBe("captioner");
+    expect(lines[0]?.text).toBe("the studio mic is live");
+  });
+
+  it("drops a captioner line when the browser already claimed the words", () => {
+    const store = useCallUiStore.getState();
+    store.ingestTranscript({
+      type: "transcript",
+      participantId: "aaron",
+      name: "Aaron",
+      text: "the studio mic is live",
+      isFinal: true,
+      ts: 5000,
+      source: "local_mic",
+    });
+    store.ingestTranscript({
+      type: "transcript",
+      participantId: "aaron",
+      name: "Aaron",
+      text: "the studio mic is live",
+      isFinal: true,
+      ts: 5100,
+      source: "captioner",
+    });
+    expect(useCallUiStore.getState().transcript).toHaveLength(1);
+    expect(useCallUiStore.getState().transcript[0]?.source).toBe("local_mic");
+  });
+
+  it("keeps a server clip and lets a later browser line replace it", () => {
+    const store = useCallUiStore.getState();
+    store.ingestTranscript({
+      type: "transcript",
+      participantId: "aaron",
+      name: "Aaron",
+      text: "caption this from the server",
+      isFinal: true,
+      ts: 6000,
+      source: "server",
+    });
+    expect(useCallUiStore.getState().transcript[0]?.source).toBe("server");
+    store.ingestTranscript({
+      type: "transcript",
+      participantId: "aaron",
+      name: "Aaron",
+      text: "caption this from the server",
+      isFinal: true,
+      ts: 6200,
+      source: "local_mic",
+    });
+    const lines = useCallUiStore.getState().transcript;
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.source).toBe("local_mic");
+  });
+
   it("drops unidentified agent_stt frames", () => {
     useCallUiStore.getState().ingestTranscript({
       type: "transcript",

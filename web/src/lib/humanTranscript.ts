@@ -67,6 +67,7 @@ function buildMsg(
   room: Room,
   text: string,
   isFinal: boolean,
+  source: "local_mic" | "server",
   segmentId?: string,
 ): TranscriptMessage | null {
   const lp = room.localParticipant;
@@ -80,10 +81,21 @@ function buildMsg(
     text: trimmed,
     isFinal,
     ts: Date.now(),
-    source: "local_mic",
+    source,
   };
   if (segmentId) msg.segmentId = segmentId;
   return msg;
+}
+
+/** Publish one final from this browser: Web Speech, or an opted-in server clip. */
+export function publishLocalCaption(
+  room: Room,
+  text: string,
+  source: "local_mic" | "server",
+): void {
+  const segmentId = `${source}-${room.localParticipant.identity}-${Date.now()}`;
+  const msg = buildMsg(room, text, true, source, segmentId);
+  if (msg) publishAndIngest(room, msg);
 }
 
 function publishAndIngest(room: Room, msg: TranscriptMessage): void {
@@ -149,6 +161,24 @@ export class HumanTranscriptSession {
   }
 
   /**
+   * Stop recognition without ending the call. Used when a pinned mic or an
+   * agent captioner takes the lane. start() arms it again.
+   */
+  suspend(): void {
+    this.wanted = false;
+    this.teardownRec();
+  }
+
+  /** True while this call still wants browser captions. */
+  isArmed(): boolean {
+    return this.wanted && !this.stopped;
+  }
+
+  isRemoteDominant(): boolean {
+    return this.remoteDominant;
+  }
+
+  /**
    * Kept for the call lifecycle's participant-change hook. A recognition
    * engine can end during device churn, so this also restarts it if needed.
    */
@@ -207,14 +237,20 @@ export class HumanTranscriptSession {
         if (!text.trim()) continue;
         if (result.isFinal) {
           const segmentId = `browser-${this.room.localParticipant.identity}-${Date.now()}`;
-          const msg = buildMsg(this.room, text, true, segmentId);
+          const msg = buildMsg(this.room, text, true, "local_mic", segmentId);
           if (msg) publishAndIngest(this.room, msg);
           this.interimSegId = null;
         } else {
           if (!this.interimSegId) {
             this.interimSegId = `browser-interim-${this.room.localParticipant.identity}`;
           }
-          const msg = buildMsg(this.room, text, false, this.interimSegId);
+          const msg = buildMsg(
+            this.room,
+            text,
+            false,
+            "local_mic",
+            this.interimSegId,
+          );
           if (msg) publishAndIngest(this.room, msg);
         }
       }
@@ -236,11 +272,18 @@ export class HumanTranscriptSession {
     rec.onend = () => {
       this.running = false;
       // Continuous mode often ends after a pause — restart while still wanted.
-      if (this.stopped || !this.wanted || !this.micEnabled) return;
+      if (this.stopped || !this.wanted || !this.micEnabled || this.remoteDominant) {
+        return;
+      }
       if (this.restartTimer) clearTimeout(this.restartTimer);
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
-        if (!this.stopped && this.wanted && this.micEnabled) {
+        if (
+          !this.stopped &&
+          this.wanted &&
+          this.micEnabled &&
+          !this.remoteDominant
+        ) {
           this.spinUp();
         }
       }, 250);

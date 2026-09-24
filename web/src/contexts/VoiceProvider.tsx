@@ -37,7 +37,19 @@ import { applyRelayConfigToRoomQueries } from "@/lib/voiceSettings";
 import { useQueryClient } from "@tanstack/react-query";
 import { handleArtifactEvent } from "@/stores/canvasStore";
 import { playCue } from "@/lib/sounds";
-import { HumanTranscriptSession } from "@/lib/humanTranscript";
+import {
+  HumanTranscriptSession,
+  isBrowserSttAvailable,
+} from "@/lib/humanTranscript";
+import { ServerCaptionSession } from "@/lib/serverCaption";
+import {
+  browserCanFollowInput,
+  captionFacts,
+  exportCaptionSource,
+  electedCaptionerName,
+  readServerCaptionEnabled,
+  serverLaneWanted,
+} from "@/lib/captionState";
 import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
 import { DeviceCheckDialog } from "@/components/Call/DeviceCheckDialog";
 import { readCallJoinPrefs, saveCallJoinPrefs } from "@/lib/callJoinPrefs";
@@ -196,7 +208,7 @@ function bindTranscriptSender(
     if (claimedSource === "agent") {
       speaker = sender;
       source = "agent";
-    } else if (claimedSource === "agent_stt") {
+    } else if (claimedSource === "agent_stt" || claimedSource === "captioner") {
       const candidates: Array<RemoteParticipant | LocalParticipant> = [
         room.localParticipant,
         ...room.remoteParticipants.values(),
@@ -208,14 +220,14 @@ function bindTranscriptSender(
       );
       if (!linkedHuman) return null;
       speaker = linkedHuman;
-      source = "agent_stt";
+      source = claimedSource;
     } else {
       return null;
     }
   } else {
     // A human data sender can only publish a caption for their own mic.
     speaker = sender;
-    source = "local_mic";
+    source = message.source === "server" ? "server" : "local_mic";
   }
 
   const now = Date.now();
@@ -339,9 +351,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Join cue fires once per connect() — Reconnected/state churn must not
   // re-chime. Reset when a fresh Room is created in connect().
   const joinCuePlayedRef = useRef(false);
-  // Speaker-owned browser STT for the local human. It runs with or without an
-  // agent and mirrors the LiveKit mute state.
+  // Speaker-owned browser STT for the local human. It runs when this browser
+  // can follow the mic and no agent captioner is on the call.
   const humanTranscriptRef = useRef<HumanTranscriptSession | null>(null);
+  const serverCaptionRef = useRef<ServerCaptionSession | null>(null);
+  const syncCaptionLanesRef = useRef<() => void>(() => {});
+  const devicesRef = useRef(devices);
+  devicesRef.current = devices;
 
   // Screen-share audio sink bookkeeping. `screenSinkEls` maps a screen-share
   // audio track's sid → the hidden <audio> element WE created for the global
@@ -454,14 +470,94 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       navigator.mediaDevices?.removeEventListener("devicechange", onChange);
   }, [refreshDevices, selectedDevices, switchDevice]);
 
+  syncCaptionLanesRef.current = () => {
+    const live = roomRef.current;
+    const connected = live?.state === ConnectionState.Connected ? live : null;
+    const audioInputId = selectedDevices.audioinput;
+    const audioInputLabel =
+      devices.audioinput.find((device) => device.deviceId === audioInputId)
+        ?.label ?? null;
+    const agentName = connected
+      ? electedCaptionerName(
+          Array.from(connected.remoteParticipants.values()).map((participant) => ({
+            identity: participant.identity,
+            name: participant.name,
+            agent: isAgentParticipant(participant),
+            cast: participant.attributes?.["stable.cast"] === "1",
+          })),
+        )
+      : null;
+    const server = serverCaptionRef.current;
+    const facts = captionFacts({
+      inCall: connected !== null,
+      audioInputId,
+      audioInputLabel,
+      speechRecognitionAvailable: isBrowserSttAvailable(),
+      micEnabled: connected ? connected.localParticipant.isMicrophoneEnabled : false,
+      remoteDominant: humanTranscriptRef.current?.isRemoteDominant() ?? false,
+      agentName,
+      serverCaptionEnabled: useCallUiStore.getState().serverCaptionEnabled,
+      serverCaptureAvailable: server
+        ? server.canCapture
+        : typeof MediaRecorder !== "undefined",
+      serverLastError: server?.hasLastError ?? false,
+    });
+    useCallUiStore.getState().setCaptionFacts(facts);
+
+    const human = humanTranscriptRef.current;
+    // Remote-speaker pauses stay inside the session. Suspend only when this
+    // browser should not own the lane at all (pinned mic, or an agent captioner).
+    const armBrowser =
+      connected !== null &&
+      facts.speechRecognitionAvailable &&
+      browserCanFollowInput(facts.audioInputId) &&
+      !agentName;
+    if (human && connected) {
+      if (armBrowser) {
+        if (!human.isArmed()) human.start();
+      } else if (human.isArmed()) {
+        human.suspend();
+      }
+    }
+    if (server && connected && serverLaneWanted(facts)) server.start();
+    else server?.suspend();
+  };
+
   const sync = useCallback((r: Room) => {
     setLocalParticipant(r.localParticipant);
     setRemoteParticipants(Array.from(r.remoteParticipants.values()));
     humanTranscriptRef.current?.syncMicrophone(
       r.localParticipant.isMicrophoneEnabled,
     );
+    syncCaptionLanesRef.current();
     setVersion((v) => v + 1);
   }, []);
+
+  useEffect(() => {
+    useCallUiStore
+      .getState()
+      .hydrateServerCaptionEnabled(readServerCaptionEnabled(currentUserId));
+    syncCaptionLanesRef.current();
+  }, [currentUserId]);
+
+  useEffect(() => {
+    return useCallUiStore.subscribe((state, prev) => {
+      if (state.serverCaptionEnabled !== prev.serverCaptionEnabled) {
+        syncCaptionLanesRef.current();
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    syncCaptionLanesRef.current();
+  }, [room, selectedDevices.audioinput, devices.audioinput, remoteParticipants]);
+
+  useEffect(() => {
+    useCallUiStore.getState().setUseDefaultMic(() => {
+      void switchDevice("audioinput", "default");
+    });
+    return () => useCallUiStore.getState().setUseDefaultMic(null);
+  }, [switchDevice]);
 
   // Attach a remote screen-share audio track to the hidden global sink so it is
   // audible in EVERY view mode (incl. compact/audio-only, which render no tile).
@@ -566,6 +662,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
     humanTranscriptRef.current = null;
+    try {
+      serverCaptionRef.current?.stop();
+    } catch {
+      /* ignore */
+    }
+    serverCaptionRef.current = null;
 
     // Submit final caption lines without blocking LiveKit teardown. Once the
     // Stable API accepts this request its durable server outbox owns delivery,
@@ -587,7 +689,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             ts: l.ts,
             is_final: true,
             segment_id: l.id,
-            source: l.source || "unknown",
+            source: exportCaptionSource(l.source),
           })),
           room_name: roomMeta?.display_name || roomMeta?.name || null,
           call_started_at: ui.callStartedAt
@@ -1008,41 +1110,57 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       }
       const humanSession = new HumanTranscriptSession(r);
       humanTranscriptRef.current = humanSession;
+      serverCaptionRef.current = new ServerCaptionSession(r, () => {
+        syncCaptionLanesRef.current();
+      });
       // Web Speech opens a second, browser-owned microphone and exposes no
       // deviceId constraint. Do not secretly capture the OS default when the
-      // caller deliberately selected another input; agent STT remains active.
-      const browserSttCanFollowInput =
-        !chosen.audioinput || chosen.audioinput === "default";
-      if (browserSttCanFollowInput) {
-        humanSession.start();
-        r.on(
-          RoomEvent.ParticipantConnected,
-          own(() => humanSession.reevaluate()),
-        );
-        r.on(
-          RoomEvent.ParticipantDisconnected,
-          own(() => humanSession.reevaluate()),
-        );
-      } else {
+      // caller deliberately selected another input. The transcript panel says
+      // which lane is live, or why none is.
+      if (!browserCanFollowInput(chosen.audioinput)) {
+        const label = devicesRef.current.audioinput.find(
+          (device) => device.deviceId === chosen.audioinput,
+        )?.label;
         useAppStore.getState().pushToast({
           title: "Browser captions paused",
-          body: "Web Speech cannot follow a selected microphone. Call audio still uses your chosen input.",
+          body: label
+            ? `Web Speech cannot follow ${label}. Call audio still uses that input. The transcript says how captions can keep going.`
+            : "Web Speech cannot follow a selected microphone. Call audio still uses your chosen input. The transcript says how captions can keep going.",
         });
       }
+      r.on(
+        RoomEvent.ParticipantConnected,
+        own(() => {
+          humanSession.reevaluate();
+          syncCaptionLanesRef.current();
+        }),
+      );
+      r.on(
+        RoomEvent.ParticipantDisconnected,
+        own(() => {
+          humanSession.reevaluate();
+          syncCaptionLanesRef.current();
+        }),
+      );
       // Pause local Web Speech when a remote human is the active speaker so
       // their audio through speakers is not captioned as the local user.
-      r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-        try {
-          const localId = r.localParticipant?.identity;
-          const localSpeaking = speakers.some((s) => s.identity === localId);
-          const remoteHumanSpeaking = speakers.some(
-            (s) => s.identity !== localId && !isAgentParticipant(s),
-          );
-          humanSession.setRemoteDominant(remoteHumanSpeaking && !localSpeaking);
-        } catch {
-          /* ignore */
-        }
-      });
+      r.on(
+        RoomEvent.ActiveSpeakersChanged,
+        own((speakers) => {
+          try {
+            const localId = r.localParticipant?.identity;
+            const localSpeaking = speakers.some((s) => s.identity === localId);
+            const remoteHumanSpeaking = speakers.some(
+              (s) => s.identity !== localId && !isAgentParticipant(s),
+            );
+            humanSession.setRemoteDominant(remoteHumanSpeaking && !localSpeaking);
+            syncCaptionLanesRef.current();
+          } catch {
+            /* ignore */
+          }
+        }),
+      );
+      syncCaptionLanesRef.current();
 
       // Publish the human's mic so the agent can hear them. Do NOT await — the
       // mic-permission prompt would otherwise block the agent dispatch below

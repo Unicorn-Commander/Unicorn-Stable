@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions,
   Check,
@@ -12,12 +12,19 @@ import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useAppStore } from "@/stores/appStore";
+import { useConversationUi } from "@/stores/conversationUiStore";
+import {
+  exportCaptionSource,
+  linesWithVoiceHistory,
+  type CaptionVoiceMessage,
+} from "@/lib/captionState";
 import {
   isDevTranscriptEnabled,
   seedSampleTranscript,
 } from "@/lib/devTranscript";
-import { isBrowserSttAvailable } from "@/lib/humanTranscript";
-import { api } from "@/services/api";
+import { api, type Message, type RoomMember } from "@/services/api";
+
+const NO_PARTICIPANTS: RoomMember[] = [];
 
 
 /**
@@ -42,8 +49,23 @@ import { api } from "@/services/api";
  * The `?devtranscript` flag still surfaces a "Seed sample" button for
  * exercising the rendering (interim vs final, autoscroll) without a live call.
  */
+function voiceMessages(items: Message[]): CaptionVoiceMessage[] {
+  return items.map((message) => ({
+    id: message.id,
+    senderId: message.sender_id,
+    senderName: message.sender_name || "Someone",
+    text: message.content,
+    createdAtMs: Date.parse(message.created_at),
+    viaVoice: message.metadata?.via === "voice",
+  }));
+}
+
 export function TranscriptPanel() {
-  const lines = useCallUiStore((s) => s.transcript);
+  const liveLines = useCallUiStore((s) => s.transcript);
+  const caption = useCallUiStore((s) => s.caption);
+  const serverCaptionEnabled = useCallUiStore((s) => s.serverCaptionEnabled);
+  const setServerCaptionEnabled = useCallUiStore((s) => s.setServerCaptionEnabled);
+  const selectDefaultMic = useCallUiStore((s) => s.useDefaultMic);
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
   const clearTranscript = useCallUiStore((s) => s.clearTranscript);
   const sendToMeetingOps = useCallUiStore((s) => s.sendToMeetingOps);
@@ -53,10 +75,23 @@ export function TranscriptPanel() {
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
   const agents = useAppStore((s) => s.agents);
-  const participants = useAppStore((s) =>
-    activeCallRoomId ? s.participants[activeCallRoomId] ?? [] : [],
+  const participantList = useAppStore((s) =>
+    activeCallRoomId ? s.participants[activeCallRoomId] : undefined,
+  );
+  const participants = participantList ?? NO_PARTICIPANTS;
+  const roomMessages = useAppStore((s) =>
+    activeCallRoomId ? s.messages[activeCallRoomId]?.items : undefined,
   );
   const pushToast = useAppStore((s) => s.pushToast);
+  const lines = useMemo(
+    () =>
+      linesWithVoiceHistory(
+        liveLines,
+        voiceMessages(roomMessages ?? []),
+        callStartedAt,
+      ),
+    [liveLines, roomMessages, callStartedAt],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Only autoscroll when the user is already at the bottom, so reading back
@@ -113,7 +148,7 @@ export function TranscriptPanel() {
           ts: l.ts,
           is_final: true,
           segment_id: l.id,
-          source: l.source || "unknown",
+          source: exportCaptionSource(l.source),
         })),
         room_name: roomMeta?.display_name || roomMeta?.name || null,
         call_started_at: callStartedAt
@@ -169,21 +204,35 @@ export function TranscriptPanel() {
   }
 
   const finalCount = lines.filter((l) => l.isFinal).length;
-  const browserStt = isBrowserSttAvailable();
+  const laneTone =
+    caption.lane === "off"
+      ? "bg-amber-400/10 text-amber-200"
+      : caption.lane === "server"
+        ? "bg-stable-purple/15 text-stable-purple-light"
+        : caption.lane === "agent"
+          ? "bg-stable-mint/10 text-stable-mint"
+          : "bg-stable-cyan/10 text-stable-cyan";
 
   return (
     <div
       className="flex h-full min-h-0 w-full flex-col bg-surface-1/70 backdrop-blur-xl"
       role="region"
       aria-label="Live call transcript"
+      data-testid="transcript-panel"
     >
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-3">
-        <div className="flex items-center gap-1.5 font-display text-xs font-semibold text-slate-200">
-          <Captions className="h-3.5 w-3.5 text-stable-cyan" />
-          Live transcript
-          <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-stable-mint/10 px-1.5 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.08em] text-stable-mint">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-stable-mint" />
-            Live
+      <div className="flex shrink-0 flex-col gap-1 border-b border-line px-3 py-1.5">
+        <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5 font-display text-xs font-semibold text-slate-200">
+          <Captions className="h-3.5 w-3.5 shrink-0 text-stable-cyan" />
+          <span className="truncate">Live transcript</span>
+          <span
+            data-testid="caption-state-chip"
+            className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.08em] ${laneTone}`}
+          >
+            {caption.lane !== "off" && (
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+            )}
+            {caption.lane}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -213,6 +262,55 @@ export function TranscriptPanel() {
           >
             <X className="h-3.5 w-3.5" />
           </button>
+        </div>
+        </div>
+        <div role="status" aria-live="polite" data-testid="caption-state" className="flex flex-col gap-1">
+          <p data-testid="caption-state-summary" className="text-[11px] leading-snug text-slate-400">
+            {caption.summary}
+          </p>
+          {caption.actions.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {caption.actions.includes("use-default-mic") && (
+                <button
+                  type="button"
+                  data-testid="caption-use-default-mic"
+                  onClick={() => selectDefaultMic?.()}
+                  className="focus-ring rounded-md border border-line bg-surface-2/80 px-1.5 py-0.5 text-[11px] text-slate-200 transition-colors hover:border-stable-cyan/40 hover:text-stable-cyan"
+                >
+                  Use the default mic
+                </button>
+              )}
+              {caption.actions.includes("invite-agent") && (
+                <button
+                  type="button"
+                  data-testid="caption-invite-agent"
+                  onClick={() => {
+                    if (activeCallRoomId) {
+                      useConversationUi.getState().openInviteSheet(activeCallRoomId);
+                    }
+                  }}
+                  className="focus-ring rounded-md border border-line bg-surface-2/80 px-1.5 py-0.5 text-[11px] text-slate-200 transition-colors hover:border-stable-cyan/40 hover:text-stable-cyan"
+                >
+                  Invite an agent
+                </button>
+              )}
+            </div>
+          )}
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-400"
+            title="Sends short clips of your microphone to Stable's transcription service when this browser cannot caption the input you picked. This is a caption, not a recording."
+          >
+            <input
+              type="checkbox"
+              data-testid="caption-server-pref"
+              className="h-3 w-3 rounded border-line bg-surface-2 text-stable-cyan focus:ring-stable-cyan/40"
+              checked={serverCaptionEnabled}
+              onChange={(event) =>
+                setServerCaptionEnabled(event.target.checked, currentUser?.id)
+              }
+            />
+            <span className="select-none">Caption my microphone (server)</span>
+          </label>
         </div>
       </div>
 
@@ -278,9 +376,6 @@ export function TranscriptPanel() {
             </p>
             <p className="text-[11px] text-slate-500">
               Lines appear here as people speak.
-              {!browserStt
-                ? " (Browser speech recognition unavailable — agent STT still works when an agent joins.)"
-                : " Human speech is captioned live; agent replies stream as they speak."}
             </p>
           </div>
         ) : (
@@ -314,7 +409,9 @@ export function TranscriptPanel() {
             const provenance: { label: string; verified: boolean } =
               line.source === "local_mic"
                 ? { label: "Identity matched · client caption", verified: false }
-                : line.source === "agent_stt"
+                : line.source === "server"
+                  ? { label: "Server transcription · not a recording", verified: false }
+                : line.source === "agent_stt" || line.source === "captioner"
                   ? { label: "Identity matched · room STT", verified: false }
                   : line.source === "agent"
                     ? { label: "Verified · agent caption", verified: true }

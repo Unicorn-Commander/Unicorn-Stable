@@ -9,6 +9,7 @@ import {
   Captions,
   type LucideIcon,
 } from "lucide-react";
+import { captionToggleTitle } from "@/lib/captionState";
 import { useCallUiStore } from "@/stores/callUiStore";
 import type { CallViewMode } from "@/lib/roomDataProtocol";
 
@@ -115,6 +116,7 @@ export function ViewModeSwitcher({
   const setPinnedParticipant = useCallUiStore((s) => s.setPinnedParticipant);
   const showTranscript = useCallUiStore((s) => s.showTranscript);
   const toggleTranscript = useCallUiStore((s) => s.toggleTranscript);
+  const captionSummary = useCallUiStore((s) => s.caption.summary);
 
   // Which friendly mode is active right now (from the wire mode + pin state).
   const activeFriendly: FriendlyMode = friendlyForViewMode(viewMode, pinnedId);
@@ -197,7 +199,7 @@ export function ViewModeSwitcher({
           )}
           aria-label={showTranscript ? "Hide transcript" : "Show transcript"}
           aria-pressed={showTranscript}
-          title={showTranscript ? "Hide live transcript" : "Show live transcript"}
+          title={captionToggleTitle(showTranscript, captionSummary)}
         >
           <Captions className="h-3.5 w-3.5" />
         </button>

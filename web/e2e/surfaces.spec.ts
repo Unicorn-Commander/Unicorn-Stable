@@ -411,6 +411,38 @@ test.describe("Chat opens on the newest message", () => {
   }
 });
 
+test.describe("Caption state", () => {
+  test("pinned mic says why captions are off", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/fixtures/captions.html");
+    await expect(page.getByTestId("caption-state-chip")).toHaveText("off");
+    await expect(page.getByTestId("caption-state-summary")).toContainText(
+      "you picked ZOOM AMS-44",
+    );
+    await expect(page.getByTestId("caption-use-default-mic")).toBeVisible();
+    await expect(page.getByTestId("caption-invite-agent")).toBeVisible();
+    await expect(page.getByTestId("caption-server-pref")).not.toBeChecked();
+    await page.screenshot({
+      path: `test-results/CaptionStateMicPinned-${testInfo.project.name}.png`,
+      fullPage: true,
+    });
+  });
+
+  test("agent captioner shows its line for the local human", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/fixtures/captions.html?lane=agent");
+    await expect(page.getByTestId("caption-state-chip")).toHaveText("agent");
+    await expect(page.getByTestId("caption-state-summary")).toContainText(
+      "Captions are coming from Persephone's mic feed",
+    );
+    await expect(page.getByText("the studio mic is live")).toBeVisible();
+    await page.screenshot({
+      path: `test-results/CaptionStateAgent-${testInfo.project.name}.png`,
+      fullPage: true,
+    });
+  });
+});
+
 test.describe("Accessibility sweep (report only)", () => {
   for (const surface of SURFACES) {
     test(`a11y:${surface.name}`, async ({ page }) => {
