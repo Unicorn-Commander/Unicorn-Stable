@@ -262,7 +262,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         call_recording_task = asyncio.create_task(
-            run_call_recording_handoff(session_factory, settings, redis)
+            run_call_recording_handoff(session_factory, settings, redis, lk_service)
         )
         logger.info(
             "call_recording_handoff_worker_started",
