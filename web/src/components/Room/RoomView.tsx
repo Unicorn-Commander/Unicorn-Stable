@@ -1,10 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Bell, BellOff, ChevronDown, Circle, Database, Hash, LayoutTemplate, Link2, ListTree, Lock, LogOut, Mic, MoreVertical, PanelLeftOpen, Pencil, Phone, Pin, Plus, Search, UserPlus, UserRound, Users, Video } from "lucide-react";
-import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
+import { Hash, Lock, Plus } from "lucide-react";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
 import { ws } from "@/services/websocket";
@@ -12,7 +11,6 @@ import { useAppStore } from "@/stores/appStore";
 import { handleArtifactEvent, useCanvasStore } from "@/stores/canvasStore";
 import { coerceArtifactEvent } from "@/lib/roomDataProtocol";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
-import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import {
   PANEL_RESIZE_HANDLE_CLASS,
   useIsDesktop,
@@ -22,8 +20,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { CallRoomLayout } from "./CallRoomLayout";
 import { LiveCallBanner } from "./LiveCallBanner";
 import { ParticipantStrip } from "./ParticipantStrip";
-import { ModelSwitcher } from "./ModelSwitcher";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
+import { RoomHeader } from "./RoomHeader";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
@@ -47,7 +45,6 @@ import { beginThread } from "@/lib/beginThread";
 import { roomLabel } from "@/lib/conversation";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { InviteSheet } from "./InviteSheet";
-import { useDirectCall } from "@/hooks/useDirectCall";
 import { ProjectNumber } from "@/components/Sidebar/NewSheet";
 
 // Lazy: the Knowledge panel (collection mgmt + file upload + doc lists) is a
@@ -74,8 +71,6 @@ export function RoomView({ roomId }: RoomViewProps) {
     max: 420,
     edge: "left",
   });
-  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const threadMessageId = useAppStore((s) => s.ui.threadMessageId);
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   // Canvas (co-working artifacts) right-drawer. Open state is global (single
@@ -89,7 +84,6 @@ export function RoomView({ roomId }: RoomViewProps) {
   // shut, so an arrival is visibly different from "there is stuff in here".
   const canvasCount = useCanvasStore((s) => s.artifacts.length);
   const canvasUnseen = useCanvasStore((s) => s.unseen);
-  const canvasDot = !canvasOpen && (canvasCount > 0 || canvasUnseen > 0);
   // Keep the canvas store scoped to the active room even while the panel is
   // closed, so a live artifact event (or reopening the panel) always targets
   // the right room. RoomView remounts per room (keyed in AppShell), so this
@@ -135,23 +129,13 @@ export function RoomView({ roomId }: RoomViewProps) {
   // Header agent-switcher (agent rooms only): shows the room's current agent
   // and opens the Brigade picker — inviting another agent re-routes replies to
   // it (last-invited wins; @mention any member agent to address it directly).
-  const [agentSwitchOpen, setAgentSwitchOpen] = useState(false);
   const rosterAgents = useAppStore((s) => s.agents);
   const [searchOpen, setSearchOpen] = useState(false);
   const [pinsOpen, setPinsOpen] = useState(false);
-  const [overflowOpen, setOverflowOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const overflowRef = useRef<HTMLDivElement>(null);
-  const overflowBtnRef = useRef<HTMLButtonElement>(null);
-  const overflowMenuRef = useRef<HTMLDivElement>(null);
-  const [muted, setMuted] = useState(() => isMuted(roomId));
-  useEffect(() => {
-    setMuted(isMuted(roomId));
-    return onMutedChange(() => setMuted(isMuted(roomId)));
-  }, [roomId]);
 
   /**
    * Room utilities share one workspace dock. Opening a thread, Canvas,
@@ -223,23 +207,6 @@ export function RoomView({ roomId }: RoomViewProps) {
     setKnowledgeOpen,
     setParticipantPanelOpen,
   ]);
-
-  // Close the overflow menu on outside-click.
-  useEffect(() => {
-    if (!overflowOpen) return;
-    function onDown(e: MouseEvent) {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
-        setOverflowOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [overflowOpen]);
-
-  // Keyboard model for the ⋮ menu (focus-in, arrows, Esc-to-close + restore).
-  useMenuKeyboard(overflowOpen, overflowMenuRef, overflowBtnRef, () =>
-    setOverflowOpen(false),
-  );
 
   const { data: roomDetail } = useQuery({
     queryKey: ["room", roomId],
@@ -354,14 +321,13 @@ export function RoomView({ roomId }: RoomViewProps) {
       ? s.rooms.find((r) => r.id === roomDetail.parent_room_id) ?? null
       : null,
   );
-  const { startCall } = useDirectCall();
-  const [callMenuOpen, setCallMenuOpen] = useState(false);
   const dmAgentId = roomDetail?.brigade_agent_id ?? null;
   const dmAgent = dmAgentId
     ? rosterAgents.find((a) => a.id === dmAgentId)
     : undefined;
   const dmAgentName =
     dmAgent?.display_name || dmAgent?.name || dmAgentId || "";
+  const roomAgentIdent = dmAgentId ? identityFor(dmAgentId, dmAgentName) : null;
   // Minting a guest link is OWNER-only on the server (membership is
   // deliberately not enough). Read the caller's own membership row — server-set
   // `is_self` is the only reliable "this is me" marker, since the Keycloak id
@@ -455,7 +421,6 @@ export function RoomView({ roomId }: RoomViewProps) {
   }
 
   function openLeave() {
-    setOverflowOpen(false);
     setLeaveOpen(true);
   }
 
@@ -498,37 +463,55 @@ export function RoomView({ roomId }: RoomViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-testid="room-view">
-      {/* Room header */}
-      {/* Glass paint lives on an inner layer: backdrop-filter on the header
-          itself would make it the containing block for fixed descendants,
-          clipping the agent-switcher's full-viewport click-away backdrop to
-          the 48px strip (and trapping the z-50 menus in a header stacking
-          context under root-level z-10 hover toolbars). */}
-      <div className="relative flex h-12 min-w-0 shrink-0 items-center justify-between gap-1 border-b border-line px-2 sm:px-4">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-stable-glass backdrop-blur-xl"
-        />
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          {/* Phones: this sub-header is the single top bar, so it owns the
-              drawer toggle. Hidden >= md (the AppShell Header's hamburger
-              takes over there). */}
-          <button
-            onClick={toggleSidebar}
-            className="-ml-1 max-md:min-h-11 max-md:min-w-11 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
-            aria-label="Open sidebar"
-          >
-            <PanelLeftOpen className="h-5 w-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setPeopleDrawerOpen(true)}
-            className="max-md:min-h-11 max-md:min-w-11 shrink-0 rounded-lg p-2 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:hidden"
-            aria-label="People"
-            title="People"
-          >
-            <UserRound className="h-5 w-5" />
-          </button>
+      <RoomHeader
+        roomId={roomId}
+        membersOpen={participantPanelOpen}
+        onToggleMembers={toggleParticipants}
+        showTasks={!!roomDetail?.project_number}
+        showInvite={!isDm}
+        onInvite={() => useConversationUi.getState().openInviteSheet(roomId)}
+        onNewThread={() =>
+          void beginThread({
+            roomId: roomDetail?.parent_room_id || roomId,
+            navigate,
+          })
+        }
+        pinsOpen={pinsOpen}
+        onTogglePins={togglePins}
+        canvasOpen={canvasOpen}
+        canvasCount={canvasCount}
+        canvasUnseen={canvasUnseen}
+        onToggleCanvas={toggleCanvas}
+        knowledgeOpen={knowledgeOpen}
+        onToggleKnowledge={toggleKnowledge}
+        onOpenSearch={() => setSearchOpen(true)}
+        showRename={!isDm}
+        onStartRename={() => setEditingName(true)}
+        showGuestAccess={!isDm && isRoomOwner}
+        onOpenGuestAccess={() => setGuestAccessOpen(true)}
+        showRecordingSettings={showRecordingSettings}
+        onOpenRecordingSettings={() => setRecordingSettingsOpen(true)}
+        showVoiceSettings={showVoiceSettings}
+        onOpenVoiceSettings={() => setVoiceSettingsOpen(true)}
+        showStartGroup={isDm}
+        startGroupLabel={dmPeerLabel}
+        onStartGroup={() => openStartGroup()}
+        onLeave={openLeave}
+        leaving={leaving}
+        roomAgent={
+          dmAgentId && roomAgentIdent
+            ? {
+                id: dmAgentId,
+                name: dmAgentName,
+                color: roomAgentIdent.color,
+                text: roomAgentIdent.text,
+              }
+            : null
+        }
+        onStartGroupWithAgent={(agent) =>
+          openStartGroup([{ kind: "agent", id: agent.id, name: agent.name }])
+        }
+      >
           {isDm ? (
             /* 1:1 DM: the person IS the header. Avatar + presence + name,
                read-only — no #, no topic, no rename (channel furniture). */
@@ -667,449 +650,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           </span>
             </>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
-          {/* Mid-conversation model switcher. Desktop: inline. Phones: folds
-              into the ⋮ menu below (rendered there) so the single mobile header
-              bar doesn't get re-crowded. */}
-          <span className="hidden md:contents">
-            <ModelSwitcher roomId={roomId} />
-          </span>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setCallMenuOpen((v) => !v)}
-              className="focus-ring inline-flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs text-slate-200 hover:bg-white/[0.06]"
-              aria-haspopup="menu"
-              aria-expanded={callMenuOpen}
-            >
-              <Phone className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Call</span>
-              <ChevronDown className="h-3 w-3 text-slate-500" />
-            </button>
-            {callMenuOpen && (
-              <div role="menu" className="glass-heavy absolute right-0 top-full z-50 mt-1 w-36 rounded-xl p-1 shadow-pop">
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
-                  onClick={() => {
-                    setCallMenuOpen(false);
-                    void startCall(roomId, { video: false });
-                  }}
-                >
-                  <Phone className="h-3.5 w-3.5" /> Voice
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
-                  onClick={() => {
-                    setCallMenuOpen(false);
-                    void startCall(roomId, { video: true });
-                  }}
-                >
-                  <Video className="h-3.5 w-3.5" /> Video
-                </button>
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              usePanelChromeStore.getState().setPanelMode(
-                roomId,
-                "threads",
-                roomPanels.threads.mode === "hidden" ? "docked" : "hidden",
-              )
-            }
-            className={clsx(
-              "focus-ring rounded-md p-2 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
-              roomPanels.threads.mode !== "hidden" && "bg-white/[0.08] text-slate-100",
-            )}
-            aria-label="Threads"
-            title="Threads"
-          >
-            <ListTree className="h-4 w-4" />
-          </button>
-          {roomDetail?.project_number && (
-            <button
-              type="button"
-              onClick={() =>
-                usePanelChromeStore.getState().setPanelMode(
-                  roomId,
-                  "tasks",
-                  roomPanels.tasks.mode === "hidden" ? "docked" : "hidden",
-                )
-              }
-              className="focus-ring rounded-md px-2 py-1 text-xs text-slate-300 hover:bg-white/[0.06]"
-              aria-label="Tasks"
-            >
-              Tasks
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => void beginThread({ roomId: roomDetail?.parent_room_id || roomId, navigate })}
-            className="focus-ring inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-stable-cyan hover:bg-white/[0.06]"
-            aria-label="New thread"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span className="hidden lg:inline">New thread</span>
-          </button>
-          {roomDetail?.brigade_agent_id &&
-            (() => {
-              const agentId = roomDetail.brigade_agent_id!;
-              const roomAgent = rosterAgents.find((a) => a.id === agentId);
-              const agentName = roomAgent?.display_name || roomAgent?.name || agentId;
-              const ident = identityFor(agentId, agentName);
-              return (
-                <div className="relative hidden md:block">
-                  <button
-                    onClick={() => setAgentSwitchOpen((v) => !v)}
-                    aria-haspopup="dialog"
-                    aria-expanded={agentSwitchOpen}
-                    title="Switch or add the agent this room talks to"
-                    className="focus-ring flex items-center gap-1.5 rounded-lg border border-line bg-white/[0.03] px-2.5 py-1 text-xs font-medium transition-colors hover:border-line-strong hover:bg-white/[0.06]"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="h-1.5 w-1.5 rounded-full"
-                      style={{ background: ident.color }}
-                    />
-                    <span
-                      className="max-w-[14ch] truncate"
-                      style={{ color: ident.text }}
-                    >
-                      {agentName}
-                    </span>
-                    <ChevronDown
-                      className={clsx(
-                        "h-3 w-3 text-slate-500 transition-transform",
-                        agentSwitchOpen && "rotate-180",
-                      )}
-                    />
-                  </button>
-                  {agentSwitchOpen && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-40"
-                        aria-hidden="true"
-                        onClick={() => setAgentSwitchOpen(false)}
-                      />
-                      <div className="absolute right-0 top-full z-50 mt-2 w-80">
-                        <BrigadeAgentPicker
-                          roomName={roomDetail?.id ?? roomId}
-                          defaultOpen
-                          onInvited={() => setAgentSwitchOpen(false)}
-                          onStartGroup={(a) => {
-                            setAgentSwitchOpen(false);
-                            openStartGroup([
-                              { kind: "agent", id: a.id, name: a.name },
-                            ]);
-                          }}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })()}
-          {/* Phones: search / pins / mute move into the ⋮ menu below so the
-              room name has room to breathe. Desktop keeps them inline. */}
-          <span className="hidden md:contents">
-            <button
-              onClick={() => setSearchOpen(true)}
-              className="rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
-              aria-label="Search messages"
-              title="Search this room"
-            >
-              <Search className="h-4 w-4" />
-            </button>
-            <button
-              onClick={togglePins}
-              className={clsx(
-                "rounded-md p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5",
-                pinsOpen && "bg-white/[0.08] text-slate-100",
-              )}
-              aria-label="Show pinned messages"
-              aria-pressed={pinsOpen}
-              title="Pinned messages"
-            >
-              <Pin className="h-4 w-4" />
-            </button>
-            <button
-              onClick={toggleCanvas}
-              className={`relative rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${canvasOpen ? "bg-stable-purple/20 text-stable-purple-light" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
-              aria-label={
-                canvasUnseen > 0
-                  ? `Toggle canvas — ${canvasUnseen} new`
-                  : canvasCount > 0
-                    ? `Toggle canvas — ${canvasCount} artifact${canvasCount === 1 ? "" : "s"}`
-                    : "Toggle canvas"
-              }
-              aria-pressed={canvasOpen}
-              title={
-                canvasCount > 0
-                  ? `Canvas — ${canvasCount} artifact${canvasCount === 1 ? "" : "s"} in this room`
-                  : "Canvas — co-working docs, code & diagrams"
-              }
-            >
-              <LayoutTemplate className="h-4 w-4" />
-              {canvasDot && (
-                <span
-                  aria-hidden="true"
-                  className={clsx(
-                    "pointer-events-none absolute right-1 top-1 h-2 w-2 rounded-full ring-2 ring-slate-900 md:right-0.5 md:top-0.5",
-                    canvasUnseen > 0
-                      ? "animate-pulse bg-stable-purple-light"
-                      : "bg-slate-500",
-                  )}
-                />
-              )}
-            </button>
-            <button
-              onClick={toggleKnowledge}
-              className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${knowledgeOpen ? "bg-stable-cyan/20 text-stable-cyan" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
-              aria-label="Toggle knowledge bases"
-              aria-pressed={knowledgeOpen}
-              title="Knowledge — attach docs for the agent to search"
-            >
-              <Database className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => setMuted(toggleMute(roomId))}
-              className={`rounded-md p-2.5 md:p-1.5 transition-colors focus-ring ${muted ? "text-amber-300" : "text-slate-400"} hover:bg-white/[0.06] hover:text-slate-100`}
-              aria-label={muted ? "Unmute room" : "Mute room"}
-              title={muted ? "Room muted — click to unmute" : "Mute notifications for this room"}
-            >
-              {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-            </button>
-          </span>
-          {!isDm && (
-          <button
-            onClick={() => useConversationUi.getState().openInviteSheet(roomId)}
-            className="max-md:min-h-11 max-md:min-w-11 flex items-center gap-1 rounded-lg border border-stable-purple/30 bg-stable-purple/15 p-2.5 text-xs font-medium text-stable-purple-light transition-colors hover:border-stable-purple/50 hover:bg-stable-purple/25 focus-ring md:px-2.5 md:py-1"
-            aria-label="Invite members"
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">Invite</span>
-          </button>
-          )}
-          <button
-            onClick={toggleParticipants}
-            className={clsx(
-              "max-md:min-h-11 max-md:min-w-11 rounded-md p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5",
-              participantPanelOpen && "bg-white/[0.08] text-slate-100",
-            )}
-            aria-label="Toggle participants panel"
-            aria-pressed={participantPanelOpen}
-            title="Show/hide members & agents"
-          >
-            <Users className="h-4 w-4" />
-          </button>
-          <div className="relative" ref={overflowRef}>
-            <button
-              ref={overflowBtnRef}
-              onClick={() => setOverflowOpen((v) => !v)}
-              className="max-md:min-h-11 max-md:min-w-11 rounded-md p-2.5 md:p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
-              aria-label="More room actions"
-              aria-haspopup="menu"
-              aria-expanded={overflowOpen}
-              title="More"
-            >
-              <MoreVertical className="h-4 w-4" />
-            </button>
-            {overflowOpen && (
-              <div
-                ref={overflowMenuRef}
-                role="menu"
-                className={clsx(
-                  "glass-heavy absolute right-0 top-full z-50 mt-1 overflow-hidden rounded-xl py-1 shadow-pop animate-fade-in",
-                  // DMs carry the longer "Start a group with <name>…" entry.
-                  isDm ? "w-60" : "w-44",
-                )}
-              >
-                {/* Phones: model switcher lives here (its inline trigger is
-                    hidden < md). Rendered as a labeled row; its own popover
-                    opens below and stays inside this menu's bounds. */}
-                <div className="px-3 py-1.5 md:hidden">
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                    Model
-                  </div>
-                  <ModelSwitcher roomId={roomId} className="max-w-full" />
-                </div>
-                <div className="my-1 h-px bg-white/[0.06] md:hidden" />
-                {/* Phones: search / pins / mute live here (their inline buttons
-                    are hidden < md). Desktop only sees Leave. */}
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setSearchOpen(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
-                >
-                  <Search className="h-4 w-4" />
-                  Search
-                </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    if (!pinsOpen) togglePins();
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
-                >
-                  <Pin className="h-4 w-4" />
-                  Pinned messages
-                </button>
-                {/* Canvas stays in this menu on EVERY viewport (not md:hidden):
-                    the inline toolbar icon is easy to miss, so the labeled
-                    entry doubles as its discoverable path on desktop too. */}
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    toggleCanvas();
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
-                >
-                  <LayoutTemplate className="h-4 w-4" />
-                  {canvasOpen ? "Hide canvas" : "Open canvas"}
-                  {canvasDot && (
-                    <span className="ml-auto rounded-full bg-stable-purple/20 px-1.5 py-0.5 text-[10px] text-stable-purple-light">
-                      {canvasUnseen > 0 ? `${canvasUnseen} new` : canvasCount}
-                    </span>
-                  )}
-                </button>
-                {/* Knowledge is reachable on every viewport (its inline button is
-                    hidden < md); the desktop toolbar button covers >= md. */}
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    toggleKnowledge();
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
-                >
-                  <Database className="h-4 w-4" />
-                  {knowledgeOpen ? "Hide knowledge" : "Knowledge bases"}
-                </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setMuted(toggleMute(roomId));
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
-                >
-                  {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-                  {muted ? "Unmute room" : "Mute room"}
-                </button>
-                {/* Phones: rename lives here (the inline title tap is gated
-                    to desktop pointers so it can't summon the keyboard). 1:1
-                    DMs are named by their person, not by the room. */}
-                {!isDm && (
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setEditingName(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring md:hidden"
-                >
-                  <Pencil className="h-4 w-4" />
-                  Rename channel
-                </button>
-                )}
-                {/* Guest access. In this menu on EVERY viewport (not md:hidden)
-                    and labeled rather than an icon: it is the room's other
-                    front door, and a host looking for "how do I get someone
-                    without an account into this call" looks here and in the
-                    Invite modal — which links across to it. Owner-only, because
-                    the server is: a member who saw this could only ever 403. */}
-                {!isDm && isRoomOwner && (
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setGuestAccessOpen(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
-                >
-                  <Link2 className="h-4 w-4" />
-                  Guest access…
-                </button>
-                )}
-                {/* Voice settings — when the room's voice agent listens.
-                    In this menu on EVERY viewport, labeled (the Guest-access
-                    precedent): a per-room configuration surface belongs where
-                    a person looks for room configuration. Gated to rooms
-                    that HAVE a voice agent and to owner/admin — the server's
-                    exact gate, so nobody sees a control that could only 403. */}
-                {showRecordingSettings && (
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setRecordingSettingsOpen(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
-                >
-                  <Circle className="h-4 w-4 fill-rose-500 text-rose-400" />
-                  Recording…
-                </button>
-                )}
-                {showVoiceSettings && (
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setVoiceSettingsOpen(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
-                >
-                  <Mic className="h-4 w-4" />
-                  Voice settings…
-                </button>
-                )}
-                {/* 1:1 DMs: the explicit group conversion. EVERY viewport —
-                    DM headers have no Invite button (removed on purpose:
-                    inviting silently converted the private DM), so this
-                    labeled entry is the one place the affordance lives. It
-                    creates a NEW group room; this DM stays private. */}
-                {isDm && (
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    openStartGroup();
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
-                >
-                  <UserPlus className="h-4 w-4 shrink-0" />
-                  <span className="min-w-0 truncate">
-                    Start a group with {dmPeerLabel}…
-                  </span>
-                </button>
-                )}
-                {isDm && <div className="my-1 h-px bg-white/[0.06]" />}
-                {!isDm && <div className="my-1 h-px bg-white/[0.06] md:hidden" />}
-                <button
-                  role="menuitem"
-                  onClick={openLeave}
-                  disabled={leaving}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-400 transition-colors hover:bg-rose-500/10 focus-ring disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <LogOut className="h-4 w-4" />
-                  {leaving ? "Leaving…" : "Leave room"}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      </RoomHeader>
 
       <AnimatePresence>
         {searchOpen && (

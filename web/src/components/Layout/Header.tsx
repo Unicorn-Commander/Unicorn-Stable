@@ -1,14 +1,6 @@
 import {
   PanelLeftClose,
   PanelLeftOpen,
-  Mic,
-  MicOff,
-  Video,
-  VideoOff,
-  MonitorUp,
-  Phone,
-  PhoneOff,
-  Users,
   UserRound,
   Activity,
   Bookmark,
@@ -20,9 +12,6 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useAppStore } from "@/stores/appStore";
-import { useDirectCall } from "@/hooks/useDirectCall";
-import { CALL_KIND_LABEL } from "@/lib/callEntry";
-import { useStableRoom } from "@/hooks/useStableRoom";
 import { logout } from "@/services/auth";
 import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { Tooltip } from "@/components/ui";
@@ -30,15 +19,10 @@ import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { api } from "@/services/api";
 import { useFederationStore } from "@/stores/federationStore";
-import {
-  runScreenShareAction,
-  windowShareGuidance,
-  monitorShareHint,
-} from "@/lib/screenShare";
 
-// `hideOnMobile` lets AppShell collapse this top bar on phones when a room is
-// active — there the RoomView sub-header (with a hamburger) is the single bar,
-// so a second bar here would just waste vertical space. Desktop always shows it.
+// Home, Agents, and Bridge use this bar. A room does not: RoomView's 44px
+// header is the only bar there, at every width. `hideOnMobile` remains so a
+// caller can still collapse this bar without unmounting it.
 export function Header({
   hideOnMobile = false,
   onOpenActivity,
@@ -48,8 +32,6 @@ export function Header({
 }) {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const participantPanelOpen = useAppStore((s) => s.ui.participantPanelOpen);
-  const toggleParticipantPanel = useAppStore((s) => s.toggleParticipantPanel);
   const peopleDrawerOpen = useAppStore((s) => s.ui.peopleDrawerOpen);
   const togglePeopleDrawer = useAppStore((s) => s.togglePeopleDrawer);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
@@ -61,10 +43,7 @@ export function Header({
   // Stable ref so PeopleDrawer restores focus here on close (useModalA11y).
   const peopleBtnRef = useRef<HTMLButtonElement>(null);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
-  const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
-  const activeRoom = rooms.find((r) => r.id === activeRoomId);
-  const { startCall } = useDirectCall();
   // Identity hue for the signed-in resident — rings the avatar + menu header.
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const selfFace = useSelfFace();
@@ -80,34 +59,6 @@ export function Header({
     ? `${pendingApprovalCount}+`
     : String(pendingApprovalCount);
 
-  // Shared call (VoiceProvider): connect/disconnect drive the one Room. Mic
-  // publish + agent dispatch + audio playback all happen in the provider now.
-  const {
-    room,
-    localParticipant,
-    isConnected: lkConnected,
-    isConnecting: lkConnecting,
-    disconnect: lkDisconnect,
-    // Read purely to re-render on mic/camera/track changes. LiveKit mutates
-    // the SAME LocalParticipant object in place, so the object identity never
-    // changes and a version bump is the only signal a toggle happened.
-    version: _lkVersion,
-  } = useStableRoom();
-
-  // DERIVE from LiveKit; never mirror it in local state.
-  //
-  // These used to be `useState(true)` / `useState(false)` that only updated
-  // when THIS header's own buttons were clicked. Two independent bugs fell out:
-  //   1. Toggling the camera from the in-call bar (VoiceVideoBar) or the call
-  //      dock changed the real track but never told the header, so the header
-  //      icon kept showing the old state until you clicked the header itself.
-  //   2. The seed values were fiction -- mic defaulted to "on" and camera to
-  //      "off" regardless of the actual published tracks, so the header could
-  //      be wrong before anyone touched anything.
-  // CallDock and VoiceVideoBar already derive; the header was the odd one out.
-  const micEnabled = localParticipant?.isMicrophoneEnabled ?? false;
-  const camEnabled = localParticipant?.isCameraEnabled ?? false;
-  const screenShareEnabled = localParticipant?.isScreenShareEnabled ?? false;
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const avatarBtnRef = useRef<HTMLButtonElement>(null);
@@ -128,74 +79,19 @@ export function Header({
     setUserMenuOpen(false),
   );
 
-  async function handleToggleMic() {
-    if (!room) return;
-    // No local echo: the RoomEvent.TrackMuted/TrackUnmuted listener in
-    // VoiceProvider bumps `version`, which re-renders every consumer with the
-    // real state. Echoing here is what let the header drift out of sync.
-    await room.localParticipant.setMicrophoneEnabled(!micEnabled);
-  }
-
-  async function handleToggleCam() {
-    if (!room) return;
-    await room.localParticipant.setCameraEnabled(!camEnabled);
-  }
-
-  async function handleScreenShare() {
-    if (!room) return;
-    // Shared helper: prefer full-display surface, clean stop/start, window tip.
-    const result = await runScreenShareAction(room.localParticipant, "toggle");
-    if (!result.ok) {
-      if (result.action === "cancelled") return;
-      useAppStore.getState().pushToast({
-        title: "Couldn't share your screen",
-        body: result.error || "Your browser blocked screen sharing.",
-      });
-      return;
-    }
-    if (result.action === "started" || result.action === "replaced") {
-      if (result.surface === "window" || result.surface === "browser") {
-        useAppStore.getState().pushToast({
-          title: "Window share active",
-          body: windowShareGuidance(),
-        });
-      } else if (result.surface === "unknown") {
-        // Browser didn't report displaySurface — still surface the tip once.
-        useAppStore.getState().pushToast({
-          title: "Screen share started",
-          body: monitorShareHint(),
-        });
-      }
-    }
-  }
-
-  function handleCallToggle() {
-    if (lkConnected || lkConnecting) {
-      lkDisconnect();
-    } else if (activeRoomId) {
-      // DMs ring the person; channels fall through to a plain join inside
-      // startCall. Both used to be `lkConnect()`, which is why a DM call had
-      // no way to tell anybody it was happening.
-      void startCall(activeRoomId, { kind: "voice" });
-    }
-  }
-
-  function handleVideoCall() {
-    if (lkConnected || lkConnecting || !activeRoomId) return;
-    void startCall(activeRoomId, { kind: "video" });
-  }
-
+  // RoomView is the only bar while a room is open. Leaving this mounted stacked
+  // a second row (room title, Phone, Video) on top of that header.
+  if (activeRoomId) return null;
 
   return (
     <header
+      data-testid="app-header"
       className={clsx(
         // relative z-30 lifts the header's (blur-induced) stacking context
         // above the z-auto content column below it, so the account dropdown
         // (which was pinned inside this context) paints OVER the message area
         // and rails instead of behind them.
         "relative z-30 flex h-14 shrink-0 items-center justify-between border-b border-line bg-stable-glass px-4 backdrop-blur-lg",
-        // On phones, collapse this bar when a room is active (the RoomView
-        // sub-header is the single bar there). Always shown >= md.
         hideOnMobile && "max-md:hidden",
       )}
     >
@@ -213,22 +109,6 @@ export function Header({
             )}
           </button>
         </Tooltip>
-
-        {activeRoom && (
-          // The room identity also lives in the RoomView sub-header (with topic
-          // + actions). On phones that one is enough — hide this duplicate so the
-          // top bar stays uncluttered. Desktop shows both.
-          <div className="hidden flex-col md:flex">
-            <h2 className="text-sm font-semibold text-slate-100">
-              {activeRoom.type === "channel" ? "#" : ""} {activeRoom.name}
-            </h2>
-            {activeRoom.description && (
-              <p className="max-w-xs truncate text-xs text-slate-400">
-                {activeRoom.description}
-              </p>
-            )}
-          </div>
-        )}
       </div>
 
       <div className="flex items-center gap-1">
@@ -253,135 +133,6 @@ export function Header({
             <UserRound className="h-4 w-4" />
           </button>
         </Tooltip>
-
-        {activeRoomId && (
-          <>
-            {(lkConnected || lkConnecting) && (
-              // In-call mic/cam/screen controls are duplicated by the
-              // VoiceVideoBar (which is always visible during a call). Hide them
-              // here on phones; keep the call start/end toggle below.
-              <span className="hidden md:contents">
-                <button
-                  onClick={handleToggleMic}
-                  className={clsx(
-                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                    micEnabled
-                      ? "text-slate-300 hover:bg-white/[0.06] hover:text-slate-100"
-                      : "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25",
-                  )}
-                  aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
-                >
-                  {micEnabled ? (
-                    <Mic className="h-4 w-4" />
-                  ) : (
-                    <MicOff className="h-4 w-4" />
-                  )}
-                </button>
-
-                <button
-                  onClick={handleToggleCam}
-                  className={clsx(
-                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                    camEnabled
-                      ? "text-slate-300 hover:bg-white/[0.06] hover:text-slate-100"
-                      : "text-slate-500 hover:bg-white/[0.06] hover:text-slate-300",
-                  )}
-                  aria-label={camEnabled ? "Turn off camera" : "Turn on camera"}
-                >
-                  {camEnabled ? (
-                    <Video className="h-4 w-4" />
-                  ) : (
-                    <VideoOff className="h-4 w-4" />
-                  )}
-                </button>
-
-                <button
-                  onClick={() => void handleScreenShare()}
-                  className={clsx(
-                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                    screenShareEnabled
-                      ? "bg-stable-cyan/15 text-stable-cyan hover:bg-stable-cyan/25"
-                      : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
-                  )}
-                  aria-label={
-                    screenShareEnabled ? "Stop sharing screen" : "Share screen"
-                  }
-                  aria-pressed={screenShareEnabled}
-                  title={
-                    screenShareEnabled
-                      ? "Stop sharing your screen"
-                      : "Share your screen — pick Entire Screen for a full display (not just a window)"
-                  }
-                >
-                  <MonitorUp className="h-4 w-4" />
-                </button>
-              </span>
-            )}
-
-            {/* Two verbs, no "phone button that might ask": Voice connects
-                straight in (camera off); Video connects camera-on, with the
-                device check only if the user opted in (lib/callEntry). */}
-            {!lkConnected && !lkConnecting && (
-              <Tooltip content={CALL_KIND_LABEL.video} placement="bottom">
-                <button
-                  onClick={handleVideoCall}
-                  className="focus-ring rounded-lg p-2.5 text-emerald-400 transition-colors hover:bg-emerald-500/15 md:p-2"
-                  aria-label={CALL_KIND_LABEL.video}
-                  data-testid="header-video-call"
-                >
-                  <Video className="h-4 w-4" />
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip
-              content={lkConnected ? "End call" : CALL_KIND_LABEL.voice}
-              placement="bottom"
-            >
-              <button
-                onClick={handleCallToggle}
-                className={clsx(
-                  "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                  lkConnected
-                    ? "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25"
-                    : "text-emerald-400 hover:bg-emerald-500/15",
-                  lkConnecting && "animate-pulse-soft",
-                )}
-                aria-label={lkConnected ? "End call" : CALL_KIND_LABEL.voice}
-                data-testid="header-voice-call"
-              >
-                {lkConnected ? (
-                  <PhoneOff className="h-4 w-4" />
-                ) : (
-                  <Phone className="h-4 w-4" />
-                )}
-              </button>
-            </Tooltip>
-
-            {/* Participants toggle is duplicated in the RoomView sub-header;
-                hide this one (and its divider) on phones. */}
-            <span className="hidden md:contents">
-              <div className="mx-1 h-5 w-px bg-line-strong" />
-
-              <Tooltip
-                content={participantPanelOpen ? "Hide participants" : "Show participants"}
-                placement="bottom"
-              >
-                <button
-                  onClick={toggleParticipantPanel}
-                  className={clsx(
-                    "focus-ring rounded-lg p-2.5 transition-colors md:p-2",
-                    participantPanelOpen
-                      ? "bg-white/[0.08] text-slate-100"
-                      : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100",
-                  )}
-                  aria-label="Toggle participant panel"
-                >
-                  <Users className="h-4 w-4" />
-                </button>
-              </Tooltip>
-            </span>
-          </>
-        )}
 
         {/* On phones these fold into the avatar menu (below) to save space. */}
         <span className="hidden md:contents">

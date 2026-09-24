@@ -394,9 +394,9 @@ test.describe("Chat opens on the newest message", () => {
         fullPage: false,
       });
 
-      // On a phone the room's top bar carries the drawer toggle — the only way
-      // back to the room list — so it must stay on screen. (Desktop hides that
-      // button: the AppShell header owns the toggle there.)
+      // The room header is the only bar, so it carries the drawer toggle on a
+      // phone — the way back to the room list — and that toggle must stay on
+      // screen.
       if (viewport === "mobile") {
         await expect(
           page.getByRole("button", { name: "Open sidebar" }),
@@ -407,6 +407,57 @@ test.describe("Chat opens on the newest message", () => {
         () => document.scrollingElement?.scrollTop ?? 0,
       );
       expect(pageScroll).toBe(0);
+    });
+  }
+});
+
+test.describe("Room header is one row", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`44px bar @ ${viewport}`, async ({ page }) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+
+      await page.goto("/c/room-general");
+      await waitForAppReady(page);
+      const header = page.getByTestId("room-header");
+      await expect(header).toBeVisible();
+      await expect(header).toHaveCount(1);
+      await expect(page.getByTestId("app-header")).toHaveCount(0);
+      await expect(page.getByTestId("header-voice-call")).toHaveCount(0);
+      await expect(page.getByTestId("header-video-call")).toHaveCount(0);
+
+      const box = await header.boundingBox();
+      expect(box).not.toBeNull();
+      expect(Math.round(box!.height)).toBe(44);
+
+      await expect(
+        header.getByRole("button", { name: "Call", exact: true }),
+      ).toHaveCount(1);
+      await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
+      await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
+      await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
+      await expect(
+        header.getByRole("button", { name: "Switch model for this conversation" }),
+      ).toHaveCount(0);
+
+      await page.screenshot({
+        path: `test-results/RoomHeader-${viewport}.png`,
+        fullPage: false,
+      });
+
+      await header.getByRole("button", { name: "More room actions" }).click();
+      await expect(
+        page.getByRole("button", { name: "Switch model for this conversation" }),
+      ).toBeVisible();
+      await expect(
+        header.getByRole("button", { name: "Call", exact: true }),
+      ).toHaveCount(1);
+
+      await page.screenshot({
+        path: `test-results/RoomHeaderMenu-${viewport}.png`,
+        fullPage: false,
+      });
     });
   }
 });

@@ -19,9 +19,17 @@ import {
 export function RecordMenu({
   roomId,
   size = "md",
+  placement = "up",
+  density = "bar",
+  testId = "record-menu",
 }: {
   roomId: string;
   size?: "md" | "lg";
+  /** Call bar opens upward; the room header opens downward. */
+  placement?: "up" | "down";
+  /** `header` matches the 44px room bar. `bar` is the in-call control. */
+  density?: "bar" | "header";
+  testId?: string;
 }) {
   const roles = useAppStore((s) => s.currentUser?.roles);
   const listed = useAppStore(
@@ -98,6 +106,7 @@ export function RecordMenu({
 
   const tall = size === "lg" ? "h-11" : "h-10";
   const live = recording.active;
+  const inHeader = density === "header";
 
   return (
     <div className="relative" ref={ref}>
@@ -112,28 +121,42 @@ export function RecordMenu({
           setOpen((value) => !value);
         }}
         className={clsx(
-          "focus-ring flex items-center gap-1 rounded-xl border px-2.5 text-xs font-semibold transition-colors active:scale-[0.98] disabled:opacity-60",
-          tall,
+          "focus-ring flex items-center gap-1 text-xs font-semibold transition-colors disabled:opacity-60",
+          inHeader
+            ? "h-10 shrink-0 rounded-md px-2"
+            : clsx(
+                "rounded-xl border px-2.5 active:scale-[0.98]",
+                tall,
+              ),
           live
             ? "border-rose-500/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-            : "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100",
+            : inHeader
+              ? "text-slate-200 hover:bg-white/[0.06] hover:text-slate-100"
+              : "border-transparent text-slate-200 hover:bg-white/[0.06] hover:text-slate-100",
         )}
         aria-label={live ? "Stop recording" : "Record"}
         aria-haspopup={live ? undefined : "menu"}
         aria-expanded={live ? undefined : open}
-        data-testid="record-menu"
+        data-testid={testId}
       >
         <span aria-hidden="true" className="text-rose-400">
           ●
         </span>
-        {live ? "Stop" : "Record"}
+        <span className={inHeader ? "hidden sm:inline" : undefined}>
+          {live ? "Stop" : "Record"}
+        </span>
         {!live && <ChevronDown className="h-3.5 w-3.5 opacity-70" aria-hidden="true" />}
       </button>
       {open && !live && (
         <div
           role="menu"
           aria-label="Record"
-          className="glass-heavy absolute bottom-full left-1/2 z-40 mb-2 w-44 -translate-x-1/2 rounded-xl p-1.5 shadow-pop"
+          className={clsx(
+            "glass-heavy absolute z-40 w-44 rounded-xl p-1.5 shadow-pop",
+            placement === "down"
+              ? "right-0 top-full mt-1"
+              : "bottom-full left-1/2 mb-2 -translate-x-1/2",
+          )}
         >
           <button
             type="button"

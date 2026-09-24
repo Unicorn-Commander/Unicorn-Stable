@@ -35,6 +35,7 @@ import { useFacePrefStore } from "@/stores/facePrefStore";
 import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
+import { OPEN_ACTIVITY_EVENT } from "@/lib/shellEvents";
 import { getNotifyLevel } from "@/utils/mute";
 import { prepareRoomsForSidebar } from "@/utils/unreadModel";
 import { useGlobalNotifications } from "@/hooks/useGlobalNotifications";
@@ -228,6 +229,14 @@ export function AppShell() {
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<ActivityTab>("approvals");
+  useEffect(() => {
+    function onOpenActivity() {
+      setActivityTab("approvals");
+      setActivityOpen(true);
+    }
+    window.addEventListener(OPEN_ACTIVITY_EVENT, onOpenActivity);
+    return () => window.removeEventListener(OPEN_ACTIVITY_EVENT, onOpenActivity);
+  }, []);
   // Federated multi-server: the active instance id keys the per-server
   // react-query caches; a switch clears the cache and returns to the home view.
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
