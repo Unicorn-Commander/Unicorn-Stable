@@ -313,3 +313,69 @@ def test_upload_with_a_session_still_attaches(monkeypatch, tmp_path: Path) -> No
     start = _FakeMOClient.calls[0]
     assert start["json"]["action"] == "attach"
     assert start["json"]["target_session_id"] == "sess-1"
+
+
+# --- 5. the row learns which session MO made from the media --------------
+
+
+class _FakeStatusClient:
+    """httpx.AsyncClient double for GET /api/uploads/{id}."""
+
+    responses: dict[str, dict] = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def get(self, url, *, headers=None):
+        assert url.endswith("/status"), url  # MO: GET /api/uploads/{id}/status
+        upload_id = url.rsplit("/", 2)[-2]
+        body = type(self).responses.get(upload_id)
+        if body is None:
+            return httpx.Response(404, json={"detail": "no such upload"}, request=httpx.Request("GET", url))
+        return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+
+@pytest.mark.asyncio
+async def test_media_session_backfill_fills_session_or_records_pipeline_failure(monkeypatch) -> None:
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeStatusClient)
+    _FakeStatusClient.responses = {
+        "up-ok": {"stage": "done", "session_id": 754},
+        "up-pending": {"stage": "transcribing", "session_id": None},
+        "up-dead": {"stage": "failed", "session_id": None, "error": "ffmpeg exploded"},
+        "up-silent": {"stage": "failed", "session_id": 1004, "error": "Transcription produced no segments."},
+    }
+    r = room()
+    ok = _failed_row(r, id="row-ok", status="complete", handoff_status="delivered", mo_upload_id="up-ok",
+                     handoff_last_attempt_at=CR._now())
+    pending = _failed_row(r, id="row-pending", status="complete", handoff_status="delivered",
+                          mo_upload_id="up-pending", handoff_last_attempt_at=CR._now())
+    dead = _failed_row(r, id="row-dead", status="complete", handoff_status="delivered", mo_upload_id="up-dead",
+                       handoff_last_attempt_at=CR._now())
+    silent = _failed_row(r, id="row-silent", status="complete", handoff_status="delivered",
+                         mo_upload_id="up-silent", handoff_last_attempt_at=CR._now())
+    db = FakeDB(router=lambda stmt: FakeResult(rows=[ok, pending, dead, silent]))
+    filled = await CR._sweep_media_sessions(lambda: db, _settings(meeting_ops_upload_url="http://meet-backend:9050"))
+    assert filled == 2
+    assert ok.mo_session_id == "754"
+    assert pending.mo_session_id is None and pending.handoff_status == "delivered"
+    assert dead.handoff_status == "failed" and "ffmpeg exploded" in dead.handoff_error
+    # measured 09-24: MO made session 1004 but its STT found no segments —
+    # the link works, the reason is on the row, the status stays delivered
+    assert silent.mo_session_id == "1004" and silent.handoff_status == "delivered"
+    assert "no segments" in silent.handoff_error
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_media_session_backfill_is_quiet_when_unconfigured() -> None:
+    from app.config import Settings
+
+    db = FakeDB()
+    assert await CR._sweep_media_sessions(lambda: db, Settings(call_recording_enabled=True)) == 0
+    assert db.executed == []

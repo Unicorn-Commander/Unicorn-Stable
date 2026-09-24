@@ -1305,7 +1305,7 @@ async def _poll_upload_session_id(
     for _ in range(max(0, attempts)):
         await asyncio.sleep(delay_seconds)
         try:
-            resp = await client.get(f"{base}/api/uploads/{upload_id}", headers=headers)
+            resp = await client.get(f"{base}/api/uploads/{upload_id}/status", headers=headers)
             if resp.status_code >= 400:
                 return None
             body = resp.json()
@@ -1482,6 +1482,96 @@ async def _sweep_local_files_after_delivery(
     return freed
 
 
+_MEDIA_SESSION_BACKFILL_WINDOW = timedelta(hours=48)
+
+
+async def _sweep_media_sessions(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> int:
+    """Learn which session Meeting-Ops made for a media-created hand-off.
+
+    A `transcribe` upload's session is created by MO's pipeline worker after
+    finalize, often later than the short poll at delivery time. Until the row
+    carries it, the recordings list cannot link the room to its session. Ask
+    MO's upload status for delivered rows that still lack one (48 h window,
+    20 per sweep); a pipeline that failed is written onto the row so it reads
+    as what it is instead of "delivered".
+    """
+    if not handoff_configured(settings):
+        return 0
+    filled = 0
+    async with session_factory() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(CallEgress)
+                    .where(
+                        CallEgress.handoff_status == "delivered",
+                        CallEgress.mo_upload_id.is_not(None),
+                        CallEgress.mo_session_id.is_(None),
+                        CallEgress.handoff_last_attempt_at
+                        >= _now() - _MEDIA_SESSION_BACKFILL_WINDOW,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(20)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return 0
+        base = upload_base_url(settings)
+        headers = _handoff_headers(settings)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+            for row in rows:
+                try:
+                    resp = await client.get(
+                        f"{base}/api/uploads/{row.mo_upload_id}/status", headers=headers
+                    )
+                    if resp.status_code >= 400:
+                        continue
+                    body = resp.json()
+                except Exception:
+                    logger.warning(
+                        "call_recording_media_session_probe_failed",
+                        recording_id=str(row.id),
+                        exc_info=True,
+                    )
+                    continue
+                if not isinstance(body, dict):
+                    continue
+                session_id = body.get("session_id")
+                error = body.get("error")
+                if session_id is not None:
+                    row.mo_session_id = str(session_id)
+                    filled += 1
+                    logger.info(
+                        "call_recording_media_session_filled",
+                        recording_id=str(row.id),
+                        mo_session_id=row.mo_session_id,
+                        pipeline_error=str(error)[:200] if error else None,
+                    )
+                if error:
+                    # MO has the media; its own pipeline failed on it. With a
+                    # session the link still works, so the row stays
+                    # delivered and carries the reason; without one there is
+                    # nothing to link and the row says so.
+                    row.handoff_error = f"Meeting-Ops pipeline: {str(error)[:300]}"
+                    if session_id is None:
+                        row.handoff_status = "failed"
+                    logger.error(
+                        "call_recording_media_session_failed",
+                        recording_id=str(row.id),
+                        mo_upload_id=row.mo_upload_id,
+                        mo_session_id=row.mo_session_id,
+                        detail=row.handoff_error,
+                    )
+        await db.commit()
+    return filled
+
+
 async def _sweep_composite_slots(
     session_factory: async_sessionmaker[AsyncSession],
     redis: Any,
@@ -1516,6 +1606,7 @@ async def run_maintenance_sweep(
         lambda: _sweep_stale_rows(session_factory, settings, redis, livekit),
         lambda: _sweep_retention(session_factory, settings),
         lambda: _sweep_local_files_after_delivery(session_factory),
+        lambda: _sweep_media_sessions(session_factory, settings),
         lambda: _sweep_composite_slots(session_factory, redis),
     ):
         try:
