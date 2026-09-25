@@ -330,9 +330,10 @@ export function compositeScreenShares<T>(
 }
 
 /**
- * Speaker layout: the newest share is the large, full-height slot. All other
- * shares and participant tiles use the narrow strip. The returned rectangles
- * are inset and reserve their own plates, so contain never crops a frame.
+ * Speaker layout: a single share gets half the canvas and cameras use a
+ * readable 16:9 strip. Six rows per column is the maximum that fits at 720p;
+ * above three columns the ordinary grid is safer, with the share spanning a
+ * 2x2 block at the front.
  */
 export function compositeSpeakerLayout(
   cameraCount: number,
@@ -342,36 +343,65 @@ export function compositeSpeakerLayout(
   const cameras = Math.max(0, Math.floor(cameraCount));
   const shares = Math.max(0, Math.floor(shareCount));
   if (shares === 0) return compositeGrid(cameras, canvas);
-  const total = shares + cameras;
+  if (shares === 1 && cameras <= 18) {
+    const shareWidth = Math.floor(canvas.width / 2);
+    const main: Rect = { x: 0, y: 0, width: shareWidth, height: canvas.height };
+    const stripWidth = canvas.width - shareWidth;
+    const columns = Math.min(3, Math.max(1, Math.ceil(cameras / 6)));
+    const rows = Math.min(cameras, 6);
+    const cameraWidth = stripWidth / columns;
+    const cameraHeight = canvas.height / rows;
+    const layouts: CompositeSpeakerLayout[] = [{ tile: main, ...tileInsets(main) }];
+    for (let i = 0; i < cameras; i++) {
+      const row = i % rows;
+      const column = Math.floor(i / rows);
+      const tile: Rect = {
+        x: shareWidth + column * cameraWidth,
+        y: row * cameraHeight,
+        width: cameraWidth,
+        height: cameraHeight,
+      };
+      layouts.push({ tile, ...speakerTileInsets(tile) });
+    }
+    return layouts;
+  }
 
-  const pad = 8;
-  const gap = 6;
-  const stripWidth = Math.max(220, Math.floor(canvas.width * 0.25));
-  const main: Rect = {
-    x: pad,
-    y: pad,
-    width: canvas.width - stripWidth - pad * 2 - gap,
-    height: canvas.height - pad * 2,
+  // More than 18 cameras cannot retain a useful strip. Keep the share as a
+  // prominent 2x2 grid tile and let the normal gallery handle the rest.
+  const cameraLayouts = compositeGrid(cameras, canvas);
+  const shareTile = cameraLayouts[0]?.tile ?? {
+    x: 0,
+    y: 0,
+    width: Math.floor(canvas.width / 2),
+    height: Math.floor(canvas.height / 2),
   };
-  const stripX = main.x + main.width + gap;
-  const stripItems = total - 1;
-  if (stripItems === 0) {
-    return [{ tile: main, ...tileInsets(main) }];
-  }
-  const stripHeight = Math.floor(
-    (canvas.height - pad * 2 - gap * (stripItems - 1)) / stripItems,
-  );
-  const layouts: CompositeSpeakerLayout[] = [{ tile: main, ...tileInsets(main) }];
-  for (let i = 0; i < stripItems; i++) {
-    const tile: Rect = {
-      x: stripX,
-      y: pad + i * (stripHeight + gap),
-      width: canvas.width - stripX - pad,
-      height: stripHeight,
-    };
-    layouts.push({ tile, ...tileInsets(tile) });
-  }
-  return layouts;
+  const span: Rect = {
+    x: shareTile.x,
+    y: shareTile.y,
+    width: shareTile.width * 2 + COMPOSITE_GAP,
+    height: shareTile.height * 2 + COMPOSITE_GAP,
+  };
+  const shareLayout = { tile: span, ...tileInsets(span) };
+  return [shareLayout, ...cameraLayouts.slice(0, Math.max(0, cameras))];
+}
+
+function speakerTileInsets(tile: Rect): { video: Rect; plate: Rect } {
+  const videoWidth = Math.max(1, tile.width - VIDEO_INSET * 2);
+  const videoHeight = Math.max(1, Math.min(tile.height - VIDEO_INSET * 2, videoWidth * 9 / 16));
+  const video: Rect = {
+    x: tile.x + VIDEO_INSET,
+    y: tile.y + Math.max(VIDEO_INSET, (tile.height - videoHeight) / 2),
+    width: videoWidth,
+    height: videoHeight,
+  };
+  const plateHeight = Math.min(PLATE_HEIGHT, Math.max(24, tile.height - 2));
+  const plate: Rect = {
+    x: tile.x + PLATE_INSET_X,
+    y: tile.y + tile.height - PLATE_BOTTOM - plateHeight,
+    width: Math.max(1, tile.width - PLATE_INSET_X * 2),
+    height: plateHeight,
+  };
+  return { video, plate };
 }
 
 /** Every live audio publication. Screen-share audio counts; a muted mic does not. */

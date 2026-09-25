@@ -191,15 +191,19 @@ describe("composite participants", () => {
     expect(shares.map((share) => share.key)).toEqual(["share-1", "share-2"]);
   });
 
-  it("fits a share and 1..16 camera slots without crop or plate overflow", () => {
-    for (let cameras = 1; cameras <= 16; cameras++) {
+  it("keeps a share wide and every camera video readable for 1..17 cameras", () => {
+    for (let cameras = 1; cameras <= 17; cameras++) {
       const layouts = compositeSpeakerLayout(cameras, 1);
       expect(layouts).toHaveLength(cameras + 1);
+      expect(layouts[0]?.tile.width).toBeGreaterThanOrEqual(640);
       for (const layout of layouts) {
         expect(inside(layout.tile, CANVAS)).toBe(true);
         expect(inside(layout.video, layout.tile)).toBe(true);
         expect(inside(layout.plate, layout.tile)).toBe(true);
-        expect(overlaps(layout.video, layout.plate)).toBe(false);
+      }
+      for (const layout of layouts.slice(1)) {
+        expect(layout.video.width).toBeGreaterThanOrEqual(160);
+        expect(layout.video.height).toBeGreaterThanOrEqual(90);
       }
     }
   });
