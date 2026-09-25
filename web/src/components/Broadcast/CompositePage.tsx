@@ -317,7 +317,6 @@ function CompositePageContent() {
   const gate = useMemo(() => new CompositeRecordingGate(), []);
   const layout = compositeLayoutKind(plan.layout);
 
-  const [live, setLive] = useState(false);
   const [tiles, setTiles] = useState<CompositeTileModel<RemoteTrack>[]>([]);
   const [audios, setAudios] = useState<{ key: string; track: RemoteTrack }[]>([]);
   const [shares, setShares] = useState<ReturnType<typeof compositeScreenShares<RemoteTrack>>>([]);
@@ -422,7 +421,6 @@ function CompositePageContent() {
     function endLiveSession(session: Session) {
       if (disposed || session.gen !== generation || current !== session) return;
       gate.noteSessionEnded();
-      setLive(false);
       roomRef.current = null;
       setConnectedSession(null);
     }
@@ -506,7 +504,6 @@ function CompositePageContent() {
           if (!creds) {
             console.error("composite recorder exchange returned a non-composite token");
             gate.noteSessionEnded();
-            setLive(false);
             return;
           }
           livekitUrl = creds.livekitUrl;
@@ -516,7 +513,6 @@ function CompositePageContent() {
           if (error instanceof BroadcastRefused) {
             console.error("composite recorder token was refused");
             gate.noteSessionEnded();
-            setLive(false);
             return;
           }
           scheduleRetry(error);
@@ -546,7 +542,6 @@ function CompositePageContent() {
       attempt = 0;
       subscribeAll(session.room);
       publish(session.room);
-      setLive(true);
       setConnectedSession(session);
       if (previous && previous !== session) void previous.room.disconnect();
     }
