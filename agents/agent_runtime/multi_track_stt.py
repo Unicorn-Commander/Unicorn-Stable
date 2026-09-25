@@ -224,6 +224,10 @@ class MultiTrackController:
 
     def _reopen_allowed(self, sid: str) -> bool:
         now = self._clock()
+        # Forget sids whose last reopen is outside the window, so a long show
+        # with many tracks coming and going does not grow this map forever.
+        for key in [k for k, ts in self._reopens.items() if not ts or now - ts[-1] >= REOPEN_WINDOW_S]:
+            del self._reopens[key]
         recent = [t for t in self._reopens.get(sid, []) if now - t < REOPEN_WINDOW_S]
         if len(recent) >= REOPEN_BUDGET:
             self._reopens[sid] = recent
@@ -263,7 +267,16 @@ class MultiTrackController:
                 tasks.append(task)
         self._sessions.clear()
         if tasks:
-            await asyncio.wait(tasks, timeout=timeout)
+            _, pending = await asyncio.wait(tasks, timeout=timeout)
+            # asyncio.wait never cancels what is still running. A session left
+            # behind would post after the relay's HTTP client is closed and
+            # lose that line silently, so stop it here where it is visible.
+            for task in pending:
+                task.cancel()
+            if pending:
+                logger.warning(
+                    "multi_track_close_timed_out", pending=len(pending), timeout_s=timeout
+                )
 
     @property
     def active_sids(self) -> set[str]:
