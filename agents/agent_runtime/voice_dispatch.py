@@ -98,7 +98,6 @@ __all__ = [
     "spoken_tokens",
     "should_drop_line",
     "join_partial_finals",
-    "UtteranceFold",
     "FRAGMENT_WINDOW_S",
     "OTHER_EAR_DUP_S",
     "floor_for",
@@ -409,96 +408,6 @@ def join_partial_finals(parts: list[str]) -> str:
 #: whole sentence to land after the per-track pieces; short enough that a
 #: person who says "yes" again a few seconds later is heard the second time.
 FRAGMENT_WINDOW_S = 2.0
-
-
-class UtteranceFold:
-    """Collapse one speaker's ears into one line per utterance.
-
-    Partial finals (the per-track ear cutting on a pause) stay open until
-    ``gate_s`` of quiet, or until a finished line from another ear closes
-    them. The longest text wins. A speaker whose microphone has the per-track
-    ear attached ignores every other ear. Two speakers are never joined.
-    """
-
-    def __init__(self, *, gate_s: float, window_s: float = FRAGMENT_WINDOW_S) -> None:
-        self.gate_s = gate_s
-        self.window_s = window_s
-        self.covered: set[str] = set()
-        # speaker → (text, updated_at, ear)
-        self._open: dict[str, tuple[str, float, str]] = {}
-        self._committed: dict[str, list[tuple[float, str]]] = {}
-
-    def has_pending(self) -> bool:
-        return bool(self._open)
-
-    def push(
-        self,
-        speaker: str,
-        text: str,
-        *,
-        ear: str,
-        now: float,
-        partial: bool = False,
-    ) -> list[tuple[str, str, str]]:
-        """Fold one heard line. Returns the utterances ready to persist."""
-        ready = self.expire(now)
-        text = " ".join((text or "").split())
-        if not speaker or not text:
-            return ready
-        if ear != "multi_track" and speaker in self.covered:
-            return ready
-        if self._subsumed(speaker, text, now, ear):
-            return ready
-        slot = self._open.get(speaker)
-        if slot is not None and now - slot[1] <= self.gate_s:
-            merged = join_partial_finals([slot[0], text])
-            ear_kept = "multi_track" if slot[2] == "multi_track" or ear == "multi_track" else ear
-            if partial:
-                self._open[speaker] = (merged, now, ear_kept)
-                return ready
-            self._open.pop(speaker, None)
-            if not self._subsumed(speaker, merged, now, ear_kept):
-                self._remember(speaker, merged, now, ear_kept)
-                ready.append((speaker, merged, ear_kept))
-            return ready
-        if slot is not None:
-            ready.extend(self._take(speaker, now))
-        if partial:
-            self._open[speaker] = (text, now, ear)
-            return ready
-        self._remember(speaker, text, now, ear)
-        ready.append((speaker, text, ear))
-        return ready
-
-    def expire(self, now: float, *, force: bool = False) -> list[tuple[str, str, str]]:
-        """Close open utterances whose silence gate has elapsed."""
-        ready: list[tuple[str, str, str]] = []
-        for speaker, (_text, updated, _ear) in list(self._open.items()):
-            if force or now - updated >= self.gate_s:
-                ready.extend(self._take(speaker, now))
-        return ready
-
-    def _take(self, speaker: str, now: float) -> list[tuple[str, str, str]]:
-        slot = self._open.pop(speaker, None)
-        if slot is None:
-            return []
-        text, _updated, ear = slot
-        if self._subsumed(speaker, text, now, ear):
-            return []
-        self._remember(speaker, text, now, ear)
-        return [(speaker, text, ear)]
-
-    def _remember(self, speaker: str, text: str, now: float, ear: str) -> None:
-        horizon = max(self.window_s, OTHER_EAR_DUP_S)
-        rows = [row for row in self._committed.get(speaker, []) if now - row[0] <= horizon]
-        rows.append((now, text, ear))
-        self._committed[speaker] = rows
-
-    def _subsumed(self, speaker: str, text: str, now: float, ear: str) -> bool:
-        for at, prev, prev_ear in self._committed.get(speaker, ()):
-            if should_drop_line(text, ear, prev, prev_ear, now - at):
-                return True
-        return False
 
 
 def log_name_near_miss(
