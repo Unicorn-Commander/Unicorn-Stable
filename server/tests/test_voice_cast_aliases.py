@@ -64,7 +64,11 @@ class CastAliasEndpointTests(IsolatedAsyncioTestCase):
         db = AsyncMock()
         room = _room(metadata)
         db.execute = AsyncMock(
-            side_effect=[_row(room), _row(SimpleNamespace(role=MemberRole.OWNER))]
+            side_effect=[
+                _row(room),
+                _row(SimpleNamespace(role=MemberRole.OWNER)),
+                MagicMock(all=MagicMock(return_value=[])),
+            ]
         )
         db.commit = AsyncMock()
         livekit = AsyncMock()
@@ -129,7 +133,11 @@ class CastAliasEndpointTests(IsolatedAsyncioTestCase):
         db = AsyncMock()
         room = _room(_show())
         db.execute = AsyncMock(
-            side_effect=[_row(room), _row(SimpleNamespace(role=MemberRole.OWNER))]
+            side_effect=[
+                _row(room),
+                _row(SimpleNamespace(role=MemberRole.OWNER)),
+                MagicMock(all=MagicMock(return_value=[])),
+            ]
         )
         db.commit = AsyncMock()
         livekit = AsyncMock()
@@ -149,7 +157,7 @@ class CastAliasEndpointTests(IsolatedAsyncioTestCase):
 
     async def test_too_many_or_the_wrong_length_is_a_422(self) -> None:
         for bad in (
-            {"agent-shox": ["aa"] * 9},
+            {"agent-shox": [f"alias-{i}" for i in range(9)]},
             {"agent-shox": ["a"]},
             {"agent-shox": ["x" * 41]},
             {"agent-shox": "shocks"},

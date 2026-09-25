@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import Annotated, Any
 
 import structlog
@@ -374,10 +375,18 @@ def stage_voices(meta: dict[str, Any] | None) -> dict[str, str] | None:
     return {k: v for k, v in cast.items() if k not in benched}
 
 
+def normalize_cast_alias(text: str) -> str:
+    """NFKC, lowercase, trimmed, inner whitespace collapsed."""
+    folded = unicodedata.normalize("NFKC", text or "").lower().strip()
+    return " ".join(folded.split())
+
+
 def relay_cast_aliases(value: Any) -> dict[str, list[str]] | None:
     """``voice_relay_cast_aliases`` as a clean map; None when the room has none.
 
-    A dict or the JSON string LiveKit metadata carries. Phrases are lowercase.
+    A dict or the JSON string LiveKit metadata carries. Phrases are normalized.
+    Only strings are kept. A seat with no phrases is left out, so an empty
+    list does not linger and get merged back in.
     """
     if isinstance(value, str) and value.strip():
         try:
@@ -393,7 +402,9 @@ def relay_cast_aliases(value: Any) -> dict[str, list[str]] | None:
             continue
         phrases: list[str] = []
         for item in aliases:
-            phrase = str(item or "").strip().lower()
+            if not isinstance(item, str):
+                continue
+            phrase = normalize_cast_alias(item)
             if phrase and phrase not in phrases:
                 phrases.append(phrase)
         if phrases:
@@ -460,9 +471,13 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
             if aliases:
                 wanted[k] = aliases
         elif k == "voice_relay_cast_aliases":
-            encoded = _cast_aliases_json(v)
-            if encoded is not None:
-                wanted[k] = encoded
+            # Present but empty (a cleared seat, or a map that normalized to
+            # nothing) must write "{}" — merge-only LiveKit metadata would
+            # otherwise keep the previous spellings. Absent is handled below,
+            # once we know the live copy is stale.
+            if k in meta:
+                encoded = _cast_aliases_json(v)
+                wanted[k] = encoded if encoded is not None else "{}"
     if wanted and "voice_relay_max_spoken_chars" not in wanted:
         wanted["voice_relay_max_spoken_chars"] = str(default_max_spoken_chars(room))
     if not wanted:

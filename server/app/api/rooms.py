@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -1402,9 +1403,39 @@ def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
 
 _MAX_ALIASES_PER_SEAT = 8
 
+#: Address cues and fillers. An alias of one of these would route "ok, …".
+_ALIAS_STOP_WORDS = frozenset(
+    {
+        "ok", "okay", "so", "the", "and", "but", "hey", "hi", "hello",
+        "yes", "no", "yeah", "um", "uh", "well", "now", "please", "thanks",
+        "a", "an", "i", "you", "it",
+    }
+)
+
+
+def _alias_forbidden_chars(text: str) -> bool:
+    """Control characters and zero-width / format characters are rejected."""
+    for ch in text:
+        if unicodedata.category(ch) in ("Cc", "Cf"):
+            return True
+    return False
+
+
+def _seat_short(seat: str) -> str:
+    seat = (seat or "").strip().lower()
+    return seat[6:] if seat.startswith("agent-") else seat
+
 
 def _clean_cast_aliases(raw: dict[str, Any]) -> dict[str, list[str]]:
-    """Shape-check a cast-alias map. Stored lowercase, phrases sorted."""
+    """Shape-check a cast-alias map.
+
+    Aliases are JSON strings. They are stored normalized (NFKC, lowercase,
+    trimmed, inner whitespace collapsed). Duplicates are removed before the
+    per-seat limit. A seat whose list is empty is omitted so a clear does
+    not leave ``[]`` behind.
+    """
+    from app.api.webhooks import normalize_cast_alias
+
     if not isinstance(raw, dict):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1423,14 +1454,29 @@ def _clean_cast_aliases(raw: dict[str, Any]) -> dict[str, list[str]]:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"{seat}: aliases must be a list",
             )
-        if len(value) > _MAX_ALIASES_PER_SEAT:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"{seat}: at most {_MAX_ALIASES_PER_SEAT} aliases",
-            )
         phrases: list[str] = []
         for item in value:
-            phrase = str(item or "").strip().lower()
+            if isinstance(item, bool) or not isinstance(item, str):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: aliases must be strings",
+                )
+            if _alias_forbidden_chars(item):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: aliases cannot contain control or zero-width characters",
+                )
+            phrase = normalize_cast_alias(item)
+            if _alias_forbidden_chars(phrase):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: aliases cannot contain control or zero-width characters",
+                )
+            if phrase in _ALIAS_STOP_WORDS:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: {phrase!r} is an address cue, not an alias",
+                )
             if len(phrase) < 2 or len(phrase) > 40:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1438,8 +1484,49 @@ def _clean_cast_aliases(raw: dict[str, Any]) -> dict[str, list[str]]:
                 )
             if phrase not in phrases:
                 phrases.append(phrase)
-        cleaned[seat] = sorted(phrases)
+        if len(phrases) > _MAX_ALIASES_PER_SEAT:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{seat}: at most {_MAX_ALIASES_PER_SEAT} aliases",
+            )
+        if phrases:
+            cleaned[seat] = sorted(phrases)
     return cleaned
+
+
+def _reject_alias_collisions(
+    cast_aliases: dict[str, list[str]],
+    cast: dict[str, str],
+    display_names: dict[str, str],
+) -> None:
+    """An alias may not be another seat's username, voice, or display name."""
+    from app.api.webhooks import normalize_cast_alias
+
+    owned: dict[str, set[str]] = {}
+    for username, voice in cast.items():
+        seat = str(username or "").strip().lower()
+        if not seat:
+            continue
+        phrases = {seat, _seat_short(seat)}
+        voice_norm = normalize_cast_alias(str(voice or ""))
+        if voice_norm:
+            phrases.add(voice_norm)
+        display = normalize_cast_alias(display_names.get(username) or display_names.get(seat) or "")
+        if display:
+            phrases.add(display)
+        phrases.discard("")
+        owned[seat] = phrases
+    for seat, phrases in cast_aliases.items():
+        for phrase in phrases:
+            norm = normalize_cast_alias(phrase)
+            for other, taken in owned.items():
+                if _seat_short(other) == _seat_short(seat):
+                    continue
+                if norm in taken:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"{seat}: {norm!r} belongs to {other}",
+                    )
 
 
 def _clean_bench(raw: list[str]) -> list[str]:
@@ -1704,6 +1791,19 @@ async def update_voice_settings(
                 detail=f"Not in this room's cast: {', '.join(unknown)}",
             )
         if cast_aliases:
+            from app.models.participant import Participant
+
+            rows = (
+                await db.execute(
+                    select(Participant.username, Participant.display_name).where(
+                        Participant.username.in_(list(cast))
+                    )
+                )
+            ).all()
+            display_names = {
+                username: (display or "") for username, display in rows
+            }
+            _reject_alias_collisions(cast_aliases, cast, display_names)
             meta[CAST_ALIAS_KEY] = cast_aliases
         else:
             meta.pop(CAST_ALIAS_KEY, None)
