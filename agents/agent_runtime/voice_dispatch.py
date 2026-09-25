@@ -72,6 +72,7 @@ import hashlib
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -94,9 +95,12 @@ __all__ = [
     "fuzzy_spoken_name_match",
     "log_name_near_miss",
     "line_subsumes",
+    "spoken_tokens",
+    "should_drop_line",
     "join_partial_finals",
     "UtteranceFold",
     "FRAGMENT_WINDOW_S",
+    "OTHER_EAR_DUP_S",
     "floor_for",
     "forget_room",
 ]
@@ -308,19 +312,73 @@ def fuzzy_spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool
     return False
 
 
+def spoken_tokens(text: str) -> tuple[str, ...]:
+    """Lowercase words with punctuation stripped and whitespace collapsed."""
+    cleaned = unicodedata.normalize("NFKC", text or "").lower()
+    cleaned = re.sub(r"[^\w\s']", " ", cleaned, flags=re.UNICODE)
+    cleaned = cleaned.replace("_", " ")
+    return tuple(part for part in cleaned.split() if part)
+
+
+def _contiguous(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
+    """True when ``shorter`` is a contiguous run of tokens inside ``longer``."""
+    if not shorter or len(shorter) > len(longer):
+        return False
+    width = len(shorter)
+    return any(longer[i : i + width] == shorter for i in range(len(longer) - width + 1))
+
+
 def _norm_line(text: str) -> str:
-    return " ".join((text or "").lower().split())
+    return " ".join(spoken_tokens(text))
 
 
 def line_subsumes(longer: str, shorter: str) -> bool:
-    """True when ``shorter`` is a prefix or substring of ``longer``.
+    """True when ``shorter``'s words are a contiguous run inside ``longer``.
 
-    Comparison is case-insensitive and ignores repeated whitespace. Equal
-    lines count, so a second copy of the same utterance inside the fragment
-    window collapses to the one already kept.
+    Whole words, not letters: "no" is not inside "I know that", and "go" is
+    not inside "good". Punctuation is ignored, so "grok in one sentence" is
+    inside "Grok, in one sentence, ...?". Equal lines count.
     """
-    a, b = _norm_line(longer), _norm_line(shorter)
-    return bool(a) and bool(b) and b in a
+    longer_tokens, shorter_tokens = spoken_tokens(longer), spoken_tokens(shorter)
+    if not longer_tokens or not shorter_tokens:
+        return False
+    if longer_tokens == shorter_tokens:
+        return True
+    return _contiguous(shorter_tokens, longer_tokens)
+
+
+#: How long an exact copy from the OTHER ear is still the same utterance.
+#: The same ear only suppresses for FRAGMENT_WINDOW_S, so "yes" again five
+#: seconds later is a new line. A different ear (captions after the session
+#: ear, or the reverse) can land several seconds late.
+OTHER_EAR_DUP_S = 8.0
+
+
+def should_drop_line(
+    new_text: str,
+    new_ear: str,
+    old_text: str,
+    old_ear: str,
+    age_s: float,
+) -> bool:
+    """Whether ``new_text`` repeats ``old_text`` from the same speaker.
+
+    A later line whose tokens are a contiguous sub-sequence of a longer line
+    is dropped within :data:`FRAGMENT_WINDOW_S`. An exact normalized copy is
+    dropped within that same window when it comes from the same ear, and
+    within :data:`OTHER_EAR_DUP_S` when it comes from a different ear.
+    """
+    if age_s < 0:
+        return False
+    new_tokens, old_tokens = spoken_tokens(new_text), spoken_tokens(old_text)
+    if not new_tokens or not old_tokens:
+        return False
+    if new_tokens == old_tokens:
+        limit = FRAGMENT_WINDOW_S if new_ear == old_ear else OTHER_EAR_DUP_S
+        return age_s <= limit
+    if age_s <= FRAGMENT_WINDOW_S and len(new_tokens) < len(old_tokens):
+        return _contiguous(new_tokens, old_tokens)
+    return False
 
 
 def join_partial_finals(parts: list[str]) -> str:
@@ -389,7 +447,7 @@ class UtteranceFold:
             return ready
         if ear != "multi_track" and speaker in self.covered:
             return ready
-        if self._subsumed(speaker, text, now):
+        if self._subsumed(speaker, text, now, ear):
             return ready
         slot = self._open.get(speaker)
         if slot is not None and now - slot[1] <= self.gate_s:
@@ -399,8 +457,8 @@ class UtteranceFold:
                 self._open[speaker] = (merged, now, ear_kept)
                 return ready
             self._open.pop(speaker, None)
-            if not self._subsumed(speaker, merged, now):
-                self._remember(speaker, merged, now)
+            if not self._subsumed(speaker, merged, now, ear_kept):
+                self._remember(speaker, merged, now, ear_kept)
                 ready.append((speaker, merged, ear_kept))
             return ready
         if slot is not None:
@@ -408,7 +466,7 @@ class UtteranceFold:
         if partial:
             self._open[speaker] = (text, now, ear)
             return ready
-        self._remember(speaker, text, now)
+        self._remember(speaker, text, now, ear)
         ready.append((speaker, text, ear))
         return ready
 
@@ -425,21 +483,20 @@ class UtteranceFold:
         if slot is None:
             return []
         text, _updated, ear = slot
-        if self._subsumed(speaker, text, now):
+        if self._subsumed(speaker, text, now, ear):
             return []
-        self._remember(speaker, text, now)
+        self._remember(speaker, text, now, ear)
         return [(speaker, text, ear)]
 
-    def _remember(self, speaker: str, text: str, now: float) -> None:
-        rows = [row for row in self._committed.get(speaker, []) if now - row[0] <= self.window_s]
-        rows.append((now, text))
+    def _remember(self, speaker: str, text: str, now: float, ear: str) -> None:
+        horizon = max(self.window_s, OTHER_EAR_DUP_S)
+        rows = [row for row in self._committed.get(speaker, []) if now - row[0] <= horizon]
+        rows.append((now, text, ear))
         self._committed[speaker] = rows
 
-    def _subsumed(self, speaker: str, text: str, now: float) -> bool:
-        for at, prev in self._committed.get(speaker, ()):
-            if now - at > self.window_s:
-                continue
-            if line_subsumes(prev, text):
+    def _subsumed(self, speaker: str, text: str, now: float, ear: str) -> bool:
+        for at, prev, prev_ear in self._committed.get(speaker, ()):
+            if should_drop_line(text, ear, prev, prev_ear, now - at):
                 return True
         return False
 
