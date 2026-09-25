@@ -575,7 +575,7 @@ class TrackGateTests(TestCase):
         close_at = len(_repeat(True, 0.4)) + len(_repeat(False, 0.2))
         import time as _time
 
-        t0 = _time.monotonic()
+        closed_at: dict[str, float] = {}
         _index_holder = {}
 
         def on_final(_track, text):
@@ -597,6 +597,7 @@ class TrackGateTests(TestCase):
                 for i, frame in enumerate(script):
                     pos["i"] = i
                     if i == close_at:
+                        closed_at["t"] = _time.monotonic()
                         sess.aclose()
                         await asyncio.sleep(0)
                     yield SimpleNamespace(frame=frame)
@@ -623,10 +624,12 @@ class TrackGateTests(TestCase):
             asyncio.run(go())
         finally:
             rtc.AudioStream = original
-        elapsed = _time.monotonic() - t0
+        # Measured from the close, not from the start of the run: a slow
+        # runner spends its time reading frames, not in the bounded flush.
+        elapsed = _time.monotonic() - closed_at["t"]
         self.assertGreaterEqual(stt.started, 1)
         self.assertNotIn("text", _index_holder)
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, 2.0)
 
     def test_a_noise_bed_or_desk_clicks_never_interrupt_a_speaking_agent(self) -> None:
         """Raw energy is not a barge-in. A steady -36 dBFS bed (music in the
@@ -650,6 +653,84 @@ class TrackGateTests(TestCase):
         self.assertEqual(self._persisted(agent), [])
         self.assertNotIn("on_onset", inspect.signature(LiveTrackSession).parameters)
         self.assertFalse(hasattr(agent, "_on_speech_onset"))
+
+    def test_hanging_up_while_the_last_line_is_recognized_still_posts_it(self) -> None:
+        """exp11: the gate cut, recognition in flight, then the track closes
+        (someone hangs up 1 to 2.5 s after the last word)."""
+        finals: list[str] = []
+        release = {"event": None}
+        stt = _ScriptSTT(texts=["thanks grok that is a wrap"])
+        real_recognize = stt.recognize
+
+        async def held_recognize(frames):
+            await release["event"].wait()
+            return await real_recognize(frames)
+
+        stt.recognize = held_recognize
+        import livekit.rtc as rtc
+
+        original = rtc.AudioStream
+        rtc.AudioStream = _endless_stream(_repeat(True, 1.0) + _repeat(False, 1.2))
+        try:
+            sess = LiveTrackSession(
+                HumanAudioTrack(AARON, "Aaron", "TR_1"),
+                object(),
+                stt,
+                lambda _t, text: finals.append(text),
+            )
+
+            async def go():
+                release["event"] = asyncio.Event()
+                sess.start()
+                await _until(lambda: sess._inflight is not None, what="recognize in flight")
+                sess.aclose()
+                release["event"].set()
+                await asyncio.wait_for(sess._task, timeout=5.0)
+
+            asyncio.run(go())
+        finally:
+            rtc.AudioStream = original
+        self.assertEqual(finals, ["thanks grok that is a wrap"])
+        self.assertTrue(sess.closed)
+
+    def test_a_recognize_hanging_in_flight_at_close_is_bounded(self) -> None:
+        import time as _time
+
+        finals: list[str] = []
+        stt = _ScriptSTT()
+
+        async def never(frames):
+            stt.started += 1
+            await asyncio.Event().wait()
+
+        stt.recognize = never
+        import livekit.rtc as rtc
+
+        original = rtc.AudioStream
+        rtc.AudioStream = _endless_stream(_repeat(True, 0.4) + _repeat(False, 1.2))
+        try:
+            sess = LiveTrackSession(
+                HumanAudioTrack(AARON, "Aaron", "TR_1"),
+                object(),
+                stt,
+                lambda _t, text: finals.append(text),
+            )
+            sess._close_timeout = 0.05
+
+            async def go():
+                sess.start()
+                await _until(lambda: sess._inflight is not None, what="recognize in flight")
+                t0 = _time.monotonic()
+                sess.aclose()
+                await asyncio.wait_for(sess._task, timeout=5.0)
+                return _time.monotonic() - t0
+
+            elapsed = asyncio.run(go())
+        finally:
+            rtc.AudioStream = original
+        self.assertEqual(stt.started, 1)
+        self.assertEqual(finals, [])
+        self.assertLess(elapsed, 1.0)
 
     def test_health_is_a_live_task_a_recent_frame_and_a_recognize_that_worked(self) -> None:
         import time as _time

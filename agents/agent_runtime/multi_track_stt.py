@@ -313,6 +313,9 @@ class LiveTrackSession:
         self._buf_s = 0.0
         self._quiet_s = 0.0
         self._in_speech = False
+        #: The recognize for the last cut, while it runs. Shielded from a
+        #: close so hanging up just after the gate still posts the line.
+        self._inflight: asyncio.Future[None] | None = None
         self._last_frame_at: float | None = None
         self._last_recognize_failed = False
         self._close_timeout = CLOSE_FLUSH_TIMEOUT_S
@@ -394,6 +397,11 @@ class LiveTrackSession:
                 exc_info=True,
             )
         finally:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # Collected after its loop closed: nothing can be awaited.
+                return
             await self._flush_tail()
 
     async def _take_frame(self, frame: Any) -> None:
@@ -415,10 +423,19 @@ class LiveTrackSession:
             await self._cut()
 
     async def _cut(self) -> None:
-        """Recognize the buffer and emit. One utterance boundary."""
+        """Recognize the buffer and emit. One utterance boundary.
+
+        The recognize runs as its own task behind a shield: a close that
+        lands while it is in flight (someone hangs up a second after the
+        last word) cancels the read, not the recognition, and the flush
+        waits for it.
+        """
         frames = self._frames
         self._reset_buffer()
-        await self._recognize(frames)
+        inflight = asyncio.ensure_future(self._recognize(frames))
+        self._inflight = inflight
+        await asyncio.shield(inflight)
+        self._inflight = None
         self._emit_pending()
 
     def _reset_buffer(self) -> None:
@@ -428,34 +445,54 @@ class LiveTrackSession:
         self._in_speech = False
 
     async def _flush_tail(self) -> None:
-        """Recognize audio still buffered when the track ends or closes."""
+        """Finish the in-flight recognize, recognize what is still buffered,
+        and emit — all inside one close timeout."""
         self._uncancel()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._close_timeout
+        inflight, self._inflight = self._inflight, None
+        if inflight is not None and not inflight.done():
+            await self._bounded(inflight, deadline, "inflight")
         frames = self._frames
         self._frames = []
         self._buf_s = 0.0
         if frames:
-            try:
-                await asyncio.wait_for(
-                    self._recognize(frames), timeout=self._close_timeout
-                )
-            except asyncio.TimeoutError:
+            if deadline - loop.time() > 0:
+                await self._bounded(self._recognize(frames), deadline, "tail")
+            else:
                 logger.warning(
                     "multi_track_close_flush_timeout",
                     track_sid=self.track.track_sid,
-                )
-            except asyncio.CancelledError:
-                self._uncancel()
-            except Exception:
-                logger.warning(
-                    "multi_track_close_flush_failed",
-                    track_sid=self.track.track_sid,
-                    exc_info=True,
+                    part="tail",
                 )
         self._emit_pending()
 
+    async def _bounded(self, awaitable: Any, deadline: float, part: str) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(awaitable, timeout=max(0.0, deadline - loop.time()))
+        except asyncio.TimeoutError:
+            logger.warning(
+                "multi_track_close_flush_timeout",
+                track_sid=self.track.track_sid,
+                part=part,
+            )
+        except asyncio.CancelledError:
+            self._uncancel()
+        except Exception:
+            logger.warning(
+                "multi_track_close_flush_failed",
+                track_sid=self.track.track_sid,
+                part=part,
+                exc_info=True,
+            )
+
     def _uncancel(self) -> None:
         """A close() cancels the read. The flush that follows must still await."""
-        task = asyncio.current_task()
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            return
         if task is None:
             return
         uncancel = getattr(task, "uncancel", None)
