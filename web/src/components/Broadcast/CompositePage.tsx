@@ -324,6 +324,8 @@ function CompositePageContent() {
   const scale = useStageScale();
   const roomRef = useRef<Room | null>(null);
   const firstFrameRef = useRef(new Set<RemoteTrack>());
+  const shareOrderRef = useRef(new Map<string, number>());
+  const nextShareOrderRef = useRef(0);
   const videoCountRef = useRef(0);
   videoCountRef.current = tiles.reduce(
     (count, tile) => count + (tile.cameraTrack ? 1 : 0),
@@ -415,7 +417,18 @@ function CompositePageContent() {
       const people = remoteParticipants(room);
       setTiles(compositeTiles(people));
       setAudios(compositeAudioTracks(people));
-      setShares(compositeScreenShares(people));
+      const nextShares = compositeScreenShares(people);
+      for (const share of nextShares) {
+        if (!shareOrderRef.current.has(share.key)) {
+          shareOrderRef.current.set(share.key, nextShareOrderRef.current++);
+        }
+      }
+      nextShares.sort(
+        (a, b) =>
+          (shareOrderRef.current.get(b.key) ?? 0) -
+          (shareOrderRef.current.get(a.key) ?? 0),
+      );
+      setShares(nextShares);
     }
 
     function endLiveSession(session: Session) {
