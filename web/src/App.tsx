@@ -27,12 +27,15 @@ const CallDock = lazy(() =>
     default: module.CallDock,
   })),
 );
-// The OBS broadcast feed. Lazy for the same reason as the rest — it pulls the
-// LiveKit runtime in, and a static import here would put livekit-client into
-// the app's INITIAL bundle graph (see scripts/check-bundle-budget.mjs).
-const BroadcastPage = lazy(() =>
-  import("@/components/Broadcast/BroadcastPage").then((module) => ({
-    default: module.BroadcastPage,
+// The OBS broadcast feed and the composite recorder page. Lazy for the same
+// reason as the rest — they pull the LiveKit runtime in, and a static import
+// here would put livekit-client into the app's INITIAL bundle graph (see
+// scripts/check-bundle-budget.mjs). BroadcastMount picks the composite page
+// only for /broadcast/:room/composite; every other /broadcast URL stays the
+// one-tile OBS feed.
+const BroadcastMount = lazy(() =>
+  import("@/components/Broadcast/BroadcastMount").then((module) => ({
+    default: module.BroadcastMount,
   })),
 );
 // The guest surface (invite redemption + the guest-scoped room shell). Lazy for
@@ -418,18 +421,20 @@ export function App() {
        * The Suspense fallback is `null` ON PURPOSE: AppLoading's spinner would
        * be composited into a live stream while the chunk loads.
        *
-       * The canonical shape is
+       * The canonical OBS shape is
        *   /broadcast/:roomId/:participantIdentity?token=…&bg=…&audio=…
-       * but the whole `/broadcast/*` subtree is claimed: a typo'd URL must go
+       * and the composite recorder is
+       *   /broadcast/:roomId/composite?rt=…&url=…&token=…&layout=…
+       * The whole `/broadcast/*` subtree is claimed: a typo'd URL must go
        * quietly black inside OBS, not fall through to `*` and paint a Keycloak
-       * login page into the stream. The page reads none of these params — the
-       * join response is the only authority on room and participant. */}
+       * login page into the stream. The OBS page reads none of these params —
+       * the join response is the only authority on room and participant. */}
       <Routes>
         <Route
           path="/broadcast/*"
           element={
             <Suspense fallback={null}>
-              <BroadcastPage />
+              <BroadcastMount />
             </Suspense>
           }
         />

@@ -31,6 +31,13 @@ export interface BroadcastJoinResponse {
   allow_audio: boolean;
   /** ISO-8601 expiry of the BROADCAST TOKEN (up to 24h), not of the LiveKit JWT. */
   expires_at: string;
+  /**
+   * `participant` — OBS feed of the one named person.
+   * `composite` — recorder token; render every publisher.
+   * Older joins omit it. The composite page treats anything but "composite"
+   * as a refusal.
+   */
+  mode?: string;
 }
 
 /* ------------------------------------------------------------------ *
