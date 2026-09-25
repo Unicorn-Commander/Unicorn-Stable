@@ -28,6 +28,14 @@ logger = structlog.get_logger(__name__)
 
 MAX_STT_TRACKS = 6
 
+#: End-of-speech silence before a track emits one utterance. A comma-sized
+#: pause must not become its own chat line (measured 2026-09-24: "grok" /
+#: "in one sentence" / "what is the point of a rehearsal"). 20 ms frames, so
+#: 50 frames is this gate. Added wait stays at one second.
+FRAME_SECONDS = 0.02
+UTTERANCE_SILENCE_GATE_S = 1.0
+UTTERANCE_SILENCE_GATE_FRAMES = int(round(UTTERANCE_SILENCE_GATE_S / FRAME_SECONDS))
+
 OnFinal = Callable[["HumanAudioTrack", str], None]
 Opener = Callable[["HumanAudioTrack"], Any]
 
@@ -171,6 +179,7 @@ class LiveTrackSession:
         self._on_final = on_final
         self._task: asyncio.Task[None] | None = None
         self._closed = False
+        self._pending_parts: list[str] = []
 
     def start(self) -> None:
         try:
@@ -216,9 +225,13 @@ class LiveTrackSession:
                 elif heard:
                     quiet += 1
                     frames.append(frame)
-                    # ~0.5s of quiet at 50 frames/s of 20ms, or 25 quiet frames.
-                    if quiet >= 25 and frames:
+                    # One utterance: wait out UTTERANCE_SILENCE_GATE_S of quiet
+                    # before recognize, so a breath between clauses stays in
+                    # the same buffer. A longer turn that hits the frame cap
+                    # is recognized early and joined at the gate.
+                    if quiet >= UTTERANCE_SILENCE_GATE_FRAMES and frames:
                         await self._recognize(frames)
+                        self._emit_pending()
                         frames = []
                         quiet = 0
                         heard = False
@@ -226,7 +239,10 @@ class LiveTrackSession:
                     await self._recognize(frames)
                     frames = []
                     quiet = 0
-                    heard = False
+            if not self._closed:
+                if frames:
+                    await self._recognize(frames)
+                self._emit_pending()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -255,6 +271,23 @@ class LiveTrackSession:
         text = _event_text(event)
         if not text:
             return
+        self._pending_parts.append(text)
+
+    def _emit_pending(self) -> None:
+        """One final for every partial recognize since the last silence."""
+        from agent_runtime.voice_dispatch import join_partial_finals
+
+        parts = self._pending_parts
+        self._pending_parts = []
+        text = join_partial_finals(parts)
+        if not text:
+            return
+        if len(parts) > 1:
+            logger.info(
+                "multi_track_partials_joined",
+                n=len(parts),
+                speaker=self.track.participant_identity,
+            )
         try:
             self._on_final(self.track, text)
         except Exception:

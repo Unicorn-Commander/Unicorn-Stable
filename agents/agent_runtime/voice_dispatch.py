@@ -91,6 +91,10 @@ __all__ = [
     "spoken_name_match",
     "fuzzy_spoken_name_match",
     "log_name_near_miss",
+    "line_subsumes",
+    "join_partial_finals",
+    "UtteranceFold",
+    "FRAGMENT_WINDOW_S",
     "floor_for",
     "forget_room",
 ]
@@ -253,6 +257,142 @@ def fuzzy_spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool
         if _edit_distance(token, needle, cap=1) <= 1:
             return True
     return False
+
+
+def _norm_line(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def line_subsumes(longer: str, shorter: str) -> bool:
+    """True when ``shorter`` is a prefix or substring of ``longer``.
+
+    Comparison is case-insensitive and ignores repeated whitespace. Equal
+    lines count, so a second copy of the same utterance inside the fragment
+    window collapses to the one already kept.
+    """
+    a, b = _norm_line(longer), _norm_line(shorter)
+    return bool(a) and bool(b) and b in a
+
+
+def join_partial_finals(parts: list[str]) -> str:
+    """One utterance out of the partial finals a track emitted for it.
+
+    Consecutive pieces that do not contain each other are the measured
+    failure ("grok" / "in one sentence" / "what is the point of a rehearsal"):
+    they join in order. A later piece that already contains the earlier text
+    replaces it, so a cumulative hypothesis does not stutter.
+    """
+    joined = ""
+    for raw in parts:
+        piece = " ".join((raw or "").split())
+        if not piece:
+            continue
+        if not joined or line_subsumes(piece, joined):
+            if not joined or len(_norm_line(piece)) >= len(_norm_line(joined)):
+                joined = piece
+            continue
+        if line_subsumes(joined, piece):
+            continue
+        joined = f"{joined} {piece}"
+    return joined
+
+
+#: How long a fragment stays eligible to be dropped because a longer line
+#: from the same speaker already covers it. Long enough for the session ear's
+#: whole sentence to land after the per-track pieces; short enough that a
+#: person who says "yes" again a few seconds later is heard the second time.
+FRAGMENT_WINDOW_S = 2.0
+
+
+class UtteranceFold:
+    """Collapse one speaker's ears into one line per utterance.
+
+    Partial finals (the per-track ear cutting on a pause) stay open until
+    ``gate_s`` of quiet, or until a finished line from another ear closes
+    them. The longest text wins. A speaker whose microphone has the per-track
+    ear attached ignores every other ear. Two speakers are never joined.
+    """
+
+    def __init__(self, *, gate_s: float, window_s: float = FRAGMENT_WINDOW_S) -> None:
+        self.gate_s = gate_s
+        self.window_s = window_s
+        self.covered: set[str] = set()
+        # speaker → (text, updated_at, ear)
+        self._open: dict[str, tuple[str, float, str]] = {}
+        self._committed: dict[str, list[tuple[float, str]]] = {}
+
+    def has_pending(self) -> bool:
+        return bool(self._open)
+
+    def push(
+        self,
+        speaker: str,
+        text: str,
+        *,
+        ear: str,
+        now: float,
+        partial: bool = False,
+    ) -> list[tuple[str, str, str]]:
+        """Fold one heard line. Returns the utterances ready to persist."""
+        ready = self.expire(now)
+        text = " ".join((text or "").split())
+        if not speaker or not text:
+            return ready
+        if ear != "multi_track" and speaker in self.covered:
+            return ready
+        if self._subsumed(speaker, text, now):
+            return ready
+        slot = self._open.get(speaker)
+        if slot is not None and now - slot[1] <= self.gate_s:
+            merged = join_partial_finals([slot[0], text])
+            ear_kept = "multi_track" if slot[2] == "multi_track" or ear == "multi_track" else ear
+            if partial:
+                self._open[speaker] = (merged, now, ear_kept)
+                return ready
+            self._open.pop(speaker, None)
+            if not self._subsumed(speaker, merged, now):
+                self._remember(speaker, merged, now)
+                ready.append((speaker, merged, ear_kept))
+            return ready
+        if slot is not None:
+            ready.extend(self._take(speaker, now))
+        if partial:
+            self._open[speaker] = (text, now, ear)
+            return ready
+        self._remember(speaker, text, now)
+        ready.append((speaker, text, ear))
+        return ready
+
+    def expire(self, now: float, *, force: bool = False) -> list[tuple[str, str, str]]:
+        """Close open utterances whose silence gate has elapsed."""
+        ready: list[tuple[str, str, str]] = []
+        for speaker, (_text, updated, _ear) in list(self._open.items()):
+            if force or now - updated >= self.gate_s:
+                ready.extend(self._take(speaker, now))
+        return ready
+
+    def _take(self, speaker: str, now: float) -> list[tuple[str, str, str]]:
+        slot = self._open.pop(speaker, None)
+        if slot is None:
+            return []
+        text, _updated, ear = slot
+        if self._subsumed(speaker, text, now):
+            return []
+        self._remember(speaker, text, now)
+        return [(speaker, text, ear)]
+
+    def _remember(self, speaker: str, text: str, now: float) -> None:
+        rows = [row for row in self._committed.get(speaker, []) if now - row[0] <= self.window_s]
+        rows.append((now, text))
+        self._committed[speaker] = rows
+
+    def _subsumed(self, speaker: str, text: str, now: float) -> bool:
+        for at, prev in self._committed.get(speaker, ()):
+            if now - at > self.window_s:
+                continue
+            if line_subsumes(prev, text):
+                return True
+        return False
 
 
 def log_name_near_miss(
