@@ -2214,10 +2214,31 @@ class VoiceRelayAgent(StableAgent):
             voice=line.voice,
         )
 
+    async def _close_multi_track(self) -> None:
+        """Close the per-track ears before teardown, bounded.
+
+        Their tails flush while the publisher is still alive (a line spoken
+        just before hang-up lands), and a closed controller never reopens a
+        session during teardown.
+        """
+        controller = self._multi_track
+        closer = getattr(controller, "aclose", None)
+        if not callable(closer):
+            return
+        try:
+            from agent_runtime.multi_track_stt import CLOSE_FLUSH_TIMEOUT_S
+
+            await asyncio.wait_for(closer(), timeout=CLOSE_FLUSH_TIMEOUT_S + 2.0)
+        except Exception:
+            logger.debug("voice_relay_multi_track_close_failed", exc_info=True)
+        finally:
+            self._multi_track = None
+
     async def _shutdown_steps(self) -> None:  # pragma: no cover — lifecycle
         heartbeat = getattr(self, "_audio_heartbeat", None)
         if heartbeat is not None:
             await heartbeat.close()
+        await self._close_multi_track()
         for task in (self._speaker_task, self._ears_task):
             if task is not None and not task.done():
                 task.cancel()

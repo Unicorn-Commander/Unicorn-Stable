@@ -34,6 +34,39 @@ def _pcm(loud: bool, samples: int = TEN_MS, rate: int = SR, *, amp: int | None =
     )
 
 
+async def _until(predicate, *, timeout: float = 5.0, what: str = "condition") -> None:
+    """Poll inside the running loop until ``predicate()`` holds. No fixed sleeps:
+    a slow runner waits longer, a fast one does not wait at all."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"{what} not reached within {timeout} s")
+        await asyncio.sleep(0.001)
+
+
+def _endless_stream(script, *, tail_loud: bool = False):
+    """A FakeStream class that plays ``script`` and then quiet frames until
+    the session is closed, like a live mic that stays connected."""
+
+    class FakeStream:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for frame in script:
+                yield SimpleNamespace(frame=frame)
+                await asyncio.sleep(0)
+            while True:
+                yield SimpleNamespace(frame=_pcm(tail_loud))
+                await asyncio.sleep(0)
+
+    return FakeStream
+
+
 def _repeat(loud: bool, seconds: float, samples: int = TEN_MS, rate: int = SR):
     n = int(round(seconds / (samples / rate)))
     return [_pcm(loud, samples, rate) for _ in range(n)]
@@ -295,12 +328,14 @@ class TrackGateTests(TestCase):
         self.assertLess(indexes[0], len(script) - 1)
 
     def test_a_failed_recognizer_uncovers_the_speaker_and_the_session_ear_saves_the_line(self) -> None:
+        """While the session is still running: no wall-clock wait, and the
+        controller is closed before the loop ends (CI flake on c00e3f4)."""
         from agent_runtime.multi_track_stt import MultiTrackController
 
         agent = self._agent()
         script = _repeat(True, 0.4) + _repeat(False, 1.2)
-        stt = _ScriptSTT(fail=True)
         covered_during: list[bool] = []
+        opened: list[LiveTrackSession] = []
 
         class Dead(_ScriptSTT):
             async def recognize(self, frames):
@@ -310,58 +345,53 @@ class TrackGateTests(TestCase):
         def opener(track):
             sess = LiveTrackSession(track, object(), Dead(), lambda *_: None)
             sess.start()
+            opened.append(sess)
             return sess
 
         import livekit.rtc as rtc
 
-        class FakeStream:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def __aiter__(self):
-                return self._gen()
-
-            async def _gen(self):
-                for frame in script:
-                    yield SimpleNamespace(frame=frame)
-                    await asyncio.sleep(0)
-
         original = rtc.AudioStream
-        rtc.AudioStream = FakeStream
+        rtc.AudioStream = _endless_stream(script)
+        results: dict = {}
         try:
             controller = MultiTrackController(on_final=lambda *_: None, opener=opener)
+            agent._multi_track = controller
 
             async def go():
-                controller.reconcile(
-                    [HumanAudioTrack(AARON, "Aaron", "TR_1")]
+                controller.reconcile([HumanAudioTrack(AARON, "Aaron", "TR_1")])
+                await _until(
+                    lambda: bool(covered_during) and not agent._speaker_covered(AARON),
+                    what="recognize failure uncovering the speaker",
                 )
-                # Let the read, the failure, and one reopen attempt finish.
-                await asyncio.sleep(0.3)
+                # The session is alive and reading: it is the failure, not a
+                # finished task, that uncovers the speaker.
+                results["alive"] = not opened[0]._task.done()
+                agent._on_own_stt(
+                    SimpleNamespace(
+                        transcript="grok what time is it", is_final=True, speaker_id=AARON
+                    )
+                )
+                await controller.aclose()
 
             asyncio.run(go())
         finally:
             rtc.AudioStream = original
 
-        agent._multi_track = controller
-        self.assertFalse(agent._speaker_covered(AARON))
-        agent._on_own_stt(
-            SimpleNamespace(
-                transcript="grok what time is it", is_final=True, speaker_id=AARON
-            )
-        )
-        self.assertEqual(
-            self._persisted(agent),
-            ["@grok grok what time is it"],
-        )
+        self.assertTrue(covered_during[0], "healthy before the failure")
+        self.assertTrue(results["alive"])
+        self.assertEqual(self._persisted(agent), ["@grok grok what time is it"])
+        self.assertEqual(len(opened), 1, "a closed controller reopened a session")
 
     def test_a_stream_that_never_opens_does_not_cover_the_speaker(self) -> None:
-        from agent_runtime.multi_track_stt import MultiTrackController
+        from agent_runtime.multi_track_stt import REOPEN_BUDGET, MultiTrackController
 
         agent = self._agent()
+        opened: list[LiveTrackSession] = []
 
         def opener(track):
             sess = LiveTrackSession(track, object(), _ScriptSTT(), lambda *_: None)
             sess.start()
+            opened.append(sess)
             return sess
 
         import livekit.rtc as rtc
@@ -374,23 +404,157 @@ class TrackGateTests(TestCase):
         rtc.AudioStream = Boom
         try:
             controller = MultiTrackController(on_final=lambda *_: None, opener=opener)
+            agent._multi_track = controller
 
             async def go():
                 controller.reconcile([HumanAudioTrack(AARON, "Aaron", "TR_1")])
-                await asyncio.sleep(0.2)
+                await _until(
+                    lambda: len(opened) == 1 + REOPEN_BUDGET
+                    and all(s._task.done() for s in opened)
+                    and not controller.active_sids,
+                    what="reopen budget spent",
+                )
+                self.assertFalse(agent._speaker_covered(AARON))
+                agent._on_own_stt(
+                    SimpleNamespace(
+                        transcript="grok what time is it", is_final=True, speaker_id=AARON
+                    )
+                )
+                await controller.aclose()
 
             asyncio.run(go())
         finally:
             rtc.AudioStream = original
 
-        agent._multi_track = controller
-        self.assertFalse(agent._speaker_covered(AARON))
-        agent._on_own_stt(
-            SimpleNamespace(
-                transcript="grok what time is it", is_final=True, speaker_id=AARON
-            )
-        )
+        self.assertEqual(len(opened), 1 + REOPEN_BUDGET)
         self.assertEqual(self._persisted(agent), ["@grok grok what time is it"])
+
+    def test_failing_tracks_retry_only_their_own_sid_within_a_budget(self) -> None:
+        """exp14: six dead streams used to reopen each other (42 opens per
+        track event). Each sid now retries itself, three times a minute."""
+        from collections import Counter
+
+        from agent_runtime.multi_track_stt import (
+            REOPEN_BUDGET,
+            REOPEN_WINDOW_S,
+            MultiTrackController,
+        )
+
+        opens: Counter = Counter()
+        sessions: list[LiveTrackSession] = []
+        now = {"t": 1000.0}
+
+        def opener(track):
+            opens[track.track_sid] += 1
+            sess = LiveTrackSession(track, object(), _ScriptSTT(), lambda *_: None)
+            sess.start()
+            sessions.append(sess)
+            return sess
+
+        import livekit.rtc as rtc
+
+        class Ends:
+            """A stream that ends at once, like a track that went away. It
+            takes the same reopen path as a stream that fails to open, without
+            rendering a traceback per attempt (which made this test slow)."""
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                return
+                yield  # pragma: no cover — makes this an async generator
+
+        tracks = [HumanAudioTrack(f"user{i}_x", f"U{i}", f"TR_{i}") for i in range(6)]
+        per_sid = 1 + REOPEN_BUDGET
+        original = rtc.AudioStream
+        rtc.AudioStream = Ends
+        try:
+            controller = MultiTrackController(
+                on_final=lambda *_: None, opener=opener, clock=lambda: now["t"]
+            )
+
+            async def settle(expected_total: int) -> None:
+                await _until(
+                    lambda: sum(opens.values()) == expected_total
+                    and all(s._task.done() for s in sessions)
+                    and not controller.active_sids,
+                    what=f"{expected_total} opens",
+                )
+                for _ in range(20):  # nothing further is scheduled
+                    await asyncio.sleep(0)
+
+            async def go():
+                controller.reconcile(tracks)
+                await settle(6 * per_sid)
+                self.assertEqual(set(opens.values()), {per_sid}, dict(opens))
+                # A new minute: one track event opens each sid again, and
+                # each gets its own budget back.
+                now["t"] += REOPEN_WINDOW_S + 1
+                controller.reconcile(tracks)
+                await settle(2 * 6 * per_sid)
+                await controller.aclose()
+
+            asyncio.run(go())
+        finally:
+            rtc.AudioStream = original
+
+        self.assertEqual(set(opens.values()), {2 * per_sid}, dict(opens))
+
+    def test_a_cancelled_or_closed_session_never_reopens(self) -> None:
+        from agent_runtime.multi_track_stt import MultiTrackController
+
+        opened: list[LiveTrackSession] = []
+
+        def opener(track):
+            sess = LiveTrackSession(track, object(), _ScriptSTT(), lambda *_: None)
+            sess.start()
+            opened.append(sess)
+            return sess
+
+        import livekit.rtc as rtc
+
+        track = HumanAudioTrack(AARON, "Aaron", "TR_1")
+        original = rtc.AudioStream
+        rtc.AudioStream = _endless_stream([])
+        try:
+            controller = MultiTrackController(on_final=lambda *_: None, opener=opener)
+
+            async def go():
+                # 1. Cancelled from outside (the job's loop shutting down).
+                controller.reconcile([track])
+                await _until(lambda: opened[0]._last_frame_at is not None, what="first frame")
+                opened[0]._task.cancel()
+                await _until(lambda: opened[0]._task.done(), what="cancelled task done")
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                self.assertEqual(len(opened), 1)
+                self.assertTrue(opened[0].closed)
+                # 2. Closed because the track left.
+                controller.reconcile([track])
+                self.assertEqual(len(opened), 2)
+                controller.reconcile([])
+                await _until(lambda: opened[1]._task.done(), what="closed task done")
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                self.assertEqual(len(opened), 2)
+                # 3. The controller itself closed: track events are ignored.
+                controller.reconcile([track])
+                self.assertEqual(len(opened), 3)
+                await controller.aclose()
+                self.assertTrue(opened[2]._task.done())
+                controller.reconcile([track])
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                self.assertEqual(len(opened), 3)
+                self.assertEqual(controller.active_sids, set())
+
+            asyncio.run(go())
+        finally:
+            rtc.AudioStream = original
 
     def test_closing_just_after_speech_emits_the_buffered_line(self) -> None:
         finals: list[str] = []

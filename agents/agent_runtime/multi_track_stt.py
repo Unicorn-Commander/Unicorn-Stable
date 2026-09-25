@@ -45,6 +45,11 @@ HEALTHY_FRAME_S = 1.0
 #: On close, recognize whatever is buffered, then give up.
 CLOSE_FLUSH_TIMEOUT_S = 3.0
 ENERGY_THRESHOLD = 400
+#: A session that ends on its own (stream error, stream end) may reopen its
+#: own sid at most this many times per window. Cancelled or closed sessions
+#: never reopen.
+REOPEN_BUDGET = 3
+REOPEN_WINDOW_S = 60.0
 
 OnFinal = Callable[["HumanAudioTrack", str], None]
 Opener = Callable[["HumanAudioTrack"], Any]
@@ -123,22 +128,22 @@ class MultiTrackController:
         on_final: OnFinal,
         opener: Opener,
         cap: int = MAX_STT_TRACKS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._on_final = on_final
         self._opener = opener
         self._cap = cap
+        self._clock = clock
         self._sessions: dict[str, Any] = {}
         self._last_tracks: list[HumanAudioTrack] = []
-        #: A sid we already reopened once after its task died. The next
-        #: external reconcile (a track event) may try again. Without the
-        #: guard a stream that cannot open spins a new session forever.
-        self._retried: set[str] = set()
-        self._closing: set[str] = set()
+        #: sid → when a failed session of this sid was reopened (budgeted).
+        self._reopens: dict[str, list[float]] = {}
+        self._shut = False
 
-    def reconcile(self, tracks: list[HumanAudioTrack], *, _retry: bool = False) -> None:
+    def reconcile(self, tracks: list[HumanAudioTrack]) -> None:
+        if self._shut:
+            return
         self._last_tracks = list(tracks)
-        if not _retry:
-            self._retried.clear()
         for sid, session in list(self._sessions.items()):
             if not _session_running(session):
                 self._sessions.pop(sid, None)
@@ -174,24 +179,53 @@ class MultiTrackController:
             )
 
     def _on_done(self, sid: str, session: Any) -> None:
-        """Drop a finished session and let a new one attach, once."""
+        """Drop a finished session. A failed one reopens its own sid, budgeted.
+
+        A session that was closed (the track left) or cancelled (the job is
+        shutting down) never reopens: a reopen during teardown leaves a live
+        task behind a closed loop. Only this sid is retried — a full
+        reconcile from here reopened every dead track once per death.
+        """
         current = self._sessions.get(sid)
         if current is not None and current is not session:
-            return
+            return  # a newer session already owns this sid
         self._sessions.pop(sid, None)
-        if sid in self._closing:
-            self._closing.discard(sid)
+        if self._shut or getattr(session, "closed", False):
             return
-        if sid in self._retried:
+        track = next(
+            (
+                t
+                for t in select_tracks(self._last_tracks, cap=self._cap)
+                if t.track_sid == sid
+            ),
+            None,
+        )
+        if track is None:
             return
-        self._retried.add(sid)
+        if not self._reopen_allowed(sid):
+            logger.warning(
+                "multi_track_reopen_budget_spent",
+                track_sid=sid,
+                budget=REOPEN_BUDGET,
+                window_s=REOPEN_WINDOW_S,
+            )
+            return
         try:
-            self.reconcile(self._last_tracks, _retry=True)
+            self._open(sid, track)
         except Exception:
             logger.warning("multi_track_reopen_failed", track_sid=sid, exc_info=True)
 
+    def _reopen_allowed(self, sid: str) -> bool:
+        now = self._clock()
+        recent = [t for t in self._reopens.get(sid, []) if now - t < REOPEN_WINDOW_S]
+        if len(recent) >= REOPEN_BUDGET:
+            self._reopens[sid] = recent
+            return False
+        recent.append(now)
+        self._reopens[sid] = recent
+        return True
+
     def _close(self, sid: str) -> None:
-        self._closing.add(sid)
         session = self._sessions.pop(sid, None)
         closer = getattr(session, "aclose", None) or getattr(session, "close", None)
         if not callable(closer):
@@ -205,6 +239,24 @@ class MultiTrackController:
                     result.close()
         except Exception:
             logger.debug("multi_track_close_failed", track_sid=sid, exc_info=True)
+
+    async def aclose(self, timeout: float = CLOSE_FLUSH_TIMEOUT_S + 1.0) -> None:
+        """Close every session and wait (bounded) for their tails to flush.
+
+        After this the controller ignores track events. The relay calls it
+        from its shutdown so a line spoken just before hang-up still lands
+        while the publisher is alive, and nothing reopens during teardown.
+        """
+        self._shut = True
+        tasks: list[asyncio.Task[Any]] = []
+        for sid, session in list(self._sessions.items()):
+            task = getattr(session, "_task", None)
+            self._close(sid)
+            if isinstance(task, asyncio.Task) and not task.done():
+                tasks.append(task)
+        self._sessions.clear()
+        if tasks:
+            await asyncio.wait(tasks, timeout=timeout)
 
     @property
     def active_sids(self) -> set[str]:
@@ -254,6 +306,8 @@ class LiveTrackSession:
         self._on_final = on_final
         self._task: asyncio.Task[None] | None = None
         self._closed = False
+        #: The read was cancelled (a close, or the job shutting down).
+        self._cancelled = False
         self._pending_parts: list[str] = []
         self._frames: list[Any] = []
         self._buf_s = 0.0
@@ -263,6 +317,11 @@ class LiveTrackSession:
         self._last_recognize_failed = False
         self._close_timeout = CLOSE_FLUSH_TIMEOUT_S
         self._stream: Any = None
+
+    @property
+    def closed(self) -> bool:
+        """Closed or cancelled on purpose. Such a session never reopens."""
+        return self._closed or self._cancelled
 
     def is_healthy(self, *, now: float | None = None) -> bool:
         """True while this ear is the one that should own the speaker.
@@ -324,6 +383,9 @@ class LiveTrackSession:
                     self._last_frame_at = time.monotonic()
                     await self._take_frame(frame)
             except asyncio.CancelledError:
+                # A close, or the job shutting down. Either way this session
+                # must not be reopened; the tail below still gets flushed.
+                self._cancelled = True
                 self._uncancel()
         except Exception:
             logger.warning(
