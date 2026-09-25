@@ -48,6 +48,8 @@ type FakeRoom = {
 const harness = vi.hoisted(() => ({
   seed: [] as FakeParticipant[],
   rooms: [] as FakeRoom[],
+  pendingConnect: false,
+  releaseConnect: null as (() => void) | null,
 }));
 
 vi.mock("livekit-client", () => {
@@ -66,7 +68,9 @@ vi.mock("livekit-client", () => {
   };
   const DisconnectReason = {
     ROOM_DELETED: "roomDeleted",
+    ROOM_CLOSED: "roomClosed",
     PARTICIPANT_REMOVED: "participantRemoved",
+    DUPLICATE_IDENTITY: "duplicateIdentity",
   };
   const Track = {
     Kind: { Video: "video", Audio: "audio" },
@@ -98,6 +102,11 @@ vi.mock("livekit-client", () => {
     }
     async connect(url: string, token: string) {
       this.connectArgs = { url, token };
+      if (harness.pendingConnect && harness.rooms[0] === this) {
+        await new Promise<void>((resolve) => {
+          harness.releaseConnect = resolve;
+        });
+      }
     }
     async startAudio() {}
     disconnect() {
@@ -220,6 +229,8 @@ function errorCount(): number {
 beforeEach(() => {
   harness.seed = [];
   harness.rooms = [];
+  harness.pendingConnect = false;
+  harness.releaseConnect = null;
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
     cb(0);
     return 1;
@@ -472,6 +483,7 @@ describe("CompositePage", () => {
 
   it.each([
     ["room deletion", DisconnectReason.ROOM_DELETED],
+    ["room closure", DisconnectReason.ROOM_CLOSED],
     ["participant removal", DisconnectReason.PARTICIPANT_REMOVED],
   ])("logs END once for %s", async (_label, reason) => {
     vi.stubGlobal("fetch", vi.fn(async () => joinResponse()));
@@ -484,6 +496,78 @@ describe("CompositePage", () => {
       room?.emit(RoomEvent.Disconnected, reason);
     });
     expect(signalCount(END_RECORDING)).toBe(1);
+  });
+
+  it("stops on duplicate identity without END or reconnect", async () => {
+    const fetchMock = vi.fn(async () => joinResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    render(<CompositePage />);
+    await settle();
+    await act(async () => {
+      harness.rooms[0]?.emit(RoomEvent.Disconnected, DisconnectReason.DUPLICATE_IDENTITY);
+      harness.rooms[0]?.emit(RoomEvent.Disconnected, DisconnectReason.DUPLICATE_IDENTITY);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(signalCount(END_RECORDING)).toBe(0);
+    expect(errorCount()).toBe(1);
+  });
+
+  it("reconnects when disconnect arrives while connect is still pending", async () => {
+    harness.pendingConnect = true;
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async () => joinResponse()));
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    // The fake's first room is allowed to emit before its connect promise resolves.
+    render(<CompositePage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError");
+      harness.releaseConnect?.();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(harness.rooms.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps increasing backoff across connect-then-kicked cycles", async () => {
+    const fetchMock = vi.fn(async () => joinResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    render(<CompositePage />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError");
+    await act(async () => { vi.advanceTimersByTime(1000); await Promise.resolve(); await Promise.resolve(); });
+    harness.rooms[1]?.emit(RoomEvent.Disconnected, "networkError");
+    await act(async () => { vi.advanceTimersByTime(1999); await Promise.resolve(); });
+    expect(harness.rooms).toHaveLength(2);
+    await act(async () => { vi.advanceTimersByTime(1); await Promise.resolve(); await Promise.resolve(); });
+    expect(harness.rooms).toHaveLength(3);
+  });
+
+  it("attaches audio published by the replacement session", async () => {
+    const first = track("first-mic");
+    const second = track("second-mic");
+    harness.seed = [participant({ identity: "ada", pubs: [{ kind: "audio", source: "microphone", sid: "first", track: first }] })];
+    const fetchMock = vi.fn(async () => joinResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    const view = render(<CompositePage />);
+    await settle();
+    harness.seed = [participant({ identity: "ada", pubs: [{ kind: "audio", source: "microphone", sid: "second", track: second }] })];
+    vi.useFakeTimers();
+    await act(async () => { harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError"); });
+    await act(async () => { vi.advanceTimersByTime(1000); await Promise.resolve(); await Promise.resolve(); });
+    expect(view.querySelectorAll("[data-testid='composite-audio']")).toHaveLength(1);
+    expect(second.attached).toHaveLength(1);
   });
 
   it("ends once when a later token exchange is refused", async () => {

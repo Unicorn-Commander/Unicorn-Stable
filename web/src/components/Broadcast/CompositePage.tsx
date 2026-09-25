@@ -71,6 +71,7 @@ async function exchangeRecorderToken(rt: string): Promise<BroadcastJoinResponse>
 interface Session {
   room: Room;
   gen: number;
+  disconnectedReason?: DisconnectReason;
 }
 
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
@@ -323,7 +324,7 @@ function CompositePageContent() {
   const [connectedSession, setConnectedSession] = useState<Session | null>(null);
   const scale = useStageScale();
   const roomRef = useRef<Room | null>(null);
-  const firstFrameRef = useRef(new Set<RemoteTrack>());
+  const firstFrameRef = useRef(new WeakSet<RemoteTrack>());
   const shareOrderRef = useRef(new Map<string, number>());
   const nextShareOrderRef = useRef(0);
   const videoCountRef = useRef(0);
@@ -398,6 +399,7 @@ function CompositePageContent() {
     let generation = 0;
     let current: Session | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let stableTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
     let pageClosed = false;
 
@@ -410,6 +412,8 @@ function CompositePageContent() {
     function clearTimers() {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = undefined;
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = undefined;
     }
 
     function publish(room: Room) {
@@ -443,11 +447,20 @@ function CompositePageContent() {
       if (
         pageClosed ||
         reason === DisconnectReason.ROOM_DELETED ||
+        reason === DisconnectReason.ROOM_CLOSED ||
         reason === DisconnectReason.PARTICIPANT_REMOVED
       ) {
         endLiveSession(session);
         return;
       }
+      if (reason === DisconnectReason.DUPLICATE_IDENTITY) {
+        console.error("composite recorder disconnected: duplicate identity");
+        current = null;
+        roomRef.current = null;
+        return;
+      }
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = undefined;
       current = null;
       scheduleRetry(new Error("unexpected composite disconnect"));
     }
@@ -483,6 +496,7 @@ function CompositePageContent() {
           void room.startAudio().catch(() => {});
         })
         .on(RoomEvent.Disconnected, (reason) => {
+          session.disconnectedReason = reason as DisconnectReason;
           reconnect(session, reason);
         });
       await room.connect(livekitUrl, token, { autoSubscribe: true });
@@ -552,7 +566,13 @@ function CompositePageContent() {
       const previous = current;
       current = session;
       roomRef.current = session.room;
-      attempt = 0;
+      stableTimer = setTimeout(() => {
+        if (current === session) attempt = 0;
+      }, 30_000);
+      if (session.disconnectedReason !== undefined) {
+        reconnect(session, session.disconnectedReason);
+        return;
+      }
       subscribeAll(session.room);
       publish(session.room);
       setConnectedSession(session);
