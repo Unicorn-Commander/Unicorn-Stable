@@ -1,8 +1,9 @@
 """Cast members answer to the names Whisper actually writes down.
 
 Measured 2026-09-24: "Shox, what is two plus two" arrived as "shocks what is
-two plus two" and fell through to the co-host. Majik will get the same
-treatment ("magic"). Aliases use the same position rule as real names.
+two plus two" and fell through to the co-host. Majik's full name is heard
+as "magic mane". Aliases use the same position rule as real names. Bare
+"magic" is not built in.
 """
 
 from __future__ import annotations
@@ -41,7 +42,8 @@ class CastAliasParserTests(TestCase):
         from voice_relay.agent import aliases_for_seat
 
         self.assertIn("shocks", aliases_for_seat("agent-shox"))
-        for phrase in ("magic", "magic mane", "majik mane"):
+        self.assertNotIn("magic", aliases_for_seat("agent-majik"))
+        for phrase in ("magic mane", "majik mane"):
             self.assertIn(phrase, aliases_for_seat("agent-majik"), phrase)
         # A room entry adds a spelling and does not erase the built-in one.
         names = aliases_for_seat("agent-shox", {"agent-shox": {"shoxx"}})
@@ -94,8 +96,9 @@ class CastAliasRoutingTests(TestCase):
 
     def test_magic_at_the_start_reaches_majik(self) -> None:
         agent = self._agent()
+        # Bare "magic" is the company name, not Majik, unless the room adds it.
         self.assertTrue(agent._maybe_persist(AARON, "Magic, what's next", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@majik Magic, what's next"])
+        self.assertEqual(self._persisted(agent), ["@zen Magic, what's next"])
         agent._publisher.persist_user_utterance.reset_mock()
         self.assertTrue(agent._maybe_persist(AARON, "magic mane, play the bed", ear="stt"))
         self.assertEqual(self._persisted(agent), ["@majik magic mane, play the bed"])
@@ -117,10 +120,10 @@ class CastAliasRoutingTests(TestCase):
         self.assertTrue(agent._maybe_persist(AARON, "then, play the bed", ear="stt"))
         self.assertEqual(self._persisted(agent), ["@zen then, play the bed"])
 
-    def test_a_one_edit_leading_token_reaches_the_cast_member(self) -> None:
+    def test_a_one_edit_leading_token_does_not_reach_the_cast_member(self) -> None:
         agent = self._agent()
         self.assertTrue(agent._maybe_persist(AARON, "grak, what is two plus two", ear="stt"))
-        self.assertEqual(self._persisted(agent), ["@grok grak, what is two plus two"])
+        self.assertEqual(self._persisted(agent), ["@zen grak, what is two plus two"])
 
     def test_a_live_frame_replaces_the_room_aliases(self) -> None:
         agent = self._agent()

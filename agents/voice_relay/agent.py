@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import unicodedata
 from types import SimpleNamespace
 import json
 import re
@@ -114,6 +115,7 @@ from agent_runtime.multi_track_stt import UTTERANCE_SILENCE_GATE_S
 from agent_runtime.voice_dispatch import (
     FRAGMENT_WINDOW_S,
     UtteranceFold,
+    best_addressed,
     fuzzy_spoken_name_match,
     log_name_near_miss,
     spoken_name_match,
@@ -371,13 +373,25 @@ def aliases_from_metadata(metadata: Any, persona: str) -> set[str]:
 
 
 #: Whisper's spellings of cast names. No room configuration required for the
-#: misses measured on 2026-09-24 ("Shox" → "shocks") and the ones expected
-#: next ("Majik" → "magic"). Keyed by the short seat id.
+#: misses measured on 2026-09-24 ("Shox" → "shocks", "Majik Mane" → "magic
+#: mane"). Bare "magic" is not a default: Magic Unicorn is the company name.
+#: A room may add it. Keyed by the short seat id.
 CAST_ALIAS_KEY = "voice_relay_cast_aliases"
 BUILTIN_CAST_ALIASES: dict[str, frozenset[str]] = {
     "shox": frozenset({"shocks"}),
-    "majik": frozenset({"magic", "magic mane", "majik mane"}),
+    "majik": frozenset({"magic mane", "majik mane"}),
 }
+
+
+def normalize_spoken_phrase(phrase: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace.
+
+    Alias matching is exact after this, under the same position rule as a
+    display name. ``Magic Mane,`` and ``magic mane`` are one phrase.
+    """
+    text = unicodedata.normalize("NFKC", phrase or "").lower()
+    text = re.sub(r"[^\w\s']", " ", text, flags=re.UNICODE)
+    return " ".join(text.split())
 
 
 def cast_aliases_from_metadata(metadata: Any) -> dict[str, set[str]]:
@@ -402,8 +416,13 @@ def cast_aliases_from_metadata(metadata: Any) -> dict[str, set[str]]:
         seat = str(key or "").strip().lower()
         if not seat or not isinstance(value, (list, tuple)):
             continue
-        phrases = {str(item or "").strip().lower() for item in value}
-        phrases.discard("")
+        phrases: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            phrase = normalize_spoken_phrase(item)
+            if phrase:
+                phrases.add(phrase)
         if phrases:
             out[seat] = phrases
     return out
@@ -413,12 +432,16 @@ def aliases_for_seat(identity: str, room_aliases: dict[str, set[str]] | None = N
     """Built-in spellings for this seat, plus any the room added."""
     ident = (identity or "").strip().lower()
     short = ident[6:] if ident.startswith("agent-") else ident
-    names = set(BUILTIN_CAST_ALIASES.get(short, ()))
+    names = {normalize_spoken_phrase(item) for item in BUILTIN_CAST_ALIASES.get(short, ())}
     room = room_aliases or {}
     for key in (ident, short, f"agent-{short}"):
         extra = room.get(key)
-        if extra:
-            names.update(extra)
+        if not extra:
+            continue
+        for item in extra:
+            phrase = normalize_spoken_phrase(str(item or ""))
+            if phrase:
+                names.add(phrase)
     names.discard("")
     return names
 
@@ -1813,21 +1836,10 @@ class VoiceRelayAgent(StableAgent):
         humans = self._human_count()
         shared = self._shared_mic_in_call()
         primary = self._primary_identity(needles)
-        by_name = next(
-            (identity for identity, names in needles.items() if voice_dispatch.spoken_name_match(text, names)),
-            None,
-        )
-        # Exact address wins. Fuzzy is the same leading-token recovery the
-        # persona path uses, and only when nobody was named outright.
-        if by_name is None:
-            by_name = next(
-                (
-                    identity
-                    for identity, names in needles.items()
-                    if voice_dispatch.fuzzy_spoken_name_match(text, names)
-                ),
-                None,
-            )
+        # Exact, after the alias normalizer. The persona keeps its own
+        # one-edit recovery; a cast seat does not. Two seats in address
+        # position: earliest start, then the longer match.
+        by_name = best_addressed(text, needles)
         candidate = by_name
         rule = "addressed_by_name"
         if candidate is None:
@@ -1853,15 +1865,7 @@ class VoiceRelayAgent(StableAgent):
 
         others = {identity: names for identity, names in needles.items() if identity != candidate}
         others[self._identity] = set(self._listen_names())
-        # decide() matches exact spoken names. A fuzzy cast hit ("grak" for
-        # grok) still has to count as an address, or the floor rules reject
-        # the line as nobody's. The leading token is already where a name
-        # sits; handing it to this candidate does not change who was named.
         my_names = set(needles[candidate])
-        if by_name is not None and not voice_dispatch.spoken_name_match(text, my_names):
-            leading = re.match(r"\s*([a-z']+)", text.lower())
-            if leading:
-                my_names.add(leading.group(1))
         kwargs: dict[str, Any] = dict(
             my_names=my_names,
             speaker=speaker,

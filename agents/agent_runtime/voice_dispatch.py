@@ -89,6 +89,8 @@ __all__ = [
     "STICKY_WINDOW_S",
     "FLOOR_LEASE_S",
     "spoken_name_match",
+    "address_span",
+    "best_addressed",
     "fuzzy_spoken_name_match",
     "log_name_near_miss",
     "line_subsumes",
@@ -147,8 +149,8 @@ _ADDRESS_CUES = frozenset(
 )
 
 
-def _addresses(text_lc: str, name: str) -> bool:
-    """Is ``name`` used to ADDRESS someone in ``text_lc``, not merely present?
+def address_span(text_lc: str, name: str) -> tuple[int, int] | None:
+    """Earliest ``(start, length)`` where ``name`` addresses someone, else None.
 
     Presence alone is not address, and the difference is not academic: the
     agent id ``the-general`` occurs verbatim inside "that is the general
@@ -162,22 +164,69 @@ def _addresses(text_lc: str, name: str) -> bool:
       * right after an address cue or any punctuation — "hey Majik", "ok, Majik";
       * immediately before punctuation — "what do you think, Majik?".
     Everything else is the name being MENTIONED, which dispatches nobody.
+
+    The match itself is exact after lowercasing. Punctuation around the name
+    is a boundary, not part of the name.
     """
+    name = (name or "").strip().lower()
+    if not name or not text_lc:
+        return None
+    best: tuple[int, int] | None = None
     for match in re.finditer(
         rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", text_lc
     ):
         start, end = match.start(), match.end()
         before = text_lc[:start].strip()
         after = text_lc[end:].lstrip()
+        addressed = False
         if not before:
-            return True  # utterance opens with the name
-        if before[-1] in ",.!?:;":
-            return True  # "...done, Majik do the next one"
-        if before.split()[-1] in _ADDRESS_CUES:
-            return True  # "hey Majik", "so Majik"
-        if after[:1] in (",", "?", "!", ".", ":", ";"):
-            return True  # "what do you think, Majik?"
-    return False
+            addressed = True  # utterance opens with the name
+        elif before[-1] in ",.!?:;":
+            addressed = True  # "...done, Majik do the next one"
+        elif before.split()[-1] in _ADDRESS_CUES:
+            addressed = True  # "hey Majik", "so Majik"
+        elif after[:1] in (",", "?", "!", ".", ":", ";"):
+            addressed = True  # "what do you think, Majik?"
+        if not addressed:
+            continue
+        span = (start, end - start)
+        if best is None or span[0] < best[0] or (
+            span[0] == best[0] and span[1] > best[1]
+        ):
+            best = span
+    return best
+
+
+def _addresses(text_lc: str, name: str) -> bool:
+    """Is ``name`` used to ADDRESS someone in ``text_lc``, not merely present?"""
+    return address_span(text_lc, name) is not None
+
+
+def best_addressed(text: str, needles: dict[str, set[str]]) -> str | None:
+    """Which identity ``text`` addresses, when several names could.
+
+    The match that starts earliest in the utterance wins. If two matches
+    start at the same character, the longer one wins. Iteration order is
+    not a vote: a cast sorted by username must not prefer Majik over Zen
+    just because ``agent-majik`` sorts first.
+    """
+    lc = (text or "").lower()
+    if not lc:
+        return None
+    winner: str | None = None
+    best: tuple[int, int] | None = None
+    for identity, names in needles.items():
+        if not identity:
+            continue
+        for raw in names:
+            span = address_span(lc, raw or "")
+            if span is None:
+                continue
+            key = (span[0], -span[1])
+            if best is None or key < best:
+                best = key
+                winner = identity
+    return winner
 
 
 def spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool:
