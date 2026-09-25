@@ -1335,3 +1335,18 @@ body.stable-broadcast::before {
 body.stable-broadcast #root {
   height: 100%;
 }
+
+/* Composite recorder (/broadcast/:room/composite). Same "paint nothing the
+   app would paint" rules as the OBS feed, on the brand field instead of
+   flat black, and with no cursor — a headless pointer must not land in the
+   MP4. Two classes so this beats the OBS feed's `background: #000`. */
+html.stable-broadcast.stable-composite,
+body.stable-broadcast.stable-composite {
+  background: #08080f !important;
+  cursor: none !important;
+}
+
+html.stable-composite *,
+body.stable-composite * {
+  cursor: none !important;
+}

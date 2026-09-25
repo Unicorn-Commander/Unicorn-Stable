@@ -80,12 +80,12 @@ mirrored onto `participants.metadata->>'stable_recorder'` at sign-in.
 `livekit` (default) renders the grid template the egress container ships —
 every participant's camera tile with its name, nothing of ours has to be
 reachable, `CALL_RECORDING_COMPOSITE_LAYOUT` = grid | speaker | single-speaker.
-`stable` renders our broadcast page with a recorder token, exactly as the rest
-of this section describes. ⚠️ Measured 09-24 on dogfood: the `stable` page is
-not yet a composite — `/broadcast/{room}/composite` falls into the one-tile
-OBS page, reads no `rt` token and never logs `START_RECORDING`, so the egress
-sits until the room empties and ends with "Start signal not received"
-(egress_aborted 412). Until that page exists (own task), leave the default.
+`stable` renders our page at `/broadcast/{room}/composite` with a recorder
+token, exactly as the rest of this section describes. That page is in the web
+app (a 1280×720 grid, name plates inside the tile, every subscribed audio
+track playing, `START_RECORDING` / `END_RECORDING`). Leave the default at
+`livekit` until an operator flips it on a host whose egress can reach the
+page; shipping the page does not flip the flag.
 
 A composite is a LiveKit **room-composite egress** with `custom_base_url` =
 our broadcast page carrying a **recorder token**:
@@ -103,15 +103,31 @@ subscribe-only, hidden LiveKit grant every OBS feed gets, plus `mode: "composite
 It is deliberately absent from `GET /broadcast/active` — the recording has its
 own consent surface.
 
-**Web lane (L8-web) contract for `/broadcast/{room}/composite`:**
+**Web contract for `/broadcast/{room}/composite`:**
 1. read `rt` from the query (NOT `token` — LiveKit overwrites that one);
-2. `POST /api/v1/broadcast/join {token: rt}`; on `mode: "composite"` render EVERY
-   publisher (grid/speaker layout of your choosing; `layout` query hint is `grid`),
-   audio unmuted (`allow_audio` is true);
-3. `console.log("START_RECORDING")` once the first track is playing and
-   `console.log("END_RECORDING")` if it ever wants to end — the LiveKit egress
-   worker waits for the first and stops on the second (custom-template contract);
-4. re-join hourly like the participant page (the LiveKit JWT is capped at 1h).
+2. `POST /api/v1/broadcast/join {token: rt}` with a bare fetch (no Keycloak
+   header). Require `mode: "composite"`, then render every publisher's camera
+   in a 1280×720 grid. A publisher with no live camera gets an initials tile,
+   not an empty cell. `object-fit: contain` keeps the frame uncropped and the
+   name plate sits fully inside the tile. The `layout` query
+   (`grid` | `speaker` | `single-speaker`) is accepted and does not change the
+   grid. If `rt` is absent but LiveKit's `url` and `token` are both present,
+   connect with those instead of the exchange;
+3. play every subscribed audio track (humans and agents). The egress records
+   the page's audio;
+4. wait up to two seconds after connect for already-published (and any newly
+   subscribed) media; video must render a first frame, while audio only needs
+   to be subscribed. Then requestAnimationFrame and log
+   `console.log("START_RECORDING")` once. A video track is not required — an
+   audio-only call still records. `console.log("END_RECORDING")` is logged
+   once only after START, for room deletion, participant removal, pagehide, or
+   refusal of a later recorder-token exchange;
+5. keep one LiveKit connection for the recording. LiveKit server refreshes its
+   token; there is no timed re-exchange. If an unexpected disconnect occurs,
+   livekit-client stops and detaches the old audio/video tracks before reporting
+   the disconnect, so the page may briefly show initials tiles and have no
+   audio. It re-exchanges `rt` and reconnects with 1, 2, 4, 8, then 10 second
+   backoff; the replacement session attaches its newly subscribed media.
 
 The MP4 lands on the shared `/egress-out` volume, is uploaded to storage, is
 attached to the call's Meeting-Ops session (`content_type video/mp4`, same
@@ -237,8 +253,10 @@ marks the row `deleted`.
    put endpoint/bucket/key/secret/region in the dogfood `.env`.
 3. **Egress host**: pick the host (not the LiveKit host), run the worker as above,
    share `/egress-out`, confirm `redis` and `ws_url` reach the stack.
-4. **Web**: L8-web's composite page at `/broadcast/{room}/composite` with the
-   contract above; `PUBLIC_BASE_URL` (or the override) reachable from the host.
+4. **Web**: the composite page is in the repo at `/broadcast/{room}/composite`
+   (contract above). Flip `CALL_RECORDING_COMPOSITE_TEMPLATE=stable` only once
+   the egress host can reach `PUBLIC_BASE_URL` (or the override) and Chrome
+   trusts its TLS. Until that flip, recordings keep LiveKit's own grid.
 5. **Policy**: after 023, run `scripts/set_recording_policy.py --policy always
    --kind audio --all-active` on dogfood; set one test room to
    `on_request`/`composite` for the proof.

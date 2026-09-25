@@ -51,6 +51,13 @@ class GrantShape(TestCase):
         self.assertTrue(g.hidden, "must not appear to humans in the call")
         self.assertTrue(g.room_join)
         self.assertEqual(g.room, "stable-room")
+        self.assertTrue(g.recorder)
+
+    def test_broadcast_grant_is_not_a_recorder(self) -> None:
+        g = B.broadcast_grants("stable-room")
+        self.assertFalse(g.recorder)
+        self.assertTrue(g.can_subscribe)
+        self.assertTrue(g.hidden)
 
 
 class TemplateUrl(TestCase):
@@ -168,6 +175,7 @@ class JoinAsRecorder(IsolatedAsyncioTestCase):
         self.assertFalse(grants.can_publish_data)
         self.assertTrue(grants.hidden)
         self.assertTrue(grants.can_subscribe)
+        self.assertTrue(grants.recorder)
         self.assertEqual(captured["name"], "recorder")
         self.assertEqual(captured["identity"], B._viewer_identity(token_row.id))
         # Bounded to the token's remaining life and the 1h cap.
@@ -186,11 +194,18 @@ class JoinAsRecorder(IsolatedAsyncioTestCase):
             calls["n"] += 1
             return FakeResult(scalar=token_row if calls["n"] == 1 else r)
 
-        lk = SimpleNamespace(generate_token=lambda **kw: "lk")
+        captured: dict = {}
+
+        def generate_token(**kwargs):
+            captured.update(kwargs)
+            return "lk"
+
+        lk = SimpleNamespace(generate_token=generate_token)
         request = SimpleNamespace(headers={"Authorization": "Bearer sbt-raw-human"}, client=None)
         out = await B.broadcast_join(request, FakeDB(router=router), lk, Settings(), None)
         self.assertEqual(out["mode"], "participant")
         self.assertEqual(out["participant_identity"], "aaron_1")
+        self.assertFalse(captured["grants"].recorder)
 
 
 class ConsentSurface(IsolatedAsyncioTestCase):

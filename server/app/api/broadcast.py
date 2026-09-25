@@ -129,7 +129,7 @@ def recorder_label(egress_row_id: Any) -> str:
 
 
 def recorder_grants(room_name: str) -> VideoGrants:
-    """The egress viewer's grant: subscribe-only, hidden, publishes nothing."""
+    """The composite egress grant, marked as a recorder by LiveKit."""
     return VideoGrants(
         room_join=True,
         room=room_name,
@@ -137,6 +137,20 @@ def recorder_grants(room_name: str) -> VideoGrants:
         can_publish_data=False,
         can_subscribe=True,
         hidden=True,
+        recorder=True,
+    )
+
+
+def broadcast_grants(room_name: str) -> VideoGrants:
+    """The ordinary OBS/browser viewer grant; it is not a recorder."""
+    return VideoGrants(
+        room_join=True,
+        room=room_name,
+        can_publish=False,
+        can_publish_data=False,
+        can_subscribe=True,
+        hidden=True,
+        recorder=False,
     )
 
 
@@ -595,7 +609,11 @@ async def broadcast_join(
     # participant to the humans in the call. The recorder variant gets the
     # SAME grant — the egress' Chrome is a viewer like any OBS source.
     recorder = is_recorder_token(row)
-    grants = recorder_grants(room.livekit_room_name)
+    grants = (
+        recorder_grants(room.livekit_room_name)
+        if recorder
+        else broadcast_grants(room.livekit_room_name)
+    )
     # Never outlive the authorizing token.
     remaining = int((expires - _now()).total_seconds())
     ttl = max(60, min(LIVEKIT_TOKEN_MAX_TTL_S, remaining))
@@ -643,6 +661,7 @@ __all__ = [
     "RECORDER_PATH_SEGMENT",
     "is_recorder_token",
     "recorder_grants",
+    "broadcast_grants",
     "composite_template_url",
     "mint_recorder_token",
     "revoke_recorder_tokens",
