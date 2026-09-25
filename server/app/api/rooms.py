@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -1338,6 +1339,11 @@ class RoomVoiceSettingsBody(BaseModel):
     #: Kokoro persona. Stored as ``voice_relay_agent_id``.
     agent_id: str | None = Field(default=None, max_length=64)
     aliases: list[str] | None = None
+    #: Per-seat spellings Whisper hears instead of the name
+    #: (``{"agent-shox": ["shocks"]}``). Omitted = unchanged; ``{}`` = clear.
+    #: Keys must be cast members. At most 8 aliases per seat, each 2 to 40
+    #: characters, stored lowercase.
+    cast_aliases: dict[str, Any] | None = None
     face_shape: str | None = Field(default=None, max_length=16)
     face_plate: bool | None = None
     max_spoken_chars: int | None = Field(default=None, ge=0, le=20000)
@@ -1393,6 +1399,134 @@ def _clean_relay_voices(raw: dict[str, str]) -> dict[str, str]:
             )
         cleaned[sender] = voice
     return cleaned
+
+
+_MAX_ALIASES_PER_SEAT = 8
+
+#: Address cues and fillers. An alias of one of these would route "ok, …".
+_ALIAS_STOP_WORDS = frozenset(
+    {
+        "ok", "okay", "so", "the", "and", "but", "hey", "hi", "hello",
+        "yes", "no", "yeah", "um", "uh", "well", "now", "please", "thanks",
+        "a", "an", "i", "you", "it",
+    }
+)
+
+
+def _alias_forbidden_chars(text: str) -> bool:
+    """Control characters and zero-width / format characters are rejected."""
+    for ch in text:
+        if unicodedata.category(ch) in ("Cc", "Cf"):
+            return True
+    return False
+
+
+def _seat_short(seat: str) -> str:
+    seat = (seat or "").strip().lower()
+    return seat[6:] if seat.startswith("agent-") else seat
+
+
+def _clean_cast_aliases(raw: dict[str, Any]) -> dict[str, list[str]]:
+    """Shape-check a cast-alias map.
+
+    Aliases are JSON strings. They are stored normalized (NFKC, lowercase,
+    trimmed, inner whitespace collapsed). Duplicates are removed before the
+    per-seat limit. A seat whose list is empty is omitted so a clear does
+    not leave ``[]`` behind.
+    """
+    from app.api.webhooks import normalize_cast_alias
+
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="cast_aliases must map a cast username to a list of aliases",
+        )
+    cleaned: dict[str, list[str]] = {}
+    for key, value in raw.items():
+        seat = str(key or "").strip().lower()
+        if not seat or len(seat) > 64:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="cast_aliases keys must be cast usernames",
+            )
+        if not isinstance(value, (list, tuple)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{seat}: aliases must be a list",
+            )
+        phrases: list[str] = []
+        for item in value:
+            if isinstance(item, bool) or not isinstance(item, str):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: aliases must be strings",
+                )
+            if _alias_forbidden_chars(item):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: aliases cannot contain control or zero-width characters",
+                )
+            phrase = normalize_cast_alias(item)
+            if _alias_forbidden_chars(phrase):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: aliases cannot contain control or zero-width characters",
+                )
+            if phrase in _ALIAS_STOP_WORDS:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: {phrase!r} is an address cue, not an alias",
+                )
+            if len(phrase) < 2 or len(phrase) > 40:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{seat}: each alias must be 2 to 40 characters",
+                )
+            if phrase not in phrases:
+                phrases.append(phrase)
+        if len(phrases) > _MAX_ALIASES_PER_SEAT:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{seat}: at most {_MAX_ALIASES_PER_SEAT} aliases",
+            )
+        if phrases:
+            cleaned[seat] = sorted(phrases)
+    return cleaned
+
+
+def _reject_alias_collisions(
+    cast_aliases: dict[str, list[str]],
+    cast: dict[str, str],
+    display_names: dict[str, str],
+) -> None:
+    """An alias may not be another seat's username, voice, or display name."""
+    from app.api.webhooks import normalize_cast_alias
+
+    owned: dict[str, set[str]] = {}
+    for username, voice in cast.items():
+        seat = str(username or "").strip().lower()
+        if not seat:
+            continue
+        phrases = {seat, _seat_short(seat)}
+        voice_norm = normalize_cast_alias(str(voice or ""))
+        if voice_norm:
+            phrases.add(voice_norm)
+        display = normalize_cast_alias(display_names.get(username) or display_names.get(seat) or "")
+        if display:
+            phrases.add(display)
+        phrases.discard("")
+        owned[seat] = phrases
+    for seat, phrases in cast_aliases.items():
+        for phrase in phrases:
+            norm = normalize_cast_alias(phrase)
+            for other, taken in owned.items():
+                if _seat_short(other) == _seat_short(seat):
+                    continue
+                if norm in taken:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"{seat}: {norm!r} belongs to {other}",
+                    )
 
 
 def _clean_bench(raw: list[str]) -> list[str]:
@@ -1509,6 +1643,9 @@ async def update_voice_settings(
     aliases = _clean_aliases(body.aliases) if body.aliases is not None else None
     voices = _clean_relay_voices(body.voices) if body.voices is not None else None
     bench = _clean_bench(body.bench) if body.bench is not None else None
+    cast_aliases = (
+        _clean_cast_aliases(body.cast_aliases) if body.cast_aliases is not None else None
+    )
 
     room = (
         await db.execute(select(Room).where(Room.id == room_id))
@@ -1602,7 +1739,15 @@ async def update_voice_settings(
         meta["voice_relay_video"] = bool(body.video)
     if body.multi is not None:
         meta["voice_relay_multi"] = bool(body.multi)
-    from app.api.webhooks import VOICE_BENCH_KEY, relay_bench, relay_cast, stage_voices
+    from app.api.webhooks import (
+        VOICE_BENCH_KEY,
+        relay_bench,
+        relay_cast,
+        relay_cast_aliases,
+        stage_voices,
+    )
+
+    CAST_ALIAS_KEY = "voice_relay_cast_aliases"
 
     if bench is not None:
         cast = relay_cast(meta.get("voice_relay_voices")) or {}
@@ -1636,6 +1781,42 @@ async def update_voice_settings(
             meta[VOICE_BENCH_KEY] = kept
         else:
             meta.pop(VOICE_BENCH_KEY, None)
+    aliases_pruned = False
+    if cast_aliases is not None:
+        cast = relay_cast(meta.get("voice_relay_voices")) or {}
+        unknown = [u for u in cast_aliases if u not in cast]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Not in this room's cast: {', '.join(unknown)}",
+            )
+        if cast_aliases:
+            from app.models.participant import Participant
+
+            rows = (
+                await db.execute(
+                    select(Participant.username, Participant.display_name).where(
+                        Participant.username.in_(list(cast))
+                    )
+                )
+            ).all()
+            display_names = {
+                username: (display or "") for username, display in rows
+            }
+            _reject_alias_collisions(cast_aliases, cast, display_names)
+            meta[CAST_ALIAS_KEY] = cast_aliases
+        else:
+            meta.pop(CAST_ALIAS_KEY, None)
+    elif voices is not None and CAST_ALIAS_KEY in meta:
+        # A new cast forgets alias entries it no longer names.
+        kept = relay_cast_aliases(
+            {seat: phrases for seat, phrases in (meta.get(CAST_ALIAS_KEY) or {}).items() if seat in voices}
+        )
+        aliases_pruned = True
+        if kept:
+            meta[CAST_ALIAS_KEY] = kept
+        else:
+            meta.pop(CAST_ALIAS_KEY, None)
     room.metadata_ = meta  # reassigned, not mutated, for JSONB change detection
     await db.commit()
 
@@ -1663,6 +1844,10 @@ async def update_voice_settings(
             # and bringing it back puts it in again.
             frame["voices"] = stage_voices(meta) or {}
             frame["bench"] = relay_bench(meta)
+        if cast_aliases is not None or aliases_pruned:
+            # Same live path as the cast: a running relay reads this frame,
+            # not the database. ``{}`` clears room aliases; built-ins remain.
+            frame["cast_aliases"] = meta.get(CAST_ALIAS_KEY) or {}
         if body.video is not None:
             frame["video"] = bool(body.video)
         if body.multi is not None:
@@ -1690,6 +1875,7 @@ async def update_voice_settings(
         live=live,
         voices=voices,
         bench=bench,
+        cast_aliases=cast_aliases,
     )
     return {
         "activation": mode,
@@ -1715,6 +1901,11 @@ async def update_voice_settings(
         **({"source": source} if body.source is not None else {}),
         **({"agent_id": meta.get("voice_relay_agent_id")} if body.agent_id is not None else {}),
         **({"aliases": aliases} if aliases is not None else {}),
+        **(
+            {"cast_aliases": meta.get(CAST_ALIAS_KEY) or {}}
+            if cast_aliases is not None
+            else {}
+        ),
         **(
             {"face_shape": meta.get("voice_relay_face_shape")}
             if body.face_shape is not None

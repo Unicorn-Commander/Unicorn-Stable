@@ -485,7 +485,7 @@ class TranscriptVersusChatTests(TestCase):
 
         source = inspect.getsource(VoiceRelayAgent._on_own_stt)
         caption_at = source.index("_captions")
-        persist_at = source.index("_maybe_persist")
+        persist_at = source.index("_hear(")
         self.assertLess(caption_at, persist_at)
 
     def test_both_ears_share_one_persist_rule(self) -> None:
@@ -497,10 +497,12 @@ class TranscriptVersusChatTests(TestCase):
 
         for fn in (VoiceRelayAgent._on_own_stt, VoiceRelayAgent._ears_loop):
             source = inspect.getsource(fn)
-            self.assertIn("_maybe_persist", source, fn.__name__)
+            self.assertIn("_hear(", source, fn.__name__)
             self.assertNotIn(
                 "self._publisher.persist_user_utterance", source, fn.__name__
             )
+        # The shared rule still commits through the one persister call.
+        self.assertIn("_maybe_persist", inspect.getsource(VoiceRelayAgent._hear))
 
     def test_addressing_uses_position_not_mere_presence(self) -> None:
         from agent_runtime.voice_dispatch import spoken_name_match

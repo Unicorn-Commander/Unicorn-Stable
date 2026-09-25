@@ -72,6 +72,7 @@ import hashlib
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -89,8 +90,16 @@ __all__ = [
     "STICKY_WINDOW_S",
     "FLOOR_LEASE_S",
     "spoken_name_match",
+    "address_span",
+    "best_addressed",
     "fuzzy_spoken_name_match",
     "log_name_near_miss",
+    "line_subsumes",
+    "spoken_tokens",
+    "should_drop_line",
+    "join_partial_finals",
+    "FRAGMENT_WINDOW_S",
+    "OTHER_EAR_DUP_S",
     "floor_for",
     "forget_room",
 ]
@@ -143,8 +152,8 @@ _ADDRESS_CUES = frozenset(
 )
 
 
-def _addresses(text_lc: str, name: str) -> bool:
-    """Is ``name`` used to ADDRESS someone in ``text_lc``, not merely present?
+def address_span(text_lc: str, name: str) -> tuple[int, int] | None:
+    """Earliest ``(start, length)`` where ``name`` addresses someone, else None.
 
     Presence alone is not address, and the difference is not academic: the
     agent id ``the-general`` occurs verbatim inside "that is the general
@@ -158,22 +167,69 @@ def _addresses(text_lc: str, name: str) -> bool:
       * right after an address cue or any punctuation — "hey Majik", "ok, Majik";
       * immediately before punctuation — "what do you think, Majik?".
     Everything else is the name being MENTIONED, which dispatches nobody.
+
+    The match itself is exact after lowercasing. Punctuation around the name
+    is a boundary, not part of the name.
     """
+    name = (name or "").strip().lower()
+    if not name or not text_lc:
+        return None
+    best: tuple[int, int] | None = None
     for match in re.finditer(
         rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", text_lc
     ):
         start, end = match.start(), match.end()
         before = text_lc[:start].strip()
         after = text_lc[end:].lstrip()
+        addressed = False
         if not before:
-            return True  # utterance opens with the name
-        if before[-1] in ",.!?:;":
-            return True  # "...done, Majik do the next one"
-        if before.split()[-1] in _ADDRESS_CUES:
-            return True  # "hey Majik", "so Majik"
-        if after[:1] in (",", "?", "!", ".", ":", ";"):
-            return True  # "what do you think, Majik?"
-    return False
+            addressed = True  # utterance opens with the name
+        elif before[-1] in ",.!?:;":
+            addressed = True  # "...done, Majik do the next one"
+        elif before.split()[-1] in _ADDRESS_CUES:
+            addressed = True  # "hey Majik", "so Majik"
+        elif after[:1] in (",", "?", "!", ".", ":", ";"):
+            addressed = True  # "what do you think, Majik?"
+        if not addressed:
+            continue
+        span = (start, end - start)
+        if best is None or span[0] < best[0] or (
+            span[0] == best[0] and span[1] > best[1]
+        ):
+            best = span
+    return best
+
+
+def _addresses(text_lc: str, name: str) -> bool:
+    """Is ``name`` used to ADDRESS someone in ``text_lc``, not merely present?"""
+    return address_span(text_lc, name) is not None
+
+
+def best_addressed(text: str, needles: dict[str, set[str]]) -> str | None:
+    """Which identity ``text`` addresses, when several names could.
+
+    The match that starts earliest in the utterance wins. If two matches
+    start at the same character, the longer one wins. Iteration order is
+    not a vote: a cast sorted by username must not prefer Majik over Zen
+    just because ``agent-majik`` sorts first.
+    """
+    lc = (text or "").lower()
+    if not lc:
+        return None
+    winner: str | None = None
+    best: tuple[int, int] | None = None
+    for identity, names in needles.items():
+        if not identity:
+            continue
+        for raw in names:
+            span = address_span(lc, raw or "")
+            if span is None:
+                continue
+            key = (span[0], -span[1])
+            if best is None or key < best:
+                best = key
+                winner = identity
+    return winner
 
 
 def spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool:
@@ -253,6 +309,105 @@ def fuzzy_spoken_name_match(text: str, names: set[str] | frozenset[str]) -> bool
         if _edit_distance(token, needle, cap=1) <= 1:
             return True
     return False
+
+
+def spoken_tokens(text: str) -> tuple[str, ...]:
+    """Lowercase words with punctuation stripped and whitespace collapsed."""
+    cleaned = unicodedata.normalize("NFKC", text or "").lower()
+    cleaned = re.sub(r"[^\w\s']", " ", cleaned, flags=re.UNICODE)
+    cleaned = cleaned.replace("_", " ")
+    return tuple(part for part in cleaned.split() if part)
+
+
+def _contiguous(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
+    """True when ``shorter`` is a contiguous run of tokens inside ``longer``."""
+    if not shorter or len(shorter) > len(longer):
+        return False
+    width = len(shorter)
+    return any(longer[i : i + width] == shorter for i in range(len(longer) - width + 1))
+
+
+def _norm_line(text: str) -> str:
+    return " ".join(spoken_tokens(text))
+
+
+def line_subsumes(longer: str, shorter: str) -> bool:
+    """True when ``shorter``'s words are a contiguous run inside ``longer``.
+
+    Whole words, not letters: "no" is not inside "I know that", and "go" is
+    not inside "good". Punctuation is ignored, so "grok in one sentence" is
+    inside "Grok, in one sentence, ...?". Equal lines count.
+    """
+    longer_tokens, shorter_tokens = spoken_tokens(longer), spoken_tokens(shorter)
+    if not longer_tokens or not shorter_tokens:
+        return False
+    if longer_tokens == shorter_tokens:
+        return True
+    return _contiguous(shorter_tokens, longer_tokens)
+
+
+#: How long an exact copy from the OTHER ear is still the same utterance.
+#: The same ear only suppresses for FRAGMENT_WINDOW_S, so "yes" again five
+#: seconds later is a new line. A different ear (captions after the session
+#: ear, or the reverse) can land several seconds late.
+OTHER_EAR_DUP_S = 8.0
+
+
+def should_drop_line(
+    new_text: str,
+    new_ear: str,
+    old_text: str,
+    old_ear: str,
+    age_s: float,
+) -> bool:
+    """Whether ``new_text`` repeats ``old_text`` from the same speaker.
+
+    A later line whose tokens are a contiguous sub-sequence of a longer line
+    is dropped within :data:`FRAGMENT_WINDOW_S`. An exact normalized copy is
+    dropped within that same window when it comes from the same ear, and
+    within :data:`OTHER_EAR_DUP_S` when it comes from a different ear.
+    """
+    if age_s < 0:
+        return False
+    new_tokens, old_tokens = spoken_tokens(new_text), spoken_tokens(old_text)
+    if not new_tokens or not old_tokens:
+        return False
+    if new_tokens == old_tokens:
+        limit = FRAGMENT_WINDOW_S if new_ear == old_ear else OTHER_EAR_DUP_S
+        return age_s <= limit
+    if age_s <= FRAGMENT_WINDOW_S and len(new_tokens) < len(old_tokens):
+        return _contiguous(new_tokens, old_tokens)
+    return False
+
+
+def join_partial_finals(parts: list[str]) -> str:
+    """One utterance out of the partial finals a track emitted for it.
+
+    Consecutive pieces that do not contain each other are the measured
+    failure ("grok" / "in one sentence" / "what is the point of a rehearsal"):
+    they join in order. A later piece that already contains the earlier text
+    replaces it, so a cumulative hypothesis does not stutter.
+    """
+    joined = ""
+    for raw in parts:
+        piece = " ".join((raw or "").split())
+        if not piece:
+            continue
+        if not joined or line_subsumes(piece, joined):
+            if not joined or len(_norm_line(piece)) >= len(_norm_line(joined)):
+                joined = piece
+            continue
+        if line_subsumes(joined, piece):
+            continue
+        joined = f"{joined} {piece}"
+    return joined
+
+
+#: How long a fragment stays eligible to be dropped because a longer line
+#: from the same speaker already covers it. Long enough for the session ear's
+#: whole sentence to land after the per-track pieces; short enough that a
+#: person who says "yes" again a few seconds later is heard the second time.
+FRAGMENT_WINDOW_S = 2.0
 
 
 def log_name_near_miss(
