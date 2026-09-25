@@ -124,8 +124,10 @@ own consent surface.
    refusal of a later recorder-token exchange;
 5. keep one LiveKit connection for the recording. LiveKit server refreshes its
    token; there is no timed re-exchange. If an unexpected disconnect occurs,
-   re-exchange `rt` and reconnect with 1, 2, 4, 8, then 10 second backoff while
-   retaining the old painted media until the replacement connects.
+   livekit-client stops and detaches the old audio/video tracks before reporting
+   the disconnect, so the page may briefly show initials tiles and have no
+   audio. It re-exchanges `rt` and reconnects with 1, 2, 4, 8, then 10 second
+   backoff; the replacement session attaches its newly subscribed media.
 
 The MP4 lands on the shared `/egress-out` volume, is uploaded to storage, is
 attached to the call's Meeting-Ops session (`content_type video/mp4`, same
