@@ -502,7 +502,7 @@ class TranscriptVersusChatTests(TestCase):
                 "self._publisher.persist_user_utterance", source, fn.__name__
             )
         # The shared rule still commits through the one persister call.
-        self.assertIn("_maybe_persist", inspect.getsource(VoiceRelayAgent._commit_heard))
+        self.assertIn("_maybe_persist", inspect.getsource(VoiceRelayAgent._hear))
 
     def test_addressing_uses_position_not_mere_presence(self) -> None:
         from agent_runtime.voice_dispatch import spoken_name_match

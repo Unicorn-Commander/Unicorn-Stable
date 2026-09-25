@@ -111,13 +111,13 @@ from agent_runtime.transcript_publisher import (
     TranscriptPublisher,
     VoiceHistoryPersister,
 )
-from agent_runtime.multi_track_stt import UTTERANCE_SILENCE_GATE_S
 from agent_runtime.voice_dispatch import (
     FRAGMENT_WINDOW_S,
-    UtteranceFold,
+    OTHER_EAR_DUP_S,
     best_addressed,
     fuzzy_spoken_name_match,
     log_name_near_miss,
+    should_drop_line,
     spoken_name_match,
 )
 from agent_runtime.voice_transcripts import (
@@ -845,9 +845,11 @@ class VoiceRelayAgent(StableAgent):
         #: Exact-text dedupe expires. A second "yes" a few seconds later is a
         #: new utterance; a second copy inside the fragment window is not.
         self._heard_at: dict[str, float] = {}
-        self._utterances = UtteranceFold(gate_s=UTTERANCE_SILENCE_GATE_S)
+        #: speaker → (at, text, ear), kept long enough for the cross-ear copy.
+        self._recent_heard: dict[str, list[tuple[float, str, str]]] = {}
+        #: When the per-track ear last produced a final for this speaker.
+        self._track_final_at: dict[str, float] = {}
         self._multi_track: Any = None
-        self._utterance_timer: Any = None
         self._transcripts: TranscriptAggregator | None = None
         self._publisher: VoiceHistoryPersister | None = None
         self._captions: TranscriptPublisher | None = None
@@ -1421,13 +1423,16 @@ class VoiceRelayAgent(StableAgent):
                     note="no human identity for this utterance; dropped",
                 )
                 return
-            # The per-track ear owns this microphone. Marking the text heard
-            # here would swallow the track's own final, which is the one that
-            # knows who spoke.
+            # A healthy per-track ear owns this microphone. The linked
+            # participant still barges in through here, the way it always
+            # has. The line itself waits: if that ear has produced nothing
+            # for a couple of seconds, a quiet mic the energy gate never
+            # opens on would otherwise go deaf, so this ear's line lands.
             if self._speaker_covered(speaker):
                 if self._speaking:
                     self._interrupt_speech(speaker=speaker, chars=len(text))
-                return
+                if self._track_produced_recently(speaker, self._clock()):
+                    return
 
             # EVERYTHING heard goes to the LIVE TRANSCRIPT — through the ONE
             # elected captioner. Every agent session transcribes the human, so
@@ -1451,7 +1456,7 @@ class VoiceRelayAgent(StableAgent):
             self._heard_segments.add(key)
 
             # Chat is a different bar than the transcript, and BOTH ears share
-            # one rule for it. _hear folds fragments; _maybe_persist is the commit.
+            # one rule for it. _hear commits one finished line.
             if self._hear(speaker, text, ear="stt") and self._speaking:
                 self._interrupt_speech(speaker=speaker, chars=len(text))
         except Exception:
@@ -1460,61 +1465,77 @@ class VoiceRelayAgent(StableAgent):
     def _attach_multi_track(self) -> None:
         """If this relay is the elected captioner, hear every human mic."""
         try:
-            from agent_runtime.diarization import speaker_hint
             from agent_runtime.multi_track_stt import attach_multi_track_stt
-            from agent_runtime.voice_transcripts import participant_shared_mic
-
-            def _on_final(track: Any, text: str) -> None:
-                content = (text or "").strip()
-                if not content:
-                    return
-                hint = None
-                participant = None
-                try:
-                    remotes = getattr(self._lk_room, "remote_participants", {}) or {}
-                    for candidate in remotes.values():
-                        if str(getattr(candidate, "identity", "") or "") == track.participant_identity:
-                            participant = candidate
-                            break
-                    if participant is not None and participant_shared_mic(participant):
-                        hint = speaker_hint(
-                            track.participant_name,
-                            participant_identity=track.participant_identity,
-                            text=content,
-                        )
-                except Exception:
-                    logger.debug("voice_relay_speaker_hint_failed", exc_info=True)
-                if self._captions is not None:
-                    self._captions.publish_user_line(
-                        participant_id=track.participant_identity,
-                        name=track.participant_name,
-                        text=content,
-                        source="captioner",
-                        speaker_hint=hint,
-                    )
-                key = f"stt:{content.lower()}"
-                if self._heard_recently(key):
-                    if self._speaking and content:
-                        self._interrupt_speech(speaker=track.participant_identity, chars=len(content))
-                    return
-                self._heard_segments.add(key)
-                # The track already waited out the silence gate and joined its
-                # partial recognizes, so this final is one utterance.
-                self._hear(
-                    track.participant_identity, content, ear="multi_track", partial=False
-                )
-                if self._speaking and content:
-                    # Barge even when the line is not one we persist: a human
-                    # talking over the relay takes the floor.
-                    self._interrupt_speech(speaker=track.participant_identity, chars=len(content))
 
             self._multi_track = attach_multi_track_stt(
                 self._lk_room,
                 self._join_identity or self._identity,
-                _on_final,
+                self._on_track_final,
+                on_onset=self._on_speech_onset,
             )
         except Exception:
             logger.warning("voice_relay_multi_track_failed", exc_info=True)
+
+    def _on_track_final(self, track: Any, text: str) -> None:
+        """One finished utterance from a per-track ear. Production entry."""
+        content = (text or "").strip()
+        if not content:
+            return
+        speaker = str(getattr(track, "participant_identity", "") or "")
+        if speaker:
+            self._track_final_at[speaker] = self._clock()
+        hint = None
+        participant = None
+        try:
+            from agent_runtime.diarization import speaker_hint
+            from agent_runtime.voice_transcripts import participant_shared_mic
+
+            remotes = getattr(self._lk_room, "remote_participants", {}) or {}
+            for candidate in remotes.values():
+                if str(getattr(candidate, "identity", "") or "") == speaker:
+                    participant = candidate
+                    break
+            if participant is not None and participant_shared_mic(participant):
+                hint = speaker_hint(
+                    getattr(track, "participant_name", "") or speaker,
+                    participant_identity=speaker,
+                    text=content,
+                )
+        except Exception:
+            logger.debug("voice_relay_speaker_hint_failed", exc_info=True)
+        if self._captions is not None:
+            self._captions.publish_user_line(
+                participant_id=speaker,
+                name=getattr(track, "participant_name", "") or speaker,
+                text=content,
+                source="captioner",
+                speaker_hint=hint,
+            )
+        key = f"stt:{content.lower()}"
+        if self._heard_recently(key):
+            if self._speaking and content:
+                self._interrupt_speech(speaker=speaker, chars=len(content))
+            return
+        self._heard_segments.add(key)
+        # The track already waited out the silence gate and joined its
+        # partial recognizes, so this final is one utterance.
+        self._hear(speaker, content, ear="multi_track")
+        if self._speaking and content:
+            # Barge even when the line is not one we persist: a human
+            # talking over the relay takes the floor. Onset usually got
+            # here first; this is the line that arrives after the gate.
+            self._interrupt_speech(speaker=speaker, chars=len(content))
+
+    def _on_speech_onset(self, track: Any) -> None:
+        """A human has been voiced for about a quarter second.
+
+        While an agent is speaking this cuts the reply now, from any human,
+        without waiting for the silence gate or recognition.
+        """
+        if not self._speaking:
+            return
+        speaker = str(getattr(track, "participant_identity", "") or "")
+        self._interrupt_speech(speaker=speaker, chars=0)
 
     def _interrupt_speech(self, *, speaker: str, chars: int) -> None:
         """A human took the floor mid-reply: stop the chunk playing now and
@@ -1544,8 +1565,20 @@ class VoiceRelayAgent(StableAgent):
             self._heard_at = {k: t for k, t in self._heard_at.items() if t >= cutoff}
         return False
 
+    #: Session-ear fallback when a covered track has produced nothing. The
+    #: per-track energy gate has no gain control; the session ear does (the
+    #: room VAD). A quiet mic must not go deaf just because that gate never
+    #: opens.
+    _TRACK_QUIET_FALLBACK_S = 2.5
+
     def _speaker_covered(self, speaker: str) -> bool:
-        """True when this human's mic has the per-track ear attached."""
+        """True when this human's per-track ear is healthy right now.
+
+        Healthy means the task is running, a frame arrived within the last
+        second, and the last recognition attempt did not fail. A dead or
+        silent session does not cover: the session ear and browser captions
+        keep working.
+        """
         controller = self._multi_track
         if controller is None or not speaker:
             return False
@@ -1559,28 +1592,21 @@ class VoiceRelayAgent(StableAgent):
             except Exception:
                 continue
             track = getattr(session, "track", None)
-            if str(getattr(track, "participant_identity", "") or "") == speaker:
-                return True
-        return False
-
-    def _sync_covered_speakers(self) -> None:
-        covered: set[str] = set()
-        controller = self._multi_track
-        if controller is not None:
-            try:
-                sids = list(controller.active_sids)
-            except Exception:
-                sids = []
-            for sid in sids:
+            if str(getattr(track, "participant_identity", "") or "") != speaker:
+                continue
+            check = getattr(session, "is_healthy", None)
+            if callable(check):
                 try:
-                    session = controller.session_for(sid)
+                    if not check():
+                        continue
                 except Exception:
                     continue
-                track = getattr(session, "track", None)
-                ident = str(getattr(track, "participant_identity", "") or "")
-                if ident:
-                    covered.add(ident)
-        self._utterances.covered = covered
+            return True
+        return False
+
+    def _track_produced_recently(self, speaker: str, now: float) -> bool:
+        last = self._track_final_at.get(speaker)
+        return last is not None and (now - last) <= self._TRACK_QUIET_FALLBACK_S
 
     def _hear(
         self,
@@ -1589,62 +1615,36 @@ class VoiceRelayAgent(StableAgent):
         *,
         ear: str,
         now: float | None = None,
-        partial: bool | None = None,
     ) -> bool:
-        """Fold one heard line into the speaker's open utterance and commit what closed.
+        """Commit one finished line. The per-track gate already joined pauses.
 
-        A per-track partial stays open until the silence gate (or until a
-        finished line from another ear closes it). The session ear is ignored
-        for a speaker whose track is already covered. One commit is one
-        ``_maybe_persist``, which is one dispatch.
+        A duplicate — a word-for-word copy, or a shorter line whose words sit
+        inside a longer one — is not a second dispatch. One commit is one
+        ``_maybe_persist``.
         """
         now = self._clock() if now is None else now
-        if partial is None:
-            partial = ear == "multi_track"
-        self._sync_covered_speakers()
-        ready = self._utterances.push(speaker, text, ear=ear, now=now, partial=partial)
-        persisted = self._commit_heard(ready)
-        self._arm_utterance_flush()
-        return persisted
+        text = " ".join((text or "").split())
+        if not speaker or not text:
+            return False
+        if ear == "multi_track":
+            self._track_final_at[speaker] = now
+        if not self._accept_heard(speaker, text, ear, now):
+            return False
+        return self._maybe_persist(speaker, text, ear=ear)
 
-    def _flush_heard(self, now: float | None = None) -> bool:
-        """Close utterances whose silence gate has elapsed."""
-        now = self._clock() if now is None else now
-        ready = self._utterances.expire(now)
-        persisted = self._commit_heard(ready)
-        self._arm_utterance_flush()
-        return persisted
-
-    def _commit_heard(self, ready: list[tuple[str, str, str]]) -> bool:
-        persisted = False
-        for speaker, text, ear in ready:
-            if self._maybe_persist(speaker, text, ear=ear):
-                persisted = True
-        return persisted
-
-    def _arm_utterance_flush(self) -> None:
-        old = self._utterance_timer
-        if not self._utterances.has_pending():
-            if old is not None:
-                old.cancel()
-                self._utterance_timer = None
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        if old is not None:
-            old.cancel()
-        self._utterance_timer = loop.call_later(
-            UTTERANCE_SILENCE_GATE_S, self._flush_from_timer
-        )
-
-    def _flush_from_timer(self) -> None:
-        self._utterance_timer = None
-        try:
-            self._flush_heard()
-        except Exception:
-            logger.warning("voice_relay_utterance_flush_failed", exc_info=True)
+    def _accept_heard(self, speaker: str, text: str, ear: str, now: float) -> bool:
+        rows = [
+            row
+            for row in self._recent_heard.get(speaker, [])
+            if now - row[0] <= OTHER_EAR_DUP_S
+        ]
+        for at, prev, prev_ear in rows:
+            if should_drop_line(text, ear, prev, prev_ear, now - at):
+                self._recent_heard[speaker] = rows
+                return False
+        rows.append((now, text, ear))
+        self._recent_heard[speaker] = rows[-32:]
+        return True
 
     def _maybe_persist(self, speaker: str, text: str, *, ear: str) -> bool:
         """ONE decision for both ears: does this utterance become a chat message?

@@ -13,6 +13,7 @@ cannot be built, that track is skipped and the log says so.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -28,13 +29,25 @@ logger = structlog.get_logger(__name__)
 
 MAX_STT_TRACKS = 6
 
-#: End-of-speech silence before a track emits one utterance. A comma-sized
-#: pause must not become its own chat line (measured 2026-09-24: "grok" /
-#: "in one sentence" / "what is the point of a rehearsal"). 20 ms frames, so
-#: 50 frames is this gate. Added wait stays at one second.
-FRAME_SECONDS = 0.02
+#: End-of-speech silence before a track emits one utterance, in real seconds
+#: from each frame's sample count. A comma-sized pause must not become its
+#: own chat line (measured 2026-09-24: "grok" / "in one sentence" / "what is
+#: the point of a rehearsal"). Counting frames is wrong: LiveKit 1.1 delivers
+#: 10 ms frames unless the stream is asked for a size.
 UTTERANCE_SILENCE_GATE_S = 1.0
-UTTERANCE_SILENCE_GATE_FRAMES = int(round(UTTERANCE_SILENCE_GATE_S / FRAME_SECONDS))
+#: A turn that never goes quiet still emits here. The previous cap counted
+#: frames and recognized without emitting, so a noise bed went silent.
+UTTERANCE_MAX_S = 15.0
+#: Voiced audio before a human talking over an agent cuts the reply, without
+#: waiting for the silence gate or the recognizer.
+SPEECH_ONSET_S = 0.25
+#: Ask the stream for 20 ms frames. Timing does not depend on getting them.
+FRAME_SIZE_MS = 20
+#: The per-track ear covers its speaker only while a frame arrived this recently.
+HEALTHY_FRAME_S = 1.0
+#: On close, recognize whatever is buffered, then give up.
+CLOSE_FLUSH_TIMEOUT_S = 3.0
+ENERGY_THRESHOLD = 400
 
 OnFinal = Callable[["HumanAudioTrack", str], None]
 Opener = Callable[["HumanAudioTrack"], Any]
@@ -118,30 +131,70 @@ class MultiTrackController:
         self._opener = opener
         self._cap = cap
         self._sessions: dict[str, Any] = {}
+        self._last_tracks: list[HumanAudioTrack] = []
+        #: A sid we already reopened once after its task died. The next
+        #: external reconcile (a track event) may try again. Without the
+        #: guard a stream that cannot open spins a new session forever.
+        self._retried: set[str] = set()
+        self._closing: set[str] = set()
 
-    def reconcile(self, tracks: list[HumanAudioTrack]) -> None:
+    def reconcile(self, tracks: list[HumanAudioTrack], *, _retry: bool = False) -> None:
+        self._last_tracks = list(tracks)
+        if not _retry:
+            self._retried.clear()
+        for sid, session in list(self._sessions.items()):
+            if not _session_running(session):
+                self._sessions.pop(sid, None)
         chosen = select_tracks(tracks, cap=self._cap)
         wanted = {track.track_sid: track for track in chosen}
         for sid in list(self._sessions):
             if sid not in wanted:
                 self._close(sid)
         for sid, track in wanted.items():
-            if self._sessions.get(sid) is not None:
+            if _session_running(self._sessions.get(sid)):
                 continue
-            try:
-                session = self._opener(track)
-            except Exception:
-                logger.warning(
-                    "multi_track_open_failed",
-                    track_sid=sid,
-                    speaker=track.participant_identity,
-                    exc_info=True,
-                )
-                continue
-            if session is not None:
-                self._sessions[sid] = session
+            self._sessions.pop(sid, None)
+            self._open(sid, track)
+
+    def _open(self, sid: str, track: HumanAudioTrack) -> None:
+        try:
+            session = self._opener(track)
+        except Exception:
+            logger.warning(
+                "multi_track_open_failed",
+                track_sid=sid,
+                speaker=track.participant_identity,
+                exc_info=True,
+            )
+            return
+        if session is None:
+            return
+        self._sessions[sid] = session
+        task = getattr(session, "_task", None)
+        if isinstance(task, asyncio.Task):
+            task.add_done_callback(
+                lambda _done, sid=sid, session=session: self._on_done(sid, session)
+            )
+
+    def _on_done(self, sid: str, session: Any) -> None:
+        """Drop a finished session and let a new one attach, once."""
+        current = self._sessions.get(sid)
+        if current is not None and current is not session:
+            return
+        self._sessions.pop(sid, None)
+        if sid in self._closing:
+            self._closing.discard(sid)
+            return
+        if sid in self._retried:
+            return
+        self._retried.add(sid)
+        try:
+            self.reconcile(self._last_tracks, _retry=True)
+        except Exception:
+            logger.warning("multi_track_reopen_failed", track_sid=sid, exc_info=True)
 
     def _close(self, sid: str) -> None:
+        self._closing.add(sid)
         session = self._sessions.pop(sid, None)
         closer = getattr(session, "aclose", None) or getattr(session, "close", None)
         if not callable(closer):
@@ -164,22 +217,76 @@ class MultiTrackController:
         return self._sessions.get(sid)
 
 
+def _session_running(session: Any) -> bool:
+    """True while this session should keep its slot in the controller.
+
+    A finished LiveTrackSession does not. A test double with no task does:
+    the controller tests hand back a plain object and expect it to stay.
+    """
+    if session is None:
+        return False
+    if isinstance(session, LiveTrackSession):
+        task = session._task
+        return task is not None and not task.done()
+    task = getattr(session, "_task", None)
+    if isinstance(task, asyncio.Task):
+        return not task.done()
+    return True
+
+
 class LiveTrackSession:
     """Read one remote mic and emit a final attributed to its owner.
 
-    Energy-gated: speech followed by a short quiet stretch is one utterance,
-    handed to the non-streaming STT ``recognize``. A failure logs and yields
-    nothing — browser captions are still the fallback.
+    Energy-gated: speech followed by a second of real quiet is one utterance,
+    handed to the non-streaming STT ``recognize``. Silence and the long-turn
+    cap are measured from each frame's samples, not from how many frames
+    arrived. A failure logs and yields nothing — the session ear is the
+    fallback once this session is no longer healthy.
     """
 
-    def __init__(self, track: HumanAudioTrack, media: Any, stt: Any, on_final: OnFinal) -> None:
+    def __init__(
+        self,
+        track: HumanAudioTrack,
+        media: Any,
+        stt: Any,
+        on_final: OnFinal,
+        on_onset: Callable[[HumanAudioTrack], None] | None = None,
+    ) -> None:
         self.track = track
         self._media = media
         self._stt = stt
         self._on_final = on_final
+        self._on_onset = on_onset
         self._task: asyncio.Task[None] | None = None
         self._closed = False
         self._pending_parts: list[str] = []
+        self._frames: list[Any] = []
+        self._buf_s = 0.0
+        self._quiet_s = 0.0
+        self._voiced_s = 0.0
+        self._in_speech = False
+        self._onset_sent = False
+        self._last_frame_at: float | None = None
+        self._last_recognize_failed = False
+        self._close_timeout = CLOSE_FLUSH_TIMEOUT_S
+        self._stream: Any = None
+
+    def is_healthy(self, *, now: float | None = None) -> bool:
+        """True while this ear is the one that should own the speaker.
+
+        The task is running, a frame arrived within the last second, and the
+        last recognition attempt did not fail. Anything else leaves the
+        session ear and browser captions in charge.
+        """
+        now = time.monotonic() if now is None else now
+        task = self._task
+        if self._closed or task is None or task.done():
+            return False
+        if self._last_recognize_failed:
+            return False
+        if self._last_frame_at is None:
+            return False
+        return (now - self._last_frame_at) <= HEALTHY_FRAME_S
 
     def start(self) -> None:
         try:
@@ -192,6 +299,7 @@ class LiveTrackSession:
         )
 
     def aclose(self) -> None:
+        """Stop reading. The task recognizes whatever is buffered, then ends."""
         self._closed = True
         task = self._task
         if task is not None and not task.done():
@@ -199,58 +307,122 @@ class LiveTrackSession:
 
     async def _run(self) -> None:
         try:
-            from livekit import rtc
+            try:
+                from livekit import rtc
 
-            stream = rtc.AudioStream(self._media, sample_rate=16000, num_channels=1)
-        except Exception:
-            logger.warning(
-                "multi_track_stream_failed",
-                track_sid=self.track.track_sid,
-                exc_info=True,
-            )
-            return
-        frames: list[Any] = []
-        quiet = 0
-        heard = False
-        try:
-            async for event in stream:
-                if self._closed:
-                    break
-                frame = getattr(event, "frame", event)
-                energy = _frame_energy(frame)
-                if energy >= 400:
-                    heard = True
-                    quiet = 0
-                    frames.append(frame)
-                elif heard:
-                    quiet += 1
-                    frames.append(frame)
-                    # One utterance: wait out UTTERANCE_SILENCE_GATE_S of quiet
-                    # before recognize, so a breath between clauses stays in
-                    # the same buffer. A longer turn that hits the frame cap
-                    # is recognized early and joined at the gate.
-                    if quiet >= UTTERANCE_SILENCE_GATE_FRAMES and frames:
-                        await self._recognize(frames)
-                        self._emit_pending()
-                        frames = []
-                        quiet = 0
-                        heard = False
-                if len(frames) > 1500:
-                    await self._recognize(frames)
-                    frames = []
-                    quiet = 0
-            if not self._closed:
-                if frames:
-                    await self._recognize(frames)
-                self._emit_pending()
-        except asyncio.CancelledError:
-            raise
+                self._stream = rtc.AudioStream(
+                    self._media,
+                    sample_rate=16000,
+                    num_channels=1,
+                    frame_size_ms=FRAME_SIZE_MS,
+                )
+            except Exception:
+                logger.warning(
+                    "multi_track_stream_failed",
+                    track_sid=self.track.track_sid,
+                    exc_info=True,
+                )
+                return
+            try:
+                async for event in self._stream:
+                    if self._closed:
+                        break
+                    frame = getattr(event, "frame", event)
+                    self._last_frame_at = time.monotonic()
+                    await self._take_frame(frame)
+            except asyncio.CancelledError:
+                self._uncancel()
         except Exception:
             logger.warning(
                 "multi_track_read_failed",
                 track_sid=self.track.track_sid,
                 exc_info=True,
             )
+        finally:
+            await self._flush_tail()
+
+    async def _take_frame(self, frame: Any) -> None:
+        dt = _frame_seconds(frame)
+        energy = _frame_energy(frame)
+        if energy >= ENERGY_THRESHOLD:
+            self._in_speech = True
+            self._quiet_s = 0.0
+            self._voiced_s += dt
+            self._frames.append(frame)
+            self._buf_s += dt
+            if not self._onset_sent and self._voiced_s >= SPEECH_ONSET_S:
+                self._onset_sent = True
+                self._signal_onset()
+        elif self._in_speech:
+            self._quiet_s += dt
+            self._frames.append(frame)
+            self._buf_s += dt
+            if self._quiet_s >= UTTERANCE_SILENCE_GATE_S and self._frames:
+                await self._cut()
+                return
+        if self._buf_s >= UTTERANCE_MAX_S and self._frames:
+            await self._cut()
+
+    async def _cut(self) -> None:
+        """Recognize the buffer and emit. One utterance boundary."""
+        frames = self._frames
+        self._reset_buffer()
+        await self._recognize(frames)
+        self._emit_pending()
+
+    def _reset_buffer(self) -> None:
+        self._frames = []
+        self._buf_s = 0.0
+        self._quiet_s = 0.0
+        self._voiced_s = 0.0
+        self._in_speech = False
+        self._onset_sent = False
+
+    async def _flush_tail(self) -> None:
+        """Recognize audio still buffered when the track ends or closes."""
+        self._uncancel()
+        frames = self._frames
+        self._frames = []
+        self._buf_s = 0.0
+        if frames:
+            try:
+                await asyncio.wait_for(
+                    self._recognize(frames), timeout=self._close_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "multi_track_close_flush_timeout",
+                    track_sid=self.track.track_sid,
+                )
+            except asyncio.CancelledError:
+                self._uncancel()
+            except Exception:
+                logger.warning(
+                    "multi_track_close_flush_failed",
+                    track_sid=self.track.track_sid,
+                    exc_info=True,
+                )
+        self._emit_pending()
+
+    def _signal_onset(self) -> None:
+        callback = self._on_onset
+        if not callable(callback):
+            return
+        try:
+            callback(self.track)
+        except Exception:
+            logger.debug("multi_track_onset_failed", exc_info=True)
+
+    def _uncancel(self) -> None:
+        """A close() cancels the read. The flush that follows must still await."""
+        task = asyncio.current_task()
+        if task is None:
+            return
+        uncancel = getattr(task, "uncancel", None)
+        if not callable(uncancel):
+            return
+        while uncancel():
+            pass
 
     async def _recognize(self, frames: list[Any]) -> None:
         recognize = getattr(self._stt, "recognize", None)
@@ -261,6 +433,7 @@ class LiveTrackSession:
             if asyncio.iscoroutine(event):
                 event = await event
         except Exception:
+            self._last_recognize_failed = True
             logger.warning(
                 "multi_track_recognize_failed",
                 track_sid=self.track.track_sid,
@@ -268,6 +441,7 @@ class LiveTrackSession:
                 exc_info=True,
             )
             return
+        self._last_recognize_failed = False
         text = _event_text(event)
         if not text:
             return
@@ -292,6 +466,31 @@ class LiveTrackSession:
             self._on_final(self.track, text)
         except Exception:
             logger.debug("multi_track_final_failed", exc_info=True)
+
+
+def _frame_seconds(frame: Any) -> float:
+    """Duration of one frame from its sample count, not from a assumed size."""
+    rate = getattr(frame, "sample_rate", None) or 16000
+    try:
+        rate_f = float(rate)
+    except (TypeError, ValueError):
+        rate_f = 16000.0
+    if rate_f <= 0:
+        rate_f = 16000.0
+    samples = getattr(frame, "samples_per_channel", None)
+    if not samples:
+        data = getattr(frame, "data", None)
+        try:
+            samples = len(bytes(data)) // 2 if data else 0
+        except Exception:
+            samples = 0
+    try:
+        samples_i = int(samples)
+    except (TypeError, ValueError):
+        samples_i = 0
+    if samples_i <= 0:
+        return 0.0
+    return samples_i / rate_f
 
 
 def _frame_energy(frame: Any) -> float:
@@ -320,7 +519,10 @@ def _event_text(event: Any) -> str:
     return str(getattr(event, "text", "") or "").strip()
 
 
-def _live_opener(on_final: OnFinal) -> Opener:
+def _live_opener(
+    on_final: OnFinal,
+    on_onset: Callable[[HumanAudioTrack], None] | None = None,
+) -> Opener:
     def open_track(track: HumanAudioTrack) -> Any:
         media = getattr(track.publication, "track", None)
         if media is None:
@@ -332,7 +534,7 @@ def _live_opener(on_final: OnFinal) -> Opener:
         except Exception:
             logger.warning("multi_track_stt_unavailable", exc_info=True)
             return None
-        session = LiveTrackSession(track, media, stt, on_final)
+        session = LiveTrackSession(track, media, stt, on_final, on_onset=on_onset)
         session.start()
         logger.info(
             "multi_track_stt_started",
@@ -350,6 +552,7 @@ def attach_multi_track_stt(
     on_final: OnFinal,
     *,
     opener: Opener | None = None,
+    on_onset: Callable[[HumanAudioTrack], None] | None = None,
     cap: int = MAX_STT_TRACKS,
 ) -> MultiTrackController | None:
     """Subscribe the elected captioner. Anyone else returns None and does nothing."""
@@ -358,7 +561,7 @@ def attach_multi_track_stt(
         return None
     controller = MultiTrackController(
         on_final=on_final,
-        opener=opener or _live_opener(on_final),
+        opener=opener or _live_opener(on_final, on_onset),
         cap=cap,
     )
 

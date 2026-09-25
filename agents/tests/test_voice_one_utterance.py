@@ -14,7 +14,7 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from agent_runtime.multi_track_stt import (
-    UTTERANCE_SILENCE_GATE_FRAMES,
+    UTTERANCE_MAX_S,
     UTTERANCE_SILENCE_GATE_S,
     LiveTrackSession,
 )
@@ -48,9 +48,10 @@ class PartialFinalTests(TestCase):
     def test_the_silence_gate_is_one_second(self) -> None:
         self.assertEqual(UTTERANCE_SILENCE_GATE_S, 1.0)
         self.assertLessEqual(UTTERANCE_SILENCE_GATE_S, 1.0)
-        self.assertEqual(UTTERANCE_SILENCE_GATE_FRAMES, 50)
-        source = inspect.getsource(LiveTrackSession._run)
-        self.assertIn("UTTERANCE_SILENCE_GATE_FRAMES", source)
+        self.assertEqual(UTTERANCE_MAX_S, 15.0)
+        source = inspect.getsource(LiveTrackSession._take_frame)
+        self.assertIn("_frame_seconds", source)
+        self.assertNotIn("GATE_FRAMES", source)
         self.assertIn("join_partial_finals", inspect.getsource(LiveTrackSession._emit_pending))
 
     def test_the_measured_fragments_join_into_the_sentence(self) -> None:
@@ -110,48 +111,39 @@ class OneUtteranceTests(TestCase):
 
         agent = self._agent()
         agent._multi_track = _covering(AARON)
-        t = 1000.0
         with patch("agent_runtime.voice_dispatch.decide", wraps=voice_dispatch.decide) as decide:
-            for piece in FRAGMENTS:
-                self.assertFalse(agent._hear(AARON, piece, ear="multi_track", now=t))
-                t += 0.3
-            # The session ear heard the same speech. This speaker's track is
-            # covered, so that copy must not persist or dispatch.
-            self.assertFalse(agent._hear(AARON, WHOLE, ear="stt", now=t))
-            self.assertEqual(self._persisted(agent), [])
-            self.assertEqual(decide.call_count, 0)
-            self.assertTrue(agent._flush_heard(now=t + UTTERANCE_SILENCE_GATE_S))
+            # Production hands the relay one final. The track already joined
+            # the pauses. The session ear's copy of that line is not a second
+            # dispatch.
+            agent._on_track_final(
+                SimpleNamespace(participant_identity=AARON, participant_name="Aaron"),
+                WHOLE,
+            )
+            self.assertFalse(agent._hear(AARON, WHOLE, ear="stt", now=agent._clock()))
         self.assertEqual(self._persisted(agent), [f"@grok {WHOLE}"])
         self.assertEqual(decide.call_count, 1)
         self.assertTrue(agent._publisher.persist_user_utterance.call_args.kwargs.get("reply"))
 
     def test_the_longest_line_wins_when_the_session_ear_is_not_covered(self) -> None:
-        """Belt: a fragment that is contained in a longer line within the
-        window is not its own chat line."""
+        """A fragment contained in a longer line within the window is not
+        its own chat line."""
         agent = self._agent()
-        t = 1000.0
-        for piece in FRAGMENTS:
-            agent._hear(AARON, piece, ear="multi_track", now=t)
-            t += 0.3
-        self.assertTrue(agent._hear(AARON, WHOLE, ear="stt", now=t))
+        self.assertTrue(agent._hear(AARON, WHOLE, ear="stt", now=1000.0))
+        self.assertFalse(agent._hear(AARON, "grok", ear="captions", now=1000.4))
         self.assertEqual(self._persisted(agent), [f"@grok {WHOLE}"])
-        self.assertFalse(agent._flush_heard(now=t + UTTERANCE_SILENCE_GATE_S))
-        self.assertEqual(len(self._persisted(agent)), 1)
 
     def test_the_persona_path_collapses_the_same_way(self) -> None:
         from agent_runtime import voice_dispatch
 
         agent = self._agent()
         agent._multi_track = _covering(AARON)
-        pieces = ("rook", "in one sentence", "what is the point of a rehearsal")
         whole = "rook in one sentence what is the point of a rehearsal"
-        t = 1000.0
         with patch("agent_runtime.voice_dispatch.decide", wraps=voice_dispatch.decide) as decide:
-            for piece in pieces:
-                agent._hear(AARON, piece, ear="multi_track", now=t)
-                t += 0.3
-            self.assertFalse(agent._hear(AARON, whole, ear="stt", now=t))
-            self.assertTrue(agent._flush_heard(now=t + UTTERANCE_SILENCE_GATE_S))
+            agent._on_track_final(
+                SimpleNamespace(participant_identity=AARON, participant_name="Aaron"),
+                whole,
+            )
+            self.assertFalse(agent._hear(AARON, whole, ear="stt", now=agent._clock()))
         self.assertEqual(self._persisted(agent), [whole])
         self.assertFalse(agent._publisher.persist_user_utterance.call_args.kwargs.get("reply", False))
         self.assertEqual(decide.call_count, 0)
@@ -159,9 +151,7 @@ class OneUtteranceTests(TestCase):
     def test_a_second_utterance_after_the_gate_is_its_own_line(self) -> None:
         agent = self._agent()
         agent._hear(AARON, WHOLE, ear="multi_track", now=1000.0)
-        self.assertTrue(agent._flush_heard(now=1000.0 + UTTERANCE_SILENCE_GATE_S))
         agent._hear(AARON, "and why does that matter live", ear="multi_track", now=1005.0)
-        self.assertTrue(agent._flush_heard(now=1005.0 + UTTERANCE_SILENCE_GATE_S))
         persisted = self._persisted(agent)
         self.assertEqual(len(persisted), 2)
         self.assertIn(WHOLE, persisted[0])
@@ -172,7 +162,6 @@ class OneUtteranceTests(TestCase):
         agent = self._agent(humans=(AARON, SHAFEN))
         agent._hear(AARON, "grok what time is it", ear="multi_track", now=1000.0)
         agent._hear(SHAFEN, "zen tell me one thing", ear="multi_track", now=1000.2)
-        self.assertTrue(agent._flush_heard(now=1000.2 + UTTERANCE_SILENCE_GATE_S))
         persisted = self._persisted(agent)
         self.assertEqual(
             persisted,
@@ -217,12 +206,14 @@ class OneUtteranceTests(TestCase):
         )
         key = f"stt:{WHOLE}"
         self.assertFalse(agent._heard_recently(key))
-        self.assertTrue(agent._hear(AARON, WHOLE, ear="multi_track", partial=False))
+        self.assertTrue(agent._hear(AARON, WHOLE, ear="multi_track"))
         self.assertEqual(self._persisted(agent), [f"@grok {WHOLE}"])
 
     def test_a_covered_speaker_session_line_does_not_dispatch_on_its_own(self) -> None:
         agent = self._agent()
         agent._multi_track = _covering(AARON)
+        # The track just produced. The session ear must not add a second line.
+        agent._track_final_at[AARON] = agent._clock()
         ev = SimpleNamespace(transcript=WHOLE, is_final=True, speaker_id=AARON)
         agent._on_own_stt(ev)
         agent._publisher.persist_user_utterance.assert_not_called()
