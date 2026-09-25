@@ -146,21 +146,21 @@ function mergeWindows(
   }
   const merged: CompactTranscriptLine[] = [];
   for (const group of groups.values()) {
-    let open: CompactTranscriptLine | null = null;
+    const folded: CompactTranscriptLine[] = [];
     for (const line of group) {
+      const last = folded[folded.length - 1];
       if (
-        open &&
-        line.ts >= open.ts &&
-        line.ts - open.ts <= windowMs &&
-        canJoin(open.text, line.text)
+        last !== undefined &&
+        line.ts >= last.ts &&
+        line.ts - last.ts <= windowMs &&
+        canJoin(last.text, line.text)
       ) {
-        open = { ...open, text: `${open.text} ${line.text}` };
+        folded[folded.length - 1] = { ...last, text: `${last.text} ${line.text}` };
       } else {
-        if (open) merged.push(open);
-        open = { ...line };
+        folded.push({ ...line });
       }
     }
-    if (open) merged.push(open);
+    merged.push(...folded);
   }
   return sortByTime(merged);
 }
@@ -228,16 +228,21 @@ export function withVoiceHistoryLines(
   const pending = [...extras].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
   const merged: ExportableTranscriptLine[] = [];
   let extraIndex = 0;
+  const takeExtra = (): ExportableTranscriptLine | undefined => pending[extraIndex];
   for (const line of buffer) {
-    while (extraIndex < pending.length && pending[extraIndex].ts <= line.ts) {
-      merged.push(pending[extraIndex]);
+    let extra = takeExtra();
+    while (extra && extra.ts <= line.ts) {
+      merged.push(extra);
       extraIndex += 1;
+      extra = takeExtra();
     }
     merged.push(line);
   }
-  while (extraIndex < pending.length) {
-    merged.push(pending[extraIndex]);
+  let extra = takeExtra();
+  while (extra) {
+    merged.push(extra);
     extraIndex += 1;
+    extra = takeExtra();
   }
   return merged;
 }

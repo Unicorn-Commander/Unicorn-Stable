@@ -44,7 +44,8 @@ export type MobileCallMode = "video" | "split" | "chat";
  *      `toggleTranscript`, `focusParticipant`, `pinParticipant`) the UI and
  *      AGENTS both call.
  *   5. Transcript ingest: interim lines update in place per speaker; final
- *      lines commit. Cheap to keep empty when the panel is closed.
+ *      lines commit. The on-screen list stays capped. A separate export
+ *      buffer keeps every accepted final for Meeting-Ops.
  *   6. Mobile intent mode (`mobileCallMode`: video | split | chat) + optional
  *      chat bottom sheet — session-scoped, not persisted; resets with the call.
  */
@@ -90,8 +91,17 @@ export interface PopoutState {
   ownerRoomId: string | null;
 }
 
-/** Cap the buffer so a long call can't grow memory unbounded. */
-const MAX_TRANSCRIPT_LINES = 500;
+/**
+ * On-screen caption cap. Oldest lines drop off the panel. The export buffer
+ * is separate so a long call does not lose its beginning in Meeting-Ops.
+ */
+export const MAX_TRANSCRIPT_LINES = 500;
+
+/**
+ * Memory ceiling for the export buffer. Compaction at export time, not this
+ * cap, is what fits the 2000-line Meeting-Ops contract.
+ */
+export const MAX_EXPORT_TRANSCRIPT_LINES = 20_000;
 const TRANSCRIPT_DEDUPE_WINDOW_MS = 12_000;
 
 /**
@@ -166,6 +176,59 @@ function sameUtterance(a: string, b: string): boolean {
     if (bw.has(word)) overlap++;
   });
   return overlap / shorter >= 0.72;
+}
+
+/** Finals that scrolled off the panel but are still inside the echo window. */
+function exportLinesInWindow(
+  exportLines: readonly TranscriptLine[],
+  ts: number,
+  seen: ReadonlySet<string>,
+): TranscriptLine[] {
+  if (exportLines.length === 0) return [];
+  const min = ts - TRANSCRIPT_DEDUPE_WINDOW_MS;
+  const max = ts + TRANSCRIPT_DEDUPE_WINDOW_MS;
+  const extra: TranscriptLine[] = [];
+  for (const candidate of exportLines) {
+    if (candidate.ts < min || candidate.ts > max) continue;
+    if (seen.has(candidate.id)) continue;
+    extra.push(candidate);
+  }
+  return extra;
+}
+
+function authorityPool(
+  lines: TranscriptLine[],
+  exportLines: readonly TranscriptLine[],
+  ts: number,
+): TranscriptLine[] {
+  const seen = new Set<string>();
+  for (const candidate of lines) seen.add(candidate.id);
+  const extra = exportLinesInWindow(exportLines, ts, seen);
+  return extra.length === 0 ? lines : lines.concat(extra);
+}
+
+function withoutMatches(
+  lines: TranscriptLine[],
+  predicate: (candidate: TranscriptLine) => boolean,
+): TranscriptLine[] {
+  let changed = false;
+  const next: TranscriptLine[] = [];
+  for (const candidate of lines) {
+    if (predicate(candidate)) changed = true;
+    else next.push(candidate);
+  }
+  return changed ? next : lines;
+}
+
+function capExportBuffer(lines: TranscriptLine[]): TranscriptLine[] {
+  if (lines.length <= MAX_EXPORT_TRANSCRIPT_LINES) return lines;
+  const dropped = lines.length - MAX_EXPORT_TRANSCRIPT_LINES;
+  console.warn(
+    `call transcript export buffer dropped ${dropped} oldest final ${
+      dropped === 1 ? "line" : "lines"
+    } past the ${MAX_EXPORT_TRANSCRIPT_LINES}-line safety cap`,
+  );
+  return lines.slice(lines.length - MAX_EXPORT_TRANSCRIPT_LINES);
 }
 
 interface CallUiState {
@@ -251,8 +314,15 @@ interface CallUiState {
    * (setActiveCallRoom), and by {@link TALK_GATE_SAFETY_TIMEOUT_MS}.
    */
   talkGate: TalkGateState;
-  /** Transcript buffer (final + the current interim line per speaker). */
+  /** On-screen transcript (finals + one interim per speaker), capped at {@link MAX_TRANSCRIPT_LINES}. */
   transcript: TranscriptLine[];
+  /**
+   * Accepted finals for Meeting-Ops export. Interims never enter. A later
+   * final is appended, not written over an earlier one. Echo and authority
+   * rules match the on-screen list, including lines that have scrolled off
+   * it. Cleared when the transcript is cleared for a new call.
+   */
+  exportTranscript: TranscriptLine[];
   /** Which caption lane is live, and why it is off. */
   caption: CaptionState;
   /** Per-user "Caption my microphone (server)". Default off. Not a recording. */
@@ -338,6 +408,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
   audioHoldConsumed: false,
   talkGate: TALK_GATE_CLOSED,
   transcript: [],
+  exportTranscript: [],
   caption: reduceCaptionState(CAPTION_IDLE_FACTS),
   serverCaptionEnabled: false,
   useDefaultMic: null,
@@ -444,6 +515,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       sendToMeetingOps: getSendByDefault(),
       callStartedAt: Date.now(),
       transcript: [],
+      exportTranscript: [],
     }),
 
   setTalkGate: (open, by, target) => {
@@ -499,7 +571,9 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       // Collapse the rolling interim line for a speaker: while a speaker is
       // mid-utterance we keep exactly ONE non-final line for them and replace
       // it in place; a final line for that speaker supersedes their interim.
+      // The export buffer never holds that interim, so a final only appends.
       let lines = state.transcript.slice();
+      let exportLines = state.exportTranscript;
 
       const within = (a: number, b: number) =>
         Math.abs(a - b) <= TRANSCRIPT_DEDUPE_WINDOW_MS;
@@ -512,13 +586,18 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       //    local_mic or server line, even with a different speaker guess.
       // 4. Acoustic echo: Web Speech often captions far-end audio as "local".
       //    If another participant already published the same words, drop the
-      //    later echo copy.
+      //    later echo copy. The export buffer is part of that lookback, so a
+      //    line that has scrolled off the panel still suppresses its echo.
 
       const matches = (candidate: TranscriptLine) =>
         within(candidate.ts, msg.ts) && sameUtterance(candidate.text, msg.text);
 
+      const dropEchoes = (candidate: TranscriptLine) =>
+        (isAgentEar(candidate.source) || candidate.source === "server") &&
+        matches(candidate);
+
       if (ear) {
-        const humanWins = lines.some(
+        const humanWins = authorityPool(lines, exportLines, msg.ts).some(
           (candidate) =>
             (candidate.source === "local_mic" || candidate.source === "server") &&
             matches(candidate),
@@ -527,14 +606,18 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       }
 
       if (msg.source === "server") {
-        const browserWins = lines.some(
+        const browserWins = authorityPool(lines, exportLines, msg.ts).some(
           (candidate) => candidate.source === "local_mic" && matches(candidate),
         );
         if (browserWins) return state;
-        lines = lines.filter(
+        const nextLines = lines.filter(
           (candidate) => !(isAgentEar(candidate.source) && matches(candidate)),
         );
-        const earlierRemote = lines.find(
+        const nextExport = withoutMatches(
+          exportLines,
+          (candidate) => isAgentEar(candidate.source) && matches(candidate),
+        );
+        const earlierRemote = authorityPool(nextLines, nextExport, msg.ts).find(
           (candidate) =>
             (candidate.source === "local_mic" || candidate.source === "server") &&
             candidate.participantId !== msg.participantId &&
@@ -542,17 +625,14 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
             candidate.ts <= msg.ts,
         );
         if (earlierRemote) return state;
+        lines = nextLines;
+        exportLines = nextExport;
       }
 
       if (msg.source === "local_mic") {
-        lines = lines.filter(
-          (candidate) =>
-            !(
-              (isAgentEar(candidate.source) || candidate.source === "server") &&
-              matches(candidate)
-            ),
-        );
-        const earlierRemote = lines.find(
+        const nextLines = lines.filter((candidate) => !dropEchoes(candidate));
+        const nextExport = withoutMatches(exportLines, dropEchoes);
+        const earlierRemote = authorityPool(nextLines, nextExport, msg.ts).find(
           (candidate) =>
             candidate.source === "local_mic" &&
             candidate.participantId !== msg.participantId &&
@@ -560,6 +640,8 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
             candidate.ts <= msg.ts,
         );
         if (earlierRemote) return state;
+        lines = nextLines;
+        exportLines = nextExport;
       }
       const interimIdx = lines.findIndex(
         (l) => !l.isFinal && l.participantId === msg.participantId,
@@ -568,22 +650,27 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       if (msg.isFinal) {
         if (interimIdx !== -1) lines.splice(interimIdx, 1);
         lines.push(line);
+        // Blank finals stay on screen but are not an export line.
+        if (line.text.trim()) {
+          exportLines = capExportBuffer(exportLines.concat(line));
+        }
       } else if (interimIdx !== -1) {
         lines[interimIdx] = line;
       } else {
         lines.push(line);
       }
 
-      // Trim from the front (oldest) if we blew past the cap.
+      // Trim the on-screen list from the front. The export buffer is not
+      // trimmed here; MAX_EXPORT_TRANSCRIPT_LINES is its only ceiling.
       const trimmed =
         lines.length > MAX_TRANSCRIPT_LINES
           ? lines.slice(lines.length - MAX_TRANSCRIPT_LINES)
           : lines;
 
-      return { transcript: trimmed };
+      return { transcript: trimmed, exportTranscript: exportLines };
     }),
 
-  clearTranscript: () => set({ transcript: [] }),
+  clearTranscript: () => set({ transcript: [], exportTranscript: [] }),
 
   setCaptionFacts: (facts) => {
     lastCaptionFacts = facts;
@@ -627,6 +714,7 @@ export const useCallUiStore = create<CallUiState>((set, get) => ({
       audioHoldConsumed: false,
       talkGate: TALK_GATE_CLOSED,
       transcript: [],
+      exportTranscript: [],
       caption: reduceCaptionState(lastCaptionFacts),
       callStartedAt: null,
       sendToMeetingOps: getSendByDefault(),

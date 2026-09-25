@@ -14,10 +14,13 @@ import { useCallUiStore } from "@/stores/callUiStore";
 import { useAppStore } from "@/stores/appStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import {
-  exportCaptionSource,
   linesWithVoiceHistory,
   type CaptionVoiceMessage,
 } from "@/lib/captionState";
+import {
+  buildCallTranscriptExportLines,
+  withVoiceHistoryLines,
+} from "@/lib/compactTranscriptExport";
 import {
   isDevTranscriptEnabled,
   seedSampleTranscript,
@@ -62,6 +65,7 @@ function voiceMessages(items: Message[]): CaptionVoiceMessage[] {
 
 export function TranscriptPanel() {
   const liveLines = useCallUiStore((s) => s.transcript);
+  const exportTranscript = useCallUiStore((s) => s.exportTranscript);
   const caption = useCallUiStore((s) => s.caption);
   const serverCaptionEnabled = useCallUiStore((s) => s.serverCaptionEnabled);
   const setServerCaptionEnabled = useCallUiStore((s) => s.setServerCaptionEnabled);
@@ -127,8 +131,12 @@ export function TranscriptPanel() {
 
   async function onSendToMeetingOps() {
     if (!activeCallRoomId || sending) return;
-    const finals = lines.filter((l) => l.isFinal && l.text.trim());
-    if (finals.length === 0) {
+    // Every final of the call plus the voice turns only chat history holds;
+    // the on-screen list is capped and would drop a long call's beginning.
+    const exportLines = buildCallTranscriptExportLines(
+      withVoiceHistoryLines(exportTranscript, lines),
+    );
+    if (exportLines.length === 0) {
       pushToast({
         title: "Nothing to send yet",
         body: "Final caption lines will appear as people finish speaking.",
@@ -141,15 +149,7 @@ export function TranscriptPanel() {
     try {
       const roomMeta = rooms.find((rm) => rm.id === activeCallRoomId);
       const result = await api.exportCallTranscript(activeCallRoomId, {
-        lines: finals.map((l) => ({
-          participant_id: l.participantId,
-          name: l.name,
-          text: l.text,
-          ts: l.ts,
-          is_final: true,
-          segment_id: l.id,
-          source: exportCaptionSource(l.source),
-        })),
+        lines: exportLines,
         room_name: roomMeta?.display_name || roomMeta?.name || null,
         call_started_at: callStartedAt
           ? new Date(callStartedAt).toISOString()
