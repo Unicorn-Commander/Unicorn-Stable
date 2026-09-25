@@ -233,6 +233,9 @@ _VOICE_META_KEYS = (
     "voice_relay_window_seconds",
     "voice_relay_aliases",
     "voice_relay_voices",
+    # Per-seat Whisper spellings (``{"agent-shox": ["shocks"]}``). A dict in
+    # the DB, a JSON string in LiveKit metadata, same as the cast.
+    "voice_relay_cast_aliases",
     # Faces + one participant per cast member (2026-09-02). Booleans in the
     # DB, "true"/"false" strings in LiveKit metadata; both default off.
     "voice_relay_video",
@@ -371,6 +374,41 @@ def stage_voices(meta: dict[str, Any] | None) -> dict[str, str] | None:
     return {k: v for k, v in cast.items() if k not in benched}
 
 
+def relay_cast_aliases(value: Any) -> dict[str, list[str]] | None:
+    """``voice_relay_cast_aliases`` as a clean map; None when the room has none.
+
+    A dict or the JSON string LiveKit metadata carries. Phrases are lowercase.
+    """
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    if not isinstance(value, dict) or not value:
+        return None
+    out: dict[str, list[str]] = {}
+    for key, aliases in value.items():
+        seat = str(key or "").strip().lower()
+        if not seat or not isinstance(aliases, (list, tuple)):
+            continue
+        phrases: list[str] = []
+        for item in aliases:
+            phrase = str(item or "").strip().lower()
+            if phrase and phrase not in phrases:
+                phrases.append(phrase)
+        if phrases:
+            out[seat] = phrases
+    return out or None
+
+
+def _cast_aliases_json(value: Any) -> str | None:
+    """:func:`relay_cast_aliases` as the JSON string LiveKit metadata carries."""
+    parsed = relay_cast_aliases(value)
+    if parsed is None:
+        return None
+    return json.dumps(parsed, sort_keys=True)
+
+
 def _stage_voices_json(meta: dict[str, Any] | None) -> str | None:
     """:func:`stage_voices` as the JSON string LiveKit metadata carries."""
     stage = stage_voices(meta)
@@ -421,6 +459,10 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
             aliases = ",".join(str(x).strip() for x in v if str(x).strip())
             if aliases:
                 wanted[k] = aliases
+        elif k == "voice_relay_cast_aliases":
+            encoded = _cast_aliases_json(v)
+            if encoded is not None:
+                wanted[k] = encoded
     if wanted and "voice_relay_max_spoken_chars" not in wanted:
         wanted["voice_relay_max_spoken_chars"] = str(default_max_spoken_chars(room))
     if not wanted:
@@ -429,6 +471,12 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
         existing = await livekit.get_room_metadata(room.livekit_room_name)
         if not isinstance(existing, dict):
             existing = {}
+        # Merge-only metadata would keep spellings the room has deleted.
+        # "{}" means no room aliases; the worker still applies its built-ins.
+        if "voice_relay_cast_aliases" not in meta:
+            stale = existing.get("voice_relay_cast_aliases")
+            if stale not in (None, "", "{}"):
+                wanted["voice_relay_cast_aliases"] = "{}"
         if all(existing.get(k) == v for k, v in wanted.items()):
             return
         merged = dict(existing)
@@ -501,6 +549,7 @@ async def _ensure_voice_relay(
     # string, like every other value in LiveKit metadata; the worker accepts
     # either form.
     voices_json = _stage_voices_json(room_meta)
+    aliases_json = _cast_aliases_json(room_meta.get("voice_relay_cast_aliases"))
     try:
         await livekit.dispatch_agent(
             room_name=room.livekit_room_name,
@@ -524,6 +573,11 @@ async def _ensure_voice_relay(
                     else {}
                 ),
                 **({"voice_relay_voices": voices_json} if voices_json is not None else {}),
+                **(
+                    {"voice_relay_cast_aliases": aliases_json}
+                    if aliases_json is not None
+                    else {}
+                ),
                 # Faces / per-member participants, only when the room asked.
                 **{
                     k: "true"

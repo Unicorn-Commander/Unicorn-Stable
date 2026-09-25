@@ -370,6 +370,59 @@ def aliases_from_metadata(metadata: Any, persona: str) -> set[str]:
     return out
 
 
+#: Whisper's spellings of cast names. No room configuration required for the
+#: misses measured on 2026-09-24 ("Shox" → "shocks") and the ones expected
+#: next ("Majik" → "magic"). Keyed by the short seat id.
+CAST_ALIAS_KEY = "voice_relay_cast_aliases"
+BUILTIN_CAST_ALIASES: dict[str, frozenset[str]] = {
+    "shox": frozenset({"shocks"}),
+    "majik": frozenset({"magic", "magic mane", "majik mane"}),
+}
+
+
+def cast_aliases_from_metadata(metadata: Any) -> dict[str, set[str]]:
+    """``voice_relay_cast_aliases`` as username → lowercase phrases.
+
+    Accepts a metadata dict, the JSON string LiveKit carries, or a value that
+    is itself a JSON string. Junk is an empty map — the settings PATCH is
+    what rejects a bad shape. Room phrases are added to the built-in
+    spellings; they do not erase them.
+    """
+    data = _metadata_dict(metadata)
+    raw = data.get(CAST_ALIAS_KEY)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, set[str]] = {}
+    for key, value in raw.items():
+        seat = str(key or "").strip().lower()
+        if not seat or not isinstance(value, (list, tuple)):
+            continue
+        phrases = {str(item or "").strip().lower() for item in value}
+        phrases.discard("")
+        if phrases:
+            out[seat] = phrases
+    return out
+
+
+def aliases_for_seat(identity: str, room_aliases: dict[str, set[str]] | None = None) -> set[str]:
+    """Built-in spellings for this seat, plus any the room added."""
+    ident = (identity or "").strip().lower()
+    short = ident[6:] if ident.startswith("agent-") else ident
+    names = set(BUILTIN_CAST_ALIASES.get(short, ()))
+    room = room_aliases or {}
+    for key in (ident, short, f"agent-{short}"):
+        extra = room.get(key)
+        if extra:
+            names.update(extra)
+    names.discard("")
+    return names
+
+
 def relay_config_from_metadata(metadata: Any) -> tuple[str, str]:
     """(source_username, relay_persona) from room/job metadata.
 
@@ -825,6 +878,9 @@ class VoiceRelayAgent(StableAgent):
         self._puppet: PuppetVideo | None = None
         #: sender username → hosted participant, when ``_multi``.
         self._cast: dict[str, CastMember] = {}
+        #: Room-configured cast aliases (username → phrases). Built-ins apply
+        #: even when this is empty.
+        self._cast_aliases: dict[str, set[str]] = {}
         self._visuals_task: asyncio.Task[None] | None = None
         self._manifest: dict[str, Any] | None = None
 
@@ -875,6 +931,10 @@ class VoiceRelayAgent(StableAgent):
             else room_meta
         )
         self._voices = relay_voices_from_metadata(voices_meta, source, persona)
+        alias_meta = (
+            job_meta if CAST_ALIAS_KEY in _metadata_dict(job_meta) else room_meta
+        )
+        self._cast_aliases = cast_aliases_from_metadata(alias_meta)
         # Faces and cast. Same precedence: the dispatch's own metadata wins
         # when it speaks to the question, the room's standing setting otherwise.
         flags = relay_flags_from_metadata(
@@ -1165,6 +1225,14 @@ class VoiceRelayAgent(StableAgent):
                     )
                     logger.info("voice_relay_voices_changed", voices=dict(self._voices))
                     self._schedule_visuals()
+                if "cast_aliases" in payload:
+                    self._cast_aliases = cast_aliases_from_metadata(
+                        {CAST_ALIAS_KEY: payload.get("cast_aliases")}
+                    )
+                    logger.info(
+                        "voice_relay_cast_aliases_changed",
+                        seats=sorted(self._cast_aliases),
+                    )
                 if "video" in payload or "multi" in payload:
                     # Faces on or off, live, for the same reason as the rest of
                     # this frame: a setting that waits for a rejoin is not one.
@@ -1193,7 +1261,7 @@ class VoiceRelayAgent(StableAgent):
                     )
                 elif not any(
                     k in payload
-                    for k in ("voices", "video", "multi", "max_spoken_chars")
+                    for k in ("voices", "video", "multi", "max_spoken_chars", "cast_aliases")
                 ):
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
                 if "max_spoken_chars" in payload:
@@ -1668,13 +1736,19 @@ class VoiceRelayAgent(StableAgent):
             logger.debug("voice_relay_sticky_claim_failed", exc_info=True)
 
     def _cast_needles(self) -> dict[str, set[str]]:
-        """Spoken name forms per hosted cast identity (``agent-grok`` → grok…)."""
+        """Spoken name forms per hosted cast identity (``agent-grok`` → grok…).
+
+        Built-in and room aliases are included. Matching them still goes
+        through the position-aware address rule, same as a display name.
+        """
         out: dict[str, set[str]] = {}
+        room_aliases = getattr(self, "_cast_aliases", None) or {}
         for identity, member in (self._cast or {}).items():
             if not identity or identity in (self._identity, self._source_username):
                 continue
             agent_id = identity[6:] if identity.startswith("agent-") else identity
             names = set(mention_needles(agent_id, None))
+            names.update(aliases_for_seat(identity, room_aliases))
             display = str(getattr(member, "display_name", "") or "").strip().lower()
             if display:
                 names.add(display)
@@ -1743,6 +1817,17 @@ class VoiceRelayAgent(StableAgent):
             (identity for identity, names in needles.items() if voice_dispatch.spoken_name_match(text, names)),
             None,
         )
+        # Exact address wins. Fuzzy is the same leading-token recovery the
+        # persona path uses, and only when nobody was named outright.
+        if by_name is None:
+            by_name = next(
+                (
+                    identity
+                    for identity, names in needles.items()
+                    if voice_dispatch.fuzzy_spoken_name_match(text, names)
+                ),
+                None,
+            )
         candidate = by_name
         rule = "addressed_by_name"
         if candidate is None:
@@ -1768,8 +1853,17 @@ class VoiceRelayAgent(StableAgent):
 
         others = {identity: names for identity, names in needles.items() if identity != candidate}
         others[self._identity] = set(self._listen_names())
+        # decide() matches exact spoken names. A fuzzy cast hit ("grak" for
+        # grok) still has to count as an address, or the floor rules reject
+        # the line as nobody's. The leading token is already where a name
+        # sits; handing it to this candidate does not change who was named.
+        my_names = set(needles[candidate])
+        if by_name is not None and not voice_dispatch.spoken_name_match(text, my_names):
+            leading = re.match(r"\s*([a-z']+)", text.lower())
+            if leading:
+                my_names.add(leading.group(1))
         kwargs: dict[str, Any] = dict(
-            my_names=needles[candidate],
+            my_names=my_names,
             speaker=speaker,
             speaker_is_agent=False,
             text=text,
