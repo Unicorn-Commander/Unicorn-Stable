@@ -213,6 +213,10 @@ function signalCount(line: string): number {
     .mock.calls.filter((args) => args[0] === line).length;
 }
 
+function errorCount(): number {
+  return vi.mocked(console.error).mock.calls.length;
+}
+
 beforeEach(() => {
   harness.seed = [];
   harness.rooms = [];
@@ -222,6 +226,7 @@ beforeEach(() => {
   });
   vi.stubGlobal("cancelAnimationFrame", () => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -383,6 +388,19 @@ describe("CompositePage", () => {
     expect(view.textContent?.trim()).toBe("");
     expect(signalCount(START_RECORDING)).toBe(0);
     expect(signalCount(END_RECORDING)).toBe(0);
+    expect(errorCount()).toBe(1);
+    expect(vi.mocked(console.error).mock.calls[0]?.flat().join(" ")).not.toContain(
+      "not-a-recorder",
+    );
+  });
+
+  it("logs one error and no END for a URL without recorder credentials", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    window.history.replaceState({}, "", "/broadcast/room-1/composite");
+    render(<CompositePage />);
+    await settle();
+    expect(errorCount()).toBe(1);
+    expect(signalCount(END_RECORDING)).toBe(0);
   });
 
   it("waits for a video track subscribed after connect and starts by the two-second bound", async () => {
@@ -449,6 +467,7 @@ describe("CompositePage", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(harness.rooms).toHaveLength(2);
     expect(signalCount(END_RECORDING)).toBe(0);
+    expect(errorCount()).toBe(1);
   });
 
   it.each([
@@ -487,6 +506,7 @@ describe("CompositePage", () => {
     });
     expect(signalCount(END_RECORDING)).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(errorCount()).toBe(2);
   });
 
   it("switches from grid to speaker for a share and back when it ends", async () => {
