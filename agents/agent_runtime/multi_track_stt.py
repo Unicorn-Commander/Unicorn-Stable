@@ -38,9 +38,6 @@ UTTERANCE_SILENCE_GATE_S = 1.0
 #: A turn that never goes quiet still emits here. The previous cap counted
 #: frames and recognized without emitting, so a noise bed went silent.
 UTTERANCE_MAX_S = 15.0
-#: Voiced audio before a human talking over an agent cuts the reply, without
-#: waiting for the silence gate or the recognizer.
-SPEECH_ONSET_S = 0.25
 #: Ask the stream for 20 ms frames. Timing does not depend on getting them.
 FRAME_SIZE_MS = 20
 #: The per-track ear covers its speaker only while a frame arrived this recently.
@@ -250,22 +247,18 @@ class LiveTrackSession:
         media: Any,
         stt: Any,
         on_final: OnFinal,
-        on_onset: Callable[[HumanAudioTrack], None] | None = None,
     ) -> None:
         self.track = track
         self._media = media
         self._stt = stt
         self._on_final = on_final
-        self._on_onset = on_onset
         self._task: asyncio.Task[None] | None = None
         self._closed = False
         self._pending_parts: list[str] = []
         self._frames: list[Any] = []
         self._buf_s = 0.0
         self._quiet_s = 0.0
-        self._voiced_s = 0.0
         self._in_speech = False
-        self._onset_sent = False
         self._last_frame_at: float | None = None
         self._last_recognize_failed = False
         self._close_timeout = CLOSE_FLUSH_TIMEOUT_S
@@ -347,12 +340,8 @@ class LiveTrackSession:
         if energy >= ENERGY_THRESHOLD:
             self._in_speech = True
             self._quiet_s = 0.0
-            self._voiced_s += dt
             self._frames.append(frame)
             self._buf_s += dt
-            if not self._onset_sent and self._voiced_s >= SPEECH_ONSET_S:
-                self._onset_sent = True
-                self._signal_onset()
         elif self._in_speech:
             self._quiet_s += dt
             self._frames.append(frame)
@@ -374,9 +363,7 @@ class LiveTrackSession:
         self._frames = []
         self._buf_s = 0.0
         self._quiet_s = 0.0
-        self._voiced_s = 0.0
         self._in_speech = False
-        self._onset_sent = False
 
     async def _flush_tail(self) -> None:
         """Recognize audio still buffered when the track ends or closes."""
@@ -403,15 +390,6 @@ class LiveTrackSession:
                     exc_info=True,
                 )
         self._emit_pending()
-
-    def _signal_onset(self) -> None:
-        callback = self._on_onset
-        if not callable(callback):
-            return
-        try:
-            callback(self.track)
-        except Exception:
-            logger.debug("multi_track_onset_failed", exc_info=True)
 
     def _uncancel(self) -> None:
         """A close() cancels the read. The flush that follows must still await."""
@@ -519,10 +497,7 @@ def _event_text(event: Any) -> str:
     return str(getattr(event, "text", "") or "").strip()
 
 
-def _live_opener(
-    on_final: OnFinal,
-    on_onset: Callable[[HumanAudioTrack], None] | None = None,
-) -> Opener:
+def _live_opener(on_final: OnFinal) -> Opener:
     def open_track(track: HumanAudioTrack) -> Any:
         media = getattr(track.publication, "track", None)
         if media is None:
@@ -534,7 +509,7 @@ def _live_opener(
         except Exception:
             logger.warning("multi_track_stt_unavailable", exc_info=True)
             return None
-        session = LiveTrackSession(track, media, stt, on_final, on_onset=on_onset)
+        session = LiveTrackSession(track, media, stt, on_final)
         session.start()
         logger.info(
             "multi_track_stt_started",
@@ -552,7 +527,6 @@ def attach_multi_track_stt(
     on_final: OnFinal,
     *,
     opener: Opener | None = None,
-    on_onset: Callable[[HumanAudioTrack], None] | None = None,
     cap: int = MAX_STT_TRACKS,
 ) -> MultiTrackController | None:
     """Subscribe the elected captioner. Anyone else returns None and does nothing."""
@@ -561,7 +535,7 @@ def attach_multi_track_stt(
         return None
     controller = MultiTrackController(
         on_final=on_final,
-        opener=opener or _live_opener(on_final, on_onset),
+        opener=opener or _live_opener(on_final),
         cap=cap,
     )
 

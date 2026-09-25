@@ -23,8 +23,9 @@ SR = 16000
 TEN_MS = 160  # 160 samples at 16 kHz
 
 
-def _pcm(loud: bool, samples: int = TEN_MS, rate: int = SR):
-    amp = 3000 if loud else 0
+def _pcm(loud: bool, samples: int = TEN_MS, rate: int = SR, *, amp: int | None = None):
+    if amp is None:
+        amp = 3000 if loud else 0
     return SimpleNamespace(
         data=array.array("h", [amp] * samples).tobytes(),
         sample_rate=rate,
@@ -59,7 +60,7 @@ class _ScriptSTT:
         return SimpleNamespace(text=f"grok question number {n}")
 
 
-def _run(script, *, stt, on_final, on_onset=None, close_at=None, clock=None):
+def _run(script, *, stt, on_final, close_at=None, clock=None):
     import livekit.rtc as rtc
 
     opened: dict = {}
@@ -88,15 +89,11 @@ def _run(script, *, stt, on_final, on_onset=None, close_at=None, clock=None):
     rtc.AudioStream = FakeStream
     sess = None
     try:
-        kwargs = {}
-        if on_onset is not None:
-            kwargs["on_onset"] = on_onset
         sess = LiveTrackSession(
             HumanAudioTrack(AARON, "Aaron", "TR_1"),
             object(),
             stt,
             on_final,
-            **kwargs,
         )
 
         async def go():
@@ -467,46 +464,28 @@ class TrackGateTests(TestCase):
         self.assertNotIn("text", _index_holder)
         self.assertLess(elapsed, 1.0)
 
-    def test_onset_interrupts_a_speaking_agent_within_about_250ms(self) -> None:
+    def test_a_noise_bed_or_desk_clicks_never_interrupt_a_speaking_agent(self) -> None:
+        """Raw energy is not a barge-in. A steady -36 dBFS bed (music in the
+        room) and a burst of desk clicks used to cut the agent at 0.25 s and
+        again after every 15 s cap. Per-track barge-in is a recognized line."""
         agent = self._agent()
         agent._speaking = True
-        interrupted: list[str] = []
-        agent._interrupt_speech = lambda **kw: interrupted.append(kw.get("speaker", ""))
-        indexes: list[int] = []
-        recognized: list[int] = []
-        pos = {"i": -1}
-        stt = _ScriptSTT()
-
-        real_recognize = stt.recognize
-
-        async def recognize(frames):
-            recognized.append(pos["i"])
-            return await real_recognize(frames)
-
-        stt.recognize = recognize
-
-        def on_onset(track):
-            indexes.append(pos["i"])
-            agent._on_speech_onset(track)
-
-        script = _repeat(True, 0.4)
-        try:
-            _run(
-                script,
-                stt=stt,
-                on_final=lambda *_: None,
-                on_onset=on_onset,
-                clock=pos,
-            )
-        except TypeError:
-            self.fail("per-track session does not signal speech onset")
-        self.assertTrue(indexes, "no onset")
-        onset_s = (indexes[0] + 1) * (TEN_MS / SR)
-        self.assertGreaterEqual(onset_s, 0.20)
-        self.assertLessEqual(onset_s, 0.30)
-        self.assertEqual(interrupted, [AARON])
-        if recognized:
-            self.assertLess(indexes[0], recognized[0])
+        interrupted: list[dict] = []
+        agent._interrupt_speech = lambda **kw: interrupted.append(kw)
+        clicks: list = []
+        for _ in range(14):
+            clicks += _repeat(True, 0.02) + _repeat(False, 0.05)
+        bed = [_pcm(True, amp=500) for _ in range(len(_repeat(True, 16.0)))]
+        script = bed + clicks + _repeat(False, 1.5)
+        # The recognizer finds no words in a bed or in clicks.
+        stt = _ScriptSTT(texts=[""] * 10)
+        track = HumanAudioTrack(AARON, "Aaron", "TR_1")
+        _run(script, stt=stt, on_final=lambda _t, text: agent._on_track_final(track, text))
+        self.assertGreaterEqual(len(stt.calls), 2, "the cap and the gate both cut")
+        self.assertEqual(interrupted, [])
+        self.assertEqual(self._persisted(agent), [])
+        self.assertNotIn("on_onset", inspect.signature(LiveTrackSession).parameters)
+        self.assertFalse(hasattr(agent, "_on_speech_onset"))
 
     def test_health_is_a_live_task_a_recent_frame_and_a_recognize_that_worked(self) -> None:
         import time as _time

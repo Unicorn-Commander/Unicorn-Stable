@@ -1471,7 +1471,6 @@ class VoiceRelayAgent(StableAgent):
                 self._lk_room,
                 self._join_identity or self._identity,
                 self._on_track_final,
-                on_onset=self._on_speech_onset,
             )
         except Exception:
             logger.warning("voice_relay_multi_track_failed", exc_info=True)
@@ -1522,20 +1521,10 @@ class VoiceRelayAgent(StableAgent):
         self._hear(speaker, content, ear="multi_track")
         if self._speaking and content:
             # Barge even when the line is not one we persist: a human
-            # talking over the relay takes the floor. Onset usually got
-            # here first; this is the line that arrives after the gate.
+            # talking over the relay takes the floor. This is the only
+            # per-track barge-in: raw energy alone (a music bed, desk
+            # clicks, program audio) must never cut an agent on air.
             self._interrupt_speech(speaker=speaker, chars=len(content))
-
-    def _on_speech_onset(self, track: Any) -> None:
-        """A human has been voiced for about a quarter second.
-
-        While an agent is speaking this cuts the reply now, from any human,
-        without waiting for the silence gate or recognition.
-        """
-        if not self._speaking:
-            return
-        speaker = str(getattr(track, "participant_identity", "") or "")
-        self._interrupt_speech(speaker=speaker, chars=0)
 
     def _interrupt_speech(self, *, speaker: str, chars: int) -> None:
         """A human took the floor mid-reply: stop the chunk playing now and
