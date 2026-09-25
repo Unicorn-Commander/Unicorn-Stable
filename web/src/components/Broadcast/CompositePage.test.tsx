@@ -437,10 +437,15 @@ describe("CompositePage", () => {
     window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
     render(<CompositePage />);
     await settle();
+    vi.useFakeTimers();
     await act(async () => {
       harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError");
     });
-    await settle();
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(harness.rooms).toHaveLength(2);
     expect(signalCount(END_RECORDING)).toBe(0);
@@ -471,10 +476,15 @@ describe("CompositePage", () => {
     window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
     render(<CompositePage />);
     await settle();
+    vi.useFakeTimers();
     await act(async () => {
       harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError");
     });
-    await settle();
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(signalCount(END_RECORDING)).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

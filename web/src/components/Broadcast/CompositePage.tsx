@@ -436,7 +436,7 @@ function CompositePageContent() {
         return;
       }
       current = null;
-      void cycle();
+      scheduleRetry(new Error("unexpected composite disconnect"));
     }
 
     async function openSession(
