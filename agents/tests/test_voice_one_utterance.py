@@ -211,9 +211,9 @@ class OneUtteranceTests(TestCase):
 
     def test_a_covered_speaker_session_line_does_not_dispatch_on_its_own(self) -> None:
         agent = self._agent()
+        # The track's own gate opened on this speech, so that ear will post
+        # the line. The session ear must not add a second one.
         agent._multi_track = _covering(AARON)
-        # The track just produced. The session ear must not add a second line.
-        agent._track_final_at[AARON] = agent._clock()
         ev = SimpleNamespace(transcript=WHOLE, is_final=True, speaker_id=AARON)
         agent._on_own_stt(ev)
         agent._publisher.persist_user_utterance.assert_not_called()

@@ -847,8 +847,6 @@ class VoiceRelayAgent(StableAgent):
         self._heard_at: dict[str, float] = {}
         #: speaker → (at, text, ear), kept long enough for the cross-ear copy.
         self._recent_heard: dict[str, list[tuple[float, str, str]]] = {}
-        #: When the per-track ear last produced a final for this speaker.
-        self._track_final_at: dict[str, float] = {}
         self._multi_track: Any = None
         self._transcripts: TranscriptAggregator | None = None
         self._publisher: VoiceHistoryPersister | None = None
@@ -1425,13 +1423,14 @@ class VoiceRelayAgent(StableAgent):
                 return
             # A healthy per-track ear owns this microphone. The linked
             # participant still barges in through here, the way it always
-            # has. The line itself waits: if that ear has produced nothing
-            # for a couple of seconds, a quiet mic the energy gate never
-            # opens on would otherwise go deaf, so this ear's line lands.
+            # has. The line itself is held back when that ear's own energy
+            # gate opened on this speech (it will post the line, after its
+            # longer silence gate). It lands only when the gate stayed shut:
+            # a quiet mic the per-track ear cannot hear.
             if self._speaker_covered(speaker):
                 if self._speaking:
                     self._interrupt_speech(speaker=speaker, chars=len(text))
-                if self._track_produced_recently(speaker, self._clock()):
+                if self._track_heard_speech(speaker):
                     return
 
             # EVERYTHING heard goes to the LIVE TRANSCRIPT — through the ONE
@@ -1481,8 +1480,6 @@ class VoiceRelayAgent(StableAgent):
         if not content:
             return
         speaker = str(getattr(track, "participant_identity", "") or "")
-        if speaker:
-            self._track_final_at[speaker] = self._clock()
         hint = None
         participant = None
         try:
@@ -1554,14 +1551,8 @@ class VoiceRelayAgent(StableAgent):
             self._heard_at = {k: t for k, t in self._heard_at.items() if t >= cutoff}
         return False
 
-    #: Session-ear fallback when a covered track has produced nothing. The
-    #: per-track energy gate has no gain control; the session ear does (the
-    #: room VAD). A quiet mic must not go deaf just because that gate never
-    #: opens.
-    _TRACK_QUIET_FALLBACK_S = 2.5
-
-    def _speaker_covered(self, speaker: str) -> bool:
-        """True when this human's per-track ear is healthy right now.
+    def _covering_sessions(self, speaker: str) -> list[Any]:
+        """This human's per-track sessions that are healthy right now.
 
         Healthy means the task is running, a frame arrived within the last
         second, and the last recognition attempt did not fail. A dead or
@@ -1570,11 +1561,12 @@ class VoiceRelayAgent(StableAgent):
         """
         controller = self._multi_track
         if controller is None or not speaker:
-            return False
+            return []
         try:
-            sids = controller.active_sids
+            sids = list(controller.active_sids)
         except Exception:
-            return False
+            return []
+        found: list[Any] = []
         for sid in sids:
             try:
                 session = controller.session_for(sid)
@@ -1590,12 +1582,34 @@ class VoiceRelayAgent(StableAgent):
                         continue
                 except Exception:
                     continue
-            return True
-        return False
+            found.append(session)
+        return found
 
-    def _track_produced_recently(self, speaker: str, now: float) -> bool:
-        last = self._track_final_at.get(speaker)
-        return last is not None and (now - last) <= self._TRACK_QUIET_FALLBACK_S
+    def _speaker_covered(self, speaker: str) -> bool:
+        """True when this human's per-track ear is healthy right now."""
+        return bool(self._covering_sessions(speaker))
+
+    def _track_heard_speech(self, speaker: str) -> bool:
+        """Did a covering per-track ear's energy gate open on recent speech?
+
+        True means that ear heard this utterance and will post it, so a line
+        from the session ear or a browser caption is a second copy. False
+        means the gate stayed shut over it (a quiet mic), so the other ear's
+        line is the only one there will be. A session that cannot say is
+        treated as having heard: the per-track ear is authoritative.
+        """
+        from agent_runtime.multi_track_stt import TRACK_VOICED_HOLD_S
+
+        for session in self._covering_sessions(speaker):
+            check = getattr(session, "voiced_within", None)
+            if not callable(check):
+                return True
+            try:
+                if check(TRACK_VOICED_HOLD_S):
+                    return True
+            except Exception:
+                return True
+        return False
 
     def _hear(
         self,
@@ -1615,8 +1629,6 @@ class VoiceRelayAgent(StableAgent):
         text = " ".join((text or "").split())
         if not speaker or not text:
             return False
-        if ear == "multi_track":
-            self._track_final_at[speaker] = now
         if not self._accept_heard(speaker, text, ear, now):
             return False
         return self._maybe_persist(speaker, text, ear=ear)
@@ -1982,9 +1994,11 @@ class VoiceRelayAgent(StableAgent):
         segment = str(normalized.get("segment_id") or "")
         text_key = f"stt:{str(normalized.get('text') or '').strip().lower()}"
         speaker = human_identity(normalized.get("participant_id"))
-        if speaker and self._speaker_covered(speaker):
-            # This mic's per-track ear is the one that persists. Claiming the
-            # text key here would make that ear's final look like a duplicate.
+        if speaker and self._speaker_covered(speaker) and self._track_heard_speech(speaker):
+            # This mic's per-track ear heard the speech and is the one that
+            # persists. Claiming the text key here would make that ear's
+            # final look like a duplicate. A quiet mic whose gate stayed
+            # shut falls through: the caption is the only copy.
             if segment:
                 self._heard_segments.add(segment)
             return

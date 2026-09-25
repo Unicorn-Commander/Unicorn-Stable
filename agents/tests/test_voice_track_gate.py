@@ -755,14 +755,18 @@ class TrackGateTests(TestCase):
         self.assertFalse(sess.is_healthy())
 
     def test_a_quiet_mic_still_reaches_chat_through_the_session_ear(self) -> None:
-        """Covered, healthy, but the energy gate has produced nothing."""
+        """Covered and healthy, but this track's energy gate stayed shut."""
         agent = self._agent()
+        gate = {"voiced": False}
 
         class Healthy:
             track = SimpleNamespace(participant_identity=AARON)
 
             def is_healthy(self) -> bool:
                 return True
+
+            def voiced_within(self, _seconds: float) -> bool:
+                return gate["voiced"]
 
         class Controller:
             @property
@@ -784,10 +788,10 @@ class TrackGateTests(TestCase):
             self._persisted(agent),
             ["@grok grok what time is it"],
         )
-        # Once the track has produced a line, the session ear stays quiet.
-        track = HumanAudioTrack(AARON, "Aaron", "TR_1")
-        _deliver(agent, track, "grok what time is it")
-        now["t"] = 1001.0
+        # When the gate did open on the speech, the per-track ear posts it
+        # and the session ear stays quiet.
+        gate["voiced"] = True
+        now["t"] = 1010.0
         agent._publisher.persist_user_utterance.reset_mock()
         agent._on_own_stt(
             SimpleNamespace(
@@ -795,3 +799,69 @@ class TrackGateTests(TestCase):
             )
         )
         self.assertEqual(self._persisted(agent), [])
+
+    def test_voiced_within_follows_the_tracks_own_energy_gate(self) -> None:
+        """The hold-back rule is keyed on this track's audio, not its finals."""
+        clock = {"t": 0.0}
+
+        def ticking():
+            return clock["t"]
+
+        import livekit.rtc as rtc
+
+        speech = _repeat(True, 0.4)
+        quiet = _repeat(False, 1.5)
+        hold = {"event": None, "parked": False}
+
+        class Stream:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                for frame in speech:
+                    clock["t"] += TEN_MS / SR
+                    yield SimpleNamespace(frame=frame)
+                    await asyncio.sleep(0)
+                # Park mid-utterance so the check below cannot miss it.
+                hold["parked"] = True
+                await hold["event"].wait()
+                for frame in quiet:
+                    clock["t"] += TEN_MS / SR
+                    yield SimpleNamespace(frame=frame)
+                    await asyncio.sleep(0)
+
+        states: dict[str, bool] = {}
+        original = rtc.AudioStream
+        rtc.AudioStream = Stream
+        try:
+            sess = LiveTrackSession(
+                HumanAudioTrack(AARON, "Aaron", "TR_1"),
+                object(),
+                _ScriptSTT(),
+                lambda *_: None,
+                clock=ticking,
+            )
+
+            async def go():
+                hold["event"] = asyncio.Event()
+                sess.start()
+                await _until(lambda: hold["parked"], what="speech buffered")
+                states["in_speech"] = sess._in_speech and sess.voiced_within(0.0)
+                hold["event"].set()
+                await asyncio.wait_for(sess._task, timeout=5.0)
+
+            asyncio.run(go())
+        finally:
+            rtc.AudioStream = original
+        self.assertTrue(states["in_speech"])
+        last_voiced = sess._last_voiced_at
+        self.assertAlmostEqual(last_voiced, 0.40, places=2)
+        self.assertTrue(sess.voiced_within(3.0, now=last_voiced + 2.9))
+        self.assertFalse(sess.voiced_within(3.0, now=last_voiced + 3.1))
+        quiet = LiveTrackSession(
+            HumanAudioTrack(AARON, "Aaron", "TR_2"), object(), _ScriptSTT(), lambda *_: None
+        )
+        self.assertFalse(quiet.voiced_within(3.0, now=1.0))

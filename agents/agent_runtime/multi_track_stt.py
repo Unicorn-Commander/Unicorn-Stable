@@ -45,6 +45,13 @@ HEALTHY_FRAME_S = 1.0
 #: On close, recognize whatever is buffered, then give up.
 CLOSE_FLUSH_TIMEOUT_S = 3.0
 ENERGY_THRESHOLD = 400
+#: How recently this track's own energy gate must have opened for the
+#: per-track ear to own a line another ear heard. The session ear's final
+#: lands about 0.55 s (VAD silence) plus recognition after the speech ends,
+#: while this ear waits a full second, so a line from the other ear almost
+#: always arrives first. Keying on the audio, not on finals, is what tells
+#: "this ear will post it" from "this ear never heard it" (a quiet mic).
+TRACK_VOICED_HOLD_S = 3.0
 #: A session that ends on its own (stream error, stream end) may reopen its
 #: own sid at most this many times per window. Cancelled or closed sessions
 #: never reopen.
@@ -299,11 +306,14 @@ class LiveTrackSession:
         media: Any,
         stt: Any,
         on_final: OnFinal,
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.track = track
         self._media = media
         self._stt = stt
         self._on_final = on_final
+        self._clock = clock
         self._task: asyncio.Task[None] | None = None
         self._closed = False
         #: The read was cancelled (a close, or the job shutting down).
@@ -317,6 +327,7 @@ class LiveTrackSession:
         #: close so hanging up just after the gate still posts the line.
         self._inflight: asyncio.Future[None] | None = None
         self._last_frame_at: float | None = None
+        self._last_voiced_at: float | None = None
         self._last_recognize_failed = False
         self._close_timeout = CLOSE_FLUSH_TIMEOUT_S
         self._stream: Any = None
@@ -333,7 +344,7 @@ class LiveTrackSession:
         last recognition attempt did not fail. Anything else leaves the
         session ear and browser captions in charge.
         """
-        now = time.monotonic() if now is None else now
+        now = self._clock() if now is None else now
         task = self._task
         if self._closed or task is None or task.done():
             return False
@@ -342,6 +353,23 @@ class LiveTrackSession:
         if self._last_frame_at is None:
             return False
         return (now - self._last_frame_at) <= HEALTHY_FRAME_S
+
+    def voiced_within(self, seconds: float, *, now: float | None = None) -> bool:
+        """Did this track's own energy gate open in the last ``seconds``?
+
+        Also true while an utterance is open or its recognition is running:
+        this ear heard that speech and will post it. False means the gate
+        stayed shut — a quiet mic this ear cannot hear.
+        """
+        if self._in_speech:
+            return True
+        inflight = self._inflight
+        if inflight is not None and not inflight.done():
+            return True
+        if self._last_voiced_at is None:
+            return False
+        now = self._clock() if now is None else now
+        return (now - self._last_voiced_at) <= seconds
 
     def start(self) -> None:
         try:
@@ -383,7 +411,7 @@ class LiveTrackSession:
                     if self._closed:
                         break
                     frame = getattr(event, "frame", event)
-                    self._last_frame_at = time.monotonic()
+                    self._last_frame_at = self._clock()
                     await self._take_frame(frame)
             except asyncio.CancelledError:
                 # A close, or the job shutting down. Either way this session
@@ -410,6 +438,7 @@ class LiveTrackSession:
         if energy >= ENERGY_THRESHOLD:
             self._in_speech = True
             self._quiet_s = 0.0
+            self._last_voiced_at = self._last_frame_at
             self._frames.append(frame)
             self._buf_s += dt
         elif self._in_speech:
