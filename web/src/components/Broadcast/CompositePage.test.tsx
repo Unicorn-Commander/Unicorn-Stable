@@ -8,7 +8,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RoomEvent } from "livekit-client";
+import { DisconnectReason, RoomEvent } from "livekit-client";
 import { CompositePage } from "./CompositePage";
 import { END_RECORDING, START_RECORDING } from "@/lib/composite";
 
@@ -18,6 +18,8 @@ import { END_RECORDING, START_RECORDING } from "@/lib/composite";
 
 type FakeTrack = {
   id: string;
+  attached: HTMLMediaElement[];
+  played: HTMLMediaElement[];
   attach: (el: HTMLMediaElement) => HTMLMediaElement;
   detach: (el: HTMLMediaElement) => HTMLMediaElement[];
 };
@@ -40,7 +42,7 @@ type FakeParticipant = {
 
 type FakeRoom = {
   connectArgs: { url: string; token: string } | null;
-  emit: (event: string) => void;
+  emit: (event: string, ...args: unknown[]) => void;
 };
 
 const harness = vi.hoisted(() => ({
@@ -62,6 +64,10 @@ vi.mock("livekit-client", () => {
     Disconnected: "disconnected",
     AudioPlaybackStatusChanged: "audioPlaybackStatusChanged",
   };
+  const DisconnectReason = {
+    ROOM_DELETED: "roomDeleted",
+    PARTICIPANT_REMOVED: "participantRemoved",
+  };
   const Track = {
     Kind: { Video: "video", Audio: "audio" },
     Source: {
@@ -72,7 +78,7 @@ vi.mock("livekit-client", () => {
     },
   };
   class Room {
-    handlers = new Map<string, Array<() => void>>();
+    handlers = new Map<string, Array<(...args: unknown[]) => void>>();
     remoteParticipants = new Map<string, FakeParticipant>();
     connectArgs: { url: string; token: string } | null = null;
     constructor() {
@@ -81,14 +87,14 @@ vi.mock("livekit-client", () => {
       }
       harness.rooms.push(this);
     }
-    on(event: string, cb: () => void) {
+    on(event: string, cb: (...args: unknown[]) => void) {
       const list = this.handlers.get(event) ?? [];
       list.push(cb);
       this.handlers.set(event, list);
       return this;
     }
-    emit(event: string) {
-      for (const cb of this.handlers.get(event) ?? []) cb();
+    emit(event: string, ...args: unknown[]) {
+      for (const cb of this.handlers.get(event) ?? []) cb(...args);
     }
     async connect(url: string, token: string) {
       this.connectArgs = { url, token };
@@ -98,7 +104,7 @@ vi.mock("livekit-client", () => {
       this.emit(RoomEvent.Disconnected);
     }
   }
-  return { Room, RoomEvent, Track, VideoQuality: { HIGH: "high" } };
+  return { Room, RoomEvent, DisconnectReason, Track, VideoQuality: { HIGH: "high" } };
 });
 
 let root: Root | null = null;
@@ -122,10 +128,22 @@ function render(node: ReactNode) {
   return host;
 }
 
-function track(id: string): FakeTrack {
+function track(id: string, options: { firstFrame?: boolean } = {}): FakeTrack {
+  const attached: HTMLMediaElement[] = [];
+  const played: HTMLMediaElement[] = [];
+  const firstFrame = options.firstFrame ?? true;
   return {
     id,
+    attached,
+    played,
     attach(el) {
+      attached.push(el);
+      el.play = vi.fn(async () => {
+        played.push(el);
+      });
+      if (firstFrame && el instanceof HTMLVideoElement) {
+        el.dispatchEvent(new Event("loadeddata"));
+      }
       return el;
     },
     detach() {
@@ -207,6 +225,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -214,12 +233,13 @@ afterEach(() => {
 
 describe("CompositePage", () => {
   it("logs START once for an audio-only room and END once on disconnect", async () => {
+    const mic = track("mic-1");
     harness.seed = [
       participant({
         identity: "agent-persephone",
         name: "Persephone",
         pubs: [
-          { kind: "audio", source: "microphone", sid: "mic-1", track: track("mic-1") },
+          { kind: "audio", source: "microphone", sid: "mic-1", track: mic },
         ],
       }),
     ];
@@ -255,16 +275,19 @@ describe("CompositePage", () => {
     );
     expect(view.querySelector("[data-testid='composite-video']")).toBeNull();
     expect(view.querySelectorAll("[data-testid='composite-audio']")).toHaveLength(1);
+    expect(mic.attached).toHaveLength(1);
+    expect(mic.attached[0]?.muted).toBe(false);
+    expect(mic.played).toHaveLength(1);
     expect(view.querySelector("button")).toBeNull();
     expect(view.textContent ?? "").not.toMatch(/error|failed|login|keycloak/i);
     expect(signalCount(START_RECORDING)).toBe(1);
 
     const room = harness.rooms[0];
     await act(async () => {
-      room?.emit(RoomEvent.Disconnected);
+      room?.emit(RoomEvent.Disconnected, DisconnectReason.ROOM_DELETED);
     });
     await act(async () => {
-      room?.emit(RoomEvent.Disconnected);
+      room?.emit(RoomEvent.Disconnected, DisconnectReason.ROOM_DELETED);
     });
     expect(signalCount(END_RECORDING)).toBe(1);
     expect(signalCount(START_RECORDING)).toBe(1);
@@ -360,5 +383,148 @@ describe("CompositePage", () => {
     expect(view.textContent?.trim()).toBe("");
     expect(signalCount(START_RECORDING)).toBe(0);
     expect(signalCount(END_RECORDING)).toBe(0);
+  });
+
+  it("waits for a video track subscribed after connect and starts by the two-second bound", async () => {
+    vi.useFakeTimers();
+    const delayed = track("late-cam", { firstFrame: false });
+    const late = track("published-after-connect", { firstFrame: false });
+    const person = participant({
+      identity: "late",
+      name: "Late",
+      pubs: [{ kind: "video", source: "camera", sid: "initial-cam", track: delayed }],
+    });
+    harness.seed = [person];
+    vi.stubGlobal("fetch", vi.fn(async () => joinResponse()));
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    const view = render(<CompositePage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(signalCount(START_RECORDING)).toBe(0);
+
+    person.trackPublications.set("late-cam", {
+      kind: "video",
+      source: "camera",
+      isMuted: false,
+      trackSid: "late-cam",
+      track: late,
+      isSubscribed: false,
+      setSubscribed(value) {
+        this.isSubscribed = value;
+      },
+      setVideoQuality() {},
+    });
+    const room = harness.rooms[0];
+    await act(async () => {
+      room?.emit(RoomEvent.TrackPublished);
+    });
+    expect(view.querySelectorAll("[data-testid='composite-video']")).toHaveLength(1);
+    expect(signalCount(START_RECORDING)).toBe(0);
+    await act(async () => {
+      vi.advanceTimersByTime(2100);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(signalCount(START_RECORDING)).toBe(1);
+  });
+
+  it("re-exchanges and reconnects after an unexpected disconnect without END", async () => {
+    const fetchMock = vi.fn(async () => joinResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    render(<CompositePage />);
+    await settle();
+    await act(async () => {
+      harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError");
+    });
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(harness.rooms).toHaveLength(2);
+    expect(signalCount(END_RECORDING)).toBe(0);
+  });
+
+  it.each([
+    ["room deletion", DisconnectReason.ROOM_DELETED],
+    ["participant removal", DisconnectReason.PARTICIPANT_REMOVED],
+  ])("logs END once for %s", async (_label, reason) => {
+    vi.stubGlobal("fetch", vi.fn(async () => joinResponse()));
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    render(<CompositePage />);
+    await settle();
+    const room = harness.rooms[0];
+    await act(async () => {
+      room?.emit(RoomEvent.Disconnected, reason);
+      room?.emit(RoomEvent.Disconnected, reason);
+    });
+    expect(signalCount(END_RECORDING)).toBe(1);
+  });
+
+  it("ends once when a later token exchange is refused", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(joinResponse())
+      .mockResolvedValueOnce({ status: 403, ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    render(<CompositePage />);
+    await settle();
+    await act(async () => {
+      harness.rooms[0]?.emit(RoomEvent.Disconnected, "networkError");
+    });
+    await settle();
+    expect(signalCount(END_RECORDING)).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("switches from grid to speaker for a share and back when it ends", async () => {
+    const camera = track("camera");
+    const share = track("share");
+    const sharePerson = participant({ identity: "share", name: "Screen", pubs: [] });
+    harness.seed = [
+      participant({
+        identity: "camera",
+        name: "Camera",
+        pubs: [{ kind: "video", source: "camera", sid: "camera", track: camera }],
+      }),
+      sharePerson,
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => joinResponse()));
+    window.history.replaceState({}, "", "/broadcast/room-1/composite?rt=recorder-token");
+    const view = render(<CompositePage />);
+    await settle();
+    const gridWidth = Number.parseInt(
+      (view.querySelectorAll("[data-testid='composite-video']")[0] as HTMLElement).style.width,
+      10,
+    );
+    sharePerson.trackPublications.set("share", {
+      kind: "video",
+      source: "screen_share",
+      isMuted: false,
+      trackSid: "share",
+      track: share,
+      isSubscribed: false,
+      setSubscribed(value) {
+        this.isSubscribed = value;
+      },
+      setVideoQuality() {},
+    });
+    await act(async () => {
+      harness.rooms[0]?.emit(RoomEvent.TrackPublished);
+    });
+    const speakerVideos = view.querySelectorAll("[data-testid='composite-video']");
+    expect(speakerVideos).toHaveLength(2);
+    expect(Number.parseInt((speakerVideos[0] as HTMLElement).style.width, 10)).toBeGreaterThan(gridWidth);
+    sharePerson.trackPublications.delete("share");
+    await act(async () => {
+      harness.rooms[0]?.emit(RoomEvent.TrackUnpublished);
+    });
+    expect(view.querySelectorAll("[data-testid='composite-video']")).toHaveLength(1);
+    expect(Number.parseInt(
+      (view.querySelector("[data-testid='composite-video']") as HTMLElement).style.width,
+      10,
+    )).toBe(gridWidth);
   });
 });

@@ -115,14 +115,17 @@ own consent surface.
    connect with those instead of the exchange;
 3. play every subscribed audio track (humans and agents). The egress records
    the page's audio;
-4. `console.log("START_RECORDING")` once, from `requestAnimationFrame` after
-   connect and the first painted layout. A video track is not required — an
-   audio-only call still records. `console.log("END_RECORDING")` once on
-   disconnect / room end. Each line is exactly once per page lifetime; the
-   hourly re-mint must not log either;
-5. re-join before the LiveKit JWT's one-hour cap, same schedule as the
-   participant page. The url+token fallback has no expiry we can trust, so
-   that path does not re-mint.
+4. wait up to two seconds after connect for already-published (and any newly
+   subscribed) media; video must render a first frame, while audio only needs
+   to be subscribed. Then requestAnimationFrame and log
+   `console.log("START_RECORDING")` once. A video track is not required — an
+   audio-only call still records. `console.log("END_RECORDING")` is logged
+   once only after START, for room deletion, participant removal, pagehide, or
+   refusal of a later recorder-token exchange;
+5. keep one LiveKit connection for the recording. LiveKit server refreshes its
+   token; there is no timed re-exchange. If an unexpected disconnect occurs,
+   re-exchange `rt` and reconnect with 1, 2, 4, 8, then 10 second backoff while
+   retaining the old painted media until the replacement connects.
 
 The MP4 lands on the shared `/egress-out` volume, is uploaded to storage, is
 attached to the call's Meeting-Ops session (`content_type video/mp4`, same

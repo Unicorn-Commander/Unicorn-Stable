@@ -9,6 +9,8 @@ import {
   compositeAudioTracks,
   compositeGrid,
   compositeLayoutKind,
+  compositeScreenShares,
+  compositeSpeakerLayout,
   compositeTiles,
   containRect,
   credentialsFromExchange,
@@ -173,6 +175,34 @@ describe("composite participants", () => {
     expect(tiles[1]?.cameraTrack).toBe(camera);
     expect(tiles[1]?.label).toBe("b");
   });
+
+  it("draws screen shares and unknown-source video separately from cameras", () => {
+    const shares = compositeScreenShares([
+      {
+        identity: "ada",
+        name: "Ada",
+        publications: [
+          { kind: "video", source: "screen_share", sid: "share-1", track: { id: "s1" } },
+          { kind: "video", source: "unknown", sid: "share-2", track: { id: "s2" } },
+          { kind: "video", source: "camera", sid: "cam", track: { id: "c" } },
+        ],
+      },
+    ]);
+    expect(shares.map((share) => share.key)).toEqual(["share-1", "share-2"]);
+  });
+
+  it("fits a share and 1..16 camera slots without crop or plate overflow", () => {
+    for (let cameras = 1; cameras <= 16; cameras++) {
+      const layouts = compositeSpeakerLayout(cameras, 1);
+      expect(layouts).toHaveLength(cameras + 1);
+      for (const layout of layouts) {
+        expect(inside(layout.tile, CANVAS)).toBe(true);
+        expect(inside(layout.video, layout.tile)).toBe(true);
+        expect(inside(layout.plate, layout.tile)).toBe(true);
+        expect(overlaps(layout.video, layout.plate)).toBe(false);
+      }
+    }
+  });
 });
 
 describe("composite connect plan", () => {
@@ -289,12 +319,12 @@ describe("recording signals", () => {
     expect(lines).toEqual([START_RECORDING, END_RECORDING]);
   });
 
-  it("logs END once even when the room ended before the first paint", () => {
+  it("never logs END when the room ends before the first paint", () => {
     const lines: string[] = [];
     const gate = new CompositeRecordingGate((line) => lines.push(line));
     gate.noteSessionEnded();
     gate.noteSessionEnded();
     gate.noteLayoutPainted(0);
-    expect(lines).toEqual([END_RECORDING]);
+    expect(lines).toEqual([]);
   });
 });

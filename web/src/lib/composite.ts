@@ -66,6 +66,8 @@ export interface CompositeTileLayout {
   plate: Rect;
 }
 
+export type CompositeSpeakerLayout = CompositeTileLayout;
+
 export interface CompositeCanvas {
   width: number;
   height: number;
@@ -132,7 +134,10 @@ export function compositeGrid(
 }
 
 function tileInsets(tile: Rect): { video: Rect; plate: Rect } {
-  const plateH = Math.min(PLATE_HEIGHT, Math.max(1, tile.height - VIDEO_INSET * 2));
+  const plateH = Math.min(
+    PLATE_HEIGHT,
+    Math.max(1, tile.height - VIDEO_INSET - VIDEO_PLATE_GAP - 1 - PLATE_BOTTOM),
+  );
   const plate: Rect = {
     x: tile.x + Math.min(PLATE_INSET_X, Math.floor(tile.width / 4)),
     y: tile.y + tile.height - PLATE_BOTTOM - plateH,
@@ -252,6 +257,13 @@ export interface CompositeTileModel<T> {
   cameraTrack: T | null;
 }
 
+export interface CompositeScreenShare<T> {
+  key: string;
+  identity: string;
+  label: string;
+  track: T;
+}
+
 export interface CompositeAudioSink<T> {
   key: string;
   track: T;
@@ -288,6 +300,78 @@ export function compositeTiles<T>(
       cameraTrack: camera?.track ?? null,
     };
   });
+}
+
+/** Every live screen share or unknown-source video, in publication order. */
+export function compositeScreenShares<T>(
+  participants: readonly CompositeParticipant<T>[],
+): CompositeScreenShare<T>[] {
+  const shares: CompositeScreenShare<T>[] = [];
+  for (const participant of participants) {
+    const label = tileLabel(participant.name, participant.identity);
+    for (const pub of participant.publications) {
+      if (
+        pub.kind !== "video" ||
+        (pub.source !== "screen_share" && pub.source !== "unknown") ||
+        pub.isMuted ||
+        pub.track == null
+      ) {
+        continue;
+      }
+      shares.push({
+        key: pub.sid || `${participant.identity}:${pub.source}`,
+        identity: participant.identity,
+        label,
+        track: pub.track,
+      });
+    }
+  }
+  return shares;
+}
+
+/**
+ * Speaker layout: the newest share is the large, full-height slot. All other
+ * shares and participant tiles use the narrow strip. The returned rectangles
+ * are inset and reserve their own plates, so contain never crops a frame.
+ */
+export function compositeSpeakerLayout(
+  cameraCount: number,
+  shareCount: number,
+  canvas: CompositeCanvas = CANVAS,
+): CompositeSpeakerLayout[] {
+  const cameras = Math.max(0, Math.floor(cameraCount));
+  const shares = Math.max(0, Math.floor(shareCount));
+  if (shares === 0) return compositeGrid(cameras, canvas);
+  const total = shares + cameras;
+
+  const pad = 8;
+  const gap = 6;
+  const stripWidth = Math.max(220, Math.floor(canvas.width * 0.25));
+  const main: Rect = {
+    x: pad,
+    y: pad,
+    width: canvas.width - stripWidth - pad * 2 - gap,
+    height: canvas.height - pad * 2,
+  };
+  const stripX = main.x + main.width + gap;
+  const stripItems = total - 1;
+  if (stripItems === 0) {
+    return [{ tile: main, ...tileInsets(main) }];
+  }
+  const stripHeight = Math.floor(
+    (canvas.height - pad * 2 - gap * (stripItems - 1)) / stripItems,
+  );
+  const layouts: CompositeSpeakerLayout[] = [{ tile: main, ...tileInsets(main) }];
+  for (let i = 0; i < stripItems; i++) {
+    const tile: Rect = {
+      x: stripX,
+      y: pad + i * (stripHeight + gap),
+      width: canvas.width - stripX - pad,
+      height: stripHeight,
+    };
+    layouts.push({ tile, ...tileInsets(tile) });
+  }
+  return layouts;
 }
 
 /** Every live audio publication. Screen-share audio counts; a muted mic does not. */
@@ -411,8 +495,9 @@ export const START_RECORDING = "START_RECORDING";
 export const END_RECORDING = "END_RECORDING";
 
 /**
- * START fires from the first painted layout after connect. `videoTrackCount`
- * is an input so callers (and tests) can see that zero is not a reason to wait.
+ * START fires after the bounded media-readiness wait and a painted layout.
+ * `videoTrackCount` is retained for callers that want to assert that zero is
+ * not a reason to wait.
  */
 export function shouldEmitStart(input: {
   connected: boolean;
@@ -471,6 +556,6 @@ export class CompositeRecordingGate {
   noteSessionEnded(): void {
     if (this.ended) return;
     this.ended = true;
-    this.emit(END_RECORDING);
+    if (this.started) this.emit(END_RECORDING);
   }
 }

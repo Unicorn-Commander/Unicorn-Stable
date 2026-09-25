@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Room, RoomEvent, Track, VideoQuality } from "livekit-client";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
+import { DisconnectReason, Room, RoomEvent, Track, VideoQuality } from "livekit-client";
 import type { RemoteTrack } from "livekit-client";
-import { backoffDelayMs, refreshDelayMs, type BroadcastJoinResponse } from "@/lib/broadcast";
+import { type BroadcastJoinResponse } from "@/lib/broadcast";
 import {
   COMPOSITE_BACKGROUND,
   COMPOSITE_HEIGHT,
@@ -10,6 +20,8 @@ import {
   compositeAudioTracks,
   compositeGrid,
   compositeLayoutKind,
+  compositeScreenShares,
+  compositeSpeakerLayout,
   compositeTiles,
   credentialsFromExchange,
   parseCompositeQuery,
@@ -29,11 +41,9 @@ import {
  * text. A refused token is a dark frame.
  *
  * The worker will not start the file until it sees console.log("START_RECORDING"),
- * and it finalizes on console.log("END_RECORDING"). START is requested from
- * requestAnimationFrame after connect and the first layout commit — not after
- * a camera track, because an audio-only call is still a recording. The
- * re-mint that keeps a long file alive past the one-hour LiveKit JWT must not
- * log either signal; only the live session's own disconnect does.
+ * and it finalizes on console.log("END_RECORDING"). START waits briefly for
+ * subscribed media and a first video frame, then uses requestAnimationFrame;
+ * audio-only calls remain valid recordings.
  *
  * The join call is a bare fetch. The shared API client attaches a Keycloak
  * header, and an egress browser cannot complete that redirect.
@@ -61,6 +71,12 @@ async function exchangeRecorderToken(rt: string): Promise<BroadcastJoinResponse>
 interface Session {
   room: Room;
   gen: number;
+}
+
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
+
+function retryDelayMs(attempt: number): number {
+  return RETRY_DELAYS_MS[Math.min(Math.max(attempt - 1, 0), RETRY_DELAYS_MS.length - 1)]!;
 }
 
 function useStageScale(): number {
@@ -107,7 +123,7 @@ function subscribeAll(room: Room) {
   room.remoteParticipants.forEach((participant) => {
     participant.trackPublications.forEach((pub) => {
       if (!pub.isSubscribed) pub.setSubscribed(true);
-      if (pub.kind === Track.Kind.Video && pub.source === Track.Source.Camera) {
+      if (pub.kind === Track.Kind.Video) {
         pub.setVideoQuality(VideoQuality.HIGH);
       }
     });
@@ -117,9 +133,11 @@ function subscribeAll(room: Room) {
 function AttachedVideo({
   track,
   box,
+  onFirstFrame,
 }: {
   track: RemoteTrack;
   box: { left: number; top: number; width: number; height: number };
+  onFirstFrame?: () => void;
 }) {
   const ref = useCallback(
     (el: HTMLVideoElement | null) => {
@@ -137,6 +155,7 @@ function AttachedVideo({
       autoPlay
       playsInline
       muted
+      onLoadedData={onFirstFrame}
       data-testid="composite-video"
       style={{
         position: "absolute",
@@ -175,7 +194,122 @@ function AttachedAudio({ track }: { track: RemoteTrack }) {
   return <audio ref={ref} autoPlay data-testid="composite-audio" />;
 }
 
-export function CompositePage() {
+function CompositeVisualTile({
+  identity,
+  label,
+  initials,
+  track,
+  box,
+  onFirstFrame,
+}: {
+  identity: string;
+  label: string;
+  initials?: string;
+  track: RemoteTrack | null;
+  box: ReturnType<typeof compositeGrid>[number];
+  onFirstFrame: (track: RemoteTrack) => void;
+}) {
+  const hue = tileHue(identity);
+  const diameter = Math.max(
+    36,
+    Math.floor(Math.min(box.video.width, box.video.height) * 0.42),
+  );
+  return (
+    <div
+      data-testid="composite-tile"
+      style={{
+        position: "absolute",
+        left: box.tile.x,
+        top: box.tile.y,
+        width: box.tile.width,
+        height: box.tile.height,
+        overflow: "hidden",
+        borderRadius: 10,
+        background: "#14141f",
+        boxShadow: `inset 0 0 0 1px rgba(154, 158, 202, 0.28), inset 0 3px 0 ${hue}`,
+        cursor: "none",
+      }}
+    >
+      {track ? (
+        <AttachedVideo
+          track={track}
+          onFirstFrame={() => onFirstFrame(track)}
+          box={{
+            left: box.video.x - box.tile.x,
+            top: box.video.y - box.tile.y,
+            width: box.video.width,
+            height: box.video.height,
+          }}
+        />
+      ) : (
+        <div
+          data-testid="composite-initials"
+          style={{
+            position: "absolute",
+            left: box.video.x - box.tile.x,
+            top: box.video.y - box.tile.y,
+            width: box.video.width,
+            height: box.video.height,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              width: diameter,
+              height: diameter,
+              borderRadius: "50%",
+              background: `linear-gradient(160deg, ${hue}, #14141f 140%)`,
+              color: "#f8f8fd",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 650,
+              fontSize: Math.max(14, Math.floor(diameter * 0.34)),
+              letterSpacing: "0.02em",
+            }}
+          >
+            {initials}
+          </div>
+        </div>
+      )}
+      <div
+        data-testid="composite-plate"
+        style={{
+          position: "absolute",
+          left: box.plate.x - box.tile.x,
+          top: box.plate.y - box.tile.y,
+          width: box.plate.width,
+          height: box.plate.height,
+          boxSizing: "border-box",
+          overflow: "hidden",
+          display: "flex",
+          alignItems: "center",
+          padding: "0 8px",
+          borderRadius: 6,
+          background: "rgba(8, 8, 15, 0.82)",
+          color: "#f8f8fd",
+          fontSize: Math.max(13, Math.min(18, Math.floor(box.plate.height * 0.5))),
+          lineHeight: 1.1,
+        }}
+      >
+        <span
+          style={{
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function CompositePageContent() {
   const plan = useMemo(
     () => planCompositeConnect(parseCompositeQuery(window.location.search)),
     [],
@@ -186,8 +320,11 @@ export function CompositePage() {
   const [live, setLive] = useState(false);
   const [tiles, setTiles] = useState<CompositeTileModel<RemoteTrack>[]>([]);
   const [audios, setAudios] = useState<{ key: string; track: RemoteTrack }[]>([]);
+  const [shares, setShares] = useState<ReturnType<typeof compositeScreenShares<RemoteTrack>>>([]);
+  const [connectedSession, setConnectedSession] = useState<Session | null>(null);
   const scale = useStageScale();
   const roomRef = useRef<Room | null>(null);
+  const firstFrameRef = useRef(new Set<RemoteTrack>());
   const videoCountRef = useRef(0);
   videoCountRef.current = tiles.reduce(
     (count, tile) => count + (tile.cameraTrack ? 1 : 0),
@@ -210,32 +347,67 @@ export function CompositePage() {
   }, []);
 
   useEffect(() => {
-    if (!live) return;
-    const handle = requestAnimationFrame(() => {
-      gate.noteLayoutPainted(videoCountRef.current);
-    });
-    return () => cancelAnimationFrame(handle);
-  }, [live, gate]);
+    const session = connectedSession;
+    if (!session) return;
+    let cancelled = false;
+    let finished = false;
+    const ready = () => {
+      if (session !== connectedSession || roomRef.current !== session.room) return true;
+      for (const participant of session.room.remoteParticipants.values()) {
+        for (const publication of participant.trackPublications.values()) {
+          if (!publication.isSubscribed || !publication.track) return false;
+          if (
+            publication.kind === Track.Kind.Video &&
+            !firstFrameRef.current.has(publication.track)
+          ) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+    const finish = () => {
+      if (cancelled || finished) return;
+      finished = true;
+      clearInterval(interval);
+      clearTimeout(timeout);
+      requestAnimationFrame(() => {
+        if (!cancelled) gate.noteLayoutPainted(videoCountRef.current);
+      });
+    };
+    const interval = setInterval(() => {
+      if (ready()) finish();
+    }, 25);
+    const timeout = setTimeout(finish, 2000);
+    if (ready()) finish();
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [connectedSession, gate]);
 
   useEffect(() => {
-    if (plan.source === "none") return;
+    if (plan.source === "none") {
+      console.error("composite URL has neither rt nor url+token");
+      return;
+    }
 
     let disposed = false;
     let generation = 0;
     let current: Session | null = null;
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
+    let pageClosed = false;
 
     const onPageHide = () => {
+      pageClosed = true;
       gate.noteSessionEnded();
     };
     window.addEventListener("pagehide", onPageHide);
 
     function clearTimers() {
-      if (refreshTimer) clearTimeout(refreshTimer);
       if (retryTimer) clearTimeout(retryTimer);
-      refreshTimer = undefined;
       retryTimer = undefined;
     }
 
@@ -244,15 +416,29 @@ export function CompositePage() {
       const people = remoteParticipants(room);
       setTiles(compositeTiles(people));
       setAudios(compositeAudioTracks(people));
+      setShares(compositeScreenShares(people));
     }
 
     function endLiveSession(session: Session) {
       if (disposed || session.gen !== generation || current !== session) return;
       gate.noteSessionEnded();
       setLive(false);
-      setTiles([]);
-      setAudios([]);
       roomRef.current = null;
+      setConnectedSession(null);
+    }
+
+    function reconnect(session: Session, reason: unknown) {
+      if (disposed || session.gen !== generation || current !== session) return;
+      if (
+        pageClosed ||
+        reason === DisconnectReason.ROOM_DELETED ||
+        reason === DisconnectReason.PARTICIPANT_REMOVED
+      ) {
+        endLiveSession(session);
+        return;
+      }
+      current = null;
+      void cycle();
     }
 
     async function openSession(
@@ -285,17 +471,19 @@ export function CompositePage() {
         .on(RoomEvent.AudioPlaybackStatusChanged, () => {
           void room.startAudio().catch(() => {});
         })
-        .on(RoomEvent.Disconnected, () => {
-          endLiveSession(session);
+        .on(RoomEvent.Disconnected, (reason) => {
+          reconnect(session, reason);
         });
       await room.connect(livekitUrl, token, { autoSubscribe: true });
       await room.startAudio().catch(() => {});
       return session;
     }
 
-    function scheduleRetry() {
+    function scheduleRetry(error: unknown) {
       attempt += 1;
-      retryTimer = setTimeout(() => void cycle(), backoffDelayMs(attempt));
+      const delay = retryDelayMs(attempt);
+      console.error(`composite reconnect attempt ${attempt} in ${delay}ms`, error);
+      retryTimer = setTimeout(() => void cycle(), delay);
     }
 
     async function cycle() {
@@ -307,7 +495,6 @@ export function CompositePage() {
 
       let livekitUrl = "";
       let token = "";
-      let expiresAt: string | null = null;
       if (plan.source === "url-token") {
         livekitUrl = plan.url;
         token = plan.token;
@@ -317,25 +504,22 @@ export function CompositePage() {
           if (disposed || gen !== generation) return;
           const creds = credentialsFromExchange(join);
           if (!creds) {
-            // A participant token on this URL is not a recording. Stay dark.
-            // END only if a file had already started (a refresh that came
-            // back revoked) — logging END before START aborts the egress
-            // before it ever had a frame.
-            if (gate.hasStarted) gate.noteSessionEnded();
+            console.error("composite recorder exchange returned a non-composite token");
+            gate.noteSessionEnded();
             setLive(false);
             return;
           }
           livekitUrl = creds.livekitUrl;
           token = creds.token;
-          expiresAt = creds.expiresAt;
         } catch (error) {
           if (disposed || gen !== generation) return;
           if (error instanceof BroadcastRefused) {
-            if (gate.hasStarted) gate.noteSessionEnded();
+            console.error("composite recorder token was refused");
+            gate.noteSessionEnded();
             setLive(false);
             return;
           }
-          scheduleRetry();
+          scheduleRetry(error);
           return;
         }
       } else {
@@ -346,9 +530,9 @@ export function CompositePage() {
       let session: Session;
       try {
         session = await openSession(livekitUrl, token, gen);
-      } catch {
+      } catch (error) {
         if (disposed || gen !== generation) return;
-        scheduleRetry();
+        scheduleRetry(error);
         return;
       }
       if (disposed || gen !== generation) {
@@ -363,13 +547,8 @@ export function CompositePage() {
       subscribeAll(session.room);
       publish(session.room);
       setLive(true);
+      setConnectedSession(session);
       if (previous && previous !== session) void previous.room.disconnect();
-
-      // Only the exchanged token has an expiry we can trust. The worker's
-      // own JWT (url+token fallback) is left to the egress process lifetime.
-      if (expiresAt) {
-        refreshTimer = setTimeout(() => void cycle(), refreshDelayMs(expiresAt));
-      }
     }
 
     void cycle();
@@ -381,6 +560,7 @@ export function CompositePage() {
       const dead = current;
       current = null;
       roomRef.current = null;
+      setConnectedSession(null);
       if (dead) void dead.room.disconnect();
     };
   }, [plan, gate]);
@@ -395,7 +575,12 @@ export function CompositePage() {
     return () => window.removeEventListener("pointerdown", start);
   }, [audios.length]);
 
-  const layouts = compositeGrid(tiles.length);
+  const layouts = shares.length
+    ? compositeSpeakerLayout(tiles.length, shares.length)
+    : compositeGrid(tiles.length);
+  const markFirstFrame = useCallback((track: RemoteTrack) => {
+    firstFrameRef.current.add(track);
+  }, []);
 
   return (
     <div
@@ -429,106 +614,73 @@ export function CompositePage() {
           cursor: "none",
         }}
       >
-        {tiles.map((tile, index) => {
+        {shares.map((share, index) => {
           const box = layouts[index];
-          if (!box) return null;
-          const hue = tileHue(tile.identity);
-          const diameter = Math.max(
-            36,
-            Math.floor(Math.min(box.video.width, box.video.height) * 0.42),
-          );
-          return (
-            <div
+          return box ? (
+            <CompositeVisualTile
+              key={`share:${share.key}`}
+              identity={share.identity}
+              label={share.label}
+              track={share.track}
+              box={box}
+              onFirstFrame={markFirstFrame}
+            />
+          ) : null;
+        })}
+        {tiles.map((tile, index) => {
+          const box = layouts[index + shares.length];
+          return box ? (
+            <CompositeVisualTile
               key={tile.identity}
-              data-testid="composite-tile"
-              style={{
-                position: "absolute",
-                left: box.tile.x,
-                top: box.tile.y,
-                width: box.tile.width,
-                height: box.tile.height,
-                overflow: "hidden",
-                borderRadius: 10,
-                background: "#14141f",
-                boxShadow: `inset 0 0 0 1px rgba(154, 158, 202, 0.28), inset 0 3px 0 ${hue}`,
-                cursor: "none",
-              }}
-            >
-              {tile.cameraTrack ? (
-                <AttachedVideo
-                  track={tile.cameraTrack}
-                  box={{
-                    left: box.video.x - box.tile.x,
-                    top: box.video.y - box.tile.y,
-                    width: box.video.width,
-                    height: box.video.height,
-                  }}
-                />
-              ) : (
-                <div
-                  data-testid="composite-initials"
-                  style={{
-                    position: "absolute",
-                    left: box.video.x - box.tile.x,
-                    top: box.video.y - box.tile.y,
-                    width: box.video.width,
-                    height: box.video.height,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: diameter,
-                      height: diameter,
-                      borderRadius: "50%",
-                      background: `linear-gradient(160deg, ${hue}, #14141f 140%)`,
-                      color: "#f8f8fd",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontWeight: 650,
-                      fontSize: Math.max(14, Math.floor(diameter * 0.34)),
-                      letterSpacing: "0.02em",
-                    }}
-                  >
-                    {tile.initials}
-                  </div>
-                </div>
-              )}
-              <div
-                data-testid="composite-plate"
-                style={{
-                  position: "absolute",
-                  left: box.plate.x - box.tile.x,
-                  top: box.plate.y - box.tile.y,
-                  width: box.plate.width,
-                  height: box.plate.height,
-                  boxSizing: "border-box",
-                  overflow: "hidden",
-                  display: "flex",
-                  alignItems: "center",
-                  padding: "0 8px",
-                  borderRadius: 6,
-                  background: "rgba(8, 8, 15, 0.82)",
-                  color: "#f8f8fd",
-                  fontSize: Math.max(13, Math.min(18, Math.floor(box.plate.height * 0.5))),
-                  lineHeight: 1.1,
-                  whiteSpace: "nowrap",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {tile.label}
-              </div>
-            </div>
-          );
+              identity={tile.identity}
+              label={tile.label}
+              initials={tile.initials}
+              track={tile.cameraTrack}
+              box={box}
+              onFirstFrame={markFirstFrame}
+            />
+          ) : null;
         })}
         {audios.map((audio) => (
           <AttachedAudio key={audio.key} track={audio.track} />
         ))}
       </div>
     </div>
+  );
+}
+
+class CompositeErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("composite page render failed", error, info);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div
+          data-testid="composite-error-stage"
+          style={{ position: "fixed", inset: 0, background: COMPOSITE_BACKGROUND }}
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export function CompositePage() {
+  return (
+    <CompositeErrorBoundary>
+      <CompositePageContent />
+    </CompositeErrorBoundary>
   );
 }
 

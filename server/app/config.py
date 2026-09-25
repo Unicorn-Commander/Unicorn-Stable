@@ -456,10 +456,8 @@ class Settings(BaseSettings):
     #             to be reachable. What dogfood records with until the branded
     #             page exists.
     #   stable  — our broadcast page at /broadcast/{room}/composite carrying a
-    #             recorder token (design §8). ⚠️ 2026-09-24: that page does not
-    #             yet exist as a composite (no grid, no START_RECORDING
-    #             signal), so this mode ends every composite with "Start
-    #             signal not received".
+    #             recorder token; the page paints the branded composite and
+    #             emits the START_RECORDING/END_RECORDING signals.
     call_recording_composite_template: str = "livekit"
     # Layout name for the livekit template: grid | speaker | single-speaker.
     call_recording_composite_layout: str = "grid"
