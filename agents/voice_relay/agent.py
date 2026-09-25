@@ -2242,7 +2242,7 @@ class VoiceRelayAgent(StableAgent):
         try:
             from agent_runtime.multi_track_stt import CLOSE_FLUSH_TIMEOUT_S
 
-            await asyncio.wait_for(closer(), timeout=CLOSE_FLUSH_TIMEOUT_S + 2.0)
+            await asyncio.wait_for(closer(), timeout=CLOSE_FLUSH_TIMEOUT_S + 1.5)
         except Exception:
             logger.debug("voice_relay_multi_track_close_failed", exc_info=True)
         finally:
@@ -2252,12 +2252,19 @@ class VoiceRelayAgent(StableAgent):
         heartbeat = getattr(self, "_audio_heartbeat", None)
         if heartbeat is not None:
             await heartbeat.close()
-        await self._close_multi_track()
         for task in (self._speaker_task, self._ears_task):
             if task is not None and not task.done():
                 task.cancel()
-        try:
-            await asyncio.wait_for(self._stop_visuals(), timeout=8.0)
-        except Exception:
-            logger.debug("voice_relay_visuals_stop_failed", exc_info=True)
+        # The whole of _shutdown_steps runs under base.py's 8 s cap, and the
+        # framework kills the process 2 s after that. Flushing the per-track
+        # ears (the last line before hang-up) and closing the cast one member
+        # at a time run side by side, bounded at 4.5 s and 6 s, so the base
+        # cleanup below always gets its turn.
+        _, visuals = await asyncio.gather(
+            self._close_multi_track(),
+            asyncio.wait_for(self._stop_visuals(), timeout=6.0),
+            return_exceptions=True,
+        )
+        if isinstance(visuals, BaseException):
+            logger.debug("voice_relay_visuals_stop_failed", exc_info=visuals)
         await super()._shutdown_steps()
