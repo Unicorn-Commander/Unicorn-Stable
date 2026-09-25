@@ -42,10 +42,10 @@ import {
   isBrowserSttAvailable,
 } from "@/lib/humanTranscript";
 import { ServerCaptionSession } from "@/lib/serverCaption";
+import { buildCallTranscriptExportLines } from "@/lib/compactTranscriptExport";
 import {
   browserCanFollowInput,
   captionFacts,
-  exportCaptionSource,
   electedCaptionerName,
   readServerCaptionEnabled,
   serverLaneWanted,
@@ -676,21 +676,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       try {
         const ui = useCallUiStore.getState();
         if (!ui.sendToMeetingOps || !callRoomId) return;
-        const finals = ui.transcript.filter((l) => l.isFinal && l.text.trim());
-        if (finals.length === 0) return;
+        // Every final of the call, not the capped on-screen list: a long
+        // call used to reach Meeting-Ops without its first minutes.
+        const lines = buildCallTranscriptExportLines(ui.exportTranscript);
+        if (lines.length === 0) return;
         const roomMeta = useAppStore
           .getState()
           .rooms.find((rm) => rm.id === callRoomId);
         await api.exportCallTranscript(callRoomId, {
-          lines: finals.map((l) => ({
-            participant_id: l.participantId,
-            name: l.name,
-            text: l.text,
-            ts: l.ts,
-            is_final: true,
-            segment_id: l.id,
-            source: exportCaptionSource(l.source),
-          })),
+          lines,
           room_name: roomMeta?.display_name || roomMeta?.name || null,
           call_started_at: ui.callStartedAt
             ? new Date(ui.callStartedAt).toISOString()
