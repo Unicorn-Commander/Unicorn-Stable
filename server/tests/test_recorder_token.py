@@ -194,7 +194,13 @@ class JoinAsRecorder(IsolatedAsyncioTestCase):
             calls["n"] += 1
             return FakeResult(scalar=token_row if calls["n"] == 1 else r)
 
-        lk = SimpleNamespace(generate_token=lambda **kw: "lk")
+        captured: dict = {}
+
+        def generate_token(**kwargs):
+            captured.update(kwargs)
+            return "lk"
+
+        lk = SimpleNamespace(generate_token=generate_token)
         request = SimpleNamespace(headers={"Authorization": "Bearer sbt-raw-human"}, client=None)
         out = await B.broadcast_join(request, FakeDB(router=router), lk, Settings(), None)
         self.assertEqual(out["mode"], "participant")
