@@ -1206,6 +1206,10 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     },
   };
   const created: Array<Record<string, unknown>> = [];
+  // Like the server, the members payload reflects a mode write — otherwise
+  // the client's members refetch after the PATCH would undo the optimistic
+  // mode under load (it did, once in 138).
+  const modeByParticipant = new Map<string, string>();
   let threadCounter = 0;
   const hub = () => ({
     ...hubRoomRaw("persephone", {
@@ -1284,15 +1288,22 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
   await page.route("**/api/v1/rooms/*/messages**", (route) =>
     route.fulfill(json({ messages: [], cursor: null, has_more: false })),
   );
+  const membersFor = (roomId: string) =>
+    membersFixture(roomId).map((m) =>
+      m.participant_id && modeByParticipant.has(m.participant_id)
+        ? { ...m, agent_mode: modeByParticipant.get(m.participant_id) }
+        : m,
+    );
   await page.route("**/api/v1/rooms/*/members", (route) => {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
-    return route.fulfill(json(membersFixture(parts[3]!)));
+    return route.fulfill(json(membersFor(parts[3]!)));
   });
   await page.route("**/api/v1/rooms/*/members/*", async (route) => {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
     const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
     world.memberPatches.push({ roomId: parts[3]!, participantId: parts[5]!, body });
-    const row = membersFixture(parts[3]!).find((m) => m.participant_id === parts[5]);
+    if (typeof body.agent_mode === "string") modeByParticipant.set(parts[5]!, body.agent_mode);
+    const row = membersFor(parts[3]!).find((m) => m.participant_id === parts[5]);
     await route.fulfill(json({ ...(row ?? { participant_id: parts[5] }), ...body }));
   });
   await page.route("**/api/v1/rooms/*/threads**", async (route) => {
