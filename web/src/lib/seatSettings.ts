@@ -117,6 +117,55 @@ export function findSeatMember(
   return findSeatMembers(room, members, crew)[0] ?? null;
 }
 
+/** A 409 on the seat write has two meanings on the server. */
+export type SeatRefusal = "archived" | "no_seat";
+
+export function seatRefusalKind(detail: string | null | undefined): SeatRefusal {
+  return /archiv/i.test(detail ?? "") ? "archived" : "no_seat";
+}
+
+/**
+ * The Brigade model switcher (client-side override for Brigade chat and
+ * voice) stays while any agent member is NOT a runner seat — in a group
+ * with Persephone and Majik, Majik's model is still set there. It goes only
+ * when every agent member is a seat, whose brain is the chip's popover.
+ */
+export function shouldShowModelSwitcher(
+  room: Room | null | undefined,
+  members: readonly RoomMember[] | null | undefined,
+  crew: readonly CrewMember[],
+): boolean {
+  const { byAgent, byParticipant } = seatIndex(crew);
+  const isSeat = (agentId: string | null | undefined, participantId: string | null | undefined) =>
+    (!!agentId && byAgent.has(agentId)) || (!!participantId && byParticipant.has(participantId));
+  const seen = new Set<string>();
+  let agentRows = 0;
+  let nonSeat = 0;
+  for (const row of room?.agent_members ?? []) {
+    const key = row.participant_id || row.agent_id || "";
+    if (seen.has(key)) continue;
+    seen.add(key);
+    agentRows += 1;
+    if (!isSeat(row.agent_id, row.participant_id)) nonSeat += 1;
+  }
+  for (const row of members ?? []) {
+    if ((row.participant_type ?? "human") !== "agent") continue;
+    const pid = row.participant_id || row.id || row.user_id || "";
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    agentRows += 1;
+    if (!isSeat(null, pid)) nonSeat += 1;
+  }
+  if (agentRows === 0) {
+    for (const id of [room?.brigade_agent_id, ...(room?.brigade_agent_ids ?? [])]) {
+      if (!id) continue;
+      agentRows += 1;
+      if (!byAgent.has(id)) nonSeat += 1;
+    }
+  }
+  return agentRows === 0 || nonSeat > 0;
+}
+
 /** The models the popover offers: what the seat announced. */
 export function seatModelOptions(caps: SeatCapabilities | null | undefined): SeatModel[] {
   return caps?.models ?? [];

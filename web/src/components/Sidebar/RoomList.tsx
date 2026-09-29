@@ -2392,8 +2392,21 @@ export function RoomList() {
             has a Crew tab instead, and the section renders nothing there. */}
         <CrewSection variant="section" onOpenRoom={openRoom} />
         <div>
-          <WorkspaceTitle />
-          <ViewSwitcher />
+          {/* The workspace title and the filters stay put while the list
+              scrolls under them; Mark read sits beside the filters, where it
+              reads as a Conversations action, not a Crew one. */}
+          <div
+            className="sticky top-0 z-10 -mx-2 bg-surface-0/95 px-2 pb-1 backdrop-blur-md"
+            data-testid="conversation-list-sticky"
+          >
+            <WorkspaceTitle />
+            <div className="flex items-start gap-1">
+              <div className="min-w-0 flex-1">
+                <ViewSwitcher />
+              </div>
+              {renderMarkReadButton(true)}
+            </div>
+          </div>
       <section data-testid="conversations-card" aria-label="Conversations">
         {conversationFilter === "channels" && (
           <div className="flex items-center justify-between px-2.5 pb-1">
@@ -2568,6 +2581,33 @@ export function RoomList() {
     }
   }
 
+  /** Mark every visible unread room read. Compact = icon only, beside the filters. */
+  function renderMarkReadButton(compact: boolean) {
+    return (
+      <button
+        type="button"
+        onClick={markVisibleSectionRead}
+        disabled={markingAllRead || visibleUnreadTargets.length === 0}
+        className={clsx(
+          "focus-ring shrink-0 rounded-lg border border-line text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40",
+          compact ? "p-1.5" : "px-2 py-1",
+        )}
+        aria-label={
+          visibleUnreadTargets.length === 0
+            ? "No unread rooms to mark as read"
+            : `Mark ${visibleUnreadTargets.length} visible room${visibleUnreadTargets.length === 1 ? "" : "s"} as read`
+        }
+        title="Mark all visible as read"
+        data-testid="mark-visible-read"
+      >
+        <span className="inline-flex items-center gap-1">
+          <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+          {!compact && <span className="hidden sm:inline">Mark read</span>}
+        </span>
+      </button>
+    );
+  }
+
   // Search + New chat: hide on Home. The one list and the Crew tab show them;
   // Directory and Calls do not.
   const showToolbar = navV2
@@ -2659,25 +2699,8 @@ export function RoomList() {
               </button>
             </div>
             )}
-            {!(navV2 && v2Destination === "crew") && (
-            <button
-              type="button"
-              onClick={markVisibleSectionRead}
-              disabled={markingAllRead || visibleUnreadTargets.length === 0}
-              className="focus-ring shrink-0 rounded-lg border border-line px-2 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label={
-                visibleUnreadTargets.length === 0
-                  ? "No unread rooms to mark as read"
-                  : `Mark ${visibleUnreadTargets.length} visible room${visibleUnreadTargets.length === 1 ? "" : "s"} as read`
-              }
-              title="Mark all visible as read"
-            >
-              <span className="inline-flex items-center gap-1">
-                <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                <span className="hidden sm:inline">Mark read</span>
-              </span>
-            </button>
-            )}
+            {/* The one list carries Mark read beside its filters instead. */}
+            {!navV2 && renderMarkReadButton(false)}
           </div>
         </div>
       )}

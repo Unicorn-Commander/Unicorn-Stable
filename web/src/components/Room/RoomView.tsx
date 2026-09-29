@@ -24,8 +24,8 @@ import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { RoomHeader } from "./RoomHeader";
 import { SeatSettings } from "./SeatSettings";
 import { useCrew } from "@/hooks/useCrew";
-import { findSeatMembers, seatChipLabel } from "@/lib/seatSettings";
-import { readRoomSeat } from "@/lib/crew";
+import { findSeatMembers, seatChipLabel, shouldShowModelSwitcher } from "@/lib/seatSettings";
+import { isHubRoom, readRoomSeat } from "@/lib/crew";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
@@ -139,13 +139,18 @@ export function RoomView({ roomId }: RoomViewProps) {
   // RoomResponse.agents[] carries no backend. A 409 on the seat write means
   // the server disagrees — the chip goes and the Brigade switcher returns.
   const { crew } = useCrew();
+  const currentParticipantId = useAppStore((s) => s.currentParticipantId);
+  const currentUserId = useAppStore((s) => s.currentUser?.id);
   const [seatRefused, setSeatRefused] = useState(false);
   const [seatOpenFor, setSeatOpenFor] = useState<string | null>(null);
   const [seatRequested, setSeatRequested] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
+  // RoomView is not keyed by room: every per-room seat flag resets here, or a
+  // `?seat=1` that found no seat would open the popover in the next room.
   useEffect(() => {
     setSeatRefused(false);
     setSeatOpenFor(null);
+    setSeatRequested(false);
   }, [roomId]);
   // `/c/<id>?seat=1` (the crew row's Settings) opens the popover once.
   useEffect(() => {
@@ -315,6 +320,12 @@ export function RoomView({ roomId }: RoomViewProps) {
     () => (seatRefused ? [] : findSeatMembers(roomDetail, members, crew)),
     [seatRefused, roomDetail, members, crew],
   );
+  // Mode writes need room owner/admin (the server's ladder); read the caller's
+  // own row, the only reliable "this is me".
+  const myRole = members?.find((m) => m.is_self)?.role ?? null;
+  const canEditMode = myRole === "owner" || myRole === "admin";
+  // The Brigade switcher stays while any agent member is not a seat.
+  const showModelSwitcher = seatRefused || shouldShowModelSwitcher(roomDetail, members, crew);
   useEffect(() => {
     if (!seatRequested) return;
     const first = seatMatches.find((match) => match.editable);
@@ -347,6 +358,8 @@ export function RoomView({ roomId }: RoomViewProps) {
         open={seatOpenFor === match.member.agent_id}
         onOpenChange={(next) => setSeatOpenFor(next ? match.member.agent_id : null)}
         onNoSeat={() => setSeatRefused(true)}
+        canEditMode={canEditMode}
+        labelled={seatMatches.length > 1}
       />
     ));
 
@@ -385,6 +398,15 @@ export function RoomView({ roomId }: RoomViewProps) {
       ? s.rooms.find((r) => r.id === roomDetail.parent_room_id) ?? null
       : null,
   );
+  // "New conversation" only on YOUR hub (or a thread under it): the server's
+  // hub test, not the room type alone.
+  const selfIds = [currentParticipantId, currentUserId];
+  const hubForNewConversation =
+    roomDetail && isHubRoom(roomDetail, selfIds)
+      ? roomDetail
+      : parentRoom && isHubRoom(parentRoom, selfIds)
+        ? parentRoom
+        : null;
   const dmAgentId = roomDetail?.brigade_agent_id ?? null;
   const dmAgent = dmAgentId
     ? rosterAgents.find((a) => a.id === dmAgentId)
@@ -581,20 +603,16 @@ export function RoomView({ roomId }: RoomViewProps) {
         onStartGroupWithAgent={(agent) =>
           openStartGroup([{ kind: "agent", id: agent.id, name: agent.name }])
         }
-        // A hub, or a thread under one: a fresh conversation with this agent
+        // Your hub, or a thread under it: a fresh conversation with this agent
         // is a thread under the hub, nested in the sidebar (Nav v3 §2.2).
         onNewConversation={
-          roomDetail?.type === "agent_hub"
-            ? () =>
-                void beginThread({
-                  roomId: roomDetail.parent_room_id || roomId,
-                  navigate,
-                })
+          hubForNewConversation
+            ? () => void beginThread({ roomId: hubForNewConversation.id, navigate })
             : undefined
         }
         // A seat room's brain is the chip's popover; the Brigade switcher
-        // would do nothing there. Everything else keeps it.
-        showModelSwitcher={seatMatches.length === 0}
+        // stays while a house agent is in the room too.
+        showModelSwitcher={showModelSwitcher}
         seatMenus={seatMenus}
       >
           {isDm ? (
@@ -770,9 +788,12 @@ export function RoomView({ roomId }: RoomViewProps) {
             : undefined
         }
       />
+      {/* Sits above the composer's call buttons, and leaves while the seat
+          sheet is open — it painted over the sheet's last rows. */}
       {(roomDetail?.type === "agent_hub" ||
         roomDetail?.type === "channel" ||
-        !!roomDetail?.parent_room_id) && (
+        !!roomDetail?.parent_room_id) &&
+        !seatOpenFor && (
         <button
           type="button"
           onClick={() =>
@@ -781,8 +802,9 @@ export function RoomView({ roomId }: RoomViewProps) {
               navigate,
             })
           }
-          className="focus-ring fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
+          className="focus-ring fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
           aria-label="New thread"
+          data-testid="room-fab"
         >
           <Plus className="h-6 w-6" />
         </button>

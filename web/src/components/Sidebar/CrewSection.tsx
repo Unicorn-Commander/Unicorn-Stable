@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,27 +13,36 @@ import clsx from "clsx";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { beginThread, openAgentHub } from "@/lib/beginThread";
-import { crewPresence, ownerSeatLabel, sharedRoomFor } from "@/lib/crew";
+import { crewPresence, ownerSeatLabel } from "@/lib/crew";
 import { useCrew } from "@/hooks/useCrew";
+import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
 import { useNavStore } from "@/stores/navStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { badgeCount } from "@/utils/unreadModel";
+import { onMutedChange } from "@/utils/mute";
 import { buildCrewSection, type CrewRow, type CrewSectionModel } from "./sidebarModel";
+
+/** Voice to a runner seat waits on C5 (the house-voice key). Said on the item, not hidden. */
+export const SEAT_CALL_UNAVAILABLE = "Voice for seats comes with the house-voice key";
 
 /**
  * Crew — the agents you can talk to, pinned like contacts (Nav v3 §2.1).
  *
- * `section` is the desktop block above Conversations: header, three groups
- * (Your seats · House · Partners), eight rows then "More", and "All agents".
- * `page` is the phone's Crew tab: the same rows, no cap, larger targets.
- * Both draw `buildCrewSection`, which AppShell also flattens for Alt+↑/↓.
+ * `section` is the desktop block above Conversations: 32px single-line rows
+ * (face, name, unread), the brain chip and ⋮ as a hover overlay so the name
+ * never gives way to them, three groups (Your seats · House · Partners)
+ * capped per group with "More", and "All agents". `page` is the phone's
+ * Crew tab: the same rows at touch height with the chip in line. Both draw
+ * `buildCrewSection`, which AppShell also flattens for Alt+↑/↓.
  *
- * A row's tap opens the hub. The ⋮ menu starts a new conversation (a thread
- * under the hub), calls the agent, or opens the seat's settings. A partner's
- * seat shows its brain read-only; the popover in the room decides what can
- * change (only your own seat).
+ * A row's tap opens its target: your hub (ensured on the server when it does
+ * not exist yet) for your seats and house agents; for a partner's seat the
+ * newest room you share, named on the row — and nothing acts in that room
+ * from here (no New conversation, no Call). Settings is yours-only; Call on
+ * a seat waits for C5 and says so.
  */
 export function CrewSection({
   variant,
@@ -44,10 +53,13 @@ export function CrewSection({
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { crew, loaded, fromRoster } = useCrew();
+  const { crew, loaded, fromRoster, crewAnswered } = useCrew();
   const rooms = useAppStore((s) => s.rooms);
   const agents = useAppStore((s) => s.agents);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
+  const unreadCounts = useAppStore((s) => s.unreadCounts);
+  const currentParticipantId = useAppStore((s) => s.currentParticipantId);
+  const currentUserId = useAppStore((s) => s.currentUser?.id);
   const scope = useFederationStore((s) => s.activeInstanceId);
   const searchQuery = useSidebarUi((s) => s.searchQuery);
   const showAll = useSidebarUi((s) => s.crewShowAll);
@@ -57,24 +69,46 @@ export function CrewSection({
   const setV2Destination = useNavStore((s) => s.setV2Destination);
   const [menuKey, setMenuKey] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // mute.ts persists outside React; recompute badges when a level changes.
+  const [mutedVersion, setMutedVersion] = useState(0);
+  useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
   const model: CrewSectionModel = useMemo(
     () =>
       buildCrewSection({
         crew,
+        crewAnswered,
+        selfIds: [currentParticipantId, currentUserId],
         rooms,
         agents,
         searchQuery,
         // The phone tab lists everyone; "More" is a rail affordance.
         showAll: variant === "page" ? true : showAll,
         collapsed: variant === "page" ? {} : collapsed,
+        roomUnread: (room) =>
+          badgeCount(room.id, unreadCounts[room.id] ?? room.unread_count ?? 0),
       }),
-    [crew, rooms, agents, searchQuery, showAll, collapsed, variant],
+    // mutedVersion recomputes badges when a mute lands outside React.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+    [
+      crew,
+      crewAnswered,
+      currentParticipantId,
+      currentUserId,
+      rooms,
+      agents,
+      searchQuery,
+      showAll,
+      collapsed,
+      variant,
+      unreadCounts,
+      mutedVersion,
+    ],
   );
 
   function closePhoneDrawer() {
     if (
-      window.matchMedia("(max-width: 767px)").matches &&
+      window.matchMedia?.("(max-width: 767px)")?.matches &&
       useAppStore.getState().ui.sidebarOpen
     ) {
       useAppStore.getState().toggleSidebar();
@@ -82,19 +116,19 @@ export function CrewSection({
   }
 
   /**
-   * The room a row opens: its hub, ensured on the server when the list has
-   * none. A partner's seat has no hub of yours — the server refuses one
-   * ("ask the seat's owner") — so its row opens the newest room you share.
+   * The room a row opens. A partner's seat only ever opens the shared room
+   * the model resolved (or nothing, with a word); your seats and house
+   * agents get their hub ensured on the server when the list has none.
    */
-  async function hubIdFor(row: CrewRow): Promise<string | null> {
+  async function targetIdFor(row: CrewRow): Promise<string | null> {
     if (row.roomId) return row.roomId;
     if (row.member.group === "partner") {
-      const shared = sharedRoomFor(row.member, useAppStore.getState().rooms);
-      if (shared) return shared.id;
-      const owner = row.member.owner ? ownerSeatLabel(row.member.owner).replace(/ seat$/, "") : "its owner";
+      const owner = row.member.owner
+        ? ownerSeatLabel(row.member.owner).replace(/’s? seat$/, "")
+        : "Its owner";
       useAppStore.getState().pushToast({
         title: `No room with ${row.member.display_name} yet`,
-        body: `${owner.replace(/’s?$/, "")} has to add their seat to a room you share.`,
+        body: `${owner} has to add their seat to a room you share.`,
       });
       return null;
     }
@@ -114,16 +148,16 @@ export function CrewSection({
     }
   }
 
-  function openHub(row: CrewRow) {
+  function openTarget(row: CrewRow) {
     void withBusy(row, async () => {
-      const id = await hubIdFor(row);
+      const id = await targetIdFor(row);
       if (id) onOpenRoom(id);
     });
   }
 
   function newConversation(row: CrewRow) {
     void withBusy(row, async () => {
-      const id = await hubIdFor(row);
+      const id = await targetIdFor(row);
       if (!id) return;
       const thread = await beginThread({ roomId: id, navigate });
       if (thread) closePhoneDrawer();
@@ -132,7 +166,7 @@ export function CrewSection({
 
   function call(row: CrewRow) {
     void withBusy(row, async () => {
-      const id = await hubIdFor(row);
+      const id = await targetIdFor(row);
       if (!id) return;
       navigate(`/c/${id}?join=1&kind=voice`);
       closePhoneDrawer();
@@ -141,7 +175,7 @@ export function CrewSection({
 
   function openSettings(row: CrewRow) {
     void withBusy(row, async () => {
-      const id = await hubIdFor(row);
+      const id = await targetIdFor(row);
       if (!id) return;
       navigate(`/c/${id}?seat=1`);
       closePhoneDrawer();
@@ -155,19 +189,116 @@ export function CrewSection({
   }
 
   const page = variant === "page";
-  const isDesktop =
-    typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
+  const isDesktop = typeof window === "undefined" || (window.matchMedia?.("(min-width: 768px)")?.matches ?? true);
+
+  function rowTitle(row: CrewRow): string {
+    const name = row.member.display_name;
+    if (row.member.group === "partner") {
+      return row.targetLabel ? `Open ${row.targetLabel} with ${name}` : `No room shared with ${name} yet`;
+    }
+    return row.brain ? `Open your conversation with ${name} — ${row.brain}` : `Open your conversation with ${name}`;
+  }
+
+  function menuFor(row: CrewRow): ReactNode | null {
+    const { member } = row;
+    if (member.group === "partner") return null;
+    const seat = member.kind === "seat";
+    return (
+      <>
+        <MenuItem onClick={() => newConversation(row)} testId="crew-menu-new">
+          <MessageSquarePlus className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          New conversation
+        </MenuItem>
+        <MenuItem
+          onClick={() => call(row)}
+          disabled={seat}
+          title={seat ? SEAT_CALL_UNAVAILABLE : undefined}
+          testId="crew-menu-call"
+        >
+          <Phone className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          Call
+        </MenuItem>
+        {member.group === "own_seat" && (
+          <MenuItem onClick={() => openSettings(row)} testId="crew-menu-settings">
+            <Settings2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            Settings
+          </MenuItem>
+        )}
+      </>
+    );
+  }
 
   function renderRow(row: CrewRow): ReactNode {
     const { member } = row;
-    // A seat's dot means "the runner polled the gateway in the last three
-    // minutes"; the tooltip says so. House agents keep Brigade's wording.
     const badge = crewPresence(member);
     const active = !!row.roomId && row.roomId === activeRoomId;
     const menuOpen = menuKey === row.id;
-    const subtitle =
-      member.role_line ||
-      (member.group === "partner" && member.owner ? ownerSeatLabel(member.owner) : null);
+    const items = menuFor(row);
+    const face = (
+      <span className={clsx("relative shrink-0", page ? "h-6 w-6" : "h-5 w-5")}>
+        <Identity
+          {...resolveIdentity({
+            id: member.agent_id,
+            participant_id: member.participant_id || undefined,
+            participant_type: "agent",
+            display_name: member.display_name,
+            avatar_url: member.avatar_url,
+            username: member.agent_id,
+          })}
+          presence={null}
+          size={page ? 24 : 20}
+          alt=""
+        />
+        {badge.dotClass && (
+          <span
+            role="img"
+            aria-label={badge.label}
+            title={badge.label}
+            className={clsx(
+              "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
+              badge.dotClass,
+            )}
+            data-testid="crew-presence"
+          />
+        )}
+      </span>
+    );
+    const chip = row.brain && (
+      <span
+        className={clsx(
+          "min-w-0 truncate rounded-full border border-line px-1.5 py-0.5 text-[10px] font-medium text-slate-300",
+          page ? "shrink-[3] bg-white/[0.03]" : "glass-heavy max-w-[10rem]",
+        )}
+        title={
+          member.group === "partner"
+            ? `${row.brain} — ${member.owner ? ownerSeatLabel(member.owner) : "a partner's seat"}; only its owner can change it`
+            : `This conversation's brain: ${row.brain}`
+        }
+        data-testid="crew-brain-chip"
+      >
+        {row.brain}
+      </span>
+    );
+    const unread = row.unread > 0 && (
+      <span
+        className="gradient-bg grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white"
+        aria-label={`${row.unread} unread`}
+        data-testid="crew-unread"
+      >
+        {row.unread > 99 ? "99+" : row.unread}
+      </span>
+    );
+    const menuButton = items && (
+      <CrewRowMenu
+        name={member.display_name}
+        agentId={member.agent_id}
+        open={menuOpen}
+        alwaysVisible={page}
+        onOpenChange={(next) => setMenuKey(next ? row.id : null)}
+      >
+        {items}
+      </CrewRowMenu>
+    );
     return (
       <li
         key={row.id}
@@ -178,8 +309,9 @@ export function CrewSection({
       >
         <div
           className={clsx(
-            "group relative flex w-full items-center rounded-lg pr-1 transition-colors",
-            active ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
+            "group relative flex items-center rounded-lg transition-colors",
+            page ? "min-h-11 pr-1" : "h-8",
+            active ? "bg-white/[0.06]" : "hover:bg-white/[0.04] focus-within:bg-white/[0.04]",
           )}
         >
           {active && (
@@ -190,120 +322,47 @@ export function CrewSection({
           )}
           <button
             type="button"
-            onClick={() => openHub(row)}
+            onClick={() => openTarget(row)}
             disabled={busy === row.id}
             aria-current={active ? "page" : undefined}
             className={clsx(
-              "focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left text-slate-300 transition-colors hover:text-slate-100 disabled:opacity-60",
-              page ? "min-h-12 py-2" : "py-2.5 md:py-1.5",
+              "focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-slate-300 transition-colors hover:text-slate-100 disabled:opacity-60",
+              page ? "min-h-11 py-1.5" : "h-8",
             )}
-            title={`Open your conversation with ${member.display_name}`}
+            title={rowTitle(row)}
             data-testid={`crew-open-${member.agent_id}`}
           >
-            <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
-              <Identity
-                {...resolveIdentity({
-                  id: member.agent_id,
-                  participant_id: member.participant_id || undefined,
-                  participant_type: "agent",
-                  display_name: member.display_name,
-                  avatar_url: member.avatar_url,
-                  username: member.agent_id,
-                })}
-                presence={null}
-                size={28}
-                alt=""
-              />
-              <span
-                className={clsx(
-                  "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border",
-                  badge.dotClass,
-                )}
-                aria-label={badge.label}
-                title={badge.label}
-              />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-[3.5rem] truncate text-sm font-medium">
-                  {member.display_name}
-                </span>
-                {/* Gives way before the name does (shrink 3 : 1) and ellipsises;
-                    the title carries the full label. */}
-                {row.brain && (
-                  <span
-                    className="min-w-0 shrink-[3] truncate rounded-full border border-line bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
-                    title={
-                      member.group === "partner"
-                        ? `${row.brain} — ${member.owner ? ownerSeatLabel(member.owner) : "a partner's seat"}; only its owner can change it`
-                        : `This conversation's brain: ${row.brain}`
-                    }
-                    data-testid="crew-brain-chip"
-                  >
-                    {row.brain}
-                  </span>
-                )}
-                {member.unread > 0 && (
-                  <span className="gradient-bg ml-auto grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full px-1.5 text-[10px] font-bold tabular-nums text-white">
-                    {member.unread > 99 ? "99+" : member.unread}
-                  </span>
-                )}
-              </span>
-              {(page ? member.last_line || subtitle : subtitle) && (
-                <span className="block truncate text-[11px] text-slate-500">
-                  {page ? member.last_line || subtitle : subtitle}
-                </span>
+            {face}
+            {/* The name keeps at least 14 characters; nothing else on the row
+                may push it below that. */}
+            <span className={clsx("min-w-[14ch] flex-1 truncate font-medium", page ? "text-sm" : "text-[13px]")}>
+              {member.display_name}
+              {row.targetLabel && (
+                <span className="font-normal text-slate-500"> · {row.targetLabel}</span>
               )}
             </span>
+            {page && chip}
+            {unread}
           </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuKey(menuOpen ? null : row.id);
-            }}
-            className={clsx(
-              "focus-ring mr-1 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1",
-              menuOpen || page
-                ? "opacity-100"
-                : "opacity-70 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
-            )}
-            aria-label={`Options for ${member.display_name}`}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            data-testid={`crew-menu-${member.agent_id}`}
-          >
-            <MoreVertical className="h-3.5 w-3.5" />
-          </button>
+          {page ? (
+            menuButton
+          ) : (
+            (chip || items) && (
+              <span
+                className={clsx(
+                  "pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-1",
+                  active || menuOpen
+                    ? "opacity-100"
+                    : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                )}
+                data-testid="crew-row-overlay"
+              >
+                {chip}
+                <span className="pointer-events-auto">{menuButton}</span>
+              </span>
+            )
+          )}
         </div>
-        {menuOpen && (
-          <>
-            <button
-              className="fixed inset-0 z-20 cursor-default"
-              aria-hidden="true"
-              tabIndex={-1}
-              onClick={() => setMenuKey(null)}
-            />
-            <div
-              role="menu"
-              aria-label={`Options for ${member.display_name}`}
-              className="glass-heavy animate-fade-in absolute right-2 top-9 z-30 w-52 overflow-hidden rounded-xl py-1 shadow-pop"
-            >
-              <MenuItem onClick={() => newConversation(row)}>
-                <MessageSquarePlus className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                New conversation
-              </MenuItem>
-              <MenuItem onClick={() => call(row)}>
-                <Phone className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                Call
-              </MenuItem>
-              <MenuItem onClick={() => openSettings(row)}>
-                <Settings2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                Settings
-              </MenuItem>
-            </div>
-          </>
-        )}
       </li>
     );
   }
@@ -311,7 +370,7 @@ export function CrewSection({
   function renderGroups() {
     return model.groups.map((group) => (
       <div key={group.group} data-testid={`crew-group-${group.group}`}>
-        <p className="px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-600">
+        <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-600">
           {group.label}
         </p>
         <ul role="list">{group.rows.map(renderRow)}</ul>
@@ -324,8 +383,8 @@ export function CrewSection({
       type="button"
       onClick={openDirectory}
       className={clsx(
-        "focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-xs font-medium text-stable-cyan transition-colors hover:bg-stable-cyan/10",
-        page ? "min-h-11 py-2.5" : "py-2 md:py-1.5",
+        "focus-ring flex w-full items-center gap-2 rounded-lg px-2 text-left text-xs font-medium text-stable-cyan transition-colors hover:bg-stable-cyan/10",
+        page ? "min-h-11 py-2.5" : "h-7",
       )}
       data-testid="crew-all-agents"
     >
@@ -362,7 +421,7 @@ export function CrewSection({
 
   return (
     <section aria-label="Crew" data-testid="crew-section" className="mb-1">
-      <div className="flex items-center justify-between px-2.5 pb-0.5">
+      <div className="flex items-center justify-between px-2 pb-0.5">
         <button
           type="button"
           onClick={() => toggleCollapsed(model.collapseKey)}
@@ -385,9 +444,9 @@ export function CrewSection({
       {!model.collapsed && (
         <>
           {!loaded ? (
-            <p className="px-2.5 py-1 text-[11px] text-slate-500">Loading crew…</p>
+            <p className="px-2 py-1 text-[11px] text-slate-500">Loading crew…</p>
           ) : model.total === 0 ? (
-            <p className="px-2.5 py-1 text-[11px] text-slate-500">No one in the crew matches.</p>
+            <p className="px-2 py-1 text-[11px] text-slate-500">No one in the crew matches.</p>
           ) : (
             renderGroups()
           )}
@@ -395,18 +454,18 @@ export function CrewSection({
             <button
               type="button"
               onClick={() => setShowAll(true)}
-              className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+              className="focus-ring flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
               data-testid="crew-more"
             >
               <ChevronDown className="h-3 w-3" />
               More ({model.hiddenCount})
             </button>
           )}
-          {showAll && !model.searching && model.total > 8 && (
+          {model.expanded && (
             <button
               type="button"
               onClick={() => setShowAll(false)}
-              className="focus-ring flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+              className="focus-ring flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
               data-testid="crew-fewer"
             >
               <ChevronDown className="h-3 w-3 rotate-180" />
@@ -420,13 +479,93 @@ export function CrewSection({
   );
 }
 
-function MenuItem({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+/**
+ * The row's ⋮ menu with the keyboard model every other menu here has:
+ * focus moves in on open, arrows cycle, Escape closes and returns focus.
+ */
+function CrewRowMenu({
+  name,
+  agentId,
+  open,
+  alwaysVisible,
+  onOpenChange,
+  children,
+}: {
+  name: string;
+  agentId: string;
+  open: boolean;
+  alwaysVisible: boolean;
+  onOpenChange: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useMenuKeyboard(open, menuRef, btnRef, () => onOpenChange(false));
+  return (
+    <span className="relative inline-flex">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenChange(!open);
+        }}
+        className={clsx(
+          "focus-ring shrink-0 rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100",
+          alwaysVisible ? "p-2" : "p-1",
+        )}
+        aria-label={`Options for ${name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        data-testid={`crew-menu-${agentId}`}
+      >
+        <MoreVertical className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <>
+          <button
+            className="fixed inset-0 z-20 cursor-default"
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={() => onOpenChange(false)}
+          />
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label={`Options for ${name}`}
+            className="glass-heavy animate-fade-in absolute right-0 top-full z-30 mt-1 w-56 overflow-hidden rounded-xl py-1 shadow-pop"
+          >
+            {children}
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
+function MenuItem({
+  onClick,
+  children,
+  disabled = false,
+  title,
+  testId,
+}: {
+  onClick: () => void;
+  children: ReactNode;
+  disabled?: boolean;
+  title?: string;
+  testId?: string;
+}) {
   return (
     <button
       type="button"
       role="menuitem"
       onClick={onClick}
-      className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06] max-md:min-h-11"
+      disabled={disabled}
+      aria-disabled={disabled || undefined}
+      title={title}
+      data-testid={testId}
+      className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-300 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50 max-md:min-h-11"
     >
       {children}
     </button>

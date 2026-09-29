@@ -12,6 +12,7 @@ import {
 } from "@/lib/identity";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
+import { othersInRoom } from "@/lib/conversation";
 import { ws } from "@/services/websocket";
 import { StableMark } from "@/components/StableMark";
 
@@ -1229,17 +1230,13 @@ interface EmptyChannelProps {
     display_name: string;
     participant_type?: string;
     avatar_url?: string | null;
+    is_self?: boolean;
   }>;
   currentUserId?: string;
   onPrompt: (content: string) => void;
   onInviteAgent?: () => void;
 }
 
-const AGENT_PROMPTS = [
-  "Give me a 30-second intro of what you do best.",
-  "What questions should I ask you first?",
-  "Walk me through a typical task you handle.",
-];
 
 // Empty-channel starter chips. Each wires to a real action (see runChip):
 // "invite-agent" opens the room's invite flow; the other two seed the composer
@@ -1257,7 +1254,6 @@ function EmptyChannel({
   roomId,
   participants,
   currentUserId,
-  onPrompt,
   onInviteAgent,
 }: EmptyChannelProps) {
   const requestInsert = useAppStore((s) => s.requestInsert);
@@ -1279,9 +1275,7 @@ function EmptyChannel({
     }
   }
 
-  const others = participants.filter(
-    (p) => (p.participant_id || p.user_id) !== currentUserId,
-  );
+  const others = othersInRoom(participants, currentUserId);
   const room = useAppStore((s) => s.rooms.find((r) => r.id === roomId));
   const counterpart = room?.counterpart;
   const onlyAgent =
@@ -1330,19 +1324,18 @@ function EmptyChannel({
           <p className="font-display text-lg font-semibold text-slate-100">
             <span style={{ color: ident.text }}>{onlyAgent.display_name}</span>
           </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Private chat — mentions are off, every message goes to them.
+          <p className="mt-1 text-xs text-slate-500" data-testid="private-hub-copy">
+            Just you and {onlyAgent.display_name}. Mentions are off — every message goes to them.
           </p>
-          <div className="mt-5 flex flex-col gap-2">
-            {AGENT_PROMPTS.map((p) => (
-              <button
-                key={p}
-                onClick={() => onPrompt(p)}
-                className="rounded-xl border border-line bg-white/[0.03] px-3.5 py-2.5 text-left text-sm text-slate-300 transition-colors hover:border-stable-purple/40 hover:bg-white/[0.05] hover:text-slate-100 focus-ring"
-              >
-                {p}
-              </button>
-            ))}
+          <div className="mt-5 flex justify-center">
+            <button
+              type="button"
+              onClick={() => runChip("say-hi")}
+              className="min-h-11 rounded-full border border-line bg-white/[0.04] px-4 py-2 text-sm text-slate-300 transition-colors hover:border-stable-purple/40 hover:bg-white/[0.06] hover:text-slate-100 focus-ring"
+              data-testid="private-hub-say-hi"
+            >
+              👋 Say hi
+            </button>
           </div>
         </div>
       </div>

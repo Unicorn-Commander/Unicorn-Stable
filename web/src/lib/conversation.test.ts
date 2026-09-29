@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { othersInRoom } from "./conversation";
 import type { Room, RoomMember } from "@/services/api";
 import {
   HUB_STARTER_PROMPTS,
@@ -150,3 +151,16 @@ describe("live room list", () => {
     expect(replaced).toHaveLength(2);
   });
 });
+
+describe("othersInRoom", () => {
+  it("drops the caller by the server's is_self, not by an id that never matches", () => {
+    const me = { participant_id: "p-aaron", user_id: null, is_self: true, display_name: "Aaron" };
+    const seat = { participant_id: "p-persephone", user_id: null, display_name: "Persephone", participant_type: "agent" };
+    // The Keycloak id is not a participant id: the comparison alone kept the human in.
+    expect(othersInRoom([me, seat], "dev-user-001").map((p) => p.participant_id)).toEqual(["p-persephone"]);
+    // Rows without the flag still fall back to the id comparison.
+    const legacyMe = { participant_id: "dev-user-001", display_name: "Aaron" };
+    expect(othersInRoom([legacyMe, seat], "dev-user-001").map((p) => p.participant_id)).toEqual(["p-persephone"]);
+  });
+});
+

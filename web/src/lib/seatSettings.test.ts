@@ -16,6 +16,8 @@ import {
   seatEffortOptions,
   seatModelOptions,
   seatPatchBody,
+  seatRefusalKind,
+  shouldShowModelSwitcher,
   validateSeat,
 } from "./seatSettings";
 
@@ -97,6 +99,42 @@ describe("seat member match", () => {
     expect(findSeatMember(shared, [majik], CREW_FIXTURE)).toBeNull();
     expect(findSeatMember(shared, [], [])).toBeNull();
     expect(findSeatMember(null, [], CREW_FIXTURE)).toBeNull();
+  });
+});
+
+describe("switcher and refusals", () => {
+  it("keeps the Brigade switcher while any agent member is not a seat", () => {
+    const seatOnly = room({
+      agent_members: [{ participant_id: "p-persephone", agent_id: "persephone", display_name: "Persephone" }],
+    });
+    expect(shouldShowModelSwitcher(seatOnly, [PERSEPHONE_MEMBER], CREW_FIXTURE)).toBe(false);
+    const mixed = room({
+      type: "group_dm",
+      counterpart: null,
+      agent_members: [
+        { participant_id: "p-persephone", agent_id: "persephone", display_name: "Persephone" },
+        { participant_id: "p-majik", agent_id: "majik", display_name: "Majik" },
+      ],
+    });
+    expect(shouldShowModelSwitcher(mixed, [PERSEPHONE_MEMBER], CREW_FIXTURE)).toBe(true);
+    const brigadeOnly = room({ type: "dm", counterpart: null, agent_members: [], brigade_agent_id: "majik" });
+    expect(shouldShowModelSwitcher(brigadeOnly, [], CREW_FIXTURE)).toBe(true);
+    const seatByResident = room({ type: "dm", counterpart: null, agent_members: [], brigade_agent_id: "persephone" });
+    expect(shouldShowModelSwitcher(seatByResident, [], CREW_FIXTURE)).toBe(false);
+    const humansOnly = room({ type: "channel", counterpart: null, agent_members: [] });
+    expect(shouldShowModelSwitcher(humansOnly, [], CREW_FIXTURE)).toBe(true);
+    // Members payload alone (no agents[] on the detail) decides the same way.
+    const viaMembers = room({ type: "channel", counterpart: null, agent_members: [] });
+    const majik: RoomMember = { ...PERSEPHONE_MEMBER, participant_id: "p-majik", display_name: "Majik" };
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER], CREW_FIXTURE)).toBe(false);
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, majik], CREW_FIXTURE)).toBe(true);
+  });
+
+  it("tells the two 409s apart", () => {
+    expect(seatRefusalKind("This room is archived")).toBe("archived");
+    expect(seatRefusalKind("archived rooms refuse")).toBe("archived");
+    expect(seatRefusalKind("no runner seat in this room")).toBe("no_seat");
+    expect(seatRefusalKind(null)).toBe("no_seat");
   });
 });
 

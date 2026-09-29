@@ -12,6 +12,7 @@ import {
   ExternalLink,
   Keyboard,
   LayoutTemplate,
+  ListTree as ListTreeIcon,
   Link2,
   ListChecks,
   ListTree,
@@ -376,10 +377,12 @@ export function RoomHeader({
           testId="room-header-record"
         />
 
+        {/* Phones keep the row to Call and More so the name can be read;
+            Members and Threads move into More there, Pop out is desktop. */}
         <button
           type="button"
           onClick={onToggleMembers}
-          className={clsx(ICON_BTN, membersOpen && "bg-white/[0.08] text-slate-100")}
+          className={clsx(ICON_BTN, "hidden sm:inline-flex", membersOpen && "bg-white/[0.08] text-slate-100")}
           aria-label="Members"
           aria-pressed={membersOpen}
           title="Members"
@@ -389,14 +392,14 @@ export function RoomHeader({
         <button
           type="button"
           onClick={toggleThreads}
-          className={clsx(ICON_BTN, threadsOpen && "bg-white/[0.08] text-slate-100")}
+          className={clsx(ICON_BTN, "hidden sm:inline-flex", threadsOpen && "bg-white/[0.08] text-slate-100")}
           aria-label="Threads"
           aria-pressed={threadsOpen}
           title="Threads"
         >
           <ListTree className="h-4 w-4" />
         </button>
-        <div className="relative" ref={popRef}>
+        <div className="relative hidden sm:block" ref={popRef}>
           <button
             ref={popBtnRef}
             type="button"
@@ -495,6 +498,14 @@ export function RoomHeader({
               <MenuItem onClick={() => run(() => setMuted(toggleMute(roomId)))}>
                 {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                 {muted ? "Unmute room" : "Mute room"}
+              </MenuItem>
+              <MenuItem onClick={() => run(onToggleMembers)} className="sm:hidden" data-testid="phone-members">
+                <Users className="h-4 w-4" />
+                {membersOpen ? "Hide members" : "Members"}
+              </MenuItem>
+              <MenuItem onClick={() => run(toggleThreads)} className="sm:hidden" data-testid="phone-threads">
+                <ListTreeIcon className="h-4 w-4" />
+                {threadsOpen ? "Hide threads" : "Threads"}
               </MenuItem>
               {seatMenus.map((entry) => (
                 <MenuItem

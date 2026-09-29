@@ -129,6 +129,20 @@ export function roomLabel(
   return explicit || (room.name || "").trim() || "Conversation";
 }
 
+/**
+ * Everyone in the room but me. The server-set `is_self` is the only reliable
+ * marker — a participant id is a UUID and never equals the Keycloak id, so a
+ * comparison alone left the human in "others" and a private hub read as a
+ * channel. The id comparison stays as the fallback for rows without the flag.
+ */
+export function othersInRoom<
+  T extends { participant_id?: string | null; user_id?: string | null; is_self?: boolean },
+>(participants: readonly T[], currentUserId: string | null | undefined): T[] {
+  return participants.filter(
+    (p) => !p.is_self && (p.participant_id || p.user_id) !== currentUserId,
+  );
+}
+
 /** Collapsed-row hint: "+3 older · 1 archived". Null when there is nothing to say. */
 export function olderArchivedLabel(older: number, archived: number): string | null {
   const parts: string[] = [];
