@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -94,6 +95,13 @@ class MessageListResponse(BaseModel):
     room_type: str | None = None
     parent_room_id: uuid.UUID | None = None
     agent_mode: str | None = None
+    # Nav v3 R11: the room's class (private | shared | channel) and the
+    # calling seat's own {model, effort} on the poll that triggers a turn,
+    # so a runner downgrades its hands on the same page it acts on. None /
+    # empty on every other producer.
+    room_class: str | None = None
+    class_reasons: list[str] = Field(default_factory=list)
+    seat: dict[str, Any] | None = None
 
 
 class PendingApprovalItem(BaseModel):

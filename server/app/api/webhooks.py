@@ -1223,25 +1223,9 @@ async def incoming_webhook(
     pseudo_sub = f"webhook:{room_name}"
     pseudo_username = f"webhook-{room_name}"[:60]
 
-    agent_p = (
-        await db.execute(
-            select(Participant).where(Participant.keycloak_sub == pseudo_sub)
-        )
-    ).scalar_one_or_none()
-    if agent_p is None:
-        agent_p = Participant(
-            keycloak_sub=pseudo_sub,
-            username=pseudo_username,
-            display_name=sender_name,
-            participant_type=ParticipantType.AGENT,
-            status=ParticipantStatus.ONLINE,
-        )
-        db.add(agent_p)
-        await db.commit()
-        await db.refresh(agent_p)
-    elif agent_p.display_name != sender_name:
-        agent_p.display_name = sender_name
-        await db.commit()
+    agent_p = await _get_or_create_webhook_sender(
+        db, pseudo_sub=pseudo_sub, username=pseudo_username, display_name=sender_name
+    )
 
     membership = (
         await db.execute(
@@ -1278,3 +1262,42 @@ async def incoming_webhook(
         content_len=len(content),
     )
     return {"status": "ok", "message_id": str(msg.id)}
+
+
+async def _get_or_create_webhook_sender(
+    db: AsyncSession, *, pseudo_sub: str, username: str, display_name: str
+) -> Participant:
+    """The synthetic sender a webhook room posts as. Always stamped
+    ``metadata.kind = "integration"`` (Nav v3 R1): an integration is foreign
+    to every room class and never people-like anywhere — the room classifier
+    and the crew read that key, so a row created before the stamp existed is
+    repaired on its next post."""
+    agent_p = (
+        await db.execute(select(Participant).where(Participant.keycloak_sub == pseudo_sub))
+    ).scalar_one_or_none()
+    if agent_p is None:
+        agent_p = Participant(
+            keycloak_sub=pseudo_sub,
+            username=username,
+            display_name=display_name,
+            participant_type=ParticipantType.AGENT,
+            status=ParticipantStatus.ONLINE,
+            metadata_={"kind": "integration"},
+        )
+        db.add(agent_p)
+        await db.commit()
+        await db.refresh(agent_p)
+        return agent_p
+
+    changed = False
+    if agent_p.display_name != display_name:
+        agent_p.display_name = display_name
+        changed = True
+    meta = agent_p.metadata_ if isinstance(agent_p.metadata_, dict) else {}
+    if meta.get("kind") != "integration":
+        # Reassigned, not mutated, for JSONB change detection.
+        agent_p.metadata_ = {**meta, "kind": "integration"}
+        changed = True
+    if changed:
+        await db.commit()
+    return agent_p

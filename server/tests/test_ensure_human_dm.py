@@ -324,7 +324,9 @@ class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
 
         # target select, advisory lock, by_pair, reclaim member rows
         db.execute = AsyncMock(
-            side_effect=[target_row, lock_row, by_pair_hit, members_res]
+            # + the class_floor stamp (Nav v3 R2: a membership removal floors
+            # the room's class) that the reclaim's agent-row deletes trigger.
+            side_effect=[target_row, lock_row, by_pair_hit, members_res, MagicMock()]
         )
         db.commit = AsyncMock()
         db.refresh = AsyncMock()
@@ -373,7 +375,9 @@ class ReclaimCanonicalDmTests(IsolatedAsyncioTestCase):
             (agent_member, agent_p),
         ]
         db.execute = AsyncMock(
-            side_effect=[target_row, lock_row, by_pair_hit, members_res]
+            # + the class_floor stamp (Nav v3 R2: a membership removal floors
+            # the room's class) that the reclaim's agent-row deletes trigger.
+            side_effect=[target_row, lock_row, by_pair_hit, members_res, MagicMock()]
         )
         db.commit = AsyncMock()
         db.refresh = AsyncMock()

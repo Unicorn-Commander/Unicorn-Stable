@@ -17,7 +17,7 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Iterable, Literal
 
 import structlog
 import httpx
@@ -35,7 +35,9 @@ from fastapi import (
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from redis.asyncio import Redis
-from sqlalchemy import delete, select
+from sqlalchemy import cast, delete, func, select, update
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
@@ -46,16 +48,26 @@ from app.auth.gateway_auth import (
     GatewayAuthError,
     GatewayPrincipal,
     hash_key,
+    key_scope_wants_membership,
     resolve_key_room_scope,
+    room_in_key_scope,
     slugify,
     validate_gateway_jwt,
     verify_gateway_key,
 )
 from app.services.room_class import (
+    SEAT_CAPABILITIES_KEY,
     SEAT_EFFORTS,
     SEAT_MODEL_RE,
-    room_class_for,
+    Actor,
+    RoomClassFacts,
+    RoomLite,
+    apply_class_floors,
+    compute_room_classes,
+    load_members,
+    seat_owners,
     seat_setting_from_metadata,
+    stamp_class_floor_shared,
 )
 from app.config import Settings, get_settings
 from app.services.agent_status import (
@@ -240,44 +252,111 @@ def seat_is_silent(agent_mode: str | None) -> bool:
     return agent_mode in SILENT_AGENT_MODES
 
 
-def _room_envelope_facts(room: Room, seat_mode: str | None) -> dict[str, Any]:
+def _room_envelope_facts(
+    room: Room,
+    seat_mode: str | None,
+    facts: RoomClassFacts | None = None,
+    seat: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Additive facts on the messages-page envelope (L2/L4 contract): the
     room, its type (a thread inherits its parent's), its parent when it is
-    a thread, and the calling seat's own agent_mode."""
+    a thread, the calling seat's own agent_mode and — Nav v3 R11 — the
+    room's class and the seat's own ``{model, effort}``, so the poll that
+    triggers a turn can downgrade the runner's hands on the spot."""
     room_type = getattr(room, "room_type", None)
     return {
         "room_id": getattr(room, "id", None),
         "room_type": getattr(room_type, "value", room_type) if room_type is not None else None,
         "parent_room_id": getattr(room, "parent_room_id", None),
         "agent_mode": seat_mode,
+        "room_class": facts.room_class if facts is not None else None,
+        "class_reasons": list(facts.reasons) if facts is not None else [],
+        "seat": seat,
     }
 
 
+#: participants.username is String(100) and a seat's username is
+#: ``agent-<agent_id>``; anything longer would be a 500 at insert time.
+MAX_SEAT_AGENT_ID_LEN = 94
+
+
+def _asking_seat(seat: Participant | None, agent_id: str) -> Any:
+    """The principal's own seat as the classifier counts it (R3): its row
+    when it has one, else a runner-shaped stand-in with no owner — which
+    reads every room as ``shared`` until the seat exists and is owned."""
+    if seat is not None:
+        return seat
+    return Actor(
+        id=None,
+        participant_type=ParticipantType.AGENT,
+        username=f"agent-{agent_id}",
+        keycloak_sub=f"brigade:{agent_id}",
+        metadata_={"backend": "runner"},
+    )
+
+
+async def _principal_owner_username(db: AsyncSession, principal: GatewayPrincipal) -> str | None:
+    """For a JWT-path principal (``dev-<username>``) the human behind the
+    token owns the agent identity — R1 stamps ``metadata.owner`` with that
+    username. Key-path principals get their owner from the operator."""
+    if getattr(principal, "auth_kind", None) != "jwt" or not getattr(principal, "human_sub", None):
+        return None
+    username = (
+        await db.execute(
+            select(Participant.username).where(Participant.keycloak_sub == principal.human_sub)
+        )
+    ).scalar_one_or_none()
+    return username or None
+
+
+async def _classify_for_seat(
+    db: AsyncSession, room: Room, seat: Participant | None, agent_id: str
+) -> RoomClassFacts:
+    """The R2 class of one room as the asking seat sees it, writing the
+    sticky floor when the verdict is shared."""
+    facts = (await compute_room_classes(db, [room], asking_seat=_asking_seat(seat, agent_id)))[
+        str(room.id)
+    ]
+    if await apply_class_floors(db, [room], {str(room.id): facts}):
+        await db.commit()
+    return facts
+
+
 async def _resolve_agent_participant(
-    db: AsyncSession, agent_id: str, room: Room
+    db: AsyncSession, agent_id: str, room: Room, *, owner_username: str | None = None
 ) -> Participant:
     """Find-or-create the AGENT participant for ``agent_id`` and ensure it is a
     member of ``room`` (mirrors the legacy post_agent_message block, but the
-    agent_id is DERIVED from the credential — never caller-supplied)."""
+    agent_id is DERIVED from the credential — never caller-supplied).
+    ``owner_username`` (JWT-path principals) is stamped as ``metadata.owner``
+    when the row has none (R1)."""
     pseudo_sub = f"brigade:{agent_id}"
     agent_p = (
         await db.execute(select(Participant).where(Participant.keycloak_sub == pseudo_sub))
     ).scalar_one_or_none()
     if agent_p is None:
+        meta: dict[str, Any] = {"backend": "runner"}
+        if owner_username:
+            meta["owner"] = owner_username
         agent_p = Participant(
             keycloak_sub=pseudo_sub,
             username=f"agent-{agent_id}",
             display_name=agent_id.replace("-", " ").title(),
             participant_type=ParticipantType.AGENT,
             status=ParticipantStatus.ONLINE,
-            metadata_={"backend": "runner"},
+            metadata_=meta,
         )
         db.add(agent_p)
         await db.commit()
         await db.refresh(agent_p)
 
+    patch: dict[str, Any] = {}
     if (agent_p.metadata_ or {}).get("backend") != "runner":
-        agent_p.metadata_ = {**(agent_p.metadata_ or {}), "backend": "runner"}
+        patch["backend"] = "runner"
+    if owner_username and not seat_owners(agent_p):
+        patch["owner"] = owner_username
+    if patch:
+        agent_p.metadata_ = {**(agent_p.metadata_ or {}), **patch}
         await db.commit()
 
     member = (
@@ -317,6 +396,10 @@ def validate_allowed_rooms(rooms: list[str]) -> list[str]:
     """Normalise a key's ``allowed_rooms``: room names (either form), ``"*"``,
     or the ``@member`` token. Any other ``@…`` token is a typo, not a scope,
     and is refused so a mis-typed key never silently scopes to nothing."""
+    if not rooms:
+        # An empty allowlist used to fall through to ["*"] on mint and on
+        # verify. A key scoped to nothing must be said so, not widened.
+        raise ValueError('allowed_rooms must not be empty (use ["*"] for any room)')
     out: list[str] = []
     for raw in rooms:
         entry = (raw or "").strip()
@@ -367,15 +450,31 @@ SeatEffort = Literal["low", "medium", "high", "max"]
 
 #: Slug shape for a runner harness name (``claude-code``, ``codex``, …).
 HARNESS_RE = r"^[a-z0-9][a-z0-9._-]{0,39}$"
-#: Most models a seat may announce (C1: ``PUT /gateway/me``).
+#: Most models a seat may announce (C1: ``PUT /gateway/me``). The
+#: participant-metadata key it is stored under is
+#: ``room_class.SEAT_CAPABILITIES_KEY`` (shared with the crew reader).
 SEAT_CAPABILITIES_MAX_MODELS = 24
-#: Participant-metadata key the announcement is stored under.
-SEAT_CAPABILITIES_KEY = "seat_capabilities"
+
+
+def _validate_model_id(value: str | None) -> str | None:
+    """Whole-string match (``fullmatch``): pydantic's ``pattern`` searches,
+    and ``$`` would let a trailing newline through — the stored id reaches
+    the runner's ``--model`` verbatim."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not SEAT_MODEL_RE.fullmatch(value):
+        raise ValueError("model id must match ^[a-z0-9][a-z0-9.:_/-]{0,80}$")
+    return value
 
 
 class SeatModelSpec(BaseModel):
-    id: str = Field(..., pattern=SEAT_MODEL_RE.pattern)
+    id: str
     label: str = Field(default="", max_length=80)
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, value: str) -> str:
+        return _validate_model_id(value) or ""
 
     @field_validator("label")
     @classmethod
@@ -386,11 +485,16 @@ class SeatModelSpec(BaseModel):
 class SeatCapabilitiesBody(BaseModel):
     """What a runner announces about itself (design C1): its harness, the
     brain it runs by default, and the models / efforts a room may pick from
-    (``metadata.seat``). The web reads it back through ``GET /crew``."""
+    (``metadata.seats[<agent_id>]``). The web reads it back through ``GET /crew``."""
 
     harness: str = Field(..., pattern=HARNESS_RE)
-    default_model: str | None = Field(default=None, pattern=SEAT_MODEL_RE.pattern)
+    default_model: str | None = None
     default_effort: SeatEffort | None = None
+
+    @field_validator("default_model")
+    @classmethod
+    def _default_model(cls, value: str | None) -> str | None:
+        return _validate_model_id(value)
     models: list[SeatModelSpec] = Field(
         default_factory=list, max_length=SEAT_CAPABILITIES_MAX_MODELS
     )
@@ -431,15 +535,23 @@ class GatewayRoomRow(BaseModel):
     display_name: str
     room_type: str
     parent_room_id: str | None = None
-    #: private | shared | channel (design §2.3; ownership decides, §2.0).
+    #: private | shared | channel (design §2.3; ownership decides, §2.0),
+    #: judged over members + every historical sender + the thread seed +
+    #: the parent + the sticky floor (R2).
     room_class: str
-    #: HUMAN members (guests are counted under ``guests``).
+    #: Why it is shared (short tags: foreign_seat, integration, guest_agent,
+    #: unattributed_actor, humans_N, floor, parent_shared…); empty when private.
+    class_reasons: list[str] = Field(default_factory=list)
+    #: HUMAN actors (guests are counted under ``guests``).
     humans: int
     #: OTHER runner seats owned by a human in the room (caller not counted).
     own_seats: int
     #: OTHER runner seats owned by someone else, or by nobody (caller not
     #: counted) — one of these is what makes a room ``shared``.
     foreign_seats: int
+    #: Foreign non-seat actors: integrations, webhook / Project-Ops senders,
+    #: unknown backends, unattributed lines.
+    foreign_actors: int = 0
     #: Guest humans + guest agents (``metadata.kind = guest_agent``).
     guests: int
     #: The caller seat's own membership agent_mode (null = pre-contract rule).
@@ -466,7 +578,12 @@ async def gateway_post_message(
     await _gateway_rate_limit(principal, redis, bucket="gw_msg_send", fail_open=False)
     room = await _resolve_room(db, body.room)
     await _enforce_scope(db, principal, room)
-    agent_p = await _resolve_agent_participant(db, principal.agent_id, room)
+    agent_p = await _resolve_agent_participant(
+        db,
+        principal.agent_id,
+        room,
+        owner_username=await _principal_owner_username(db, principal),
+    )
     # agent_mode (design §3): a listening or muted seat never speaks here.
     seat_mode = await _seat_agent_mode(db, room, principal.agent_id)
     if seat_is_silent(seat_mode):
@@ -535,7 +652,14 @@ async def gateway_get_messages(
     # so a listening/muted seat gets an empty page here. Listening still
     # READS the room through GET /gateway/rooms/{room}/context.
     seat_mode = await _seat_agent_mode(db, room_obj, principal.agent_id)
-    envelope = _room_envelope_facts(room_obj, seat_mode)
+    seat_row = await _find_seat_participant(db, principal.agent_id)
+    facts = await _classify_for_seat(db, room_obj, seat_row, principal.agent_id)
+    envelope = _room_envelope_facts(
+        room_obj,
+        seat_mode,
+        facts,
+        seat_setting_from_metadata(getattr(room_obj, "metadata_", None), principal.agent_id),
+    )
     if seat_is_silent(seat_mode):
         logger.info(
             "gateway_messages_silenced_by_agent_mode",
@@ -623,22 +747,26 @@ async def gateway_get_context(
     out["context_depth"] = (
         getattr(membership, "context_depth", None) if membership is not None else None
     )
-    # Nav v3 C1: the room's class (private / shared / channel, design §2.3)
-    # and its seat setting ({model, effort}, nulls = the seat's defaults) so
+    # Nav v3 C1: the room's class (private / shared / channel, design §2.3,
+    # computed the R2 way over members + history + seed + parent + floor) and
+    # the asking seat's own {model, effort} (nulls = the seat's defaults) so
     # a runner can pick its policy and brain from the one call it already
     # makes per turn. Same values GET /gateway/rooms reports.
-    facts = room_class_for(
-        room_obj, seat_participant_id=seat.id if seat is not None else None
-    )
+    facts = await _classify_for_seat(db, room_obj, seat, principal.agent_id)
     out["room_class"] = facts.room_class
-    out["seat"] = seat_setting_from_metadata(getattr(room_obj, "metadata_", None))
+    out["class_reasons"] = list(facts.reasons)
+    out["seat"] = seat_setting_from_metadata(
+        getattr(room_obj, "metadata_", None), principal.agent_id
+    )
     return out
 
 
-def seat_room_row(room: Any, seat_participant_id: Any) -> GatewayRoomRow:
-    """Pure: one ``GET /gateway/rooms`` row from a loaded room (members
-    selectin-loaded) and the caller seat's participant id."""
-    facts = room_class_for(room, seat_participant_id=seat_participant_id)
+def seat_room_row(
+    room: Any, seat_participant_id: Any, facts: RoomClassFacts, agent_id: str
+) -> GatewayRoomRow:
+    """Pure: one ``GET /gateway/rooms`` row from a room (members attached),
+    the caller seat's participant id, its computed facts and its agent id
+    (which keys ``metadata.seats``)."""
     agent_mode: str | None = None
     for member in getattr(room, "members", None) or []:
         if str(getattr(member, "participant_id", None)) == str(seat_participant_id):
@@ -655,12 +783,14 @@ def seat_room_row(room: Any, seat_participant_id: Any) -> GatewayRoomRow:
         room_type=str(getattr(room_type, "value", room_type) or ""),
         parent_room_id=str(parent) if parent is not None else None,
         room_class=facts.room_class,
+        class_reasons=list(facts.reasons),
         humans=facts.humans,
         own_seats=facts.own_seats,
         foreign_seats=facts.foreign_seats,
+        foreign_actors=facts.foreign_actors,
         guests=facts.guests,
         agent_mode=agent_mode,
-        seat=SeatSetting(**seat_setting_from_metadata(getattr(room, "metadata_", None))),
+        seat=SeatSetting(**seat_setting_from_metadata(getattr(room, "metadata_", None), agent_id)),
         updated_at=getattr(room, "updated_at", None),
     )
 
@@ -673,56 +803,167 @@ async def _find_seat_participant(db: AsyncSession, agent_id: str) -> Participant
     ).scalar_one_or_none()
 
 
+async def _seat_rooms_lite(db: AsyncSession, seat_id: Any) -> list[RoomLite]:
+    """Non-archived rooms the seat is a member of, as column rows (no
+    eager creator / membership loads), newest activity first."""
+    rows = (
+        await db.execute(
+            select(
+                Room.id,
+                Room.name,
+                Room.livekit_room_name,
+                Room.display_name,
+                Room.room_type,
+                Room.parent_room_id,
+                Room.metadata_,
+                Room.updated_at,
+                Room.is_archived,
+            )
+            .join(RoomMember, RoomMember.room_id == Room.id)
+            .where(RoomMember.participant_id == seat_id, Room.is_archived.is_(False))
+            .order_by(Room.updated_at.desc())
+        )
+    ).all()
+    return [
+        RoomLite(
+            id=row[0],
+            name=row[1],
+            livekit_room_name=row[2],
+            display_name=row[3],
+            room_type=row[4],
+            parent_room_id=row[5],
+            metadata_=row[6] if isinstance(row[6], dict) else None,
+            updated_at=row[7],
+            is_archived=bool(row[8]),
+        )
+        for row in rows
+    ]
+
+
+async def _rooms_with_owner_present(
+    db: AsyncSession, room_ids: list[Any], owners: Iterable[str]
+) -> set[str]:
+    """Of ``room_ids``, those where one of ``owners`` (usernames) is a
+    current HUMAN member — the ``@member`` rule for a batch (R4)."""
+    names = [name for name in owners if name]
+    if not names or not room_ids:
+        return set()
+    rows = (
+        await db.execute(
+            select(RoomMember.room_id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id.in_(room_ids),
+                Participant.participant_type == ParticipantType.HUMAN,
+                func.lower(Participant.username).in_(names),
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    return {str(room_id) for room_id in rows}
+
+
+async def _rooms_with_human_present(
+    db: AsyncSession, room_ids: list[Any], human_sub: str | None
+) -> set[str]:
+    """JWT path: the rooms where the human behind the token is a member."""
+    if not human_sub or not room_ids:
+        return set()
+    rows = (
+        await db.execute(
+            select(RoomMember.room_id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(RoomMember.room_id.in_(room_ids), Participant.keycloak_sub == human_sub)
+            .distinct()
+        )
+    ).scalars().all()
+    return {str(room_id) for room_id in rows}
+
+
+async def _scope_filter_rooms(
+    db: AsyncSession, principal: GatewayPrincipal, seat: Participant, rooms: list[RoomLite]
+) -> list[RoomLite]:
+    """Keep the rooms the principal may actually read (R4 / P2): a
+    name-scoped key lists only its names, ``*`` everything, ``@member`` the
+    rooms where the seat's owner human is present; a JWT principal the rooms
+    its human is in."""
+    if not rooms:
+        return rooms
+    ids = [room.id for room in rooms]
+    if principal.allowed_rooms is None:
+        keep = await _rooms_with_human_present(db, ids, principal.human_sub)
+        return [room for room in rooms if str(room.id) in keep]
+    allowed = principal.allowed_rooms
+    if not allowed:
+        return []
+    keep: set[str] = {str(room.id) for room in rooms if room_in_key_scope(allowed, room)}
+    if key_scope_wants_membership(allowed):
+        keep |= await _rooms_with_owner_present(db, ids, seat_owners(seat))
+    return [room for room in rooms if str(room.id) in keep]
+
+
 @router.get("/rooms", response_model=list[GatewayRoomRow])
 async def gateway_list_rooms(
     principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> list[GatewayRoomRow]:
-    """Every non-archived room the caller's seat is a member of (design C1).
-
-    This is how a seat follows its human: the runner polls it and watches
-    whatever it finds — hubs, threads, rooms it was added to — under the
-    policy the ``room_class`` implies, instead of a YAML list. Membership is
-    the whole filter; the key's ``allowed_rooms`` still gates what the seat
-    may then read or post (``@member`` makes the two agree).
+    """The rooms the caller's seat is a member of AND may read (design C1,
+    R4): non-archived, inside the key's scope — for ``@member`` that means
+    the seat's owner human is a current member, because the seat follows
+    ITS human. Each row carries the R2 class (members + history + seed +
+    parent + floor) so the runner picks its policy from it; a ``shared``
+    verdict also writes the sticky floor.
     """
-    await _gateway_rate_limit(principal, redis, bucket="gw_msg_read", fail_open=True)
+    await _gateway_rate_limit(principal, redis, bucket="gw_rooms", fail_open=True)
     seat = await _find_seat_participant(db, principal.agent_id)
     if seat is None:
         # A provisioned seat that has never posted has no participant row
         # yet, hence no memberships. Empty, not 404: the runner keeps polling.
         return []
-    rooms = (
-        await db.execute(
-            select(Room)
-            .join(RoomMember, RoomMember.room_id == Room.id)
-            .where(
-                RoomMember.participant_id == seat.id,
-                Room.is_archived.is_(False),
-            )
-            .order_by(Room.updated_at.desc())
-        )
-    ).scalars().all()
-    return [seat_room_row(room, seat.id) for room in rooms]
-
-
-async def _get_or_create_seat_participant(db: AsyncSession, agent_id: str) -> Participant:
-    """The seat's participant row, created on first contact (mirrors
-    ``_resolve_agent_participant`` minus the room membership)."""
-    seat = await _find_seat_participant(db, agent_id)
-    if seat is None:
-        seat = Participant(
-            keycloak_sub=f"brigade:{agent_id}",
-            username=f"agent-{agent_id}",
-            display_name=agent_id.replace("-", " ").title(),
-            participant_type=ParticipantType.AGENT,
-            status=ParticipantStatus.ONLINE,
-            metadata_={"backend": "runner"},
-        )
-        db.add(seat)
+    rooms = await _scope_filter_rooms(db, principal, seat, await _seat_rooms_lite(db, seat.id))
+    if not rooms:
+        return []
+    members = await load_members(db, [room.id for room in rooms])
+    for room in rooms:
+        room.members = members.get(str(room.id), [])
+    facts = await compute_room_classes(db, rooms, asking_seat=seat)
+    if await apply_class_floors(db, rooms, facts):
         await db.commit()
-        await db.refresh(seat)
+    return [seat_room_row(room, seat.id, facts[str(room.id)], principal.agent_id) for room in rooms]
+
+
+async def _get_or_create_seat_participant(
+    db: AsyncSession, agent_id: str, *, owner_username: str | None = None
+) -> Participant:
+    """The seat's participant row, created on first contact (mirrors
+    ``_resolve_agent_participant`` minus the room membership). Safe against
+    a concurrent first contact: an IntegrityError on the unique sub re-reads
+    the winner instead of surfacing a 500."""
+    seat = await _find_seat_participant(db, agent_id)
+    if seat is not None:
+        return seat
+    meta: dict[str, Any] = {"backend": "runner"}
+    if owner_username:
+        meta["owner"] = owner_username
+    seat = Participant(
+        keycloak_sub=f"brigade:{agent_id}",
+        username=f"agent-{agent_id}",
+        display_name=agent_id.replace("-", " ").title(),
+        participant_type=ParticipantType.AGENT,
+        status=ParticipantStatus.ONLINE,
+        metadata_=meta,
+    )
+    db.add(seat)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        winner = await _find_seat_participant(db, agent_id)
+        if winner is None:
+            raise
+        return winner
+    await db.refresh(seat)
     return seat
 
 
@@ -735,23 +976,41 @@ async def gateway_put_me(
 ) -> dict[str, Any]:
     """A runner announces its harness, default brain and the models/efforts a
     room may pick from (design C1). Stored on the seat participant as
-    ``metadata.seat_capabilities`` — merged, so the seat's other metadata
-    (``backend``, ``crew``, avatar…) is never clobbered — and returned as
-    stored. Runners call it at start and hourly; the web reads it via
-    ``GET /crew``."""
+    ``metadata.seat_capabilities`` through an SQL ``||`` merge — so the
+    seat's other metadata (``backend``, ``crew``, ``owner``, avatar…) is never
+    clobbered, even by a concurrent write — and returned as stored. Runners
+    call it at start and hourly; the web reads it via ``GET /crew``."""
     await _gateway_rate_limit(principal, redis, bucket="gw_me", fail_open=True)
-    seat = await _get_or_create_seat_participant(db, principal.agent_id)
+    if len(principal.agent_id) > MAX_SEAT_AGENT_ID_LEN:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"agent id longer than {MAX_SEAT_AGENT_ID_LEN} characters",
+        )
+    owner_username = await _principal_owner_username(db, principal)
+    seat = await _get_or_create_seat_participant(
+        db, principal.agent_id, owner_username=owner_username
+    )
     stored = body.model_dump(mode="json")
     stored["updated_at"] = datetime.now(timezone.utc).isoformat()
-    # Reassign, never mutate: SQLAlchemy does not see in-place JSONB edits.
-    meta = dict(seat.metadata_ or {})
-    if meta.get("backend") != "runner":
+    patch: dict[str, Any] = {SEAT_CAPABILITIES_KEY: stored}
+    if (seat.metadata_ or {}).get("backend") != "runner":
         # Whoever announces capabilities through the gateway IS a runner-backed
         # seat (same stamp the post path applies).
-        meta["backend"] = "runner"
-    meta[SEAT_CAPABILITIES_KEY] = stored
-    seat.metadata_ = meta
+        patch["backend"] = "runner"
+    if owner_username and not seat_owners(seat):
+        patch["owner"] = owner_username
+    await db.execute(
+        update(Participant)
+        .where(Participant.id == seat.id)
+        .values(
+            metadata_=func.coalesce(Participant.metadata_, cast({}, JSONB)).op("||")(
+                cast(patch, JSONB)
+            )
+        )
+    )
     await db.commit()
+    # Mirror the merge on the loaded row so this request's readers agree.
+    seat.metadata_ = {**(seat.metadata_ or {}), **patch}
     logger.info(
         "gateway_seat_capabilities_stored",
         agent_id=principal.agent_id,
@@ -1036,6 +1295,8 @@ async def gateway_leave_room(
                 RoomMember.participant_id == agent_p.id,
             )
         )
+        # R2: any membership removal floors the room's class at shared.
+        await stamp_class_floor_shared(db, [room_obj.id])
         await db.commit()
 
     try:
@@ -1094,6 +1355,15 @@ async def gateway_remove_brigade_agent(
     agent_id = (brigade_agent_id or "").strip()
     if not agent_id:
         raise HTTPException(status_code=422, detail="brigade_agent_id required")
+    if agent_id != principal.agent_id and not room_in_key_scope(
+        principal.allowed_rooms or [], room_obj
+    ):
+        # A key that reaches this room only through ``@member`` may remove
+        # itself, not other agents: membership is not moderation authority.
+        raise HTTPException(
+            status_code=403,
+            detail="A member-scoped key may only remove its own agent from a room",
+        )
 
     pseudo_sub = f"brigade:{agent_id}"
     agent_p = (
@@ -1111,6 +1381,8 @@ async def gateway_remove_brigade_agent(
                 RoomMember.participant_id == agent_p.id,
             )
         )
+        # R2: any membership removal floors the room's class at shared.
+        await stamp_class_floor_shared(db, [room_obj.id])
         await db.commit()
 
     try:

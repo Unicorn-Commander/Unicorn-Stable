@@ -33,11 +33,14 @@ from app.services.livekit_service import LiveKitService
 from app.services.mentions import parse_mentions
 from app.services.presence_service import PresenceService
 from app.services.room_class import (
-    ROOM_CLASS_PRIVATE,
-    SEAT_METADATA_KEY,
+    SEATS_METADATA_KEY,
     SeatSettingError,
-    room_class_for,
-    validate_seat_setting,
+    agent_id_of_sub,
+    is_runner_seat,
+    norm_username,
+    seat_owners,
+    stamp_class_floor_shared,
+    validate_seats_setting,
 )
 
 logger = structlog.get_logger(__name__)
@@ -45,10 +48,15 @@ logger = structlog.get_logger(__name__)
 # Room-metadata keys a client PATCH may write. Everything else in metadata_
 # is server-owned wiring (brigade_agent_id, conference, dm_pair, …) that a
 # room admin's browser must not be able to rewrite through the generic
-# update endpoint. ``seat`` (Nav v3 C2: the conversation's {model, effort})
-# is validated and separately authorised in ``update_room`` — see
-# ``_authorize_seat_setting``.
-CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled", SEAT_METADATA_KEY})
+# update endpoint. ``seats`` (Nav v3 C2 / R6: per-seat {model, effort},
+# keyed by agent id) is validated and separately authorised in
+# ``update_room`` — see ``_authorize_seats_setting``.
+CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled", SEATS_METADATA_KEY})
+
+#: Room slugs may not wear the LiveKit prefix: LiveKit names are
+#: ``stable-<slug>``, so a room NAMED ``stable-persephone`` would collide with
+#: #persephone's LiveKit name in every by-name lookup and key scope.
+RESERVED_ROOM_NAME_PREFIX = "stable-"
 
 #: Threads nested under a parent row in GET /rooms are capped per parent; the
 #: rest come from GET /rooms/{id}/threads (which pages by include_archived).
@@ -227,6 +235,11 @@ class RoomService:
         later "New chat" fail with 409 forever (the user can't start a new
         conversation at all).
         """
+        if name.startswith(RESERVED_ROOM_NAME_PREFIX):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Room names may not start with '{RESERVED_ROOM_NAME_PREFIX}'",
+            )
         existing = (
             await self._db.execute(select(Room).where(Room.name == name))
         ).scalar_one_or_none()
@@ -777,6 +790,10 @@ class RoomService:
         if was_archived:
             room.is_archived = False
         try:
+            if agent_rows:
+                # R2: membership removal floors the class (the reclaimed DM
+                # keeps the agents' old lines).
+                await stamp_class_floor_shared(self._db, [room.id])
             await self._db.commit()
             await self._db.refresh(room)
         except Exception:
@@ -1479,6 +1496,12 @@ class RoomService:
         meta["thread"] = {
             "parent_room_id": str(parent.id),
             "seed_message_id": str(seed.id) if seed is not None else None,
+            # R2: the seed's TRUE author, so the class of a thread started
+            # from a stranger's line counts that stranger. None when the
+            # seed's sender is gone (NULL) — foreign, fail closed.
+            "seed_sender_id": (
+                str(seed.sender_id) if seed is not None and seed.sender_id else None
+            ),
         }
         display = (title or "").strip()
         if not display and seed is not None:
@@ -1536,9 +1559,13 @@ class RoomService:
         seed_message: Message | None = None
         if seed is not None:
             seed_sender = getattr(seed, "sender", None)
+            # The quoted line keeps its TRUE author (R2): a stranger's words
+            # are never re-attributed to the creator, so the room's class —
+            # and anyone reading the history — sees who really wrote them.
+            # SYSTEM styling marks it as a quote, not a new line.
             seed_message = Message(
                 room_id=room.id,
-                sender_id=creator_id,
+                sender_id=seed.sender_id,
                 content=seed.content,
                 content_type=ContentType.SYSTEM,
                 metadata_={
@@ -2005,6 +2032,9 @@ class RoomService:
             )
 
         await self._db.delete(membership)
+        # R2: whoever leaves, their lines stay in the window — the room is
+        # never private again (sticky floor).
+        await stamp_class_floor_shared(self._db, [room_id])
         await self._db.commit()
 
         logger.info(
@@ -2041,18 +2071,19 @@ class RoomService:
         recording contract (design §8) — stored here, enforced by the
         recording service.
 
-        ``metadata.seat`` (Nav v3 C2) is the exception to the owner/admin
-        rule: validated first (422), then allowed for the room OWNER or for
-        any human member of a ``private`` room (a hub, a thread, a 1:1), and
-        refused with 409 when no runner-backed seat is in the room to obey
-        it. A PATCH that ONLY carries ``seat`` takes that path; anything
-        else in the body still needs owner/admin.
+        ``metadata.seats`` (Nav v3 C2 / R6: ``{"<agent_id>": {model,
+        effort}}``) is the exception to the owner/admin rule: validated
+        first (422), then each entry is allowed only for that seat's OWNER
+        (``participants.metadata.owner``) — in any room — and refused with
+        409 when that agent is not a runner seat in the room, or the room is
+        archived. A PATCH that ONLY carries ``seats`` takes that path (any
+        member); anything else in the body still needs owner/admin.
         """
-        seat_patch = bool(metadata) and SEAT_METADATA_KEY in metadata
-        seat_value: dict[str, str | None] | None = None
-        if seat_patch:
+        seats_patch = bool(metadata) and SEATS_METADATA_KEY in metadata
+        seats_value: dict[str, dict[str, str | None]] | None = None
+        if seats_patch:
             try:
-                seat_value = validate_seat_setting(metadata[SEAT_METADATA_KEY])
+                seats_value = validate_seats_setting(metadata[SEATS_METADATA_KEY])
             except SeatSettingError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2069,9 +2100,9 @@ class RoomService:
                 recording_policy,
                 recording_kind,
             )
-        ) or bool(metadata and set(metadata) - {SEAT_METADATA_KEY})
+        ) or bool(metadata and set(metadata) - {SEATS_METADATA_KEY})
 
-        if other_changes or not seat_patch:
+        if other_changes or not seats_patch:
             membership = await self._require_role(room_id, participant_id, ["owner", "admin"])
         else:
             membership = await self._get_membership(room_id, participant_id)
@@ -2089,8 +2120,8 @@ class RoomService:
                 detail="Room not found",
             )
 
-        if seat_patch:
-            self._authorize_seat_setting(room, membership)
+        if seats_patch:
+            self._authorize_seats_setting(room, membership, seats_value or {})
 
         if display_name is not None:
             room.display_name = display_name
@@ -2145,9 +2176,12 @@ class RoomService:
                 for k, v in metadata.items()
                 if k in CLIENT_MUTABLE_METADATA_KEYS
             }
-            if seat_patch:
-                # The validated, normalised form — never the raw client value.
-                allowed[SEAT_METADATA_KEY] = seat_value
+            if seats_patch:
+                # Per-seat merge of the validated, normalised form — never the
+                # raw client value, and never another owner's entry.
+                existing = (room.metadata_ or {}).get(SEATS_METADATA_KEY)
+                existing = existing if isinstance(existing, dict) else {}
+                allowed[SEATS_METADATA_KEY] = {**existing, **(seats_value or {})}
             if allowed:
                 # Reassign (never mutate in place) so SQLAlchemy's JSONB
                 # change detection sees the update.
@@ -2162,32 +2196,44 @@ class RoomService:
         return room
 
     @staticmethod
-    def _authorize_seat_setting(room: Room, membership: RoomMember) -> None:
-        """C2's gate for ``metadata.seat``: the room OWNER, or any HUMAN
-        member when the room is ``private`` (one human, one seat); and the
-        room must hold a runner-backed seat to obey it (409 otherwise)."""
-        facts = room_class_for(room)
-        role = getattr(membership.role, "value", membership.role)
-        caller = getattr(membership, "participant", None)
-        caller_type = getattr(caller, "participant_type", None)
-        caller_is_human = (
-            getattr(caller_type, "value", caller_type) == ParticipantType.HUMAN.value
-        )
-        if role != MemberRole.OWNER.value and not (
-            caller_is_human and facts.room_class == ROOM_CLASS_PRIVATE
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "Only the room owner, or a human member of a private room, "
-                    "can set the seat's model and effort"
-                ),
-            )
-        if facts.runner_seats == 0:
+    def _authorize_seats_setting(
+        room: Room, membership: RoomMember, seats: dict[str, Any]
+    ) -> None:
+        """R6's gate for ``metadata.seats``: the room must be live (409 when
+        archived); every agent id must be a runner seat that is a member of
+        the room (409 otherwise); and the caller must be that seat's OWNER
+        (``participants.metadata.owner``) — 403 otherwise, whoever owns the
+        room."""
+        if bool(getattr(room, "is_archived", False)):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="This room has no runner-backed agent seat to configure",
+                detail="This room is archived",
             )
+        caller = getattr(membership, "participant", None)
+        me = norm_username(getattr(caller, "username", None))
+        seats_in_room: dict[str, Any] = {}
+        for member in getattr(room, "members", None) or []:
+            participant = getattr(member, "participant", None)
+            if participant is None or not is_runner_seat(participant):
+                continue
+            agent_id = agent_id_of_sub(getattr(participant, "keycloak_sub", None))
+            if agent_id:
+                seats_in_room[agent_id] = participant
+        for agent_id in seats:
+            seat = seats_in_room.get(agent_id)
+            if seat is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"'{agent_id}' is not a runner seat in this room",
+                )
+            if me is None or me not in seat_owners(seat):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"Only the owner of '{agent_id}' can set that seat's model "
+                        "and effort — ask the seat's owner"
+                    ),
+                )
 
     async def archive_room(
         self,
@@ -2460,6 +2506,8 @@ class RoomService:
         ).scalar_one_or_none()
 
         await self._db.delete(target)
+        # R2: a removed member's lines stay in the window — sticky floor.
+        await stamp_class_floor_shared(self._db, [room_id])
         await self._db.commit()
 
         # Best-effort: evict from the live LiveKit room too. Identity matches

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.message import MessageResponse
 
@@ -39,6 +39,16 @@ class RoomAgentInfo(BaseModel):
 
 class RoomCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$")
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_livekit_prefixed(cls, value: str) -> str:
+        # LiveKit room names are ``stable-<name>``; a room NAMED ``stable-x``
+        # would collide with #x's LiveKit name in every by-name lookup and
+        # gateway key scope (MultipleResultsFound, a 500). Reserved.
+        if value.startswith("stable-"):
+            raise ValueError("room names may not start with 'stable-'")
+        return value
     display_name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     # DEPRECATED for agent chats (the web's ``createAgentDm``: ``dm`` + an

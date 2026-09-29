@@ -66,13 +66,22 @@ class GatewaySeatMode(IsolatedAsyncioTestCase):
     async def _get(self, mode, room=None):
         import app.api.gateway as G
 
+        from app.services.room_class import RoomClassFacts
+
         room = room or _room(room_type=RoomType.CHANNEL)
         db = AsyncMock()
         db.execute = AsyncMock(side_effect=[_res(scalar=room), _res(scalar=mode)])
         svc = SimpleNamespace(get_messages=AsyncMock(return_value={"messages": [], "cursor": None, "has_more": False}))
+        # Nav v3 R11: the poll also looks the seat up and computes the room's
+        # class (history-aware, its own queries) — pinned in
+        # tests/test_nav_v3_fix_class.py; stubbed here so these assertions
+        # stay about agent_mode and the L2 envelope facts.
+        facts = RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0)
         with patch.object(G, "_gateway_rate_limit", AsyncMock()), patch.object(
             G, "touch_bridge_seen", AsyncMock()
         ), patch.object(G, "clear_relay_pending", AsyncMock()), patch.object(
+            G, "_find_seat_participant", AsyncMock(return_value=None)
+        ), patch.object(G, "_classify_for_seat", AsyncMock(return_value=facts)), patch.object(
             G, "_build_message_service", return_value=svc
         ):
             out = await G.gateway_get_messages("crew", self._principal(), db, AsyncMock(), AsyncMock(), None, 50)
