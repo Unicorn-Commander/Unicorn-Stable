@@ -32,14 +32,23 @@ from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
 from app.services.mentions import parse_mentions
 from app.services.presence_service import PresenceService
+from app.services.room_class import (
+    ROOM_CLASS_PRIVATE,
+    SEAT_METADATA_KEY,
+    SeatSettingError,
+    room_class_for,
+    validate_seat_setting,
+)
 
 logger = structlog.get_logger(__name__)
 
 # Room-metadata keys a client PATCH may write. Everything else in metadata_
 # is server-owned wiring (brigade_agent_id, conference, dm_pair, …) that a
 # room admin's browser must not be able to rewrite through the generic
-# update endpoint.
-CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled"})
+# update endpoint. ``seat`` (Nav v3 C2: the conversation's {model, effort})
+# is validated and separately authorised in ``update_room`` — see
+# ``_authorize_seat_setting``.
+CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled", SEAT_METADATA_KEY})
 
 #: Threads nested under a parent row in GET /rooms are capped per parent; the
 #: rest come from GET /rooms/{id}/threads (which pages by include_archived).
@@ -2031,8 +2040,46 @@ class RoomService:
         string clears it); ``recording_policy`` / ``recording_kind`` are the
         recording contract (design §8) — stored here, enforced by the
         recording service.
+
+        ``metadata.seat`` (Nav v3 C2) is the exception to the owner/admin
+        rule: validated first (422), then allowed for the room OWNER or for
+        any human member of a ``private`` room (a hub, a thread, a 1:1), and
+        refused with 409 when no runner-backed seat is in the room to obey
+        it. A PATCH that ONLY carries ``seat`` takes that path; anything
+        else in the body still needs owner/admin.
         """
-        await self._require_role(room_id, participant_id, ["owner", "admin"])
+        seat_patch = bool(metadata) and SEAT_METADATA_KEY in metadata
+        seat_value: dict[str, str | None] | None = None
+        if seat_patch:
+            try:
+                seat_value = validate_seat_setting(metadata[SEAT_METADATA_KEY])
+            except SeatSettingError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(exc),
+                ) from None
+        other_changes = any(
+            value is not None
+            for value in (
+                display_name,
+                description,
+                is_archived,
+                visibility,
+                project_number,
+                recording_policy,
+                recording_kind,
+            )
+        ) or bool(metadata and set(metadata) - {SEAT_METADATA_KEY})
+
+        if other_changes or not seat_patch:
+            membership = await self._require_role(room_id, participant_id, ["owner", "admin"])
+        else:
+            membership = await self._get_membership(room_id, participant_id)
+            if membership is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not a member of this room",
+                )
 
         result = await self._db.execute(select(Room).where(Room.id == room_id))
         room = result.scalar_one_or_none()
@@ -2041,6 +2088,9 @@ class RoomService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Room not found",
             )
+
+        if seat_patch:
+            self._authorize_seat_setting(room, membership)
 
         if display_name is not None:
             room.display_name = display_name
@@ -2095,6 +2145,9 @@ class RoomService:
                 for k, v in metadata.items()
                 if k in CLIENT_MUTABLE_METADATA_KEYS
             }
+            if seat_patch:
+                # The validated, normalised form — never the raw client value.
+                allowed[SEAT_METADATA_KEY] = seat_value
             if allowed:
                 # Reassign (never mutate in place) so SQLAlchemy's JSONB
                 # change detection sees the update.
@@ -2107,6 +2160,34 @@ class RoomService:
 
         logger.info("room_updated", room_id=str(room_id))
         return room
+
+    @staticmethod
+    def _authorize_seat_setting(room: Room, membership: RoomMember) -> None:
+        """C2's gate for ``metadata.seat``: the room OWNER, or any HUMAN
+        member when the room is ``private`` (one human, one seat); and the
+        room must hold a runner-backed seat to obey it (409 otherwise)."""
+        facts = room_class_for(room)
+        role = getattr(membership.role, "value", membership.role)
+        caller = getattr(membership, "participant", None)
+        caller_type = getattr(caller, "participant_type", None)
+        caller_is_human = (
+            getattr(caller_type, "value", caller_type) == ParticipantType.HUMAN.value
+        )
+        if role != MemberRole.OWNER.value and not (
+            caller_is_human and facts.room_class == ROOM_CLASS_PRIVATE
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only the room owner, or a human member of a private room, "
+                    "can set the seat's model and effort"
+                ),
+            )
+        if facts.runner_seats == 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This room has no runner-backed agent seat to configure",
+            )
 
     async def archive_room(
         self,

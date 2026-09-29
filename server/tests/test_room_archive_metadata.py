@@ -169,7 +169,10 @@ class RoomUpdateSchemaTests(TestCase):
         body = RoomUpdate(metadata={"auto_titled": True})
         self.assertEqual(body.metadata, {"auto_titled": True})
 
-    def test_allowlist_contains_auto_titled_only(self) -> None:
+    def test_allowlist_contains_auto_titled_and_seat_only(self) -> None:
         # The allowlist is deliberately tiny; growing it is a conscious,
-        # reviewed act — this test is the tripwire.
-        self.assertEqual(CLIENT_MUTABLE_METADATA_KEYS, frozenset({"auto_titled"}))
+        # reviewed act — this test is the tripwire. ``seat`` joined it with
+        # Nav v3 C2 (2026-09-28): the conversation's {model, effort}, which
+        # update_room validates and authorises separately (see
+        # tests/test_nav_v3_seat_setting.py) rather than merging raw.
+        self.assertEqual(CLIENT_MUTABLE_METADATA_KEYS, frozenset({"auto_titled", "seat"}))
