@@ -63,6 +63,8 @@ function member(over: Partial<CrewMember> & Pick<CrewMember, "agent_id" | "displ
     seat_capabilities: null,
     last_line: null,
     last_at: null,
+    // Seats only, and only once the runner has called the gateway.
+    last_seen_at: null,
     unread: 0,
     ...over,
   };
@@ -80,6 +82,7 @@ export const CREW_FIXTURE: CrewMember[] = [
     seat_capabilities: CLAUDE_CAPS,
     last_line: "Board is clear; two PRs waiting on you.",
     last_at: "2026-09-28T20:12:00Z",
+    last_seen_at: "2026-09-28T21:59:30Z",
     unread: 1,
   }),
   member({
@@ -92,6 +95,7 @@ export const CREW_FIXTURE: CrewMember[] = [
     seat_capabilities: { ...CLAUDE_CAPS, default_model: "claude-opus-5-5", default_effort: "medium" },
     last_line: "Cue sheet locked for Thursday.",
     last_at: "2026-09-28T18:40:00Z",
+    last_seen_at: "2026-09-28T21:59:00Z",
   }),
   member({
     agent_id: "codex-astra",
@@ -120,6 +124,8 @@ export const CREW_FIXTURE: CrewMember[] = [
     display_name: "Zen",
     group: "own_seat",
     role_line: "OpenCode · local Qwen",
+    // Offline, but it has called before: the dot can say when.
+    last_seen_at: "2026-09-28T21:48:00Z",
     seat_capabilities: {
       harness: "opencode",
       default_model: "qwen3.6-35b-chat",
@@ -169,6 +175,7 @@ export const CREW_FIXTURE: CrewMember[] = [
     seat_capabilities: CLAUDE_CAPS,
     last_line: "Pushed the Z13 fix.",
     last_at: "2026-09-28T17:30:00Z",
+    last_seen_at: "2026-09-28T21:58:00Z",
   }),
   member({
     agent_id: "shox",
@@ -206,6 +213,7 @@ export const CREW_RAW_FIXTURE: RawCrewMember[] = [
     seat_capabilities: null,
     last_line: null,
     last_at: null,
+    last_seen_at: null,
     unread: 0,
   },
   {
@@ -223,6 +231,7 @@ export const CREW_RAW_FIXTURE: RawCrewMember[] = [
     seat_capabilities: null,
     last_line: "deploy ok",
     last_at: "2026-09-28T20:00:00Z",
+    last_seen_at: "2026-09-28T20:00:00Z",
     unread: 0,
   },
 ];
@@ -239,7 +248,8 @@ export const GUEST_AGENT_MEMBER: RoomMember = {
   availability: "unknown",
   joined_at: "2026-09-22T15:00:00Z",
   agent_mode: "when_named",
-  metadata: { kind: "guest_agent", backend: "external", owner: null },
+  context_depth: null,
+  metadata: { kind: "guest_agent", backend: null, owner: null, owner_display_name: null },
 };
 
 /** A partner's seat inside a shared room — marked with its owner. */
@@ -254,7 +264,8 @@ export const PARTNER_SEAT_MEMBER: RoomMember = {
   availability: "available",
   joined_at: "2026-09-10T15:00:00Z",
   agent_mode: "when_named",
-  metadata: { backend: "runner", owner: "shafen", owner_display_name: "Shafen", crew: true },
+  context_depth: null,
+  metadata: { kind: null, backend: "runner", owner: "shafen", owner_display_name: "Shafen" },
 };
 
 export const PERSEPHONE_MEMBER: RoomMember = {
@@ -269,7 +280,24 @@ export const PERSEPHONE_MEMBER: RoomMember = {
   availability_reason: "bridge_session_active",
   joined_at: "2026-09-03T15:00:00Z",
   agent_mode: "answers_all",
-  metadata: { backend: "runner", owner: "aaron", crew: true },
+  context_depth: 40,
+  metadata: { kind: null, backend: "runner", owner: "aaron", owner_display_name: "Aaron Stransky" },
+};
+
+/** A house agent: an agent row whose backend was never set. */
+export const MAJIK_MEMBER: RoomMember = {
+  participant_id: "p-majik",
+  username: "agent-majik",
+  display_name: "Majik Mane",
+  avatar_url: "/agent-puppets/majik.webp",
+  role: "member",
+  participant_type: "agent",
+  is_online: false,
+  availability: "available",
+  joined_at: "2026-09-03T15:00:00Z",
+  agent_mode: "when_named",
+  context_depth: null,
+  metadata: { kind: null, backend: null, owner: null, owner_display_name: null },
 };
 
 export const AARON_MEMBER: RoomMember = {
@@ -282,7 +310,40 @@ export const AARON_MEMBER: RoomMember = {
   is_online: true,
   is_self: true,
   joined_at: "2026-09-03T15:00:00Z",
+  // Humans carry the two agent fields as null and no metadata.
+  agent_mode: null,
+  context_depth: null,
+  metadata: null,
 };
+
+/**
+ * A thread's seed line as the server writes it: SYSTEM-styled, under the
+ * seed's TRUE author, with `metadata.kind = "thread_seed"`.
+ */
+export function threadSeedMessageRaw(roomId: string, parentId: string): Record<string, unknown> {
+  return {
+    id: `msg-seed-${roomId}`,
+    room_id: roomId,
+    sender_id: "p-persephone",
+    sender_name: "Persephone",
+    sender_type: "agent",
+    content: "Panel v2 is on the wall; the kitchen routine list is next.",
+    content_type: "system",
+    created_at: "2026-09-28T18:58:00Z",
+    updated_at: "2026-09-28T18:58:00Z",
+    is_edited: false,
+    is_deleted: false,
+    reply_count: 0,
+    metadata: {
+      kind: "thread_seed",
+      seed_message_id: "msg-hub-41",
+      seed_room_id: parentId,
+      seed_sender_id: "p-persephone",
+      seed_sender_name: "Persephone",
+      seed_created_at: "2026-09-28T18:40:00Z",
+    },
+  };
+}
 
 /**
  * A hub is `room_type = agent_hub` AND no parent AND `metadata.agent_hub.

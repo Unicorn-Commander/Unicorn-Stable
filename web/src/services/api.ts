@@ -191,12 +191,22 @@ export interface RoomMember {
   agent_mode?: "answers_all" | "when_named" | "listening" | "muted" | null;
   context_depth?: number | null;
   /**
-   * The participant's own metadata, when the members payload carries it
-   * (Nav v3 §2.0). Read defensively: `kind = "guest_agent"` marks an outside
-   * account's agent, `backend = "runner"` a seat, `owner` the seat's human.
-   * Older servers omit it and every reader falls through to "nothing known".
+   * The guest-safe subset of an AGENT member's metadata (Nav v3 §2.0) —
+   * exactly `{kind, backend, owner, owner_display_name}`; null for humans
+   * and guests. `kind` is "guest_agent" / "integration" or null; `backend`
+   * is "runner" for a seat and null for a house agent that never set one;
+   * `owner` is a username (the server sends the first of a list; a list is
+   * tolerated). Older servers omit the field and every reader falls through
+   * to "nothing known".
    */
-  metadata?: Record<string, unknown> | null;
+  metadata?: RoomMemberMetadata | null;
+}
+
+export interface RoomMemberMetadata {
+  kind?: string | null;
+  backend?: string | null;
+  owner?: string | string[] | null;
+  owner_display_name?: string | null;
 }
 
 /**
@@ -602,10 +612,16 @@ export interface CrewMember {
   owner: string | null;
   group: CrewGroup;
   presence: CrewPresence;
+  /** The caller's own top-level hub with THIS agent, or null. */
   hub_room_id: string | null;
   seat_capabilities: SeatCapabilities | null;
   last_line: string | null;
   last_at: string | null;
+  /**
+   * Seats only: when the runner last called the gateway (30-day memory);
+   * null for a house agent and for a seat that never called.
+   */
+  last_seen_at: string | null;
   unread: number;
 }
 
@@ -932,14 +948,18 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
   };
 }
 
+/** Every username in `metadata.owner` (a string or a list — one person can have two). */
+export function ownerNames(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 /** `metadata.owner` is a username, or a list of usernames — the first one names the seat. */
 export function coerceOwner(raw: unknown): string | null {
-  if (typeof raw === "string") return raw.trim() || null;
-  if (Array.isArray(raw)) {
-    const first = raw.find((item) => typeof item === "string" && item.trim());
-    return typeof first === "string" ? first.trim() : null;
-  }
-  return null;
+  return ownerNames(raw)[0] ?? null;
 }
 
 /**
@@ -995,6 +1015,7 @@ export function normalizeCrewMember(raw: RawCrewMember): CrewMember | null {
       : null,
     last_line: raw.last_line ?? null,
     last_at: raw.last_at ?? null,
+    last_seen_at: kind === "seat" && typeof raw.last_seen_at === "string" ? raw.last_seen_at : null,
     unread: typeof raw.unread === "number" ? raw.unread : 0,
   };
 }

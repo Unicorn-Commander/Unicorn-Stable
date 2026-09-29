@@ -3,6 +3,8 @@ import { coerceOwner, type Agent, type Room, type RoomMember } from "@/services/
 import { CREW_FIXTURE, GUEST_AGENT_MEMBER, PARTNER_SEAT_MEMBER, PERSEPHONE_MEMBER } from "@/mocks/crewFixture";
 import {
   brainLabel,
+  relativeTime,
+  roomClassFloor,
   canEditSeat,
   crewBrainChip,
   crewFromRoster,
@@ -259,24 +261,39 @@ describe("room seat", () => {
 describe("runner presence", () => {
   const now = Date.parse("2026-09-28T21:00:00Z");
 
-  it("says only what the row knows: online, or no gateway call in the window", () => {
-    expect(crewPresence(persephone)).toMatchObject({ online: true, label: RUNNER_ONLINE_LABEL });
-    // The hourly announce and the last line are NOT last-seen stamps; the
-    // offline label never invents a duration from them.
-    const stale = { ...persephone, presence: "offline" as const, seat_capabilities: { ...persephone.seat_capabilities!, updated_at: "2026-09-28T20:48:00Z" }, last_at: "2026-09-25T00:00:00Z" };
-    expect(crewPresence(stale)).toMatchObject({ online: false, label: RUNNER_OFFLINE_LABEL });
+  it("says only what the row knows: online, last seen when, or no gateway call in the window", () => {
+    expect(crewPresence(persephone, now)).toMatchObject({ online: true, label: RUNNER_ONLINE_LABEL });
+    // The hourly announce and the last line are NOT last-seen stamps; with no
+    // last_seen_at the offline label never invents a duration from them.
+    const stale = {
+      ...persephone,
+      presence: "offline" as const,
+      last_seen_at: null,
+      seat_capabilities: { ...persephone.seat_capabilities!, updated_at: "2026-09-28T20:48:00Z" },
+      last_at: "2026-09-25T00:00:00Z",
+    };
+    expect(crewPresence(stale, now)).toMatchObject({ online: false, label: RUNNER_OFFLINE_LABEL });
     expect(RUNNER_OFFLINE_LABEL).toBe("Runner offline — no gateway call in the last 3 min");
-    // Once /crew carries last_seen_at, this is the label it feeds.
-    expect(runnerSeenLabel("2026-09-28T20:48:00Z", now)).toBe("Runner not seen for 12 min");
-    expect(runnerSeenLabel("2026-09-28T18:00:00Z", now)).toBe("Runner not seen for 3 h");
-    expect(runnerSeenLabel("2026-09-20T18:00:00Z", now)).toBe("Runner not seen for 8 d");
+    // With the runner's last gateway call on the row, the dot says when.
+    expect(crewPresence({ ...stale, last_seen_at: "2026-09-28T20:48:00Z" }, now)).toMatchObject({
+      online: false,
+      label: "Runner last seen 12 min ago",
+    });
+    expect(runnerSeenLabel("2026-09-28T18:00:00Z", now)).toBe("Runner last seen 3 h ago");
+    expect(runnerSeenLabel("2026-09-20T18:00:00Z", now)).toBe("Runner last seen 8 d ago");
+    expect(runnerSeenLabel("2026-09-28T20:59:50Z", now)).toBe("Runner last seen just now");
     expect(runnerSeenLabel(null, now)).toBe(RUNNER_OFFLINE_LABEL);
     expect(runnerSeenLabel("garbage", now)).toBe(RUNNER_OFFLINE_LABEL);
+    expect(relativeTime("garbage", now)).toBeNull();
+    // The fixture's offline seat that has called before.
+    const zen = CREW_FIXTURE.find((m) => m.agent_id === "zen")!;
+    expect(crewPresence(zen, Date.parse("2026-09-28T22:00:00Z")).label).toBe("Runner last seen 12 min ago");
   });
 
   it("keeps Brigade wording for house agents and draws no dot for unknown", () => {
     expect(crewPresence(majik)).toMatchObject({ online: true, label: "Majik Mane is available" });
-    expect(crewPresence({ ...majik, presence: "offline" })).toMatchObject({
+    // A house agent never says "last seen": that stamp is a seat's.
+    expect(crewPresence({ ...majik, presence: "offline", last_seen_at: "2026-09-28T20:00:00Z" })).toMatchObject({
       online: false,
       label: "Majik Mane is unavailable",
     });
@@ -309,13 +326,48 @@ describe("member roster marks (§2.0)", () => {
     // Someone else looking at the same room sees Aaron's seat as a partner's.
     const seen = memberKindMark(PERSEPHONE_MEMBER, "shafen");
     expect(seen?.kind).toBe("partner_seat");
-    expect(seen && seen.kind === "partner_seat" ? seen.label : null).toBe("Aaron’s seat");
+    expect(seen && seen.kind === "partner_seat" ? seen.label : null).toBe("Aaron Stransky’s seat");
     const bare: RoomMember = { username: "x", display_name: "X", role: "member", joined_at: "" };
     expect(memberKindMark(bare, "aaron")).toBeNull();
     expect(memberKindMark({ ...bare, metadata: { backend: "runner" } }, "aaron")).toBeNull();
-    // The server stores owner as a string OR a list of usernames.
-    const listed = memberKindMark({ ...bare, metadata: { backend: "runner", owner: ["shafen", "aaron"] } }, "aaron");
-    expect(listed && listed.kind === "partner_seat" ? listed.label : null).toBe("Shafen’s seat");
+    // The server stores owner as a string OR a list of usernames; a list
+    // that names you anywhere is your seat, not a partner's.
+    const theirs = memberKindMark({ ...bare, metadata: { backend: "runner", owner: ["shafen", "shafenkhan"] } }, "aaron");
+    expect(theirs && theirs.kind === "partner_seat" ? theirs.label : null).toBe("Shafen’s seat");
+    expect(memberKindMark({ ...bare, metadata: { backend: "runner", owner: ["aaron", "aaronstransky"] } }, "aaronstransky")).toBeNull();
+    // The server's word (/crew group own_seat) beats any username comparison.
+    expect(
+      memberKindMark(
+        { ...bare, participant_id: "p-x", metadata: { backend: "runner", owner: "aaron-s" } },
+        "aaron",
+        new Set(["p-x"]),
+      ),
+    ).toBeNull();
+  });
+
+  it("reads the final members shape: null metadata, null backend, integrations", () => {
+    const bare: RoomMember = { username: "x", display_name: "X", role: "member", joined_at: "" };
+    expect(memberKindMark({ ...bare, metadata: null }, "aaron")).toBeNull();
+    // A house agent: an agent row whose backend was never set.
+    expect(
+      memberKindMark({ ...bare, metadata: { kind: null, backend: null, owner: null, owner_display_name: null } }, "aaron"),
+    ).toBeNull();
+    expect(
+      memberKindMark({ ...bare, metadata: { kind: "integration", backend: "runner", owner: "aaron", owner_display_name: null } }, "aaron"),
+    ).toEqual({ kind: "integration" });
+    // The display name wins over the username when the server sends one.
+    const named = memberKindMark(
+      { ...bare, metadata: { kind: null, backend: "runner", owner: "shafenkhan", owner_display_name: "Shafen Khan" } },
+      "aaron",
+    );
+    expect(named && named.kind === "partner_seat" ? named.label : null).toBe("Shafen Khan’s seat");
+  });
+
+  it("reads the room's class floor", () => {
+    expect(roomClassFloor({ metadata_: { class_floor: "shared" } })).toBe("shared");
+    expect(roomClassFloor({ metadata_: { class_floor: "private" } })).toBeNull();
+    expect(roomClassFloor({ metadata_: {} })).toBeNull();
+    expect(roomClassFloor(null)).toBeNull();
   });
 
   it("writes the possessive", () => {

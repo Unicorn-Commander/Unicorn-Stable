@@ -143,6 +143,39 @@ export function othersInRoom<
   );
 }
 
+export interface ThreadSeed {
+  /** "Nate Ellison" — the seed line's true author. */
+  authorName: string;
+  /** "Started from Nate Ellison’s message". */
+  label: string;
+  seedMessageId: string | null;
+}
+
+/**
+ * A thread's seed line: the message the thread was started from, quoted as
+ * the thread's first entry under its TRUE author (`metadata.kind =
+ * "thread_seed"`). The creator may see it as unread and "Needs you" may name
+ * the seed's author — that is the record being honest, so the line says
+ * where it came from instead of looking like a fresh message.
+ */
+export function threadSeedOf(message: {
+  sender_name?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): ThreadSeed | null {
+  const meta = message.metadata;
+  if (!meta || meta.kind !== "thread_seed") return null;
+  const named =
+    (typeof meta.seed_sender_name === "string" && meta.seed_sender_name.trim()) ||
+    (message.sender_name || "").trim();
+  const authorName = named || "someone";
+  const possessive = named ? `${named}${/s$/i.test(named) ? "’" : "’s"}` : "someone’s";
+  return {
+    authorName,
+    label: `Started from ${possessive} message`,
+    seedMessageId: typeof meta.seed_message_id === "string" ? meta.seed_message_id : null,
+  };
+}
+
 /** Collapsed-row hint: "+3 older · 1 archived". Null when there is nothing to say. */
 export function olderArchivedLabel(older: number, archived: number): string | null {
   const parts: string[] = [];

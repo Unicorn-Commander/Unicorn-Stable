@@ -6,6 +6,7 @@ import {
   hubRoomRaw,
   membersFixture,
   threadRoomRaw,
+  threadSeedMessageRaw,
 } from "../src/mocks/crewFixture";
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
@@ -1261,13 +1262,15 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     updated_at: "2026-09-28T12:00:00Z",
     last_message: null,
   };
-  // A shared room: Aaron, Persephone, Shafen's Flow and a customer's guest agent.
+  // A shared room: Aaron, Persephone, Shafen's Flow and a customer's guest
+  // agent. A foreign line was written there, so its floor is "shared".
   const taxsq = {
     ...general,
     id: "room-taxsq",
     name: "taxsq-portal",
     display_name: "taxsq-portal",
     member_count: 4,
+    metadata_: { class_floor: "shared" },
     agents: [
       { participant_id: "p-persephone", agent_id: "persephone", display_name: "Persephone", agent_mode: "when_named" },
       { participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow", agent_mode: "when_named" },
@@ -1354,9 +1357,16 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
   });
   await page.route("**/api/v1/rooms/*/recordings**", (route) => route.fulfill(json([])));
   await page.route("**/api/v1/rooms/browse**", (route) => route.fulfill(json([])));
-  await page.route("**/api/v1/rooms/*/messages**", (route) =>
-    route.fulfill(json({ messages: [], cursor: null, has_more: false })),
-  );
+  await page.route("**/api/v1/rooms/*/messages**", (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    // The existing thread was started from one of Persephone's lines: its
+    // first entry is the seed, under its true author.
+    const messages =
+      parts[3] === existingThread.id
+        ? [threadSeedMessageRaw(existingThread.id as string, PERSEPHONE_HUB_ID)]
+        : [];
+    return route.fulfill(json({ messages, cursor: null, has_more: false }));
+  });
   const membersFor = (roomId: string) =>
     membersFixture(roomId).map((m) =>
       m.participant_id && modeByParticipant.has(m.participant_id)
@@ -1712,6 +1722,9 @@ test.describe("Crew-first nav (v3)", () => {
       if (viewport === "desktop") {
         const mine = page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]');
         const theirs = page.locator('[data-testid="seat-chip"][data-agent-id="shafen-claude-code"]');
+        // The floor: a foreign line was written here, and the header says so.
+        await expect(page.getByTestId("room-class-chip")).toHaveText("shared");
+        await expect(page.getByTestId("room-class-chip")).toHaveAttribute("title", /outside your seats/);
         await expect(mine).toContainText("Persephone · Fable 5.1 · high");
         await expect(mine).toHaveAttribute("data-editable", "true");
         await expect(theirs).toContainText("Shafen’s Flow · Fable 5.1 · high");
@@ -1727,6 +1740,15 @@ test.describe("Crew-first nav (v3)", () => {
       await expect(page.getByText("Guest", { exact: true }).first()).toBeVisible();
       await expect(page.getByTestId("member-partner-seat").first()).toHaveText("Shafen’s seat");
       await page.screenshot({ path: `test-results/NavV3-Roster-marks-${tag}.png`, fullPage: false });
+
+      // A thread's seed line says where it came from, under its true author.
+      await page.goto(`/c/${PERSEPHONE_HUB_ID}-t-00000000`);
+      await waitForAppReady(page);
+      const seedLine = page.getByTestId("thread-seed");
+      await expect(seedLine).toBeVisible();
+      await expect(seedLine).toContainText("Started from Persephone’s message");
+      await expect(seedLine).toContainText("Panel v2 is on the wall");
+      await page.screenshot({ path: `test-results/NavV3-Thread-seed-${tag}.png`, fullPage: false });
       await assertPageHealth(page, viewport);
     });
   }

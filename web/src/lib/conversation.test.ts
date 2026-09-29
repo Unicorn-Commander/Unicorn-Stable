@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { othersInRoom } from "./conversation";
+import { othersInRoom, threadSeedOf } from "./conversation";
 import type { Room, RoomMember } from "@/services/api";
 import {
   HUB_STARTER_PROMPTS,
@@ -161,6 +161,34 @@ describe("othersInRoom", () => {
     // Rows without the flag still fall back to the id comparison.
     const legacyMe = { participant_id: "dev-user-001", display_name: "Aaron" };
     expect(othersInRoom([legacyMe, seat], "dev-user-001").map((p) => p.participant_id)).toEqual(["p-persephone"]);
+  });
+});
+
+describe("threadSeedOf", () => {
+  it("names the seed line's true author and nothing else is a seed", () => {
+    const seed = {
+      sender_name: "Persephone",
+      metadata: {
+        kind: "thread_seed",
+        seed_message_id: "msg-41",
+        seed_sender_id: "p-persephone",
+        seed_sender_name: "Persephone",
+      },
+    };
+    expect(threadSeedOf(seed)).toEqual({
+      authorName: "Persephone",
+      label: "Started from Persephone’s message",
+      seedMessageId: "msg-41",
+    });
+    expect(threadSeedOf({ sender_name: "James", metadata: { kind: "thread_seed" } })?.label).toBe(
+      "Started from James’ message",
+    );
+    expect(threadSeedOf({ sender_name: "", metadata: { kind: "thread_seed" } })?.label).toBe(
+      "Started from someone’s message",
+    );
+    expect(threadSeedOf({ sender_name: "Aaron", metadata: {} })).toBeNull();
+    expect(threadSeedOf({ sender_name: "Aaron", metadata: null })).toBeNull();
+    expect(threadSeedOf({ sender_name: "Aaron", metadata: { kind: "voice" } })).toBeNull();
   });
 });
 

@@ -9,7 +9,13 @@ import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { AGENT_MODES, AGENT_MODE_LABEL, agentModeLabel, type AgentMode } from "@/lib/conversation";
-import { modelLabel, ownerSeatLabel, readRoomSeat } from "@/lib/crew";
+import {
+  modelLabel,
+  ownerSeatLabel,
+  readRoomSeat,
+  roomClassFloor,
+  SHARED_FLOOR_REASON,
+} from "@/lib/crew";
 import {
   applySeatToRoom,
   effectiveEffort,
@@ -410,6 +416,14 @@ export function SeatSettings({
       <p className="px-3 pb-1.5 pt-2 text-[11px] leading-snug text-slate-500">
         Applies from the next reply in this conversation only.
       </p>
+      {roomClassFloor(storeRoom?.metadata_ ? storeRoom : room) === "shared" && (
+        <p
+          className="mx-3 mb-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 text-[11px] leading-snug text-amber-100"
+          data-testid="seat-shared-floor"
+        >
+          <span className="font-semibold">Shared.</span> {SHARED_FLOOR_REASON}
+        </p>
+      )}
     </div>
   );
 

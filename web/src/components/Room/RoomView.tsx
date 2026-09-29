@@ -25,7 +25,7 @@ import { RoomHeader } from "./RoomHeader";
 import { SeatSettings } from "./SeatSettings";
 import { useCrew } from "@/hooks/useCrew";
 import { findSeatMembers, seatChipLabel, shouldShowModelSwitcher } from "@/lib/seatSettings";
-import { isHubRoom, readRoomSeat } from "@/lib/crew";
+import { isHubRoom, readRoomSeat, roomClassFloor, SHARED_FLOOR_REASON } from "@/lib/crew";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
@@ -348,8 +348,23 @@ export function RoomView({ roomId }: RoomViewProps) {
         onOpen: () => setSeatOpenFor(match.member.agent_id),
       };
     });
-  const renderSeatChips = () =>
-    seatMatches.map((match) => (
+  // The hands chip: once a line from outside your seats was written here the
+  // room's floor is "shared" for good, and the header says so with the reason.
+  const sharedFloor = seatMatches.length > 0 && roomClassFloor(roomDetail) === "shared";
+  const renderSeatChips = () => [
+    ...(sharedFloor
+      ? [
+          <span
+            key="class-floor"
+            className="hidden shrink-0 items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-100 sm:inline-flex"
+            title={SHARED_FLOOR_REASON}
+            data-testid="room-class-chip"
+          >
+            shared
+          </span>,
+        ]
+      : []),
+    ...seatMatches.map((match) => (
       <SeatSettings
         key={match.member.agent_id}
         roomId={roomId}
@@ -361,7 +376,8 @@ export function RoomView({ roomId }: RoomViewProps) {
         canEditMode={canEditMode}
         labelled={seatMatches.length > 1}
       />
-    ));
+    )),
+  ];
 
   // If the members fetch comes back 403, my membership is gone (I was removed
   // or the room was archived) — eject to home rather than sit on a dead room.

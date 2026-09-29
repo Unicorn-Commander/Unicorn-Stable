@@ -253,6 +253,22 @@ describe("SeatSettings", () => {
     expect(useAppStore.getState().rooms[0]?.metadata_).toEqual({});
   });
 
+  it("says when the conversation's floor is shared, with the reason", () => {
+    const shared = hub({ metadata_: { class_floor: "shared" } });
+    client.setQueryData(["room", PERSEPHONE_HUB_ID], shared);
+    useAppStore.setState({ rooms: [shared] });
+    renderSeat({});
+    fireEvent.click(screen.getByTestId("seat-chip"));
+    expect(screen.getByTestId("seat-shared-floor")).toHaveTextContent("Shared.");
+    expect(screen.getByTestId("seat-shared-floor")).toHaveTextContent("outside your seats");
+  });
+
+  it("says nothing about the floor in a private conversation", () => {
+    renderSeat({});
+    fireEvent.click(screen.getByTestId("seat-chip"));
+    expect(screen.queryByTestId("seat-shared-floor")).toBeNull();
+  });
+
   it("labels the chip with the seat's name when the room holds several seats", () => {
     renderSeat({ labelled: true });
     expect(screen.getByTestId("seat-chip")).toHaveTextContent("Persephone · Fable 5.1 · high");

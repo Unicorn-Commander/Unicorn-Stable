@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Crown,
   Shield,
@@ -31,6 +31,7 @@ import { livekitIdentityForMember } from "@/lib/broadcast";
 import { isGuestParticipant } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import { memberKindMark } from "@/lib/crew";
+import { useCrew } from "@/hooks/useCrew";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -413,11 +414,13 @@ function DirectoryPersonRow({
 function MemberKindMark({
   member,
   selfUsername,
+  ownSeatIds,
 }: {
   member: RoomMember;
   selfUsername: string | null | undefined;
+  ownSeatIds: ReadonlySet<string>;
 }) {
-  const mark = memberKindMark(member, selfUsername);
+  const mark = memberKindMark(member, selfUsername, ownSeatIds);
   if (!mark) return null;
   if (mark.kind === "guest") {
     return (
@@ -425,6 +428,17 @@ function MemberKindMark({
         className="shrink-0"
         title="An outside account's agent — let in for this room, none of our hands"
       />
+    );
+  }
+  if (mark.kind === "integration") {
+    return (
+      <span
+        className="shrink-0 rounded-md border border-line bg-white/[0.03] px-1 py-0.5 text-[9px] font-medium normal-case tracking-normal text-slate-500"
+        title="A webhook, relay or probe — it posts here, nobody answers from it"
+        data-testid="member-integration"
+      >
+        integration
+      </span>
     );
   }
   return (
@@ -440,6 +454,18 @@ function MemberKindMark({
 
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   const selfUsername = useAppStore((s) => s.currentUser?.username);
+  // Which seats are yours is the server's word (/crew `group`), not a
+  // username comparison: one person can own a seat under two usernames.
+  const { crew } = useCrew();
+  const ownSeatIds = useMemo(
+    () =>
+      new Set(
+        crew
+          .filter((member) => member.group === "own_seat" && member.participant_id)
+          .map((member) => member.participant_id),
+      ),
+    [crew],
+  );
   const participants =
     useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const qc = useQueryClient();
@@ -743,7 +769,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                       style={{ color: ident.text }}
                     >
                       <span className="truncate">{m.display_name}</span>
-                      <MemberKindMark member={m} selfUsername={selfUsername} />
+                      <MemberKindMark member={m} selfUsername={selfUsername} ownSeatIds={ownSeatIds} />
                     </p>
                     <p className="truncate text-[10px] text-slate-500">
                       <AgentModeChip

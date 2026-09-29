@@ -1,3 +1,4 @@
+import { threadSeedOf } from "@/lib/conversation";
 import { useState, useRef, useEffect, useMemo, createElement } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -1715,6 +1716,20 @@ export function MessageBubble({
     } catch {
       return null;
     }
+  }
+
+  // A thread's seed line is a quote under its true author: it says where it
+  // came from rather than reading as a fresh message from them.
+  const seed = threadSeedOf(message);
+  if (seed) {
+    return (
+      <div className="px-4 py-2" data-testid="thread-seed">
+        <p className="text-[11px] font-medium text-slate-500">{seed.label}</p>
+        <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-line-strong pl-3 text-sm leading-relaxed text-slate-300">
+          {message.content}
+        </blockquote>
+      </div>
+    );
   }
 
   if (message.sender_type === "system") {

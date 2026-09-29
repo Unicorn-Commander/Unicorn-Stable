@@ -145,8 +145,12 @@ describe("CrewSection", () => {
     const row = await screen.findByTestId("crew-open-persephone");
     expect(within(row).getByTestId("crew-unread")).toHaveTextContent("3");
     expect(within(row).getByRole("img", { name: "Runner online" })).toBeTruthy();
+    // Grok never called the gateway: the plain offline label. Zen has, so
+    // its dot says when it was last seen.
+    const grok = screen.getByTestId("crew-open-grok");
+    expect(within(grok).getByRole("img", { name: "Runner offline — no gateway call in the last 3 min" })).toBeTruthy();
     const zen = screen.getByTestId("crew-open-zen");
-    expect(within(zen).getByRole("img", { name: "Runner offline — no gateway call in the last 3 min" })).toBeTruthy();
+    expect(within(zen).getByRole("img", { name: /^Runner last seen .+ ago$/ })).toBeTruthy();
   });
 
   it("draws no dot for a presence nobody measured", async () => {

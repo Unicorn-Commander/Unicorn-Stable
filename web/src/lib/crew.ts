@@ -13,6 +13,7 @@
  */
 import {
   coerceOwner,
+  ownerNames,
   type Agent,
   type CrewGroup,
   type CrewMember,
@@ -90,6 +91,7 @@ export function crewFromRoster(agents: readonly Agent[]): CrewMember[] {
       seat_capabilities: null,
       last_line: null,
       last_at: null,
+      last_seen_at: null,
       unread: 0,
     }));
 }
@@ -363,23 +365,31 @@ export interface CrewPresenceBadge {
   dotClass: string | null;
 }
 
-/** What the offline dot on a seat can honestly say until /crew carries `last_seen_at`. */
+/** What the offline dot on a seat says when the row carries no `last_seen_at`. */
 export const RUNNER_OFFLINE_LABEL = "Runner offline — no gateway call in the last 3 min";
 export const RUNNER_ONLINE_LABEL = "Runner online";
 
+/** "12 min ago", "3 h ago", "8 d ago"; null for a stamp that does not parse. */
+export function relativeTime(iso: string | null | undefined, now: number): string | null {
+  const at = iso ? Date.parse(iso) : Number.NaN;
+  if (!Number.isFinite(at)) return null;
+  const minutes = Math.round((now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
 /**
- * "Runner not seen for 12 min" — only from a real last-seen stamp. The
- * crew row has none today (`updated_at` is the hourly announce, `last_at`
- * the last line), so callers pass nothing and get the plain offline label.
+ * "Runner last seen 12 min ago" from the row's `last_seen_at` — the
+ * runner's last gateway call, the only stamp that is a "seen" time (the
+ * hourly announce and the last line are not). Without it, the plain
+ * offline label.
  */
 export function runnerSeenLabel(lastSeen: string | null | undefined, now: number): string {
-  const at = lastSeen ? Date.parse(lastSeen) : Number.NaN;
-  if (!Number.isFinite(at)) return RUNNER_OFFLINE_LABEL;
-  const minutes = Math.max(1, Math.round((now - at) / 60_000));
-  if (minutes < 60) return `Runner not seen for ${minutes} min`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `Runner not seen for ${hours} h`;
-  return `Runner not seen for ${Math.round(hours / 24)} d`;
+  const when = relativeTime(lastSeen, now);
+  return when ? `Runner last seen ${when}` : RUNNER_OFFLINE_LABEL;
 }
 
 /**
@@ -388,7 +398,7 @@ export function runnerSeenLabel(lastSeen: string | null | undefined, now: number
  * that; a house agent keeps Brigade's availability wording. "unknown" (the
  * roster fallback) draws no dot at all — `dotClass` is null.
  */
-export function crewPresence(member: CrewMember): CrewPresenceBadge {
+export function crewPresence(member: CrewMember, now = Date.now()): CrewPresenceBadge {
   if (member.presence === "unknown") {
     return { online: false, label: "Presence unknown", dotClass: null };
   }
@@ -399,7 +409,7 @@ export function crewPresence(member: CrewMember): CrewPresenceBadge {
     }
     return {
       online,
-      label: RUNNER_OFFLINE_LABEL,
+      label: runnerSeenLabel(member.last_seen_at, now),
       dotClass: agentPresence({ availability: "unavailable" }).dotClass,
     };
   }
@@ -438,6 +448,7 @@ export function crewBrainChip(
 
 export type MemberKindMark =
   | { kind: "guest" }
+  | { kind: "integration" }
   | { kind: "partner_seat"; owner: string; label: string };
 
 /**
@@ -459,22 +470,28 @@ export function ownerSeatLabel(owner: string): string {
  * guess from a username.
  */
 export function memberKindMark(
-  member: Pick<RoomMember, "metadata" | "participant_type">,
+  member: Pick<RoomMember, "metadata" | "participant_type" | "participant_id" | "id">,
   selfUsername?: string | null,
+  /** Participant ids of YOUR seats (from /crew): the server's word on ownership. */
+  ownSeatIds?: ReadonlySet<string>,
 ): MemberKindMark | null {
   const meta = member.metadata ?? null;
   if (!meta || typeof meta !== "object") return null;
   const kind = typeof meta.kind === "string" ? meta.kind : null;
   if (kind === "guest_agent") return { kind: "guest" };
+  if (kind === "integration") return { kind: "integration" };
   const backend = typeof meta.backend === "string" ? meta.backend : null;
-  // `owner` is a username or a list of usernames (the server stores both).
+  // `owner` is a username or a list of usernames (one person can have two).
+  const owners = ownerNames(meta.owner);
   const owner = coerceOwner(meta.owner) ?? "";
   if (backend !== "runner" || !owner) return null;
-  if (selfUsername && owner.toLowerCase() === selfUsername.toLowerCase()) return null;
+  const pid = member.participant_id || member.id || "";
+  if (pid && ownSeatIds?.has(pid)) return null;
+  if (selfUsername && owners.some((name) => name.toLowerCase() === selfUsername.toLowerCase())) {
+    return null;
+  }
   const ownerName =
-    (typeof meta.owner_display_name === "string" && meta.owner_display_name.trim()) ||
-    (typeof meta.owner_name === "string" && meta.owner_name.trim()) ||
-    owner;
+    (typeof meta.owner_display_name === "string" && meta.owner_display_name.trim()) || owner;
   return { kind: "partner_seat", owner, label: ownerSeatLabel(ownerName) };
 }
 
@@ -492,3 +509,18 @@ export function seatIndex(crew: readonly CrewMember[]): {
   }
   return { byAgent, byParticipant };
 }
+
+/**
+ * `metadata.class_floor`: "shared" once a line from outside your seats was
+ * written in the room. The floor is sticky — the seat answers there with
+ * reduced hands from then on — so the header says it, with the reason.
+ */
+export function roomClassFloor(
+  room: { metadata_?: Record<string, unknown> | null } | null | undefined,
+): "shared" | null {
+  return room?.metadata_?.class_floor === "shared" ? "shared" : null;
+}
+
+export const SHARED_FLOOR_REASON =
+  "A line from outside your seats was written here, so this conversation is shared: seats answer when named, with reduced hands. Start a new conversation for a private one.";
+

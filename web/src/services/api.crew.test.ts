@@ -46,6 +46,13 @@ describe("GET /api/v1/crew", () => {
       group: "own_seat",
       presence: "online",
       hub_room_id: PERSEPHONE_HUB_ID,
+      last_seen_at: "2026-09-28T21:59:30Z",
+    });
+    // last_seen_at rides on seats only.
+    expect(crew.find((m) => m.agent_id === "majik")?.last_seen_at).toBeNull();
+    expect(crew.find((m) => m.agent_id === "zen")).toMatchObject({
+      presence: "offline",
+      last_seen_at: "2026-09-28T21:48:00Z",
     });
     expect(crew[0]!.seat_capabilities).toMatchObject({
       harness: "claude-code",
@@ -94,6 +101,11 @@ describe("GET /api/v1/crew", () => {
     expect(normalizeCrewMember({ agent_id: "x", kind: "guest_agent" })).toBeNull();
     expect(normalizeCrewMember({ agent_id: "x", kind: "integration", backend: "runner" })).toBeNull();
     expect(normalizeCrewMember({ agent_id: "x", presence: "unknown" })?.presence).toBe("unknown");
+    // A house row never carries a last-seen stamp, whatever the wire says.
+    expect(
+      normalizeCrewMember({ agent_id: "x", kind: "brigade", last_seen_at: "2026-09-28T20:00:00Z" })?.last_seen_at,
+    ).toBeNull();
+    expect(normalizeCrewMember({ agent_id: "x", kind: "seat" })?.last_seen_at).toBeNull();
   });
 
   it("surfaces a 404 so the hook can fall back to the roster", async () => {
@@ -151,11 +163,14 @@ describe("PATCH /rooms/{id}/members/{pid} agent_mode", () => {
     expect(row).toMatchObject({ participant_id: "p-persephone", agent_mode: "listening" });
   });
 
-  it("lists a guest agent and a partner's seat with their metadata", async () => {
+  it("lists members in the final shape: mode, depth, and the four-key metadata on agents only", async () => {
     const members = await api.getRoomMembers("room-taxsq");
     const guest = members.find((m) => m.participant_id === "p-taxsq-assistant");
-    expect(guest?.metadata).toMatchObject({ kind: "guest_agent" });
+    expect(guest?.metadata).toEqual({ kind: "guest_agent", backend: null, owner: null, owner_display_name: null });
     const flow = members.find((m) => m.participant_id === "p-shafen-claude-code");
-    expect(flow?.metadata).toMatchObject({ backend: "runner", owner: "shafen" });
+    expect(flow?.metadata).toEqual({ kind: null, backend: "runner", owner: "shafen", owner_display_name: "Shafen" });
+    expect(flow).toMatchObject({ agent_mode: "when_named", context_depth: null });
+    const me = members.find((m) => m.is_self);
+    expect(me).toMatchObject({ metadata: null, agent_mode: null, context_depth: null });
   });
 });
