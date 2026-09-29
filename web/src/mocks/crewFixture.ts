@@ -10,13 +10,14 @@
  * A guest agent (a customer's assistant) appears only in a room roster, and
  * an integration (webhook-dev-stable) appears nowhere.
  */
-import {
-  normalizeCrewMember,
-  type CrewMember,
-  type RawCrewMember,
-  type RawRoomListItem,
-  type RoomMember,
-  type SeatCapabilities,
+// Types only: the Playwright spec imports this file under Node, and a value
+// import of the API client would drag the whole app graph in with it.
+import type {
+  CrewMember,
+  RawCrewMember,
+  RawRoomListItem,
+  RoomMember,
+  SeatCapabilities,
 } from "@/services/api";
 
 export const PERSEPHONE_HUB_ID = "hub-fa65c5631810";
@@ -225,13 +226,6 @@ export const CREW_RAW_FIXTURE: RawCrewMember[] = [
     unread: 0,
   },
 ];
-
-/** What `api.getCrew()` yields from the raw payload: the twelve, never the two. */
-export function crewFromRawFixture(): CrewMember[] {
-  return CREW_RAW_FIXTURE.map((row) => normalizeCrewMember(row)).filter(
-    (row): row is CrewMember => row !== null,
-  );
-}
 
 /** Never in Crew: an outside account's agent, visible only inside a room. */
 export const GUEST_AGENT_MEMBER: RoomMember = {

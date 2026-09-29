@@ -1295,6 +1295,10 @@ function EmptyChannel({
         : null;
 
   if (onlyAgent) {
+    const portraitSize =
+      typeof window !== "undefined" && window.matchMedia?.("(max-width: 900px)")?.matches
+        ? 96
+        : 128;
     const ident = identityFor(
       onlyAgent.participant_id || onlyAgent.user_id || onlyAgent.display_name,
       onlyAgent.display_name,
@@ -1309,7 +1313,13 @@ function EmptyChannel({
               real portrait. Sized in rem so it scales with the user's text
               size, and capped on short viewports so the starter prompts stay
               above the fold on a laptop. */}
-          <div className="relative mx-auto mb-5 h-32 w-32 max-[900px]:h-24 max-[900px]:w-24">
+          {/* The box and the portrait take the SAME size: the box used to
+              shrink to 96px under 900px while the portrait stayed 128px and
+              sat on top of the name. */}
+          <div
+            className="relative mx-auto mb-5"
+            style={{ width: portraitSize, height: portraitSize }}
+          >
             <div
               aria-hidden="true"
               className="absolute -inset-3 rounded-full blur-2xl opacity-70"
@@ -1317,7 +1327,7 @@ function EmptyChannel({
             />
             <Identity
               {...resolveIdentity({ ...onlyAgent, participant_type: "agent" })}
-              size={128}
+              size={portraitSize}
               className="relative"
             />
           </div>

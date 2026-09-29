@@ -802,7 +802,7 @@ export interface CrewCapPolicy {
 
 export const CREW_CAP_POLICY: CrewCapPolicy = {
   ownSeatsWindowMs: 14 * 24 * 60 * 60 * 1000,
-  ownSeatsFloor: 3,
+  ownSeatsFloor: 2,
   house: 3,
   partner: 3,
 };

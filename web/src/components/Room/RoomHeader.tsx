@@ -63,8 +63,13 @@ const POP_TARGETS: { id: RoomPanelId; label: string }[] = [
   { id: "transcript", label: "Transcript" },
 ];
 
-const ICON_BTN =
-  "focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100";
+// The display utility is kept apart: a button that hides below `sm` says
+// `hidden sm:inline-flex` itself — `inline-flex` in the shared string would
+// win over `hidden` and the button would still be drawn on a phone.
+const ICON_BTN_BASE =
+  "focus-ring h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100";
+const ICON_BTN = `inline-flex ${ICON_BTN_BASE}`;
+const ICON_BTN_DESKTOP = `hidden sm:inline-flex ${ICON_BTN_BASE}`;
 
 export interface RoomHeaderAgent {
   id: string;
@@ -382,7 +387,7 @@ export function RoomHeader({
         <button
           type="button"
           onClick={onToggleMembers}
-          className={clsx(ICON_BTN, "hidden sm:inline-flex", membersOpen && "bg-white/[0.08] text-slate-100")}
+          className={clsx(ICON_BTN_DESKTOP, membersOpen && "bg-white/[0.08] text-slate-100")}
           aria-label="Members"
           aria-pressed={membersOpen}
           title="Members"
@@ -392,7 +397,7 @@ export function RoomHeader({
         <button
           type="button"
           onClick={toggleThreads}
-          className={clsx(ICON_BTN, "hidden sm:inline-flex", threadsOpen && "bg-white/[0.08] text-slate-100")}
+          className={clsx(ICON_BTN_DESKTOP, threadsOpen && "bg-white/[0.08] text-slate-100")}
           aria-label="Threads"
           aria-pressed={threadsOpen}
           title="Threads"

@@ -263,17 +263,20 @@ export function CrewSection({
         )}
       </span>
     );
+    const chipTitle =
+      member.group === "partner"
+        ? `${row.brain} — ${member.owner ? ownerSeatLabel(member.owner) : "a partner's seat"}; only its owner can change it`
+        : `This conversation's brain: ${row.brain}`;
+    // Desktop: a pill in the hover overlay. Phone: plain text on a second
+    // line — a pill squeezed beside the name collapsed to "F…".
     const chip = row.brain && (
       <span
-        className={clsx(
-          "min-w-0 truncate rounded-full border border-line px-1.5 py-0.5 text-[10px] font-medium text-slate-300",
-          page ? "shrink-[3] bg-white/[0.03]" : "glass-heavy max-w-[10rem]",
-        )}
-        title={
-          member.group === "partner"
-            ? `${row.brain} — ${member.owner ? ownerSeatLabel(member.owner) : "a partner's seat"}; only its owner can change it`
-            : `This conversation's brain: ${row.brain}`
+        className={
+          page
+            ? "block truncate text-[11px] text-slate-500"
+            : "glass-heavy min-w-0 max-w-[10rem] truncate rounded-full border border-line px-1.5 py-0.5 text-[10px] font-medium text-slate-300"
         }
+        title={chipTitle}
         data-testid="crew-brain-chip"
       >
         {row.brain}
@@ -335,13 +338,15 @@ export function CrewSection({
             {face}
             {/* The name keeps at least 14 characters; nothing else on the row
                 may push it below that. */}
-            <span className={clsx("min-w-[14ch] flex-1 truncate font-medium", page ? "text-sm" : "text-[13px]")}>
-              {member.display_name}
-              {row.targetLabel && (
-                <span className="font-normal text-slate-500"> · {row.targetLabel}</span>
-              )}
+            <span className="min-w-[14ch] flex-1">
+              <span className={clsx("block truncate font-medium", page ? "text-sm" : "text-[13px]")}>
+                {member.display_name}
+                {row.targetLabel && (
+                  <span className="font-normal text-slate-500"> · {row.targetLabel}</span>
+                )}
+              </span>
+              {page && chip}
             </span>
-            {page && chip}
             {unread}
           </button>
           {page ? (
@@ -350,10 +355,16 @@ export function CrewSection({
             (chip || items) && (
               <span
                 className={clsx(
-                  "pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-1",
+                  "pointer-events-none absolute top-1/2 -translate-y-1/2 items-center gap-1",
+                  // Clear of the unread badge, which keeps the row's far end.
+                  row.unread > 0 ? "right-9" : "right-1",
+                  // display, not opacity: an invisible overlay would still
+                  // cover the unread badge (and read as visible to a11y tools).
+                  // A touch device has no hover, so there it is always shown:
+                  // an affordance that only exists on :hover does not exist.
                   active || menuOpen
-                    ? "opacity-100"
-                    : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                    ? "flex"
+                    : "hidden group-hover:flex group-focus-within:flex [@media(hover:none)]:flex",
                 )}
                 data-testid="crew-row-overlay"
               >
@@ -370,7 +381,12 @@ export function CrewSection({
   function renderGroups() {
     return model.groups.map((group) => (
       <div key={group.group} data-testid={`crew-group-${group.group}`}>
-        <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-600">
+        <p
+          className={clsx(
+            "px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-600",
+            page ? "pb-0.5 pt-1.5" : "h-5 leading-5",
+          )}
+        >
           {group.label}
         </p>
         <ul role="list">{group.rows.map(renderRow)}</ul>
@@ -421,11 +437,11 @@ export function CrewSection({
 
   return (
     <section aria-label="Crew" data-testid="crew-section" className="mb-1">
-      <div className="flex items-center justify-between px-2 pb-0.5">
+      <div className="flex h-6 items-center justify-between px-2">
         <button
           type="button"
           onClick={() => toggleCollapsed(model.collapseKey)}
-          className="focus-ring group flex min-w-0 items-center gap-1 rounded-md py-1 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
+          className="focus-ring group flex min-w-0 items-center gap-1 rounded-md text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 transition-colors hover:text-slate-300"
           aria-expanded={!model.collapsed}
           title="Agents you can talk to"
         >
@@ -439,6 +455,16 @@ export function CrewSection({
           {model.total > 0 && (
             <span className="ml-1 tabular-nums text-slate-600">{model.total}</span>
           )}
+        </button>
+        {/* The directory's door lives on the header: one row fewer above the list. */}
+        <button
+          type="button"
+          onClick={openDirectory}
+          className="focus-ring flex shrink-0 items-center gap-0.5 rounded-md px-1 text-[10px] font-semibold text-stable-cyan transition-colors hover:bg-stable-cyan/10"
+          data-testid="crew-all-agents"
+        >
+          All agents
+          <ChevronRight className="h-3 w-3" />
         </button>
       </div>
       {!model.collapsed && (
@@ -454,7 +480,7 @@ export function CrewSection({
             <button
               type="button"
               onClick={() => setShowAll(true)}
-              className="focus-ring flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+              className="focus-ring flex h-6 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
               data-testid="crew-more"
             >
               <ChevronDown className="h-3 w-3" />
@@ -465,14 +491,13 @@ export function CrewSection({
             <button
               type="button"
               onClick={() => setShowAll(false)}
-              className="focus-ring flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+              className="focus-ring flex h-6 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
               data-testid="crew-fewer"
             >
               <ChevronDown className="h-3 w-3 rotate-180" />
               Show fewer
             </button>
           )}
-          {allAgents}
         </>
       )}
     </section>

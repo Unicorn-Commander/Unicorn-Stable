@@ -399,8 +399,17 @@ export function RoomView({ roomId }: RoomViewProps) {
       : null,
   );
   // "New conversation" only on YOUR hub (or a thread under it): the server's
-  // hub test, not the room type alone.
-  const selfIds = [currentParticipantId, currentUserId];
+  // hub test, not the room type alone. "You" is the participant id the socket
+  // acknowledged, or — the one marker that needs no socket — the members
+  // payload's own `is_self` row.
+  const selfMember = members?.find((m) => m.is_self);
+  const selfIds = [
+    currentParticipantId,
+    currentUserId,
+    selfMember?.participant_id,
+    selfMember?.id,
+    selfMember?.user_id,
+  ];
   const hubForNewConversation =
     roomDetail && isHubRoom(roomDetail, selfIds)
       ? roomDetail

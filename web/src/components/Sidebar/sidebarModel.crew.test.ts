@@ -83,16 +83,17 @@ const ids = (section: ReturnType<typeof buildCrewSection>) =>
 describe("crew section model", () => {
   it("shows the seats heard from lately, the top house agents and the top partners before More", () => {
     // Fixture: Persephone and Rook have a last line this week; four other seats
-    // never spoke. Floor of three keeps Astra; the rest fold. House and Partners
-    // each show three, so acceptance 3 holds on the first view.
+    // never spoke and fold. House and Partners each show three, so acceptance 3
+    // holds on the first view — eight rows, which keeps six conversations on a
+    // 1440×900 desktop.
     const section = buildCrewSection(base);
     expect(section.groups.map((group) => [group.group, group.rows.map((row) => row.member.agent_id)])).toEqual([
-      ["own_seat", ["persephone", "claude-code", "codex-astra"]],
+      ["own_seat", ["persephone", "claude-code"]],
       ["house", ["majik", "sidekick", "the-general"]],
       ["partner", ["shafen-claude-code", "shox", "okapi-grok"]],
     ]);
     expect(section.total).toBe(12);
-    expect(section.hiddenCount).toBe(3);
+    expect(section.hiddenCount).toBe(4);
     expect(section.expanded).toBe(false);
     expect(section.searching).toBe(false);
   });
@@ -113,7 +114,8 @@ describe("crew section model", () => {
     expect(shown.has("shafen-claude-code")).toBe(true);
     const stale = eleven.map((m) => ({ ...m, last_at: "2026-08-01T00:00:00Z" }));
     const fewer = defaultCrewSet([...stale, ...CREW_FIXTURE.filter((m) => m.group !== "own_seat")], CREW_CAP_POLICY, NOW);
-    expect([...fewer].filter((id) => id.startsWith("seat-"))).toEqual(["seat-0", "seat-1", "seat-2"]);
+    // A fresh install (nothing heard from) still shows a couple of seats.
+    expect([...fewer].filter((id) => id.startsWith("seat-"))).toEqual(["seat-0", "seat-1"]);
     // An unread hub counts as heard from.
     const unread = stale.map((m, i) => (i === 7 ? { ...m, unread: 2 } : m));
     expect(defaultCrewSet(unread, CREW_CAP_POLICY, NOW).has("seat-7")).toBe(true);

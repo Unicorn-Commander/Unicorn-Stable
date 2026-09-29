@@ -112,14 +112,17 @@ function WorkspaceTitle() {
     ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
     : "Stable";
   return (
-    <div className="shrink-0 px-1 pt-1" data-testid="conversation-list-header">
+    <div
+      className="flex h-6 shrink-0 items-baseline gap-2 px-1"
+      data-testid="conversation-list-header"
+    >
       <p
         data-testid="workspace-name"
-        className="truncate text-sm font-semibold text-slate-50"
+        className="min-w-0 truncate text-sm font-semibold text-slate-50"
       >
         {name}
       </p>
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+      <h2 className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         Conversations
       </h2>
     </div>
@@ -902,9 +905,12 @@ export function RoomList() {
         }}
         className={clsx(
           "focus-ring mr-1 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1",
+          // At rest on a desktop the trigger takes no room (it used to
+          // reserve a column while invisible); hover or keyboard focus in
+          // the row brings it, and a touch device always has it.
           open || alwaysVisible
             ? "opacity-100"
-            : "opacity-70 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+            : "opacity-70 md:hidden md:opacity-100 md:group-hover:block md:group-focus-within:block [@media(hover:none)]:block",
         )}
         aria-label={label}
         aria-haspopup="menu"
@@ -1411,11 +1417,16 @@ export function RoomList() {
                   >
                     {name}
                   </span>
-                  {/* The chip gives way before the name does: a seat's
-                      "Answers everyone" used to leave "P" of Persephone. */}
-                  {isAgent && entry.kind === "agent" && entry.mode && (
-                    <AgentModeChip mode={entry.mode} compact className="min-w-0 shrink-[3]" />
-                  )}
+                  {/* Only a mode that differs from a private conversation's
+                      default says anything; "Answers everyone" on every hub
+                      was noise that cost the name its room. When shown, the
+                      chip gives way before the name does. */}
+                  {isAgent &&
+                    entry.kind === "agent" &&
+                    entry.mode &&
+                    entry.mode !== "answers_all" && (
+                      <AgentModeChip mode={entry.mode} compact className="min-w-0 shrink-[3]" />
+                    )}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <LiveCallBadge
@@ -1456,7 +1467,7 @@ export function RoomList() {
           <button
             onClick={() => void startThreadOn(entry.hub.id)}
             disabled={startingChat}
-            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:hidden md:opacity-100 md:group-hover:block md:group-focus-within:block [@media(hover:none)]:block"
             aria-label={`New thread with ${name}`}
             title={`New thread with ${name}`}
           >

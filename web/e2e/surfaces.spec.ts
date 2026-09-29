@@ -316,14 +316,20 @@ async function waitForAppReady(page: Page) {
 /** Click a test id that is actually visible. On a phone the sidebar (and the
  *  controls inside it) is unmounted until the header opens it. */
 async function clickTestId(page: Page, testId: string) {
-  const visible = page.locator(`[data-testid="${testId}"]`).locator("visible=true");
-  if ((await visible.count()) === 0) {
+  const visible = () => page.locator(`[data-testid="${testId}"]`).locator("visible=true");
+  if ((await visible().count()) === 0) {
     const openSidebar = page.getByRole("button", { name: "Open sidebar" });
     if (await openSidebar.isVisible().catch(() => false)) {
       await openSidebar.click();
     }
   }
-  await page.locator(`[data-testid="${testId}"]`).locator("visible=true").first().click();
+  // Nav v3: on a phone the account entries (Settings, People, Saved…) live
+  // in the Me tab's sheet, not the drawer.
+  if ((await visible().count()) === 0) {
+    const me = page.getByTestId("nav-me").locator("visible=true");
+    if (await me.count()) await me.first().click();
+  }
+  await visible().first().click();
 }
 
 async function assertPageHealth(page: Page, viewportName: string) {
@@ -713,9 +719,17 @@ test.describe("Room header is one row", () => {
       await expect(
         header.getByRole("button", { name: "Call", exact: true }),
       ).toHaveCount(1);
-      await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
-      await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
-      await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
+      if (viewport === "desktop") {
+        await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
+        await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
+        await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
+      } else {
+        // Nav v3: the phone's row is Call and More so the room's name can be
+        // read; Members and Threads live in More, Pop out is a desktop tool.
+        await expect(header.getByRole("button", { name: "Members" })).not.toBeVisible();
+        await expect(header.getByRole("button", { name: "Threads" })).not.toBeVisible();
+        await expect(header.getByRole("button", { name: "Pop out" })).not.toBeVisible();
+      }
       await expect(
         header.getByRole("button", { name: "Switch model for this conversation" }),
       ).toHaveCount(0);
@@ -729,6 +743,10 @@ test.describe("Room header is one row", () => {
       await expect(
         page.getByRole("button", { name: "Switch model for this conversation" }),
       ).toBeVisible();
+      if (viewport === "mobile") {
+        await expect(page.getByTestId("phone-members")).toBeVisible();
+        await expect(page.getByTestId("phone-threads")).toBeVisible();
+      }
       await expect(
         header.getByRole("button", { name: "Call", exact: true }),
       ).toHaveCount(1);
@@ -1257,7 +1275,56 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     ],
     updated_at: "2026-09-28T11:00:00Z",
   };
-  const rooms = () => [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general, taxsq];
+  const line = (roomId: string, at: string, who: { id: string; name: string; type: "human" | "agent" }, content: string) => ({
+    id: `msg-${roomId}`,
+    room_id: roomId,
+    sender_id: who.id,
+    sender_name: who.name,
+    sender_type: who.type,
+    sender_avatar: null,
+    content,
+    content_type: "text",
+    thread_id: null,
+    reply_count: 0,
+    edited: false,
+    created_at: at,
+    updated_at: at,
+    metadata: {},
+  });
+  const channel = (id: string, name: string, at: string, content: string) => ({
+    ...general,
+    id,
+    name,
+    display_name: name,
+    updated_at: at,
+    last_message: line(id, at, { id: "user-jason", name: "Nate Ellison", type: "human" }, content),
+  });
+  const extras = [
+    {
+      ...general,
+      id: "room-dm-jason",
+      name: "Nate Ellison",
+      display_name: "Nate Ellison",
+      room_type: "dm",
+      visibility: "private",
+      counterpart: { participant_id: "user-jason", kind: "human", display_name: "Nate Ellison" },
+      updated_at: "2026-09-28T10:30:00Z",
+      last_message: line("room-dm-jason", "2026-09-28T10:30:00Z", { id: "user-jason", name: "Nate Ellison", type: "human" }, "Thursday still works"),
+    },
+    channel("room-ops", "ops", "2026-09-28T10:00:00Z", "GPU temps nominal"),
+    channel("room-leadership", "leadership", "2026-09-28T09:00:00Z", "Quiet channel"),
+    channel("room-war", "war-room", "2026-09-28T08:00:00Z", "Room is open"),
+    channel("room-dev", "dev", "2026-09-28T07:00:00Z", "PR #42 ready"),
+  ];
+  const rooms = () => [
+    hub(),
+    ...created,
+    existingThread,
+    hubRoomRaw("claude-code"),
+    general,
+    taxsq,
+    ...extras,
+  ];
   const detailFor = (id: string) => {
     if (id === PERSEPHONE_HUB_ID) return hub();
     const own = created.find((room) => room.id === id);
@@ -1265,6 +1332,8 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     if (id === existingThread.id) return existingThread;
     if (id === "room-general") return general;
     if (id === "room-taxsq") return taxsq;
+    const extra = extras.find((room) => room.id === id);
+    if (extra) return extra;
     return hubRoomRaw("claude-code", { id, name: id });
   };
   const json = (body: unknown, status = 200) => ({
@@ -1371,28 +1440,78 @@ test.describe("Crew-first nav (v3)", () => {
         await clickTestId(page, "nav-conversations");
         const section = page.getByTestId("crew-section");
         await expect(section).toBeVisible();
-        await expect(section.getByTestId("crew-group-own_seat")).toBeVisible();
-        await expect(section.getByTestId("crew-group-house")).toBeVisible();
-        await expect(section.getByTestId("crew-group-partner")).toHaveCount(0);
+        // Per-group cap: the seats heard from lately, three house, three
+        // partners — all three groups on the first view (acceptance 3).
+        for (const group of ["own_seat", "house", "partner"]) {
+          await expect(section.getByTestId(`crew-group-${group}`)).toBeVisible();
+        }
         const rows = section.getByTestId("crew-row");
         await expect(rows).toHaveCount(8);
         await expect(rows.nth(0)).toContainText("Persephone");
-        await expect(rows.nth(0).getByTestId("crew-brain-chip")).toHaveText("Fable 5.1 · high");
         await expect(rows.nth(1)).toContainText("Rook");
-        await expect(rows.nth(1).getByTestId("crew-brain-chip")).toHaveText("Opus 5.5 · medium");
+        await expect(rows.nth(2)).toContainText("Majik Mane");
+        await expect(rows.nth(5)).toContainText("Flow");
+        await expect(rows.nth(5)).toContainText("#taxsq-portal");
         await expect(section.getByTestId("crew-more")).toContainText("More (4)");
+        // Names never give way: the headline name is fully drawn at 280px.
+        const nameFits = await rows.nth(0).getByTestId("crew-open-persephone").locator("span.truncate").first()
+          .evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+        expect(nameFits).toBe(true);
+        // The brain chip is a hover overlay where hover exists; a touch
+        // device (this suite's iPhone-emulation project) always shows it.
+        const canHover = await page.evaluate(() => window.matchMedia("(hover: hover)").matches);
+        if (canHover) {
+          await expect(rows.nth(3).getByTestId("crew-brain-chip")).toHaveCount(0);
+          await expect(rows.nth(1).getByTestId("crew-brain-chip")).not.toBeVisible();
+          await rows.nth(0).hover();
+        }
+        await expect(rows.nth(0).getByTestId("crew-brain-chip")).toBeVisible();
+        await expect(rows.nth(0).getByTestId("crew-brain-chip")).toHaveText("Fable 5.1 · high");
+        // A partner's row has no ⋮ — nothing acts in the shared room from here.
+        await rows.nth(5).hover();
+        await expect(rows.nth(5).getByTestId("crew-menu-shafen-claude-code")).toHaveCount(0);
+        // Your own seat's menu: New conversation, Call (waits on C5), Settings.
+        await rows.nth(0).hover();
+        await rows.nth(0).getByTestId("crew-menu-persephone").click();
+        const menu = page.getByRole("menu", { name: "Options for Persephone" });
+        await expect(menu.getByTestId("crew-menu-new")).toBeVisible();
+        await expect(menu.getByTestId("crew-menu-call")).toBeDisabled();
+        await expect(menu.getByTestId("crew-menu-settings")).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(menu).toHaveCount(0);
+        // Density (P1-9): with 12 crew rows present the one list still shows
+        // at least six conversations on 1440×900, under sticky filters.
+        await expect(page.getByTestId("conversation-list-sticky")).toBeVisible();
+        await expect(page.getByTestId("mark-visible-read")).toBeVisible();
+        const visibleConversations = await page.getByTestId("conversation-row").evaluateAll((els) =>
+          els.filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+          }).length,
+        );
+        expect(visibleConversations).toBeGreaterThanOrEqual(6);
+        await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-${tag}.png`, fullPage: false });
         await section.getByTestId("crew-more").click();
-        await expect(section.getByTestId("crew-group-partner")).toBeVisible();
         await expect(section.getByTestId("crew-row")).toHaveCount(12);
-        await expect(section.getByTestId("crew-row").filter({ hasText: "Flow" })).toContainText("Shafen");
-        // Acceptance 3: zero rows named "Claude Code"; the directory is a row, not a tab.
+        await expect(section.getByTestId("crew-fewer")).toBeVisible();
+        // Acceptance 3: zero rows named "Claude Code"; the directory is a door, not a tab.
         await expect(page.getByText("Claude Code", { exact: true })).toHaveCount(0);
         await expect(section.getByTestId("crew-all-agents")).toBeVisible();
         await expect(page.getByTestId("phone-tab-bar")).not.toBeVisible();
-        // The one list is still there, under the crew.
         await expect(page.getByTestId("conversations-card")).toBeVisible();
         await expect(page.getByTestId("workspace-name")).toBeVisible();
-        await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-${tag}.png`, fullPage: true });
+        await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-all-${tag}.png`, fullPage: true });
+        await section.getByTestId("crew-fewer").click();
+        // The To box: crew, then people and channels as you type.
+        await clickTestId(page, "new-room-button");
+        const toBox = page.getByTestId("new-sheet-to");
+        await expect(toBox).toBeVisible();
+        await expect(page.getByTestId("new-sheet-picks-crew")).toBeVisible();
+        await toBox.fill("sha");
+        await expect(page.getByTestId("new-sheet-picks-crew").getByRole("option")).toHaveCount(3);
+        await page.screenshot({ path: `test-results/NavV3-ToBox-${tag}.png`, fullPage: false });
+        await page.keyboard.press("Escape");
+        await expect(page.getByTestId("create-room-modal")).toHaveCount(0);
       } else {
         // Phone: Home · Chats · Crew · Calls · Me, and no Agents tab.
         const bar = page.getByTestId("phone-tab-bar");
@@ -1412,7 +1531,42 @@ test.describe("Crew-first nav (v3)", () => {
         await expect(crewPage.getByTestId("crew-all-agents")).toBeVisible();
         await expect(page.getByText("Claude Code", { exact: true })).toHaveCount(0);
         await expect(bar.getByTestId("nav-crew")).toHaveAttribute("aria-current", "page");
-        await page.screenshot({ path: `test-results/NavV3-Crew-${tag}.png`, fullPage: true });
+        // Full-height list (P1-7): the drawer footer and the second search box
+        // are gone, so at least eight of the twelve rows are on screen.
+        const visibleCrewRows = await crewPage.getByTestId("crew-row").evaluateAll((els) =>
+          els.filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+          }).length,
+        );
+        expect(visibleCrewRows).toBeGreaterThanOrEqual(8);
+        await expect(page.getByTestId("drawer-tools")).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+        await expect(page.locator('input[aria-label^="Search"]').locator("visible=true")).toHaveCount(1);
+        await page.screenshot({ path: `test-results/NavV3-Crew-${tag}.png`, fullPage: false });
+        // Me tab: profile, People, Activity, Saved, Settings, Sign out.
+        await bar.getByTestId("nav-me").click();
+        const me = page.getByTestId("me-sheet");
+        await expect(me).toBeVisible();
+        for (const id of ["me-people", "me-activity", "me-saved", "open-settings", "me-sign-out"]) {
+          await expect(me.getByTestId(id)).toBeVisible();
+        }
+        await expect(bar.getByTestId("nav-me")).toHaveAttribute("aria-current", "page");
+        await page.screenshot({ path: `test-results/NavV3-Me-${tag}.png`, fullPage: false });
+        await me.getByRole("button", { name: "Close" }).click();
+        await expect(me).toHaveCount(0);
+        // The To box on a phone.
+        await bar.getByTestId("nav-conversations").click();
+        await clickTestId(page, "new-room-button");
+        const toBox = page.getByTestId("new-sheet-to");
+        await expect(toBox).toBeVisible();
+        await toBox.fill("sha");
+        await expect(page.getByTestId("new-sheet-picks-crew").getByRole("option")).toHaveCount(3);
+        await page.screenshot({ path: `test-results/NavV3-ToBox-${tag}.png`, fullPage: false });
+        await page.keyboard.press("Escape");
+        await expect(page.getByTestId("create-room-modal")).toHaveCount(0);
+        await bar.getByTestId("nav-crew").click();
+        await expect(crewPage).toBeVisible();
       }
 
       // Tap → the hub (already known to the list, so no POST /hub).
@@ -1420,6 +1574,16 @@ test.describe("Crew-first nav (v3)", () => {
       await expect(page).toHaveURL(new RegExp(`/c/${PERSEPHONE_HUB_ID}$`));
       const header = page.getByTestId("room-header");
       await expect(header).toContainText("Persephone");
+      // The name is drawn in full — on the phone too, where Members, Threads
+      // and Pop out left the row (P2-19).
+      const titleFits = await header.locator("span.truncate", { hasText: "Persephone" }).first()
+        .evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+      expect(titleFits).toBe(true);
+      // A private hub's empty state: the agent, "Say hi" — no channel copy.
+      await expect(page.getByTestId("private-hub-say-hi")).toBeVisible();
+      await expect(page.getByText("Invite an agent")).toHaveCount(0);
+      await expect(page.getByText("Pin a goal for this channel")).toHaveCount(0);
+      await expect(page.getByText("others see it the moment")).toHaveCount(0);
       if (viewport === "desktop") {
         await expect(header.getByTestId("hub-new-conversation")).toBeVisible();
       } else {
@@ -1492,6 +1656,13 @@ test.describe("Crew-first nav (v3)", () => {
       if (viewport === "desktop") {
         await expect(page.getByTestId("seat-chip")).toHaveText(/Opus 5\.5 · medium/);
       }
+      if (viewport === "mobile") {
+        // The FAB leaves while the sheet is open (P1-8).
+        await expect(page.getByTestId("room-fab")).toHaveCount(0);
+      }
+      const membersRefetch = page.waitForResponse(
+        (r) => /\/api\/v1\/rooms\/[^/]+\/members$/.test(r.url()) && r.request().method() === "GET",
+      );
       await popover.getByTestId("seat-mode-listening").click();
       await expect.poll(() => world.memberPatches.length).toBe(1);
       expect(world.memberPatches[0]).toEqual({
@@ -1499,10 +1670,28 @@ test.describe("Crew-first nav (v3)", () => {
         participantId: "p-persephone",
         body: { agent_mode: "listening" },
       });
+      // Listening must still be checked AFTER the members refetch lands.
+      await membersRefetch;
+      await page.waitForTimeout(150);
       await expect(popover.getByTestId("seat-mode-listening")).toHaveAttribute("aria-checked", "true");
+      await expect(popover.getByTestId("seat-mode-answers_all")).toHaveAttribute("aria-checked", "false");
       await page.screenshot({ path: `test-results/NavV3-SeatPopover-set-${tag}.png`, fullPage: false });
       await page.keyboard.press("Escape");
       await expect(popover).toHaveCount(0);
+      if (viewport === "mobile") {
+        // Back, and clear of the composer's call buttons.
+        const fab = page.getByTestId("room-fab");
+        await expect(fab).toBeVisible();
+        const fabBox = (await fab.boundingBox())!;
+        for (const id of ["composer-voice-call", "composer-video-call"]) {
+          const box = await page.getByTestId(id).boundingBox();
+          if (!box) continue;
+          const overlaps =
+            fabBox.x < box.x + box.width && fabBox.x + fabBox.width > box.x &&
+            fabBox.y < box.y + box.height && fabBox.y + fabBox.height > box.y;
+          expect(overlaps).toBe(false);
+        }
+      }
 
       // The Brigade model switcher stays out of a seat room's More menu.
       await page.getByRole("button", { name: "More room actions" }).click();
@@ -1514,11 +1703,27 @@ test.describe("Crew-first nav (v3)", () => {
       }
       await page.keyboard.press("Escape");
 
-      // A shared room's roster marks a guest agent and a partner's seat (§2.0).
+      // A shared room: two seats, two chips that say whose (P1-6); the roster
+      // marks a guest agent and a partner's seat (§2.0, needs Lane A's
+      // members metadata subset — stubbed here).
       await page.goto("/c/room-taxsq");
       await waitForAppReady(page);
       await expect(page.getByTestId("room-header")).toContainText("taxsq-portal");
-      await page.getByTestId("room-header").getByRole("button", { name: "Members" }).click();
+      if (viewport === "desktop") {
+        const mine = page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]');
+        const theirs = page.locator('[data-testid="seat-chip"][data-agent-id="shafen-claude-code"]');
+        await expect(mine).toContainText("Persephone · Fable 5.1 · high");
+        await expect(mine).toHaveAttribute("data-editable", "true");
+        await expect(theirs).toContainText("Shafen’s Flow · Fable 5.1 · high");
+        await expect(theirs).toHaveAttribute("data-editable", "false");
+        await expect(theirs.getByTestId("seat-chip-lock")).toBeVisible();
+        await page.screenshot({ path: `test-results/NavV3-MixedRoom-${tag}.png`, fullPage: false });
+        await page.getByTestId("room-header").getByRole("button", { name: "Members" }).click();
+      } else {
+        await page.getByRole("button", { name: "More room actions" }).click();
+        await expect(page.getByTestId("seat-menu-entry")).toHaveCount(1);
+        await page.getByTestId("phone-members").click();
+      }
       await expect(page.getByText("Guest", { exact: true }).first()).toBeVisible();
       await expect(page.getByTestId("member-partner-seat").first()).toHaveText("Shafen’s seat");
       await page.screenshot({ path: `test-results/NavV3-Roster-marks-${tag}.png`, fullPage: false });
