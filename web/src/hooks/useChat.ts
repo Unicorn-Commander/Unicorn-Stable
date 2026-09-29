@@ -15,6 +15,8 @@ import {
   newClientMsgId,
   optimisticIdFor,
   pendingSendMetadata,
+  buildSendRequest,
+  droppedMetadataKeys,
 } from "@/lib/sendPipeline";
 
 /** Human-readable message for a rejected send. Mirrors the errorMessage()
@@ -24,39 +26,22 @@ function describeSendError(err: unknown): string {
   return apiErr?.detail || apiErr?.message || "Send failed";
 }
 
-/** Wire content_type for a send request. Older `failed_request` snapshots
- *  predate the explicit field — re-derive it from the attachments then. */
-function contentTypeForRequest(
-  req: OutgoingSendRequest,
-): SendMessageRequest["content_type"] {
-  if (req.content_type) return req.content_type;
-  const hasImage = (req.attachments ?? []).some((a) =>
-    a.content_type.startsWith("image/"),
-  );
-  if (hasImage) return "image";
-  if (req.attachments?.length) return "file";
-  return "text";
-}
-
 /** The ONE place a send's POST is built and fired — first attempts, the
  *  automatic retry, and manual Retry taps all replay exactly this, so no
  *  path can drift from the ACK contract. */
 function postSend(send: TrackedSend): Promise<Message> {
-  const req = send.request;
-  const request: SendMessageRequest = {
-    content: req.content,
-    content_type: contentTypeForRequest(req),
-    client_msg_id: send.clientMsgId,
-  };
-  const meta: Record<string, unknown> = {};
-  if (req.attachments?.length) meta.attachments = req.attachments;
-  if (req.extraMetadata) Object.assign(meta, req.extraMetadata);
-  if (Object.keys(meta).length > 0) request.metadata = meta;
-  if (req.thread_id) request.thread_id = req.thread_id;
   // Per-room LLM override (mid-conversation model switcher). Read from the
   // store at attempt-time so a retry replays the room's CURRENT model.
   const modelOverride = useAppStore.getState().modelOverrides[send.roomId];
-  if (modelOverride) request.model = modelOverride;
+  const request: SendMessageRequest = buildSendRequest(send, modelOverride);
+  if (import.meta.env.DEV) {
+    // The server drops every other key with a 201; say so while developing
+    // rather than let a feature quietly depend on one.
+    const dropped = droppedMetadataKeys(request.metadata);
+    if (dropped.length > 0) {
+      console.warn(`[send] the server drops these metadata keys: ${dropped.join(", ")}`);
+    }
+  }
   return api.sendMessage(send.roomId, request);
 }
 

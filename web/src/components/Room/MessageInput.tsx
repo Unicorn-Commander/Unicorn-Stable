@@ -140,7 +140,8 @@ interface SlashResult {
 }
 
 /** Returns text+metadata to send, or text=null to consume input silently. */
-function applySlashCommand(input: string): SlashResult {
+/** Exported for the test that pins the metadata keys a composed message carries. */
+export function applySlashCommand(input: string): SlashResult {
   if (!input.startsWith("/")) return { text: input };
   const space = input.indexOf(" ");
   const cmd = (space === -1 ? input.slice(1) : input.slice(1, space)).toLowerCase();
