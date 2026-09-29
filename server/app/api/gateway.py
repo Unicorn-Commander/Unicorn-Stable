@@ -1183,10 +1183,21 @@ async def gateway_put_me(
                 cast(patch, JSONB)
             )
         )
+        # Without this the session expires the loaded seat's metadata_ (a
+        # JSONB `||` cannot be evaluated in Python), and the mirror below
+        # lazy-loads it: MissingGreenlet under asyncpg, a 500 on every
+        # announce (measured on dogfood 2026-09-29). Same rule as the owner
+        # PATCH and the class floor.
+        .execution_options(synchronize_session=False)
     )
     await db.commit()
-    # Mirror the merge on the loaded row so this request's readers agree.
-    seat.metadata_ = {**(seat.metadata_ or {}), **patch}
+    # Mirror the merge on the loaded row so this request's readers agree,
+    # without scheduling an ORM write of the whole column.
+    merged = {**(seat.metadata_ or {}), **patch}
+    if hasattr(seat, "_sa_instance_state"):
+        set_committed_value(seat, "metadata_", merged)
+    else:
+        seat.metadata_ = merged
     logger.info(
         "gateway_seat_capabilities_stored",
         agent_id=principal.agent_id,
