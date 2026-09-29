@@ -19,6 +19,12 @@
  * room's roster with everyone's status plainly labelled.
  */
 import {
+  isSupersededReceipt,
+  isSystemLine,
+  recordingIdOf,
+  systemLineText,
+} from "@/lib/systemLines";
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -88,7 +94,8 @@ function statusLabel(status: GuestSocketStatus): string {
   }
 }
 
-function MessageRow({
+/** One line of the guest transcript. Exported for the guest-shape tests. */
+export function GuestMessageRow({
   message,
   members,
 }: {
@@ -99,10 +106,16 @@ function MessageRow({
   // a guest's message arrives as "guest" — no roster join needed here.
   const guest = isGuestSender(message.sender_type);
   const agent = message.sender_type === "agent";
-  if (message.sender_type === "system") {
+  // Server-worded system lines (recording notices, the parent's thread
+  // line) are put back together from their metadata; a guest's roster may
+  // resolve no name, and then the line simply says less.
+  if (isSystemLine(message)) {
     return (
-      <li className="px-2 py-1 text-center text-[11px] italic text-slate-500">
-        {message.content}
+      <li
+        className="px-2 py-1 text-center text-[11px] italic text-slate-500"
+        data-testid="guest-system-line"
+      >
+        {systemLineText(message, members) ?? message.content}
       </li>
     );
   }
@@ -301,6 +314,12 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
                 content: line,
                 content_type: "system",
                 created_at: new Date().toISOString(),
+                // The recording's id is how the persisted notice finds
+                // this receipt, whatever this device's clock says.
+                metadata: {
+                  recording_receipt: true,
+                  ...(recordingIdOf(payload) ? { recording_id: recordingIdOf(payload) } : {}),
+                },
               });
             }
             break;
@@ -334,13 +353,15 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
     if (list) list.scrollTop = list.scrollHeight;
   }, [messages.length]);
 
-  const visible = useMemo(
-    () =>
-      messages.filter((m) =>
-        isMessageVisibleToGuest(m.created_at, session.historyFromMs),
-      ),
-    [messages, session.historyFromMs],
-  );
+  const visible = useMemo(() => {
+    const shown = messages.filter((m) =>
+      isMessageVisibleToGuest(m.created_at, session.historyFromMs),
+    );
+    // The local recording receipt (drawn from the socket's frame) is the same
+    // fact as the server's persisted notice, and yields to it in either
+    // arrival order — or the transcript says "recording started" twice.
+    return shown.filter((m) => !isSupersededReceipt(m, shown));
+  }, [messages, session.historyFromMs]);
 
   /** MEMOIZED, not inline: GuestVideoStage lists this in the dependency array
    *  of the effect that owns the LiveKit connection, so a fresh identity per
@@ -383,7 +404,10 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
   }
 
   return (
-    <div className="flex h-dvh w-full flex-col bg-slate-900 text-slate-200">
+    <div
+      className="flex h-dvh w-full flex-col bg-slate-900 text-slate-200"
+      data-testid="guest-room"
+    >
       <header className="flex shrink-0 items-center gap-3 border-b border-white/[0.06] px-4 py-3">
         <StableMark className="h-6 w-6 shrink-0" />
         <div className="min-w-0 flex-1">
@@ -414,6 +438,8 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
           type="button"
           onClick={() => setShowRoster((open) => !open)}
           aria-expanded={showRoster}
+          aria-label={`People in this room (${members.length})`}
+          data-testid="guest-roster-toggle"
           className="focus-ring inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 lg:hidden"
         >
           <Users className="h-4 w-4" />
@@ -453,6 +479,7 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
               "flex flex-col rounded-xl border border-white/[0.06] bg-slate-950/40 p-2",
               showRoster ? "flex" : "hidden lg:flex",
             )}
+            data-testid="guest-roster"
           >
             <h2 className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               In this room ({members.length})
@@ -489,7 +516,7 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
                 </li>
               ) : (
                 visible.map((message) => (
-                  <MessageRow
+                  <GuestMessageRow
                     key={message.id}
                     message={message}
                     members={members}

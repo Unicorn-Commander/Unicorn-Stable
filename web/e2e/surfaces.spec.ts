@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import {
   CREW_FIXTURE,
@@ -1814,3 +1814,221 @@ test.describe("Crew-first nav (v3)", () => {
   }
 });
 
+/**
+ * The guest room with the rows a GUEST caller gets (server 345fbd1): null
+ * availability and reason on every members row, `{kind}` alone on an agent's
+ * metadata, no `gateway` / `on_behalf_of` / `agent_id` on a message — and
+ * the server-worded system lines, whose names come from the guest's own
+ * roster.
+ */
+const GUEST_ROOM_ID = "room-taxsq";
+
+function guestLine(
+  id: string,
+  at: string,
+  sender: { id: string | null; name: string; type: string },
+  content: string,
+  over: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    room_id: GUEST_ROOM_ID,
+    sender_id: sender.id,
+    sender_name: sender.name,
+    sender_type: sender.type,
+    sender_avatar: null,
+    content,
+    content_type: "text",
+    created_at: at,
+    updated_at: at,
+    ...over,
+  };
+}
+
+const GUEST_AARON = { id: "p-aaron", name: "Aaron Stransky", type: "human" };
+/** A notice is a NULL-sender line. */
+const GUEST_NOBODY = { id: null, name: "", type: "system" };
+const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+
+/** Stub the guest's whole world, redeem the invite, land in the room. */
+async function joinGuestRoom(page: Page, history: unknown[]) {
+  const json = (body: unknown, status = 200) => ({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+  const session = {
+    session_id: "gs-e2e",
+    participant_id: "p-guest",
+    display_name: "Morgan Ali",
+    room_id: GUEST_ROOM_ID,
+    room_display_name: "taxsq-portal",
+    can_publish: false,
+    expires_at: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+  };
+  // A stub credential for a stubbed server: it opens nothing anywhere.
+  await page.route("**/api/v1/guest/redeem", (route) =>
+    route.fulfill(json({ ...session, session_token: "sgs-e2e-stub" })),
+  );
+  await page.route("**/api/v1/guest/me", (route) => route.fulfill(json(session)));
+  await page.route("**/api/v1/guest/leave", (route) => route.fulfill({ status: 204 }));
+  await page.route("**/api/v1/tokens/livekit", (route) =>
+    route.fulfill(json({ detail: "no call in this test" }, 503)),
+  );
+
+  const row = (
+    id: string,
+    name: string,
+    type: "human" | "agent" | "guest",
+    over: Record<string, unknown> = {},
+  ) => ({
+    participant_id: id,
+    user_id: id,
+    username: name.toLowerCase().replace(/\s+/g, "-"),
+    display_name: name,
+    avatar_url: null,
+    role: "member",
+    participant_type: type,
+    is_online: type !== "agent",
+    is_muted: false,
+    is_self: false,
+    joined_at: "2026-09-22T15:00:00Z",
+    // For a guest caller, always.
+    availability: null,
+    availability_reason: null,
+    metadata: type === "agent" ? { kind: null } : null,
+    ...over,
+  });
+  await page.route(`**/api/v1/rooms/${GUEST_ROOM_ID}/members`, (route) =>
+    route.fulfill(
+      json([
+        row("p-aaron", "Aaron Stransky", "human", { role: "owner" }),
+        row("p-persephone", "Persephone", "agent"),
+        row("p-flow", "Flow", "agent", { metadata: { kind: "guest_agent" } }),
+        row("p-guest", "Morgan Ali", "guest", { is_self: true }),
+      ]),
+    ),
+  );
+  await page.route(`**/api/v1/rooms/${GUEST_ROOM_ID}/messages**`, (route) =>
+    route.fulfill(json({ messages: [...history].reverse(), cursor: null, has_more: false })),
+  );
+
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    sockets.push(ws);
+    ws.onMessage((data) => {
+      let frame: { type?: string } = {};
+      try {
+        frame = JSON.parse(String(data)) as { type?: string };
+      } catch {
+        return;
+      }
+      if (frame.type === "auth") ws.send(JSON.stringify({ type: "auth_ok" }));
+      if (frame.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
+    });
+  });
+
+  await page.goto("/guest/inv-e2e-0000000000");
+  await page.getByPlaceholder("Ada Lovelace").fill("Morgan Ali");
+  await page.getByRole("button", { name: "Join as guest" }).click();
+  const room = page.getByTestId("guest-room");
+  await expect(room).toBeVisible();
+  await expect(room.getByText("Connected")).toBeVisible();
+  return {
+    room,
+    /** A frame from the server, on the guest's live socket. */
+    push: (frame: unknown) => {
+      const socket = sockets[sockets.length - 1];
+      expect(socket, "the guest socket").toBeTruthy();
+      socket!.send(JSON.stringify(frame));
+    },
+  };
+}
+
+test.describe("Guest room (a guest's shapes)", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`roster, transcript, system lines @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      const { room, push } = await joinGuestRoom(page, [
+        guestLine("g-1", minutesAgo(30), GUEST_AARON, "Welcome. The portal walk-through starts in a minute."),
+        guestLine("g-2", minutesAgo(29), GUEST_AARON, "Channel thread started", {
+          content_type: "system",
+          metadata: { kind: "thread_started", thread_room_id: "room-taxsq-t-1", thread_title: "Portal questions", created_by: "p-aaron", seed_message_id: null },
+        }),
+        guestLine("g-3", minutesAgo(28), GUEST_NOBODY, "Video recording started", {
+          content_type: "system",
+          metadata: { kind: "recording", event: "started", recording_kind: "composite", recording_id: "rec-9", started_by: "p-aaron", reason: "policy always" },
+        }),
+        // An agent's line as a guest gets it: no gateway, on_behalf_of, agent_id.
+        guestLine("g-4", minutesAgo(27), { id: "p-persephone", name: "Persephone", type: "agent" }, "The client portal is on screen.", { metadata: {} }),
+        guestLine("g-5", minutesAgo(26), { id: "p-flow", name: "Flow", type: "agent" }, "Noted for the Northbridge Tax side."),
+        guestLine("g-6", minutesAgo(20), GUEST_NOBODY, "Video recording stopped", {
+          content_type: "system",
+          metadata: { kind: "recording", event: "stopped", recording_kind: "composite", recording_id: "rec-9", started_by: "p-aaron", reason: "stop_requested" },
+        }),
+      ]);
+
+      // The transcript: agents' lines, and the system lines in words.
+      await expect(room.getByText("The client portal is on screen.")).toBeVisible();
+      await expect(room.getByText("Noted for the Northbridge Tax side.")).toBeVisible();
+      const lines = room.getByTestId("guest-system-line");
+      await expect(lines).toHaveCount(3);
+      await expect(lines.nth(0)).toHaveText("Aaron Stransky started a thread: Portal questions");
+      await expect(lines.nth(1)).toHaveText(
+        "Video recording started · by Aaron Stransky · this room always records",
+      );
+      await expect(lines.nth(2)).toHaveText(
+        "Video recording stopped · on request · started by Aaron Stransky",
+      );
+      await expect(room.getByText("Channel thread started")).toHaveCount(0);
+
+      // Live: the socket's frame draws a local receipt; the server's
+      // persisted notice then takes its place — one line, not two.
+      const startedAt = new Date().toISOString();
+      push({
+        type: "recording_state",
+        payload: {
+          room_id: GUEST_ROOM_ID,
+          active: true,
+          kind: "audio",
+          started_by: { id: "p-aaron", display_name: "Aaron Stransky" },
+          started_at: startedAt,
+          recording_id: "rec-10",
+          reason: "user",
+        },
+      });
+      await expect(lines).toHaveCount(4);
+      await expect(lines.nth(3)).toHaveText("Recording started · audio · started by Aaron Stransky");
+      push({
+        type: "message",
+        payload: {
+          room_id: GUEST_ROOM_ID,
+          message: guestLine("g-7", startedAt, GUEST_NOBODY, "Audio recording started", {
+            content_type: "system",
+            metadata: { kind: "recording", event: "started", recording_kind: "audio", recording_id: "rec-10", started_by: "p-aaron", reason: "user" },
+          }),
+        },
+      });
+      await expect(lines.nth(3)).toHaveText("Audio recording started · by Aaron Stransky");
+      await expect(lines).toHaveCount(4);
+
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/NavV3-Guest-room-${tag}.png`, fullPage: false });
+
+      // The roster draws every row: availability is not there to read.
+      if (viewport === "mobile") await page.getByTestId("guest-roster-toggle").click();
+      const roster = room.getByTestId("guest-roster");
+      await expect(roster).toBeVisible();
+      await expect(roster.getByRole("listitem")).toHaveCount(4);
+      for (const name of ["Aaron Stransky", "Persephone", "Flow", "Morgan Ali"]) {
+        await expect(roster.getByRole("listitem").filter({ hasText: name })).toBeVisible();
+      }
+      await expect(roster.getByText("AI", { exact: true })).toHaveCount(2);
+      if (viewport === "mobile") {
+        await page.screenshot({ path: `test-results/NavV3-Guest-roster-${tag}.png`, fullPage: false });
+      }
+      await assertPageHealth(page, viewport);
+    });
+  }
+});

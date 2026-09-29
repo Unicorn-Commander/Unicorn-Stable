@@ -363,6 +363,27 @@ describe("member roster marks (§2.0)", () => {
     expect(named && named.kind === "partner_seat" ? named.label : null).toBe("Shafen Khan’s seat");
   });
 
+  it("reads a guest's view of the roster: agent rows carry {kind} only", () => {
+    // What a guest caller gets: null availability and reason, {kind} alone.
+    const row = (metadata: RoomMember["metadata"]): RoomMember => ({
+      username: "x",
+      display_name: "X",
+      role: "member",
+      joined_at: "",
+      participant_type: "agent",
+      availability: null,
+      availability_reason: null,
+      metadata,
+    });
+    expect(memberKindMark(row({ kind: "guest_agent" }), null)).toEqual({ kind: "guest" });
+    expect(memberKindMark(row({ kind: "integration" }), null)).toEqual({ kind: "integration" });
+    // A seat as a guest sees it: no backend, no owner — so no mark, no crash.
+    expect(memberKindMark(row({ kind: "seat" }), null)).toBeNull();
+    expect(memberKindMark(row({ kind: null }), null)).toBeNull();
+    expect(memberKindMark(row({}), undefined)).toBeNull();
+    expect(memberKindMark(row(null), undefined)).toBeNull();
+  });
+
   it("reads the room's class floor", () => {
     expect(roomClassFloor({ metadata_: { class_floor: "shared" } })).toBe("shared");
     expect(roomClassFloor({ metadata_: { class_floor: "private" } })).toBeNull();
