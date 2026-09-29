@@ -15,7 +15,7 @@ import clsx from "clsx";
 import { api, type CrewMember, type PeopleDirectoryEntry, type Room } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
-import { CREW_GROUP_LABEL, brainLabel, ownerSeatLabel, readRoomSeat, hubRoomFor } from "@/lib/crew";
+import { CREW_GROUP_LABEL, brainLabel, crewTargetRoom, ownerSeatLabel, readRoomSeat } from "@/lib/crew";
 import { buildToPicks } from "@/lib/newSheetPicker";
 import { useCrew } from "@/hooks/useCrew";
 import {
@@ -122,28 +122,47 @@ export function NewSheet() {
   );
 }
 
-/** Open a crew member's hub — straight to it when the list already knows the room. */
+function selfIds(): (string | null | undefined)[] {
+  const state = useAppStore.getState();
+  return [state.currentParticipantId, state.currentUser?.id];
+}
+
+/**
+ * Open a crew member — the one path the crew rail also takes: your hub for
+ * your seats and house agents (ensured on the server when the list has
+ * none), the newest shared room for a partner's seat, which is never asked
+ * for a hub (the server refuses: "ask the seat's owner").
+ */
 async function openCrewMember(
   member: CrewMember,
   navigate: (to: string) => void,
+  crewAnswered: boolean,
 ): Promise<boolean> {
-  const known = hubRoomFor(member, useAppStore.getState().rooms);
-  if (known) {
-    navigate(`/c/${known.id}`);
+  const target = crewTargetRoom(member, useAppStore.getState().rooms, selfIds(), crewAnswered);
+  if (target) {
+    navigate(`/c/${target.room.id}`);
     return true;
+  }
+  if (member.group === "partner") {
+    useAppStore.getState().pushToast({
+      title: `No room with ${member.display_name} yet`,
+      body: `${member.owner ? ownerSeatLabel(member.owner).replace(/’s? seat$/, "") : "Its owner"} has to add their seat to a room you share.`,
+    });
+    return false;
   }
   const hub = await openAgentHub(member.agent_id, navigate);
   return !!hub;
 }
 
-function crewSubtitle(member: CrewMember, rooms: readonly Room[]): string {
+function crewSubtitle(member: CrewMember, rooms: readonly Room[], crewAnswered: boolean): string {
   const parts: string[] = [];
   if (member.group === "partner" && member.owner) parts.push(ownerSeatLabel(member.owner));
   else if (member.role_line) parts.push(member.role_line);
   else parts.push(CREW_GROUP_LABEL[member.group]);
   if (member.seat_capabilities) {
+    const target = crewTargetRoom(member, rooms, selfIds(), crewAnswered);
     const brain = brainLabel(
-      readRoomSeat(hubRoomFor(member, rooms), member.agent_id),
+      readRoomSeat(target?.kind === "hub" ? target.room : null, member.agent_id),
       member.seat_capabilities,
     );
     if (brain) parts.push(brain);
@@ -163,7 +182,7 @@ function ToStep({
   const [q, setQ] = useState("");
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { crew } = useCrew();
+  const { crew, crewAnswered } = useCrew();
   const rooms = useAppStore((s) => s.rooms);
   const active = q.trim().length > 0;
   const { data: people = [], isFetching: peopleFetching } = useQuery({
@@ -240,7 +259,7 @@ function ToStep({
             <PickRow
               key={member.agent_id}
               title={member.display_name}
-              subtitle={crewSubtitle(member, rooms)}
+              subtitle={crewSubtitle(member, rooms, crewAnswered)}
               face={resolveIdentity({
                 id: member.agent_id,
                 participant_id: member.participant_id || undefined,
@@ -249,7 +268,9 @@ function ToStep({
                 avatar_url: member.avatar_url,
                 username: member.agent_id,
               })}
-              onClick={() => void openCrewMember(member, navigate).then((ok) => ok && onDone())}
+              onClick={() =>
+                void openCrewMember(member, navigate, crewAnswered).then((ok) => ok && onDone())
+              }
             />
           ))}
         </PickGroup>
@@ -438,7 +459,7 @@ function PersonStep({ onDone }: { onDone: () => void }) {
  * two-entry allowlist. A stale server without /crew shows the roster.
  */
 function AgentStep({ onDone }: { onDone: () => void }) {
-  const { crew, loaded, fromRoster } = useCrew();
+  const { crew, loaded, fromRoster, crewAnswered } = useCrew();
   const rooms = useAppStore((s) => s.rooms);
   const [q, setQ] = useState("");
   const navigate = useNavigate();
@@ -458,7 +479,7 @@ function AgentStep({ onDone }: { onDone: () => void }) {
         <PickRow
           key={member.agent_id}
           title={member.display_name}
-          subtitle={crewSubtitle(member, rooms)}
+          subtitle={crewSubtitle(member, rooms, crewAnswered)}
           face={resolveIdentity({
             id: member.agent_id,
             participant_id: member.participant_id || undefined,
@@ -467,7 +488,9 @@ function AgentStep({ onDone }: { onDone: () => void }) {
             avatar_url: member.avatar_url,
             username: member.agent_id,
           })}
-          onClick={() => void openCrewMember(member, navigate).then((ok) => ok && onDone())}
+          onClick={() =>
+            void openCrewMember(member, navigate, crewAnswered).then((ok) => ok && onDone())
+          }
         />
       ))}
     </Picker>

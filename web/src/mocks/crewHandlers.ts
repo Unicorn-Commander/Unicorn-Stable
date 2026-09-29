@@ -6,6 +6,7 @@
 import { http, HttpResponse } from "msw";
 import {
   CREW_FIXTURE,
+  CREW_RAW_FIXTURE,
   PERSEPHONE_HUB_ID,
   hubRoomRaw,
   membersFixture,
@@ -32,7 +33,8 @@ export function resetCrewMock(): void {
 }
 
 export const crewHandlers = [
-  http.get("*/api/v1/crew", () => HttpResponse.json(CREW_FIXTURE)),
+  // The wire carries a guest agent and an integration too: the client drops them.
+  http.get("*/api/v1/crew", () => HttpResponse.json(CREW_RAW_FIXTURE)),
 
   http.post("*/api/v1/agents/:agentId/hub", ({ params }) =>
     HttpResponse.json(hubRoomRaw(String(params.agentId))),

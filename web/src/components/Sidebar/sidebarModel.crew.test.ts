@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
-import type { Agent, Room } from "@/services/api";
+import type { Agent, CrewMember, Room } from "@/services/api";
 import { CREW_FIXTURE, PERSEPHONE_HUB_ID, ROOK_HUB_ID } from "@/mocks/crewFixture";
 import {
   buildConversationRows,
   buildCrewSection,
+  CREW_CAP_POLICY,
+  defaultCrewSet,
   flattenConversationPane,
   flattenConversationRows,
   flattenCrewRows,
   SECTION_KEYS,
+  stepKeyboardOrder,
 } from "./sidebarModel";
+
+const SELF = ["p-aaron"];
+const NOW = Date.parse("2026-09-28T22:00:00Z");
 
 function room(over: Partial<Room> = {}): Room {
   return {
@@ -38,6 +44,7 @@ function hubFor(agentId: string, id: string, over: Partial<Room> = {}): Room {
       display_name: agentId,
       agent_id: agentId,
     },
+    metadata_: { agent_hub: { human_id: "p-aaron", agent_id: agentId } },
     ...over,
   });
 }
@@ -49,8 +56,15 @@ const persephoneHub = hubFor("persephone", PERSEPHONE_HUB_ID, {
   },
 });
 const rookHub = hubFor("claude-code", ROOK_HUB_ID);
-const astraHub = hubFor("codex-astra", "hub-codex-astra");
 const general = room({ id: "room-general", name: "general" });
+const taxsq = room({
+  id: "room-taxsq",
+  name: "taxsq-portal",
+  updated_at: "2026-09-28T11:00:00Z",
+  agent_members: [
+    { participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow" },
+  ],
+});
 
 const base = {
   crew: CREW_FIXTURE,
@@ -59,51 +73,58 @@ const base = {
   searchQuery: "",
   showAll: false,
   collapsed: {},
+  selfIds: SELF,
+  now: NOW,
 };
 
 const ids = (section: ReturnType<typeof buildCrewSection>) =>
   section.groups.flatMap((group) => group.rows.map((row) => row.member.agent_id));
 
 describe("crew section model", () => {
-  it("groups Your seats → House → Partners in server order and caps at eight", () => {
+  it("shows the seats heard from lately, the top house agents and the top partners before More", () => {
+    // Fixture: Persephone and Rook have a last line this week; four other seats
+    // never spoke. Floor of three keeps Astra; the rest fold. House and Partners
+    // each show three, so acceptance 3 holds on the first view.
     const section = buildCrewSection(base);
-    expect(section.groups.map((group) => group.group)).toEqual(["own_seat", "house"]);
-    expect(section.groups[0]!.label).toBe("Your seats");
-    expect(section.groups[0]!.rows.map((row) => row.member.agent_id)).toEqual([
-      "persephone",
-      "claude-code",
-      "codex-astra",
-      "grok",
-      "zen",
-      "claude",
-    ]);
-    expect(section.groups[1]!.rows.map((row) => row.member.agent_id)).toEqual([
-      "majik",
-      "sidekick",
+    expect(section.groups.map((group) => [group.group, group.rows.map((row) => row.member.agent_id)])).toEqual([
+      ["own_seat", ["persephone", "claude-code", "codex-astra"]],
+      ["house", ["majik", "sidekick", "the-general"]],
+      ["partner", ["shafen-claude-code", "shox", "okapi-grok"]],
     ]);
     expect(section.total).toBe(12);
-    expect(section.hiddenCount).toBe(4);
+    expect(section.hiddenCount).toBe(3);
+    expect(section.expanded).toBe(false);
     expect(section.searching).toBe(false);
   });
 
-  it("More lifts the cap and the Partners group appears", () => {
-    const section = buildCrewSection({ ...base, showAll: true });
-    expect(section.groups.map((group) => group.group)).toEqual(["own_seat", "house", "partner"]);
-    expect(section.hiddenCount).toBe(0);
-    expect(section.groups[2]!.label).toBe("Partners");
-    expect(section.groups[2]!.rows.map((row) => row.member.display_name)).toEqual([
-      "Flow",
-      "ShOX",
-      "Okapi",
-    ]);
+  it("caps per group, never across groups", () => {
+    const eleven: CrewMember[] = Array.from({ length: 11 }, (_, i) => ({
+      ...CREW_FIXTURE[0]!,
+      agent_id: `seat-${i}`,
+      display_name: `Seat ${i}`,
+      hub_room_id: null,
+      last_at: "2026-09-27T00:00:00Z",
+      unread: 0,
+    }));
+    const crew = [...eleven, ...CREW_FIXTURE.filter((m) => m.group !== "own_seat")];
+    const shown = defaultCrewSet(crew, CREW_CAP_POLICY, NOW);
+    expect([...shown].filter((id) => id.startsWith("seat-"))).toHaveLength(11);
+    expect(shown.has("majik")).toBe(true);
+    expect(shown.has("shafen-claude-code")).toBe(true);
+    const stale = eleven.map((m) => ({ ...m, last_at: "2026-08-01T00:00:00Z" }));
+    const fewer = defaultCrewSet([...stale, ...CREW_FIXTURE.filter((m) => m.group !== "own_seat")], CREW_CAP_POLICY, NOW);
+    expect([...fewer].filter((id) => id.startsWith("seat-"))).toEqual(["seat-0", "seat-1", "seat-2"]);
+    // An unread hub counts as heard from.
+    const unread = stale.map((m, i) => (i === 7 ? { ...m, unread: 2 } : m));
+    expect(defaultCrewSet(unread, CREW_CAP_POLICY, NOW).has("seat-7")).toBe(true);
   });
 
-  it("never lists a guest agent or an integration, whatever the fixture holds", () => {
+  it("More lifts the cap and marks the section expanded", () => {
     const section = buildCrewSection({ ...base, showAll: true });
-    for (const row of section.groups.flatMap((group) => group.rows)) {
-      expect(["own_seat", "house", "partner"]).toContain(row.member.group);
-      expect(row.member.agent_id).not.toMatch(/^webhook-|taxsq/);
-    }
+    expect(ids(section)).toHaveLength(12);
+    expect(section.hiddenCount).toBe(0);
+    expect(section.expanded).toBe(true);
+    expect(section.groups[2]!.label).toBe("Partners");
   });
 
   it("a search ignores the cap and matches name, id, role line and owner", () => {
@@ -112,39 +133,87 @@ describe("crew section model", () => {
       "shox",
       "okapi-grok",
     ]);
-    const okapi = buildCrewSection({ ...base, searchQuery: "OKAPI" });
-    expect(ids(okapi)).toEqual(["okapi-grok"]);
-    expect(okapi.total).toBe(1);
-    expect(okapi.hiddenCount).toBe(0);
-    expect(okapi.searching).toBe(true);
-    expect(ids(buildCrewSection({ ...base, searchQuery: "showrunner" }))).toEqual(["claude-code"]);
+    const zen = buildCrewSection({ ...base, searchQuery: "ZEN" });
+    expect(ids(zen)).toEqual(["zen"]);
+    expect(zen.hiddenCount).toBe(0);
+    expect(zen.searching).toBe(true);
+    expect(zen.expanded).toBe(false);
     expect(buildCrewSection({ ...base, searchQuery: "nobody" }).groups).toEqual([]);
   });
 
-  it("brain chip: the hub's override beats the seat default; house rows read the roster family", () => {
+  it("brain chip: the hub's seats entry beats the seat default; house rows read the roster family", () => {
     const majik = { id: "majik", model: "qwen3.6-35b-chat" } as Agent;
     const section = buildCrewSection({ ...base, showAll: true, agents: [majik] });
     const brain = (agentId: string) =>
-      section.groups.flatMap((group) => group.rows).find((row) => row.member.agent_id === agentId)
-        ?.brain;
+      section.groups.flatMap((group) => group.rows).find((row) => row.member.agent_id === agentId)?.brain;
     expect(brain("persephone")).toBe("Opus 5.5 · medium");
     expect(brain("claude-code")).toBe("Opus 5.5 · medium");
     expect(brain("codex-astra")).toBe("GPT-5 Codex · medium");
-    expect(brain("zen")).toBe("Qwen 3.6 35B · medium");
     expect(brain("majik")).toBe("Qwen");
     expect(brain("sidekick")).toBeNull();
-    // "claude" is a seat that has not announced its capabilities yet.
     expect(brain("claude")).toBeNull();
-    // A partner's seat shows its brain too — read-only is the popover's job.
     expect(brain("shafen-claude-code")).toBe("Fable 5.1 · high");
   });
 
-  it("resolves a hub from the room list when the server sent none", () => {
-    const section = buildCrewSection({ ...base, showAll: true, rooms: [...base.rooms, astraHub] });
-    const rows = section.groups.flatMap((group) => group.rows);
-    expect(rows.find((row) => row.member.agent_id === "codex-astra")?.roomId).toBe("hub-codex-astra");
-    expect(rows.find((row) => row.member.agent_id === "persephone")?.roomId).toBe(PERSEPHONE_HUB_ID);
-    expect(rows.find((row) => row.member.agent_id === "grok")?.roomId).toBeNull();
+  it("targets: hub_room_id for your seats and house, the newest shared room for a partner", () => {
+    const section = buildCrewSection({ ...base, showAll: true, rooms: [...base.rooms, taxsq] });
+    const row = (agentId: string) =>
+      section.groups.flatMap((group) => group.rows).find((r) => r.member.agent_id === agentId)!;
+    expect(row("persephone")).toMatchObject({ roomId: PERSEPHONE_HUB_ID, target: "hub", targetLabel: null });
+    expect(row("shafen-claude-code")).toMatchObject({
+      roomId: "room-taxsq",
+      target: "shared",
+      targetLabel: "#taxsq-portal",
+    });
+    // A partner you share nothing with has nowhere to go; a seat with no hub
+    // yet keeps the server's id (null here) and is ensured on tap.
+    expect(row("shox")).toMatchObject({ roomId: null, target: null });
+    expect(row("codex-astra")).toMatchObject({ roomId: null, target: null, hub: null });
+  });
+
+  it("trusts hub_room_id when /crew answered and never searches the list for a hub", () => {
+    const strayHub = hubFor("codex-astra", "hub-codex-astra");
+    const answered = buildCrewSection({ ...base, showAll: true, rooms: [...base.rooms, strayHub] });
+    const astra = answered.groups.flatMap((g) => g.rows).find((r) => r.member.agent_id === "codex-astra")!;
+    expect(astra.roomId).toBeNull();
+    const fallback = buildCrewSection({
+      ...base,
+      showAll: true,
+      crewAnswered: false,
+      rooms: [...base.rooms, strayHub],
+    });
+    const astraViaList = fallback.groups.flatMap((g) => g.rows).find((r) => r.member.agent_id === "codex-astra")!;
+    expect(astraViaList.roomId).toBe("hub-codex-astra");
+  });
+
+  it("badges the hub plus its live threads by the Conversations rule, else the server count", () => {
+    const thread = room({ id: `${PERSEPHONE_HUB_ID}-t-1`, parent_room_id: PERSEPHONE_HUB_ID, type: "agent_hub" });
+    const archived = room({ id: `${PERSEPHONE_HUB_ID}-t-2`, parent_room_id: PERSEPHONE_HUB_ID, is_archived: true });
+    const counts: Record<string, number> = { [PERSEPHONE_HUB_ID]: 1, [thread.id]: 2, [archived.id]: 9 };
+    const section = buildCrewSection({
+      ...base,
+      rooms: [persephoneHub, rookHub, thread, archived],
+      roomUnread: (r) => counts[r.id] ?? 0,
+    });
+    const rows = section.groups.flatMap((g) => g.rows);
+    expect(rows.find((r) => r.member.agent_id === "persephone")?.unread).toBe(3);
+    // Rook's hub is loaded and quiet: the client count (0) wins over the server's stale one.
+    expect(rows.find((r) => r.member.agent_id === "claude-code")?.unread).toBe(0);
+    // Astra has no hub loaded: the server's count stands.
+    const astra = CREW_FIXTURE.find((m) => m.agent_id === "codex-astra")!;
+    const withServerCount = buildCrewSection({
+      ...base,
+      crew: [{ ...astra, unread: 4 }],
+      roomUnread: () => 0,
+    });
+    expect(withServerCount.groups[0]!.rows[0]!.unread).toBe(4);
+    // Muted: the rule passed in returns 0 for a muted room.
+    const muted = buildCrewSection({
+      ...base,
+      rooms: [persephoneHub, thread],
+      roomUnread: (r) => (r.id === PERSEPHONE_HUB_ID ? 0 : counts[r.id] ?? 0),
+    });
+    expect(muted.groups[0]!.rows[0]!.unread).toBe(2);
   });
 
   it("collapses under its own section key", () => {
@@ -156,11 +225,9 @@ describe("crew section model", () => {
 });
 
 describe("crew keyboard order", () => {
-  it("walks the visible crew hubs, skipping rows with no hub and a collapsed section", () => {
-    const section = buildCrewSection({ ...base, showAll: true, rooms: [...base.rooms, astraHub] });
-    expect(flattenCrewRows(section)).toEqual([[PERSEPHONE_HUB_ID], [ROOK_HUB_ID], ["hub-codex-astra"]]);
-    const capped = buildCrewSection({ ...base, rooms: [...base.rooms, astraHub] });
-    expect(flattenCrewRows(capped)).toEqual([[PERSEPHONE_HUB_ID], [ROOK_HUB_ID], ["hub-codex-astra"]]);
+  it("walks the visible crew targets — hubs and partners' shared rooms — skipping rows with no room and a collapsed section", () => {
+    const section = buildCrewSection({ ...base, showAll: true, rooms: [...base.rooms, taxsq] });
+    expect(flattenCrewRows(section)).toEqual([[PERSEPHONE_HUB_ID], [ROOK_HUB_ID], ["room-taxsq"]]);
     const shut = buildCrewSection({ ...base, collapsed: { [SECTION_KEYS.crew]: true } });
     expect(flattenCrewRows(shut)).toEqual([]);
   });
@@ -185,5 +252,67 @@ describe("crew keyboard order", () => {
     expect(pane.slice(0, 2)).toEqual([[PERSEPHONE_HUB_ID], [ROOK_HUB_ID]]);
     expect(pane.slice(2)).toEqual(listOrder);
     expect(flattenConversationPane(null, listRows)).toEqual(listOrder);
+  });
+
+  it("reaches every visible row exactly once in both directions with two thread-less hubs", () => {
+    // Two hubs with no threads: each is a crew row AND a Conversations row,
+    // so the pane holds the same room twice. Stepping from the first copy
+    // trapped the walk between the copies; stepping from the last index does not.
+    const rooms = [persephoneHub, rookHub, general];
+    const listRows = buildConversationRows({
+      rooms,
+      searchQuery: "",
+      scope: null,
+      categories: {},
+      people: {},
+      folders: {},
+      expandedPeople: {},
+      filter: "all",
+      isUnread: () => false,
+    });
+    const entries = flattenConversationPane(buildCrewSection({ ...base, rooms }), listRows);
+    expect(entries).toEqual([[PERSEPHONE_HUB_ID], [ROOK_HUB_ID], [PERSEPHONE_HUB_ID], [ROOK_HUB_ID], ["room-general"]]);
+
+    // Walk down the way AppShell does: navigate only when the target changes.
+    const walk = (delta: -1 | 1, startCurrent: string | null, startLast: number | null) => {
+      const visited: number[] = [];
+      let current = startCurrent;
+      let last = startLast;
+      for (let i = 0; i < 20; i++) {
+        const step = stepKeyboardOrder(entries, current, delta, last);
+        if (!step) break;
+        if (visited.length > 0 && visited[visited.length - 1] === step.index) break;
+        visited.push(step.index);
+        last = step.index;
+        if (step.target && step.target !== current) current = step.target;
+      }
+      return { visited, current, last };
+    };
+    const down = walk(1, null, null);
+    expect(down.visited).toEqual([0, 1, 2, 3, 4]);
+    expect(down.current).toBe("room-general");
+    const up = walk(-1, down.current, down.last);
+    expect(up.visited).toEqual([3, 2, 1, 0]);
+    expect(up.current).toBe(PERSEPHONE_HUB_ID);
+    // The old rule (first copy of the active room) never reaches the list.
+    const naive: number[] = [];
+    let cur: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const step = stepKeyboardOrder(entries, cur, 1, null);
+      naive.push(step!.index);
+      cur = step!.target;
+    }
+    expect(naive).toEqual([0, 1, 2, 1, 2, 1]);
+  });
+
+  it("enters from the end it moves toward and clamps at the edges", () => {
+    const entries = [["a"], ["b"], ["c"]];
+    expect(stepKeyboardOrder(entries, null, 1, null)).toEqual({ index: 0, target: "a" });
+    expect(stepKeyboardOrder(entries, null, -1, null)).toEqual({ index: 2, target: "c" });
+    expect(stepKeyboardOrder(entries, "c", 1, 2)).toEqual({ index: 2, target: "c" });
+    expect(stepKeyboardOrder(entries, "zzz", 1, 7)).toEqual({ index: 0, target: "a" });
+    expect(stepKeyboardOrder([], "a", 1, null)).toBeNull();
+    // A stale last index that no longer holds the active room is ignored.
+    expect(stepKeyboardOrder(entries, "b", 1, 0)).toEqual({ index: 2, target: "c" });
   });
 });

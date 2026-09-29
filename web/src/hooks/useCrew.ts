@@ -16,8 +16,14 @@ export interface CrewState {
   crew: CrewMember[];
   /** True once the server answered (or refused) — before that, no rows means "loading". */
   loaded: boolean;
-  /** The list came from the Brigade roster because /crew is not on this server. */
+  /**
+   * The list came from the Brigade roster because /crew has never answered on
+   * this server. A failed background refetch over a list that did load keeps
+   * the real list and says nothing.
+   */
   fromRoster: boolean;
+  /** /crew answered at least once: `hub_room_id` is the truth, not a room-list search. */
+  crewAnswered: boolean;
   isPending: boolean;
 }
 
@@ -37,15 +43,16 @@ export function useCrew(): CrewState {
     refetchInterval: CREW_POLL_MS,
     retry: false,
   });
-  const fromRoster = query.isError;
+  const fromRoster = query.data === undefined && query.isError;
   const crew = useMemo(
     () => (query.data ? query.data : fromRoster ? crewFromRoster(agents) : []),
     [query.data, fromRoster, agents],
   );
   return {
     crew,
-    loaded: query.isSuccess || query.isError,
+    loaded: query.data !== undefined || query.isError,
     fromRoster,
+    crewAnswered: query.data !== undefined,
     isPending: query.isPending,
   };
 }
@@ -54,9 +61,14 @@ export function useCrew(): CrewState {
  * Synchronous read for code that runs outside React (the Alt+↑/↓ handler):
  * the cached list, else the roster fallback when the query already failed.
  */
-export function readCrewCache(qc: QueryClient, scope: string | null): CrewMember[] {
+export function readCrewCache(
+  qc: QueryClient,
+  scope: string | null,
+): { crew: CrewMember[]; crewAnswered: boolean } {
   const state = qc.getQueryState<CrewMember[]>(crewQueryKey(scope));
-  if (state?.data) return state.data;
-  if (state?.status === "error") return crewFromRoster(useAppStore.getState().agents);
-  return [];
+  if (state?.data) return { crew: state.data, crewAnswered: true };
+  if (state?.status === "error") {
+    return { crew: crewFromRoster(useAppStore.getState().agents), crewAnswered: false };
+  }
+  return { crew: [], crewAnswered: false };
 }

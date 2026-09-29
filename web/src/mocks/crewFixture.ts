@@ -10,7 +10,14 @@
  * A guest agent (a customer's assistant) appears only in a room roster, and
  * an integration (webhook-dev-stable) appears nowhere.
  */
-import type { CrewMember, RawRoomListItem, RoomMember, SeatCapabilities } from "@/services/api";
+import {
+  normalizeCrewMember,
+  type CrewMember,
+  type RawCrewMember,
+  type RawRoomListItem,
+  type RoomMember,
+  type SeatCapabilities,
+} from "@/services/api";
 
 export const PERSEPHONE_HUB_ID = "hub-fa65c5631810";
 export const ROOK_HUB_ID = "hub-rook-0c3d1a2b";
@@ -175,6 +182,56 @@ export const CREW_FIXTURE: CrewMember[] = [
     role_line: "Shafen's Grok",
   }),
 ];
+
+/**
+ * What a server might put on the wire, including the two kinds the client
+ * must drop on sight: a guest agent and an integration. `CREW_FIXTURE` is
+ * this list after `normalizeCrewMember`.
+ */
+export const CREW_RAW_FIXTURE: RawCrewMember[] = [
+  ...CREW_FIXTURE,
+  {
+    agent_id: "taxsq-assistant",
+    participant_id: "p-taxsq-assistant",
+    display_name: "Northbridge Tax assistant",
+    avatar_url: null,
+    role_line: null,
+    backend: "external",
+    kind: "guest_agent",
+    owner: null,
+    group: "house",
+    presence: "offline",
+    hub_room_id: null,
+    seat_capabilities: null,
+    last_line: null,
+    last_at: null,
+    unread: 0,
+  },
+  {
+    agent_id: "webhook-dev-stable",
+    participant_id: "p-webhook-dev-stable",
+    display_name: "Claude Code",
+    avatar_url: null,
+    role_line: null,
+    backend: "runner",
+    kind: "integration",
+    owner: ["aaron"],
+    group: "own_seat",
+    presence: "online",
+    hub_room_id: null,
+    seat_capabilities: null,
+    last_line: "deploy ok",
+    last_at: "2026-09-28T20:00:00Z",
+    unread: 0,
+  },
+];
+
+/** What `api.getCrew()` yields from the raw payload: the twelve, never the two. */
+export function crewFromRawFixture(): CrewMember[] {
+  return CREW_RAW_FIXTURE.map((row) => normalizeCrewMember(row)).filter(
+    (row): row is CrewMember => row !== null,
+  );
+}
 
 /** Never in Crew: an outside account's agent, visible only inside a room. */
 export const GUEST_AGENT_MEMBER: RoomMember = {

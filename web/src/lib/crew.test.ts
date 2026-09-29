@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Agent, Room, RoomMember } from "@/services/api";
+import { coerceOwner, type Agent, type Room, type RoomMember } from "@/services/api";
 import { CREW_FIXTURE, GUEST_AGENT_MEMBER, PARTNER_SEAT_MEMBER, PERSEPHONE_MEMBER } from "@/mocks/crewFixture";
 import {
   brainLabel,
@@ -7,6 +7,7 @@ import {
   crewBrainChip,
   crewFromRoster,
   crewPresence,
+  crewTargetRoom,
   defaultBrainLabel,
   groupCrew,
   hubRoomFor,
@@ -19,10 +20,14 @@ import {
   ownerSeatLabel,
   readRoomSeat,
   readRoomSeats,
+  RUNNER_OFFLINE_LABEL,
+  RUNNER_ONLINE_LABEL,
   runnerSeenLabel,
   seatIndex,
   sharedRoomFor,
 } from "./crew";
+
+const SELF = ["p-aaron"];
 
 const persephone = CREW_FIXTURE.find((m) => m.agent_id === "persephone")!;
 const flow = CREW_FIXTURE.find((m) => m.agent_id === "shafen-claude-code")!;
@@ -63,8 +68,9 @@ describe("roster fallback", () => {
       agent({ id: "sidekick", status: "offline", availability: "unavailable" }),
       agent({ id: "locked", entitled: false }),
       agent({ id: "persephone", display_name: "Persephone" }),
+      agent({ id: "gone", status: "offline" }),
     ]);
-    expect(rows.map((r) => r.agent_id)).toEqual(["majik", "sidekick", "persephone"]);
+    expect(rows.map((r) => r.agent_id)).toEqual(["majik", "sidekick", "persephone", "gone"]);
     for (const row of rows) {
       expect(row.group).toBe("house");
       expect(row.kind).toBe("brigade");
@@ -74,8 +80,10 @@ describe("roster fallback", () => {
     }
     expect(rows[0]).toMatchObject({ display_name: "Majik Mane", role_line: "House DJ", presence: "online" });
     expect(rows[1]!.presence).toBe("offline");
-    // No availability on an older roster: status decides.
-    expect(rows[2]!.presence).toBe("online");
+    // No availability and a non-offline status: nobody measured it — unknown, no dot.
+    expect(rows[2]!.presence).toBe("unknown");
+    expect(crewPresence(rows[2]!)).toEqual({ online: false, label: "Presence unknown", dotClass: null });
+    expect(rows[3]!.presence).toBe("offline");
   });
 });
 
@@ -162,9 +170,9 @@ describe("room seat", () => {
     expect(crewBrainChip(majik, null, null)).toBeNull();
   });
 
-  it("finds the hub by id, counterpart, resident id or participant", () => {
+  it("finds a hub only through hub_room_id when /crew answered, else through the list", () => {
     const room = (over: Partial<Room> & { id: string }): Room =>
-      ({ name: over.id, description: "", type: "agent_hub", created_at: "", updated_at: "", member_count: 1, unread_count: 0, last_message: null, members: [], agents: [], ...over }) as Room;
+      ({ name: over.id, description: "", type: "agent_hub", created_at: "", updated_at: "", member_count: 1, unread_count: 0, last_message: null, members: [], agents: [], metadata_: { agent_hub: { human_id: "p-aaron" } }, ...over }) as Room;
     const byId = room({ id: "hub-fa65c5631810" });
     const byCounterpart = room({ id: "h2", counterpart: { participant_id: "p-x", kind: "agent", display_name: "X", agent_id: "codex-astra" } });
     const byResident = room({ id: "h3", brigade_agent_id: "grok" });
@@ -173,22 +181,25 @@ describe("room seat", () => {
     const thread = room({ id: "h6", brigade_agent_id: "claude", parent_room_id: "h7" });
     const rooms = [byId, byCounterpart, byResident, byParticipant, archived, thread];
     const find = (id: string) => CREW_FIXTURE.find((m) => m.agent_id === id)!;
-    expect(hubRoomFor(find("persephone"), rooms)?.id).toBe("hub-fa65c5631810");
-    expect(hubRoomFor(find("codex-astra"), rooms)?.id).toBe("h2");
-    expect(hubRoomFor(find("grok"), rooms)?.id).toBe("h3");
-    expect(hubRoomFor(find("zen"), rooms)?.id).toBe("h4");
-    expect(hubRoomFor(find("claude"), rooms)).toBeNull();
-    // Somebody else's hub with the same agent is not yours once we know who we are.
+    // /crew answered: the id is the truth, the list is never searched.
+    expect(hubRoomFor(find("persephone"), rooms, SELF)?.id).toBe("hub-fa65c5631810");
+    expect(hubRoomFor(find("codex-astra"), rooms, SELF)).toBeNull();
+    expect(hubRoomFor({ ...find("persephone"), hub_room_id: "not-loaded" }, rooms, SELF)).toBeNull();
+    // Roster fallback (no /crew): the list is searched, but only for YOUR hub.
+    expect(hubRoomFor(find("codex-astra"), rooms, SELF, false)?.id).toBe("h2");
+    expect(hubRoomFor(find("grok"), rooms, SELF, false)?.id).toBe("h3");
+    expect(hubRoomFor(find("zen"), rooms, SELF, false)?.id).toBe("h4");
+    expect(hubRoomFor(find("claude"), rooms, SELF, false)).toBeNull();
     const shafens = room({
       id: "h8",
       brigade_agent_id: "grok",
       metadata_: { agent_hub: { human_id: "p-shafen", agent_id: "grok" } },
     });
-    expect(hubRoomFor(find("grok"), [shafens], ["p-aaron"])).toBeNull();
-    expect(hubRoomFor(find("grok"), [shafens], [])?.id).toBe("h8");
+    expect(hubRoomFor(find("grok"), [shafens], SELF, false)).toBeNull();
+    expect(hubRoomFor(find("grok"), [shafens], [], false)).toBeNull();
   });
 
-  it("tests a hub by type, parent and human — never the type alone", () => {
+  it("tests a hub by type, parent AND human — a hub that names nobody is not yours", () => {
     const hub = { type: "agent_hub", parent_room_id: null, metadata_: { agent_hub: { human_id: "p-aaron" } } } as unknown as Room;
     const thread = { ...hub, parent_room_id: "hub-1" } as Room;
     const unnamed = { type: "agent_hub", parent_room_id: null, metadata_: {} } as Room;
@@ -196,10 +207,25 @@ describe("room seat", () => {
     expect(isHubRoom(hub, ["p-aaron"])).toBe(true);
     expect(isHubRoom(hub, ["dev-user-001", "p-aaron"])).toBe(true);
     expect(isHubRoom(hub, ["p-shafen"])).toBe(false);
-    expect(isHubRoom(hub, [null, undefined])).toBe(true);
+    expect(isHubRoom(hub, [null, undefined])).toBe(false);
+    expect(isHubRoom(hub, [])).toBe(false);
     expect(isHubRoom(thread, ["p-aaron"])).toBe(false);
-    expect(isHubRoom(unnamed, ["p-aaron"])).toBe(true);
+    expect(isHubRoom(unnamed, ["p-aaron"])).toBe(false);
     expect(isHubRoom(channel, ["p-aaron"])).toBe(false);
+  });
+
+  it("resolves one target per row: a hub for yours and house, the shared room for a partner", () => {
+    const room = (over: Partial<Room> & { id: string }): Room =>
+      ({ name: over.id, description: "", type: "channel", created_at: "", updated_at: "", member_count: 1, unread_count: 0, last_message: null, members: [], agents: [], ...over }) as Room;
+    const hub = room({ id: "hub-fa65c5631810", type: "agent_hub", metadata_: { agent_hub: { human_id: "p-aaron" } } });
+    const shared = room({ id: "room-taxsq", name: "taxsq-portal", brigade_agent_ids: ["shafen-claude-code"] });
+    const dm = room({ id: "dm-1", type: "group_dm", display_name: "Aaron, Shafen, Flow", updated_at: "2026-09-29T00:00:00Z", agent_members: [{ participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow" }] });
+    const find = (id: string) => CREW_FIXTURE.find((m) => m.agent_id === id)!;
+    expect(crewTargetRoom(find("persephone"), [hub, shared], SELF)).toMatchObject({ kind: "hub", label: "Persephone" });
+    expect(crewTargetRoom(find("shafen-claude-code"), [hub, shared], SELF)).toMatchObject({ kind: "shared", label: "#taxsq-portal" });
+    expect(crewTargetRoom(find("shafen-claude-code"), [hub, shared, dm], SELF)?.label).toBe("Aaron, Shafen, Flow");
+    expect(crewTargetRoom(find("shox"), [hub, shared], SELF)).toBeNull();
+    expect(crewTargetRoom(find("codex-astra"), [hub, shared], SELF)).toBeNull();
   });
 
   it("finds the newest room shared with a partner's seat", () => {
@@ -233,25 +259,41 @@ describe("room seat", () => {
 describe("runner presence", () => {
   const now = Date.parse("2026-09-28T21:00:00Z");
 
-  it("says the runner polled recently, or how long ago it was seen", () => {
-    expect(crewPresence(persephone, now)).toMatchObject({ online: true, label: "Runner online" });
-    const stale = { ...persephone, presence: "offline" as const, seat_capabilities: { ...persephone.seat_capabilities!, updated_at: "2026-09-28T20:48:00Z" } };
-    expect(crewPresence(stale, now)).toMatchObject({ online: false, label: "Runner not seen for 12 min" });
+  it("says only what the row knows: online, or no gateway call in the window", () => {
+    expect(crewPresence(persephone)).toMatchObject({ online: true, label: RUNNER_ONLINE_LABEL });
+    // The hourly announce and the last line are NOT last-seen stamps; the
+    // offline label never invents a duration from them.
+    const stale = { ...persephone, presence: "offline" as const, seat_capabilities: { ...persephone.seat_capabilities!, updated_at: "2026-09-28T20:48:00Z" }, last_at: "2026-09-25T00:00:00Z" };
+    expect(crewPresence(stale)).toMatchObject({ online: false, label: RUNNER_OFFLINE_LABEL });
+    expect(RUNNER_OFFLINE_LABEL).toBe("Runner offline — no gateway call in the last 3 min");
+    // Once /crew carries last_seen_at, this is the label it feeds.
+    expect(runnerSeenLabel("2026-09-28T20:48:00Z", now)).toBe("Runner not seen for 12 min");
     expect(runnerSeenLabel("2026-09-28T18:00:00Z", now)).toBe("Runner not seen for 3 h");
     expect(runnerSeenLabel("2026-09-20T18:00:00Z", now)).toBe("Runner not seen for 8 d");
-    expect(runnerSeenLabel(null, now)).toBe("Runner offline");
-    expect(runnerSeenLabel("garbage", now)).toBe("Runner offline");
-    const unannounced = { ...stale, seat_capabilities: null, last_at: "2026-09-28T20:59:30Z" };
-    expect(crewPresence(unannounced, now).label).toBe("Runner not seen for 1 min");
+    expect(runnerSeenLabel(null, now)).toBe(RUNNER_OFFLINE_LABEL);
+    expect(runnerSeenLabel("garbage", now)).toBe(RUNNER_OFFLINE_LABEL);
   });
 
-  it("keeps Brigade wording for house agents", () => {
-    expect(crewPresence(majik, now)).toMatchObject({ online: true, label: "Majik Mane is available" });
-    expect(crewPresence({ ...majik, presence: "offline" }, now)).toMatchObject({
+  it("keeps Brigade wording for house agents and draws no dot for unknown", () => {
+    expect(crewPresence(majik)).toMatchObject({ online: true, label: "Majik Mane is available" });
+    expect(crewPresence({ ...majik, presence: "offline" })).toMatchObject({
       online: false,
       label: "Majik Mane is unavailable",
     });
-    expect(crewPresence(majik, now).dotClass).not.toBe(crewPresence({ ...majik, presence: "offline" }, now).dotClass);
+    expect(crewPresence(majik).dotClass).not.toBe(crewPresence({ ...majik, presence: "offline" }).dotClass);
+    expect(crewPresence({ ...majik, presence: "unknown" }).dotClass).toBeNull();
+  });
+});
+
+describe("owner coercion", () => {
+  it("takes a string or the first of a list", () => {
+    expect(coerceOwner("shafen")).toBe("shafen");
+    expect(coerceOwner(" aaron ")).toBe("aaron");
+    expect(coerceOwner(["shafen", "aaron"])).toBe("shafen");
+    expect(coerceOwner(["", "aaron"])).toBe("aaron");
+    expect(coerceOwner([])).toBeNull();
+    expect(coerceOwner(null)).toBeNull();
+    expect(coerceOwner(7)).toBeNull();
   });
 });
 
@@ -271,6 +313,9 @@ describe("member roster marks (§2.0)", () => {
     const bare: RoomMember = { username: "x", display_name: "X", role: "member", joined_at: "" };
     expect(memberKindMark(bare, "aaron")).toBeNull();
     expect(memberKindMark({ ...bare, metadata: { backend: "runner" } }, "aaron")).toBeNull();
+    // The server stores owner as a string OR a list of usernames.
+    const listed = memberKindMark({ ...bare, metadata: { backend: "runner", owner: ["shafen", "aaron"] } }, "aaron");
+    expect(listed && listed.kind === "partner_seat" ? listed.label : null).toBe("Shafen’s seat");
   });
 
   it("writes the possessive", () => {

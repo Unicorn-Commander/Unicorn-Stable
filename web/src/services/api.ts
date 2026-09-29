@@ -568,7 +568,8 @@ export interface Agent {
 export type CrewGroup = "own_seat" | "house" | "partner";
 export type CrewKind = "brigade" | "seat";
 export type CrewBackend = "runner" | "brigade";
-export type CrewPresence = "online" | "offline";
+/** The server says online/offline; the roster fallback can only say "unknown" (no dot). */
+export type CrewPresence = "online" | "offline" | "unknown";
 
 export interface SeatModel {
   id: string;
@@ -931,12 +932,35 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
   };
 }
 
+/** `metadata.owner` is a username, or a list of usernames — the first one names the seat. */
+export function coerceOwner(raw: unknown): string | null {
+  if (typeof raw === "string") return raw.trim() || null;
+  if (Array.isArray(raw)) {
+    const first = raw.find((item) => typeof item === "string" && item.trim());
+    return typeof first === "string" ? first.trim() : null;
+  }
+  return null;
+}
+
 /**
- * Fill the fields a row may omit so every consumer reads one shape. `group`
- * is derived when absent: an owned runner seat is `own_seat` only if the
- * server said so, so a row with no `group` and no `kind` is treated as house.
+ * Fill the fields a row may omit so every consumer reads one shape. A row
+ * whose `kind` is neither a seat nor a Brigade agent (a guest agent, an
+ * integration, anything new) is not crew and yields null: the server never
+ * lists those, and the client never renders them either way.
  */
-export function normalizeCrewMember(raw: Partial<CrewMember> & { agent_id: string }): CrewMember {
+/** A /crew row as the wire may carry it: any strings, any owner shape. */
+export type RawCrewMember = { agent_id: string } & Partial<
+  Omit<CrewMember, "agent_id" | "owner" | "kind" | "backend" | "presence" | "group">
+> & {
+  owner?: unknown;
+  kind?: string | null;
+  backend?: string | null;
+  presence?: string | null;
+  group?: string | null;
+};
+
+export function normalizeCrewMember(raw: RawCrewMember): CrewMember | null {
+  if (raw.kind != null && raw.kind !== "seat" && raw.kind !== "brigade") return null;
   const backend: CrewBackend = raw.backend === "runner" ? "runner" : "brigade";
   const kind: CrewKind = raw.kind === "seat" || (raw.kind == null && backend === "runner") ? "seat" : "brigade";
   const group: CrewGroup =
@@ -954,9 +978,10 @@ export function normalizeCrewMember(raw: Partial<CrewMember> & { agent_id: strin
     role_line: raw.role_line ?? null,
     backend,
     kind,
-    owner: raw.owner ?? null,
+    owner: coerceOwner(raw.owner),
     group,
-    presence: raw.presence === "online" ? "online" : "offline",
+    presence:
+      raw.presence === "online" ? "online" : raw.presence === "unknown" ? "unknown" : "offline",
     hub_room_id: raw.hub_room_id ?? null,
     seat_capabilities: caps
       ? {
@@ -1859,7 +1884,9 @@ class StableApiClient {
       "/api/v1/crew",
     );
     const rows = Array.isArray(raw) ? raw : raw?.items ?? [];
-    return rows.map(normalizeCrewMember);
+    return rows
+      .map((row) => normalizeCrewMember(row))
+      .filter((row): row is CrewMember => row !== null);
   }
 
   /** Backend health/build summary — powers the Settings → Instance pane and

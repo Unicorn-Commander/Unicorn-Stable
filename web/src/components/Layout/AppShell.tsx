@@ -34,6 +34,7 @@ import {
   flattenConversationPane,
   flattenCrewRows,
   flattenSidebarOrder,
+  stepKeyboardOrder,
   type SidebarView,
 } from "@/components/Sidebar/sidebarModel";
 import { useFederationStore } from "@/stores/federationStore";
@@ -131,9 +132,24 @@ function SurfaceLoading() {
  * walking an order that matched none of it. A copy that has to be kept in sync
  * by hand is the bug, so there is no copy.
  */
+/**
+ * Where Alt+↑/↓ last landed. A hub is listed twice on a desktop (its crew
+ * row and its Conversations row); stepping from the first copy of the
+ * active room trapped the walk between the two, so the step starts from
+ * this index whenever that row still holds the active room.
+ */
+let lastKeyboardIndex: number | null = null;
+
 function sidebarRoomOrder(queryClient: QueryClient): string[][] {
-  const { rooms, activeRoomId, unreadCounts, mentionUnreads, agents } =
-    useAppStore.getState();
+  const {
+    rooms,
+    activeRoomId,
+    unreadCounts,
+    mentionUnreads,
+    agents,
+    currentParticipantId,
+    currentUser,
+  } = useAppStore.getState();
   const { categories, people, folders, collapsed } =
     useChannelCategories.getState();
   const { searchQuery, expandedPeople, focusMode, crewShowAll } =
@@ -155,14 +171,19 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
     const isDesktop = window.matchMedia("(min-width: 768px)").matches;
     const destination =
       isDesktop && (routed === "crew" || routed === "calls") ? "conversations" : routed;
+    const cached = readCrewCache(queryClient, scope);
     const crewSection = (page: boolean) =>
       buildCrewSection({
-        crew: readCrewCache(queryClient, scope),
+        crew: cached.crew,
+        crewAnswered: cached.crewAnswered,
+        selfIds: [currentParticipantId, currentUser?.id],
         rooms,
         agents,
         searchQuery,
         showAll: page ? true : crewShowAll,
         collapsed: page ? {} : collapsed,
+        roomUnread: (room) =>
+          badgeCount(room.id, unreadCounts[room.id] ?? room.unread_count ?? 0),
       });
     if (destination === "crew") return flattenCrewRows(crewSection(true));
     if (destination === "calls") {
@@ -536,18 +557,12 @@ export function AppShell() {
         if (entries.length === 0) return;
         e.preventDefault();
         const current = useAppStore.getState().activeRoomId;
-        const idx = entries.findIndex((ids) =>
-          ids.includes(current ?? ""),
-        );
         const delta = e.key === "ArrowUp" ? -1 : 1;
         // No active room: enter the list from the end you're moving toward.
-        const next =
-          idx === -1
-            ? delta === 1
-              ? 0
-              : entries.length - 1
-            : Math.min(Math.max(idx + delta, 0), entries.length - 1);
-        const target = entries[next]?.[0];
+        const step = stepKeyboardOrder(entries, current, delta, lastKeyboardIndex);
+        if (!step) return;
+        lastKeyboardIndex = step.index;
+        const target = step.target;
         if (target && target !== current) {
           useAppStore.getState().clearUnread(target);
           navigate(`/c/${target}`);

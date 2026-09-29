@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { crewHandlers, resetCrewMock } from "@/mocks/crewHandlers";
-import { PERSEPHONE_HUB_ID } from "@/mocks/crewFixture";
+import { CREW_RAW_FIXTURE, PERSEPHONE_HUB_ID } from "@/mocks/crewFixture";
 import { api, normalizeCrewMember, type ApiError } from "./api";
 
 const server = setupServer(...crewHandlers);
@@ -28,9 +28,15 @@ afterAll(() => {
 });
 
 describe("GET /api/v1/crew", () => {
-  it("returns the ranked crew with kind, owner, group and seat capabilities", async () => {
+  it("returns the ranked crew with kind, owner, group and seat capabilities — and drops every other kind", async () => {
+    expect(CREW_RAW_FIXTURE).toHaveLength(14);
+    expect(CREW_RAW_FIXTURE.map((row) => row.kind)).toContain("guest_agent");
+    expect(CREW_RAW_FIXTURE.map((row) => row.kind)).toContain("integration");
     const crew = await api.getCrew();
     expect(crew).toHaveLength(12);
+    expect(crew.map((m) => m.agent_id)).not.toContain("taxsq-assistant");
+    expect(crew.map((m) => m.agent_id)).not.toContain("webhook-dev-stable");
+    expect(crew.map((m) => m.display_name)).not.toContain("Claude Code");
     expect(crew[0]).toMatchObject({
       agent_id: "persephone",
       participant_id: "p-persephone",
@@ -80,9 +86,14 @@ describe("GET /api/v1/crew", () => {
     expect(crew[1]).toMatchObject({ kind: "seat", group: "partner", owner: "shafen" });
   });
 
-  it("keeps the server's group when it names one", () => {
-    expect(normalizeCrewMember({ agent_id: "x", backend: "runner", group: "own_seat" }).group).toBe("own_seat");
-    expect(normalizeCrewMember({ agent_id: "x", kind: "brigade", group: "house" }).kind).toBe("brigade");
+  it("keeps the server's group when it names one, coerces owner, drops unknown kinds", () => {
+    expect(normalizeCrewMember({ agent_id: "x", backend: "runner", group: "own_seat" })?.group).toBe("own_seat");
+    expect(normalizeCrewMember({ agent_id: "x", kind: "brigade", group: "house" })?.kind).toBe("brigade");
+    expect(normalizeCrewMember({ agent_id: "x", kind: "seat", owner: ["shafen", "aaron"] })?.owner).toBe("shafen");
+    expect(normalizeCrewMember({ agent_id: "x", kind: "seat", owner: 42 })?.owner).toBeNull();
+    expect(normalizeCrewMember({ agent_id: "x", kind: "guest_agent" })).toBeNull();
+    expect(normalizeCrewMember({ agent_id: "x", kind: "integration", backend: "runner" })).toBeNull();
+    expect(normalizeCrewMember({ agent_id: "x", presence: "unknown" })?.presence).toBe("unknown");
   });
 
   it("surfaces a 404 so the hook can fall back to the roster", async () => {

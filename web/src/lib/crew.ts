@@ -11,17 +11,19 @@
  * Everything here is data → data so the sidebar model, the New sheet and the
  * seat popover agree on one reading of a row. Nothing touches a store.
  */
-import type {
-  Agent,
-  CrewGroup,
-  CrewMember,
-  Room,
-  RoomMember,
-  RoomSeat,
-  RoomSeats,
-  SeatCapabilities,
+import {
+  coerceOwner,
+  type Agent,
+  type CrewGroup,
+  type CrewMember,
+  type Room,
+  type RoomMember,
+  type RoomSeat,
+  type RoomSeats,
+  type SeatCapabilities,
 } from "@/services/api";
 import { agentPresence } from "@/lib/agentStatus";
+import { roomLabel } from "@/lib/conversation";
 
 export const CREW_GROUP_ORDER: readonly CrewGroup[] = ["own_seat", "house", "partner"] as const;
 
@@ -61,7 +63,9 @@ export function canEditSeat(member: Pick<CrewMember, "kind" | "backend" | "group
 /**
  * Stale-server fallback: the Brigade roster as house rows. It has no owner
  * or seat facts, so every row is a house agent; nothing here can manufacture
- * a seat, a partner, a guest or an integration.
+ * a seat, a partner, a guest or an integration. Presence is only what the
+ * roster states: `availability` decides, and a roster without it is
+ * "unknown" — no dot, rather than a green one nobody measured.
  */
 export function crewFromRoster(agents: readonly Agent[]): CrewMember[] {
   return agents
@@ -77,10 +81,11 @@ export function crewFromRoster(agents: readonly Agent[]): CrewMember[] {
       owner: null,
       group: "house" as const,
       presence:
-        agent.availability === "available" ||
-        (agent.availability === undefined && agent.status !== "offline")
+        agent.availability === "available"
           ? ("online" as const)
-          : ("offline" as const),
+          : agent.availability === "unavailable" || agent.status === "offline"
+            ? ("offline" as const)
+            : ("unknown" as const),
       hub_room_id: null,
       seat_capabilities: null,
       last_line: null,
@@ -209,24 +214,22 @@ export function readRoomSeat(
 }
 
 /**
- * Is this room the caller's hub with an agent? `room_type = agent_hub` is
- * not enough — a thread under a hub carries the same type — so it is the
- * type AND no parent AND, when the server names the hub's human and we
- * know who we are, that human is us.
+ * Is this room the caller's hub with an agent? The server's test (R7): the
+ * room is `agent_hub` AND has no parent AND `metadata.agent_hub.human_id`
+ * is the caller. `room_type` alone is never enough — a thread under a hub
+ * carries the same type — and a hub that does not name its human is not
+ * yours: a human can be invited into someone else's hub.
  */
 export function isHubRoom(
   room: Pick<Room, "type" | "parent_room_id" | "metadata_">,
-  selfIds: readonly (string | null | undefined)[] = [],
+  selfIds: readonly (string | null | undefined)[],
 ): boolean {
   if (room.type !== "agent_hub" || room.parent_room_id) return false;
   const meta = room.metadata_?.agent_hub;
   const humanId =
     meta && typeof meta === "object" ? (meta as { human_id?: unknown }).human_id : undefined;
-  if (typeof humanId === "string" && humanId) {
-    const known = selfIds.filter((id): id is string => !!id);
-    if (known.length > 0 && !known.includes(humanId)) return false;
-  }
-  return true;
+  if (typeof humanId !== "string" || !humanId) return false;
+  return selfIds.some((id) => !!id && id === humanId);
 }
 
 /**
@@ -265,19 +268,23 @@ function roomHasAgent(
 }
 
 /**
- * The agent hub in the room list that belongs to this crew member, if
- * loaded: the server's `hub_room_id` first, else the one hub room with
- * this agent on the other side (`isHubRoom`, never a thread).
+ * The caller's hub with this crew member, if the room list has it. When
+ * /crew answered, `hub_room_id` is the truth (the server already applied
+ * R7) and nothing else is searched: a null means "no hub yet". Only the
+ * roster fallback, which carries no hub id, searches the list — and then
+ * only a room that passes `isHubRoom` for the caller, never a thread and
+ * never someone else's hub.
  */
 export function hubRoomFor(
   member: Pick<CrewMember, "agent_id" | "hub_room_id" | "participant_id">,
   rooms: readonly Room[],
-  selfIds: readonly (string | null | undefined)[] = [],
+  selfIds: readonly (string | null | undefined)[],
+  crewAnswered = true,
 ): Room | null {
   if (member.hub_room_id) {
-    const byId = rooms.find((room) => room.id === member.hub_room_id);
-    if (byId) return byId;
+    return rooms.find((room) => room.id === member.hub_room_id) ?? null;
   }
+  if (crewAnswered) return null;
   return (
     rooms.find(
       (room) =>
@@ -289,6 +296,38 @@ export function hubRoomFor(
             room.counterpart?.participant_id === member.participant_id)),
     ) ?? null
   );
+}
+
+export type CrewTargetKind = "hub" | "shared";
+
+export interface CrewTarget {
+  kind: CrewTargetKind;
+  room: Room;
+  /** "#taxsq-portal" for a shared room; the agent's name for a hub. */
+  label: string;
+}
+
+/**
+ * The one room a crew row opens — the same answer for the rail, the phone
+ * tab and the New sheet. Your seats and house agents open their hub (null
+ * when it does not exist yet: the caller may then ask the server for one);
+ * a partner's seat opens the newest room you share, in key order, and is
+ * never asked for a hub (the server refuses: "ask the seat's owner").
+ */
+export function crewTargetRoom(
+  member: CrewMember,
+  rooms: readonly Room[],
+  selfIds: readonly (string | null | undefined)[],
+  crewAnswered = true,
+): CrewTarget | null {
+  if (member.group === "partner") {
+    const shared = sharedRoomFor(member, rooms);
+    if (!shared) return null;
+    const label = shared.type === "channel" ? `#${roomLabel(shared)}` : roomLabel(shared);
+    return { kind: "shared", room: shared, label };
+  }
+  const hub = hubRoomFor(member, rooms, selfIds, crewAnswered);
+  return hub ? { kind: "hub", room: hub, label: member.display_name } : null;
 }
 
 /**
@@ -303,11 +342,13 @@ export function sharedRoomFor(
   const candidates = rooms.filter(
     (room) => !room.is_archived && !room.parent_room_id && roomHasAgent(room, member),
   );
-  candidates.sort(
-    (a, b) =>
-      Date.parse(b.last_message?.created_at || b.updated_at || "") -
-      Date.parse(a.last_message?.created_at || a.updated_at || ""),
-  );
+  // An unparsable stamp sorts as "never", not as NaN (which made the order
+  // implementation-defined).
+  const stamp = (room: Room) => {
+    const at = Date.parse(room.last_message?.created_at || room.updated_at || "");
+    return Number.isFinite(at) ? at : 0;
+  };
+  candidates.sort((a, b) => stamp(b) - stamp(a));
   return candidates[0] ?? null;
 }
 
@@ -318,13 +359,22 @@ export interface CrewPresenceBadge {
   online: boolean;
   /** Tooltip / aria-label for the dot. */
   label: string;
-  dotClass: string;
+  /** Null = draw no dot (presence unknown). */
+  dotClass: string | null;
 }
 
-/** "Runner not seen for 12 min" from the runner's last announcement. */
+/** What the offline dot on a seat can honestly say until /crew carries `last_seen_at`. */
+export const RUNNER_OFFLINE_LABEL = "Runner offline — no gateway call in the last 3 min";
+export const RUNNER_ONLINE_LABEL = "Runner online";
+
+/**
+ * "Runner not seen for 12 min" — only from a real last-seen stamp. The
+ * crew row has none today (`updated_at` is the hourly announce, `last_at`
+ * the last line), so callers pass nothing and get the plain offline label.
+ */
 export function runnerSeenLabel(lastSeen: string | null | undefined, now: number): string {
   const at = lastSeen ? Date.parse(lastSeen) : Number.NaN;
-  if (!Number.isFinite(at)) return "Runner offline";
+  if (!Number.isFinite(at)) return RUNNER_OFFLINE_LABEL;
   const minutes = Math.max(1, Math.round((now - at) / 60_000));
   if (minutes < 60) return `Runner not seen for ${minutes} min`;
   const hours = Math.round(minutes / 60);
@@ -334,18 +384,22 @@ export function runnerSeenLabel(lastSeen: string | null | undefined, now: number
 
 /**
  * The presence dot on a crew row. For a seat, `presence` means the runner
- * polled the gateway in the last three minutes, and the tooltip says so;
- * a house agent keeps Brigade's availability wording.
+ * called the gateway in the last three minutes, and the tooltip says exactly
+ * that; a house agent keeps Brigade's availability wording. "unknown" (the
+ * roster fallback) draws no dot at all — `dotClass` is null.
  */
-export function crewPresence(member: CrewMember, now = Date.now()): CrewPresenceBadge {
+export function crewPresence(member: CrewMember): CrewPresenceBadge {
+  if (member.presence === "unknown") {
+    return { online: false, label: "Presence unknown", dotClass: null };
+  }
   const online = member.presence === "online";
   if (isRunnerSeat(member)) {
     if (online) {
-      return { online, label: "Runner online", dotClass: agentPresence({ isOnline: true }).dotClass };
+      return { online, label: RUNNER_ONLINE_LABEL, dotClass: agentPresence({ isOnline: true }).dotClass };
     }
     return {
       online,
-      label: runnerSeenLabel(member.seat_capabilities?.updated_at ?? member.last_at, now),
+      label: RUNNER_OFFLINE_LABEL,
       dotClass: agentPresence({ availability: "unavailable" }).dotClass,
     };
   }
@@ -413,7 +467,8 @@ export function memberKindMark(
   const kind = typeof meta.kind === "string" ? meta.kind : null;
   if (kind === "guest_agent") return { kind: "guest" };
   const backend = typeof meta.backend === "string" ? meta.backend : null;
-  const owner = typeof meta.owner === "string" ? meta.owner.trim() : "";
+  // `owner` is a username or a list of usernames (the server stores both).
+  const owner = coerceOwner(meta.owner) ?? "";
   if (backend !== "runner" || !owner) return null;
   if (selfUsername && owner.toLowerCase() === selfUsername.toLowerCase()) return null;
   const ownerName =
