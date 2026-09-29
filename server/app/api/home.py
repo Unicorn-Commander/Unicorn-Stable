@@ -970,7 +970,7 @@ def crew_card(entry: CrewEntry) -> CrewCard:
 
 
 async def _crew(
-    db: AsyncSession, participant_id: uuid.UUID, now: datetime
+    db: AsyncSession, participant_id: uuid.UUID, now: datetime, *, redis: Any = None
 ) -> list[CrewCard]:
     """The dashboard's crew: the same roster and ranking as ``GET /crew``
     (services/crew.build_crew — runner seats with ``crew = true`` and a live
@@ -978,7 +978,7 @@ async def _crew(
     capped at CREW_CAP. Before Nav v3 this was every agent sharing a room
     with the caller, which is how seven webhook relays became "Claude Code"
     rows on Aaron's home (design §1.4)."""
-    entries = await build_crew(db, participant_id, now)
+    entries = await build_crew(db, participant_id, now, redis=redis)
     return [crew_card(entry) for entry in entries[:CREW_CAP]]
 
 
@@ -1071,7 +1071,7 @@ async def get_home_summary(
         if v < 3:
             return summary.model_dump(mode="json")
         needs = await _needs_you(db, participant_id, now)
-        crew = await _crew(db, participant_id, now)
+        crew = await _crew(db, participant_id, now, redis=getattr(request.app.state, "redis", None))
         live_calls = await _enrich_live(db, occupancy)
         standing = await _standing_index(db)
     except Exception:

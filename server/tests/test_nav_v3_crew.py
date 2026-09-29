@@ -1,11 +1,13 @@
 """Nav v3 C3 — the crew (design §2.0 / §2.1).
 
-Own seats (``metadata.owner`` == the caller), house agents (Brigade, via a
-hub or agent DM), partner seats (someone else's, sharing a room); guest
-agents and integrations never. Ranking: own seats → house agents heard from
-in the last 14 days → partners → the rest by name. ``/home/summary`` reuses
-the builder and keeps the CrewCard shape; the New picker lists the crew's
-runner seats instead of a fixed allowlist.
+Own seats (``metadata.owner`` names the caller), house agents (the R1
+allowlist, via the caller's own hub or an agent DM), partner seats (someone
+else's, sharing a room); guest agents, integrations and every other agent
+row never. Ranking: own seats → house agents heard from in the last 14 days →
+partners → the rest by name. Presence: seats from the gateway-fresh marker,
+house from the Brigade roster or a heartbeat. ``/home/summary`` reuses the
+builder and keeps the CrewCard shape; the New picker lists the crew's runner
+seats (with the two-entry fallback until a flagged seat exists).
 """
 
 from __future__ import annotations
@@ -21,15 +23,16 @@ from fastapi import HTTPException
 from app.api import brigade as brigade_api
 from app.api import home
 from app.api.crew import CrewRow, crew_row, router as crew_router
-from app.models.participant import ParticipantStatus, ParticipantType
+from app.models.participant import ParticipantType
 from app.models.room import RoomType
 from app.services import crew as C
 
 NOW = datetime(2026, 9, 28, 22, 0, tzinfo=timezone.utc)
+CALLER = uuid.uuid4()
+LIVE = {"persephone", "claude-code", "flow", "grok", "zen"}
 
 
-def _agent(agent_id, *, backend="runner", crew=True, owner="aaron", kind=None,
-           status=ParticipantStatus.ONLINE, display=None, extra=None):
+def _agent(agent_id, *, backend="runner", crew=True, owner="aaron", kind=None, display=None, extra=None):
     meta = {}
     if backend:
         meta["backend"] = backend
@@ -46,19 +49,27 @@ def _agent(agent_id, *, backend="runner", crew=True, owner="aaron", kind=None,
         keycloak_sub=f"brigade:{agent_id}",
         display_name=display or agent_id.replace("-", " ").title(),
         participant_type=ParticipantType.AGENT,
-        status=status,
-        metadata_=meta,
+        metadata_=meta or None,
         avatar_url=None,
     )
 
 
 def _brigade(agent_id, **kw):
-    return _agent(agent_id, backend=None, crew=False, owner=None, status=ParticipantStatus.OFFLINE, **kw)
+    """A real Brigade persona row: brigade sub, NULL metadata, no key."""
+    return _agent(agent_id, backend=None, crew=False, owner=None, **kw)
 
 
-def _row(participant, room_type=RoomType.AGENT_HUB, mode="answers_all"):
-    room = SimpleNamespace(id=uuid.uuid4(), room_type=room_type)
-    return (participant, SimpleNamespace(agent_mode=mode), room)
+def _hub(human_id=CALLER, parent=None):
+    return SimpleNamespace(id=uuid.uuid4(), room_type=RoomType.AGENT_HUB, parent_room_id=parent,
+                           metadata_={"agent_hub": {"human_id": str(human_id), "agent_id": "x"}})
+
+
+def _plain(room_type=RoomType.GROUP_DM):
+    return SimpleNamespace(id=uuid.uuid4(), room_type=room_type, parent_room_id=None, metadata_={})
+
+
+def _row(participant, room=None, mode="answers_all"):
+    return (participant, SimpleNamespace(agent_mode=mode), room if room is not None else _hub())
 
 
 def _msg(participant, days_ago, text="On it."):
@@ -72,41 +83,44 @@ def _heartbeat(identity, minutes_ago):
     )
 
 
-class CrewMembershipAndRanking(TestCase):
-    def _crew(self, *, runner_seats=(), live=None, rows=(), messages=(), unread=None, events=(), caller="aaron", roles=None):
-        return C.rank_crew(
-            C.assemble_crew(
-                now=NOW,
-                caller_username=caller,
-                runner_seats=list(runner_seats),
-                live_key_agent_ids=set(live or ()),
-                shared_rows=list(rows),
-                last_messages={str(m.sender_id): m for m in messages},
-                unread_by_room=dict(unread or {}),
-                events=list(events),
-                brigade_roles=roles,
-            ),
-            NOW,
-        )
+def _crew(*, runner_seats=(), live=None, all_keys=None, rows=(), messages=(), unread=None, events=(),
+          caller="aaron", caller_id=CALLER, fresh=None, roster=None, roles=None):
+    live = set(LIVE if live is None else live)
+    return C.rank_crew(
+        C.assemble_crew(
+            now=NOW,
+            caller_id=caller_id,
+            caller_username=caller,
+            runner_seats=list(runner_seats),
+            all_key_agent_ids=set(all_keys if all_keys is not None else live),
+            live_key_agent_ids=live,
+            shared_rows=list(rows),
+            last_messages={str(m.sender_id): m for m in messages},
+            unread_by_room=dict(unread or {}),
+            events=list(events),
+            gateway_fresh=fresh,
+            roster_status=roster,
+            brigade_roles=roles,
+        ),
+        NOW,
+    )
 
+
+class CrewMembershipAndRanking(TestCase):
     def test_own_seats_first_then_recent_house_then_partners_then_the_rest(self) -> None:
         persephone = _agent("persephone")
         grok = _agent("grok")  # own seat, no room shared yet
         flow = _agent("flow", owner="shafen")
-        majik = _brigade("majik")
-        gunny = _brigade("gunny")
-        perry = _brigade("perry")
+        majik, gunny, perry = _brigade("majik"), _brigade("gunny"), _brigade("perry")
         rows = [
             _row(persephone),
-            _row(flow, RoomType.CHANNEL, mode=None),
+            _row(flow, _plain(RoomType.CHANNEL), mode=None),
             _row(majik),
-            _row(gunny, RoomType.DM),
+            _row(gunny, _plain(RoomType.DM)),
             _row(perry),
         ]
-        crew = self._crew(
-            runner_seats=[persephone, grok],
-            live=["persephone", "grok", "flow"],
-            rows=rows,
+        crew = _crew(
+            runner_seats=[persephone, grok], rows=rows,
             messages=[_msg(gunny, 1), _msg(majik, 3), _msg(perry, 40), _msg(grok, 2), _msg(persephone, 0)],
         )
         self.assertEqual(
@@ -123,20 +137,22 @@ class CrewMembershipAndRanking(TestCase):
         by_id = {e.agent_id: e for e in crew}
         self.assertEqual((by_id["persephone"].kind, by_id["persephone"].owner), ("seat", "aaron"))
         self.assertEqual((by_id["flow"].kind, by_id["flow"].owner), ("seat", "shafen"))
-        self.assertEqual((by_id["majik"].kind, by_id["majik"].owner), ("brigade", None))
+        self.assertEqual((by_id["majik"].kind, by_id["majik"].owner, by_id["majik"].backend), ("brigade", None, "brigade"))
         self.assertEqual(by_id["persephone"].hub_room_id, str(rows[0][2].id))
         self.assertIsNone(by_id["grok"].hub_room_id)
         self.assertEqual(by_id["gunny"].last_line, "On it.")
 
-    def test_integrations_and_guest_agents_never_appear(self) -> None:
-        webhook = _agent("webhook-dev-stable", kind="integration")
+    def test_integrations_guest_agents_and_other_rows_never_appear(self) -> None:
+        webhook = SimpleNamespace(id=uuid.uuid4(), username="webhook-hub-x", keycloak_sub="webhook:hub-x", display_name="Claude Code",
+                                  participant_type=ParticipantType.AGENT, metadata_=None, avatar_url=None)
         relay = _agent("texts-relay", kind="integration", crew=False)
+        flagged_relay = _agent("webhook-dev-stable", kind="integration")
         visitor = _brigade("visitor-claude", kind="guest_agent")
         persephone = _agent("persephone")
-        crew = self._crew(
-            runner_seats=[webhook, relay, persephone],
-            live=["webhook-dev-stable", "texts-relay", "persephone"],
-            rows=[_row(webhook), _row(relay), _row(visitor), _row(persephone)],
+        crew = _crew(
+            runner_seats=[flagged_relay, relay, persephone],
+            live=LIVE | {"webhook-dev-stable", "texts-relay"},
+            rows=[_row(webhook), _row(relay), _row(flagged_relay), _row(visitor), _row(persephone)],
         )
         self.assertEqual([e.agent_id for e in crew], ["persephone"])
 
@@ -144,55 +160,65 @@ class CrewMembershipAndRanking(TestCase):
         unflagged = _agent("claude-dev", crew=False)
         revoked = _agent("zen")  # flagged, but no live key
         persephone = _agent("persephone")
-        crew = self._crew(
+        crew = _crew(
             runner_seats=[unflagged, revoked, persephone],
-            live=["persephone", "claude-dev"],
+            live={"persephone", "claude-dev"},
             rows=[_row(unflagged), _row(revoked), _row(persephone)],
         )
         self.assertEqual([e.agent_id for e in crew], ["persephone"])
 
-    def test_a_house_agent_needs_a_hub_or_dm_not_just_a_channel(self) -> None:
+    def test_a_house_agent_needs_the_allowlist_and_a_hub_or_dm(self) -> None:
         majik = _brigade("majik")
-        crew = self._crew(rows=[_row(majik, RoomType.CHANNEL, mode=None)])
-        self.assertEqual(crew, [])
-        crew = self._crew(rows=[_row(majik, RoomType.DM)])
+        self.assertEqual(_crew(rows=[_row(majik, _plain(RoomType.CHANNEL), mode=None)]), [])
+        crew = _crew(rows=[_row(majik, _plain(RoomType.DM))])
         self.assertEqual([(e.agent_id, e.group) for e in crew], [("majik", "house")])
+        # A key row for the id, or any kind/backend, takes it off the allowlist.
+        self.assertEqual(_crew(rows=[_row(majik)], all_keys=LIVE | {"majik"}), [])
+        self.assertEqual(_crew(rows=[_row(_brigade("gunny", extra={"backend": "odd"}))]), [])
 
     def test_partner_needs_a_shared_room_and_someone_elses_owner(self) -> None:
         flow = _agent("flow", owner="shafen")
         # Not shared with the caller → not listed at all.
-        self.assertEqual(self._crew(runner_seats=[flow], live=["flow"]), [])
-        crew = self._crew(runner_seats=[flow], live=["flow"], rows=[_row(flow, RoomType.GROUP_DM, mode=None)])
+        self.assertEqual(_crew(runner_seats=[flow]), [])
+        crew = _crew(runner_seats=[flow], rows=[_row(flow, _plain(), mode=None)])
         self.assertEqual([(e.agent_id, e.group, e.owner) for e in crew], [("flow", "partner", "shafen")])
         # No owner at all is still a partner when it shares a room.
         orphan = _agent("orphan", owner=None)
-        crew = self._crew(runner_seats=[orphan], live=["orphan"], rows=[_row(orphan, RoomType.GROUP_DM, mode=None)])
+        crew = _crew(runner_seats=[orphan], live=LIVE | {"orphan"}, rows=[_row(orphan, _plain(), mode=None)])
         self.assertEqual([(e.group, e.owner) for e in crew], [("partner", None)])
 
-    def test_presence_from_a_fresh_heartbeat_or_online_status(self) -> None:
-        persephone = _agent("persephone", status=ParticipantStatus.OFFLINE)
-        rook = _agent("claude-code", status=ParticipantStatus.OFFLINE)
-        grok = _agent("grok", status=ParticipantStatus.ONLINE)
-        crew = self._crew(
-            runner_seats=[persephone, rook, grok],
-            live=["persephone", "claude-code", "grok"],
-            events=[_heartbeat("agent-persephone", 2), _heartbeat("brigade:claude-code", 9)],
+    def test_the_hub_is_the_callers_own_top_level_hub(self) -> None:
+        persephone = _agent("persephone")
+        mine = _hub()
+        thread = _hub(parent=mine.id)
+        mallorys = _hub(uuid.uuid4())
+        crew = _crew(runner_seats=[persephone], rows=[_row(persephone, thread), _row(persephone, mallorys), _row(persephone, mine)])
+        self.assertEqual(crew[0].hub_room_id, str(mine.id))
+
+    def test_presence_seats_from_the_gateway_house_from_roster_or_heartbeat(self) -> None:
+        persephone, rook, majik, gunny = _agent("persephone"), _agent("claude-code"), _brigade("majik"), _brigade("gunny")
+        crew = _crew(
+            runner_seats=[persephone, rook], rows=[_row(majik), _row(gunny)],
+            fresh={"persephone"}, roster={"majik": "active", "gunny": "disabled"},
+            events=[_heartbeat("brigade:gunny", 2)],
         )
         by_id = {e.agent_id: e for e in crew}
         self.assertEqual(by_id["persephone"].presence, "online")
-        self.assertEqual(by_id["persephone"].status, "online")
-        self.assertEqual(by_id["claude-code"].presence, "offline")  # 9 min > 6 min
-        self.assertEqual(by_id["grok"].presence, "online")
+        self.assertEqual(by_id["claude-code"].presence, "offline")
+        self.assertEqual(by_id["majik"].presence, "online")
+        self.assertEqual(by_id["gunny"].presence, "online")  # heartbeat 2 min ago
+        stale = _crew(runner_seats=[persephone], rows=[_row(gunny)], events=[_heartbeat("brigade:gunny", 9)])
+        self.assertEqual({e.presence for e in stale}, {"offline"})
 
     def test_unread_role_line_and_capabilities(self) -> None:
         caps = {"harness": "claude-code", "default_model": "claude-fable-5-1", "default_effort": "high",
                 "models": [], "efforts": ["low", "medium", "high", "max"]}
         persephone = _agent("persephone", extra={"seat_capabilities": caps, "description": "Aaron's main assistant"})
         majik = _brigade("majik", extra={"title": "House DJ"})
-        hub = _row(persephone)
-        crew = self._crew(
-            runner_seats=[persephone], live=["persephone"], rows=[hub, _row(majik)],
-            unread={str(hub[2].id): 3}, roles={"majik": "House DJ — runs the radio"},
+        hub = _hub()
+        crew = _crew(
+            runner_seats=[persephone], rows=[_row(persephone, hub), _row(majik)],
+            unread={str(hub.id): 3}, roles={"majik": "House DJ — runs the radio"},
         )
         by_id = {e.agent_id: e for e in crew}
         self.assertEqual(by_id["persephone"].unread, 3)
@@ -202,11 +228,13 @@ class CrewMembershipAndRanking(TestCase):
         self.assertEqual(by_id["majik"].unread, 0)
         self.assertIsNone(by_id["majik"].seat_capabilities)
 
-    def test_owner_match_is_case_insensitive_and_needs_a_caller(self) -> None:
+    def test_owner_match_is_case_insensitive_accepts_lists_and_needs_a_caller(self) -> None:
         persephone = _agent("persephone", owner="Aaron ")
-        crew = self._crew(runner_seats=[persephone], live=["persephone"], caller="AARON")
+        crew = _crew(runner_seats=[persephone], caller="AARON")
         self.assertEqual([e.group for e in crew], ["own_seat"])
-        self.assertEqual(self._crew(runner_seats=[persephone], live=["persephone"], caller=None), [])
+        flow = _agent("flow", owner=["shafen", "shafenkhan"])
+        self.assertEqual([e.group for e in _crew(runner_seats=[flow], caller="shafenkhan")], ["own_seat"])
+        self.assertEqual(_crew(runner_seats=[persephone], caller=None), [])
 
     def test_role_lines_from_brigade_roster(self) -> None:
         roster = {"agents": [
@@ -234,8 +262,9 @@ class HomeCrewReusesTheBuilder(IsolatedAsyncioTestCase):
             for i in range(home.CREW_CAP + 5)
         ]
         with patch.object(home, "build_crew", new=AsyncMock(return_value=entries)) as build:
-            cards = await home._crew(AsyncMock(), uuid.uuid4(), NOW)
+            cards = await home._crew(AsyncMock(), uuid.uuid4(), NOW, redis="redis")
         build.assert_awaited_once()
+        self.assertEqual(build.await_args.kwargs.get("redis"), "redis")
         self.assertEqual(len(cards), home.CREW_CAP)
         card = cards[0]
         self.assertIsInstance(card, home.CrewCard)
@@ -265,49 +294,56 @@ class HomeCrewReusesTheBuilder(IsolatedAsyncioTestCase):
 
 
 class BuildCrewWiring(IsolatedAsyncioTestCase):
-    """build_crew's query order against a fake session: username, live keys,
-    crew-flagged seats, shared rows, last messages, unread (hubs), events."""
+    """build_crew's query order against a fake session: username, key sets,
+    crew-flagged seats, shared rows, last messages, unread (hubs), events;
+    presence from Redis when given."""
+
+    class _Res:
+        def __init__(self, *, scalar=None, scalars=None, rows=None):
+            self._scalar, self._scalars, self._rows = scalar, list(scalars or []), list(rows or [])
+
+        def scalar_one_or_none(self):
+            return self._scalar
+
+        def scalars(self):
+            return SimpleNamespace(all=lambda: list(self._scalars))
+
+        def all(self):
+            return list(self._rows)
+
+    def _pcols(self, p):
+        return (p.id, p.participant_type, p.username, p.keycloak_sub, p.display_name, p.metadata_, p.avatar_url)
 
     async def test_query_order_and_result(self) -> None:
         persephone = _agent("persephone")
-        hub = _row(persephone)
-        message = _msg(persephone, 0, "Deploying now.")
-
-        def res(*, scalar=None, scalars=None, rows=None):
-            r = MagicMock()
-            r.scalar_one_or_none.return_value = scalar
-            r.scalars.return_value.all.return_value = list(scalars or [])
-            r.all.return_value = list(rows or [])
-            return r
-
+        hub = _hub()
+        R = self._Res
         db = AsyncMock()
         db.execute = AsyncMock(side_effect=[
-            res(scalar="aaron"),                       # caller username
-            res(scalars=["persephone", "rook"]),       # live key agent ids
-            res(scalars=[persephone]),                 # crew-flagged runner seats
-            res(rows=[hub]),                           # shared rows
-            res(scalars=[message]),                    # last messages
-            res(rows=[(hub[2].id, 4)]),                # unread in hubs
-            res(scalars=[_heartbeat("agent-persephone", 1)]),  # events
+            R(scalar="aaron"),                                                  # caller username
+            R(rows=[("persephone", True), ("rook", False)]),                    # key sets
+            R(rows=[self._pcols(persephone)]),                                  # crew-flagged runner seats
+            R(rows=[self._pcols(persephone) + ("answers_all", hub.id, hub.room_type, None, hub.metadata_)]),  # shared rows
+            R(rows=[(persephone.id, "Deploying now.", NOW)]),                   # last lines
+            R(rows=[(hub.id, 4)]),                                              # unread in hubs
+            R(scalars=[_heartbeat("agent-persephone", 1)]),                     # events
         ])
-        crew = await C.build_crew(db, uuid.uuid4(), NOW)
+        redis = AsyncMock()
+        with patch("app.services.agent_availability.get_gateway_fresh", new=AsyncMock(return_value={"persephone"})):
+            crew = await C.build_crew(db, CALLER, NOW, redis=redis)
         self.assertEqual(db.execute.await_count, 7)
         self.assertEqual(len(crew), 1)
         entry = crew[0]
-        self.assertEqual((entry.agent_id, entry.group, entry.unread, entry.last_line, entry.presence),
-                         ("persephone", "own_seat", 4, "Deploying now.", "online"))
+        self.assertEqual((entry.agent_id, entry.group, entry.unread, entry.last_line, entry.presence, entry.hub_room_id),
+                         ("persephone", "own_seat", 4, "Deploying now.", "online", str(hub.id)))
+        for call in db.execute.await_args_list[1:]:
+            self.assertNotIn("agent_configs", str(call.args[0]).lower())
 
     async def test_empty_crew_stops_after_membership_queries(self) -> None:
-        def res(*, scalar=None, scalars=None, rows=None):
-            r = MagicMock()
-            r.scalar_one_or_none.return_value = scalar
-            r.scalars.return_value.all.return_value = list(scalars or [])
-            r.all.return_value = list(rows or [])
-            return r
-
+        R = self._Res
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[res(scalar="aaron"), res(scalars=[]), res(scalars=[]), res(rows=[])])
-        self.assertEqual(await C.build_crew(db, uuid.uuid4(), NOW), [])
+        db.execute = AsyncMock(side_effect=[R(scalar="aaron"), R(rows=[]), R(rows=[]), R(rows=[])])
+        self.assertEqual(await C.build_crew(db, CALLER, NOW), [])
         self.assertEqual(db.execute.await_count, 4)
 
 
@@ -330,7 +366,8 @@ class NewPickerListsTheCrewsSeats(IsolatedAsyncioTestCase):
                 unread=0, status="offline", agent_mode=None, current_task=None, since=None,
             ),
         ]
-        with patch.object(brigade_api, "crew_runner_seats_for", new=AsyncMock(return_value=entries)) as seats:
+        with patch.object(brigade_api, "crew_flagged_runner_seats", new=AsyncMock(return_value=[_agent("persephone")])), \
+             patch.object(brigade_api, "crew_runner_seats_for", new=AsyncMock(return_value=entries)) as seats:
             agents = await brigade_api._fetch_bridge_crew_agents(AsyncMock(), {"participant_id": uuid.uuid4()})
         seats.assert_awaited_once()
         self.assertEqual([(a.id, a.name, a.description) for a in agents],
@@ -338,7 +375,8 @@ class NewPickerListsTheCrewsSeats(IsolatedAsyncioTestCase):
 
     async def test_without_a_caller_every_live_crew_seat_is_listed(self) -> None:
         seat = _agent("persephone", extra={"description": "Main assistant"})
-        with patch.object(brigade_api, "list_crew_runner_seats", new=AsyncMock(return_value=[seat])):
+        with patch.object(brigade_api, "crew_flagged_runner_seats", new=AsyncMock(return_value=[seat])), \
+             patch.object(brigade_api, "list_crew_runner_seats", new=AsyncMock(return_value=[seat])):
             agents = await brigade_api._fetch_bridge_crew_agents(AsyncMock())
         self.assertEqual([(a.id, a.name, a.description) for a in agents], [("persephone", "Persephone", "Main assistant")])
 

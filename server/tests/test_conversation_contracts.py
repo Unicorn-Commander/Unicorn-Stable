@@ -52,6 +52,10 @@ class ContractRoutesAreMounted(unittest.TestCase):
         ("post", "/api/v1/invites/{token}/accept"),
         ("get", "/api/v1/rooms/{room_id}/context"),
         ("get", "/api/v1/gateway/rooms/{room}/context"),
+        # Nav v3 (C1 / C3)
+        ("get", "/api/v1/gateway/rooms"),
+        ("put", "/api/v1/gateway/me"),
+        ("get", "/api/v1/crew"),
         ("post", "/api/v1/rooms/{room_id}/recording/start"),
         ("post", "/api/v1/rooms/{room_id}/recording/stop"),
         ("get", "/api/v1/rooms/{room_id}/recordings"),
@@ -112,6 +116,27 @@ class ContractRoutesAuthPosture(unittest.TestCase):
         import app.api.gateway as G
 
         self.assertIn("authenticate_gateway_caller", _deps(G, G.gateway_get_context))
+
+    def test_nav_v3_gateway_routes_use_gateway_auth(self) -> None:
+        # Nav v3 C1: the seat's room list and its capability announcement are
+        # gateway-credential routes (key or gateway JWT), never a plain user.
+        import app.api.gateway as G
+
+        for fn in (G.gateway_list_rooms, G.gateway_put_me):
+            with self.subTest(route=fn.__name__):
+                deps = _deps(G, fn)
+                self.assertIn("authenticate_gateway_caller", deps)
+                self.assertNotIn("get_current_user", deps)
+
+    def test_crew_is_a_real_user_route(self) -> None:
+        # Nav v3 C3: the crew is the CALLER's roster — a user JWT, never a
+        # guest, broadcast or gateway credential.
+        import app.api.crew as CR
+
+        deps = _deps(CR, CR.list_crew)
+        self.assertIn("get_current_user", deps)
+        self.assertNotIn("authenticate_gateway_caller", deps)
+        self.assertNotIn("require_room_member_or_guest", deps)
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +497,12 @@ class MigrationChain(unittest.TestCase):
         return mod
 
     def test_ids_fit_varchar_32_and_chain_from_020(self) -> None:
-        chain = ["021_conversation_model", "022_agent_hubs_backfill", "023_recording_policy"]
+        chain = [
+            "021_conversation_model",
+            "022_agent_hubs_backfill",
+            "023_recording_policy",
+            "024_crew_seat_flags",
+        ]
         prev = "020_agent_backend"
         for name in chain:
             mod = self._load(name)

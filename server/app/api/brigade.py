@@ -30,10 +30,13 @@ from app.deps import (
 from app.services.agent_routing import find_agent_participant, participant_backend
 from app.services.crew import (
     agent_id_of,
+    crew_flagged_runner_seats,
     crew_runner_seats_for,
     list_crew_runner_seats,
+    live_key_agent_ids,
     role_line_of,
 )
+from app.services.room_class import stamp_class_floor_shared
 from app.services.agent_access import ensure_agent_access, entitled_agent_ids
 from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
@@ -367,6 +370,25 @@ async def _fetch_brigade_agents() -> list[BrigadeAgent]:
     ]
 
 
+#: Until at least one seat carries ``metadata.crew = true`` (migration 024
+#: stamps them; a restored database may not have run it yet) the picker
+#: keeps offering the two seats it always did, gated on a live key exactly
+#: as before. The moment a flagged seat exists this list is not consulted.
+_FALLBACK_SEATS: dict[str, tuple[str, str]] = {
+    "claude-code": ("Rook", "Aaron's Mac Studio seat — Build In Public showrunner"),
+    "persephone": ("Persephone", "Aaron's Mac Studio seat — main assistant"),
+}
+
+
+async def _fallback_seat_agents(db: AsyncSession) -> list[BrigadeAgent]:
+    live = await live_key_agent_ids(db)
+    return [
+        BrigadeAgent(id=agent_id, name=name, description=desc)
+        for agent_id, (name, desc) in _FALLBACK_SEATS.items()
+        if agent_id in live
+    ]
+
+
 async def _fetch_bridge_crew_agents(
     db: AsyncSession, user: dict[str, Any] | None = None
 ) -> list[BrigadeAgent]:
@@ -375,7 +397,8 @@ async def _fetch_bridge_crew_agents(
     room with them) — every one with ``participants.metadata.crew = true``
     and a live (non-revoked) gateway key; guest agents and integrations
     never. Without a caller (no ``user``) it is every crew seat with a live
-    key.
+    key. With no flagged seat anywhere (flags not deployed yet) it is the
+    two-entry fallback the picker always had.
 
     This replaced a fixed two-entry allowlist (Rook, Persephone). The crew
     flag is the opt-in — ephemeral show-night seats, bots and a guest's own
@@ -383,6 +406,9 @@ async def _fetch_bridge_crew_agents(
     and the live-key rule means a revoked/rotated seat quietly drops out
     instead of dangling there as an invite that will 403/404 downstream.
     """
+    flagged = await crew_flagged_runner_seats(db)
+    if not flagged:
+        return await _fallback_seat_agents(db)
     participant_id = (user or {}).get("participant_id")
     if participant_id is not None:
         entries = await crew_runner_seats_for(db, participant_id)
@@ -429,7 +455,16 @@ async def _fetch_invitable_agents(
             bridge_agent_ids=[a.id for a in bridge],
         )
         brigade = []
-    return brigade + bridge
+    # One row per id, Brigade's first: a seat that is ALSO a Brigade persona
+    # (or a roster that lists it twice) must not show up twice.
+    seen: set[str] = set()
+    merged: list[BrigadeAgent] = []
+    for agent in brigade + bridge:
+        if agent.id in seen:
+            continue
+        seen.add(agent.id)
+        merged.append(agent)
+    return merged
 
 
 async def _entitlement_set(
@@ -446,7 +481,10 @@ async def _entitlement_set(
         return None
     try:
         return await entitled_agent_ids(
-            db, participant_id=user["participant_id"], agent_ids=agent_ids
+            db,
+            participant_id=user["participant_id"],
+            agent_ids=agent_ids,
+            username=user.get("username"),
         )
     except Exception:
         logger.warning("agent_entitlement_annotation_failed", exc_info=True)
@@ -844,8 +882,10 @@ async def invite_brigade_agent(
     settings = get_settings()
 
     # Sanity-check the requested agent exists (Brigade roster or the crew's
-    # runner seats — see _fetch_invitable_agents).
-    agents = await _fetch_invitable_agents(db, user)
+    # runner seats — see _fetch_invitable_agents). No caller here on
+    # purpose: runner seats were refused above, so the caller's ranked crew
+    # (five queries) would be dead weight on every invite.
+    agents = await _fetch_invitable_agents(db)
     valid_ids = {a.id for a in agents}
     if body.brigade_agent_id not in valid_ids:
         raise HTTPException(
@@ -1148,6 +1188,11 @@ async def remove_brigade_agent(
         # residency instead of all of them (and never leaves the responder
         # answering as the agent that was just evicted).
         room.metadata_ = remove_resident_agent(room.metadata_, brigade_agent_id)
+        # Nav v3 R2: any membership removal floors the room's class at shared
+        # (the evicted agent's lines stay in the window). SQL || merge on the
+        # row; mirrored onto the loaded metadata so this commit keeps both.
+        room.metadata_ = {**(room.metadata_ or {}), "class_floor": "shared"}
+        await stamp_class_floor_shared(db, [room.id])
         await db.commit()
 
     # Best-effort eviction from LiveKit. Identity is whatever the worker

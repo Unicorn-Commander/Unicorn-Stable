@@ -6,28 +6,43 @@ to share a room:
 
 * **own seats** — runner seats (``metadata.backend = runner``) that opted in
   with ``metadata.crew = true``, hold a live (non-revoked) gateway key, and
-  carry ``metadata.owner`` = the caller's username. Listed whether or not a
-  room is shared yet: they are yours.
-* **house** — Brigade agents the caller has a hub (``agent_hub``) or an
-  agent DM with.
+  carry ``metadata.owner`` (a username or a list) naming the caller. Listed
+  whether or not a room is shared yet: they are yours.
+* **house** — Brigade agents (the R1 allowlist: ``brigade:`` sub, backend
+  absent or ``brigade``, no ``kind``, no gateway key row at all) the caller
+  has a hub or an agent DM with.
 * **partner** — someone else's runner seat (crew flag + live key, a
   different or missing owner) that shares a non-archived room with the
   caller.
-* guest agents (``metadata.kind = guest_agent``) and integrations
-  (``metadata.kind = integration``) never appear, whatever rooms they post in.
+* guest agents (``metadata.kind = guest_agent``), integrations
+  (``metadata.kind = integration``), webhook / Project-Ops senders and
+  anything with an unknown backend never appear.
+
+The caller's hub with an agent is the ``agent_hub`` room with no parent
+whose ``metadata.agent_hub.human_id`` is the caller (R7) — never a thread,
+never someone else's hub.
+
+Presence (R8): a seat is online when its bridge called the gateway
+recently (``get_gateway_fresh``); a house agent when Brigade's roster says
+it is registered and enabled, or a worker heartbeat landed in the last
+6 minutes. ``participants.status`` is never consulted — it is pinned online
+at creation and means nothing.
 
 Ranking (design §2.1 as amended): own seats, then house agents with a
 message in the last 14 days (most recent first), then partners, then the
 rest alphabetically.
 
-``build_crew`` runs the queries; ``assemble_crew`` / ``rank_crew`` are pure
-over their inputs so the rules have unit tests. ``/home/summary`` and
-``GET /crew`` both call ``build_crew`` — one roster, two shapes.
+``build_crew`` runs the queries (column selects — no eager membership or
+config loads); ``assemble_crew`` / ``rank_crew`` are pure over their inputs
+so the rules have unit tests. ``/home/summary`` and ``GET /crew`` both call
+``build_crew`` — one roster, two shapes.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,19 +56,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import AgentEvent
 from app.models.agent_gateway_key import AgentGatewayKey
 from app.models.message import Message
-from app.models.participant import Participant, ParticipantStatus, ParticipantType
+from app.models.participant import Participant, ParticipantType
 from app.models.room import Room, RoomMember, RoomType
-from app.services.agent_routing import participant_backend
+from app.services.agent_availability import _INACTIVE_BRIGADE_STATUSES
 from app.services.room_class import (
-    GUEST_AGENT_KIND,
-    INTEGRATION_KIND,
-    participant_kind,
+    CREW_FLAG_KEY,
+    EXCLUDED_KINDS,
+    SEAT_CAPABILITIES_KEY,
+    Actor,
+    agent_id_of_sub,
+    is_excluded_kind_participant as _is_excluded_kind,
+    is_house_agent,
+    is_runner_seat,
+    norm_username,
     seat_owner,
+    seat_owners,
 )
 
 logger = structlog.get_logger(__name__)
 
-#: A ``worker_heartbeat`` event this recent means the agent's process is up.
+#: A ``worker_heartbeat`` event this recent means a house agent's worker is up.
 PRESENCE_HEARTBEAT_FRESH = timedelta(minutes=6)
 #: A heartbeat this recent counts as "active since" on the home card.
 HEARTBEAT_FRESH = timedelta(seconds=90)
@@ -65,12 +87,7 @@ RECENT_WINDOW = timedelta(days=14)
 EVENTS_LOOKBACK = timedelta(hours=6)
 EVENTS_LIMIT = 300
 
-#: participants.metadata keys this module honours.
-CREW_FLAG_KEY = "crew"
-SEAT_CAPABILITIES_KEY = "seat_capabilities"
 ROLE_LINE_KEYS = ("role_line", "description", "title")
-#: ``metadata.kind`` values that are never on anyone's crew.
-EXCLUDED_KINDS: frozenset[str] = frozenset({GUEST_AGENT_KIND, INTEGRATION_KIND})
 
 PRESENCE_ONLINE = "online"
 PRESENCE_OFFLINE = "offline"
@@ -93,7 +110,7 @@ class CrewEntry:
     avatar_url: str | None
     role_line: str | None
     backend: str
-    #: ``seat`` (a runner) | ``brigade``.
+    #: ``seat`` (a runner on someone's computer) | ``brigade``.
     kind: str
     #: ``metadata.owner`` — the username that owns a seat; null otherwise.
     owner: str | None
@@ -138,32 +155,25 @@ def _truthy(value: Any) -> bool:
     return False
 
 
-def _norm(name: Any) -> str | None:
-    if not isinstance(name, str):
-        return None
-    cleaned = name.strip().lower()
-    return cleaned or None
-
-
 def agent_id_of(participant: Any) -> str:
     """The agent id a participant posts as: ``brigade:<id>`` → ``<id>``,
     else ``agent-<id>`` → ``<id>``, else the username."""
-    sub = str(getattr(participant, "keycloak_sub", "") or "")
-    if sub.startswith("brigade:"):
-        return sub[len("brigade:") :]
+    from_sub = agent_id_of_sub(getattr(participant, "keycloak_sub", None))
+    if from_sub:
+        return from_sub
     username = str(getattr(participant, "username", "") or "")
     if username.startswith("agent-"):
         return username[len("agent-") :]
-    return username or sub
+    return username or str(getattr(participant, "keycloak_sub", "") or "")
 
 
 def is_excluded_kind(participant: Any) -> bool:
     """Guest agents and integrations are never on a crew."""
-    return participant_kind(participant) in EXCLUDED_KINDS
+    return _is_excluded_kind(participant)
 
 
 def is_integration(participant: Any) -> bool:
-    return participant_kind(participant) == INTEGRATION_KIND
+    return _meta(participant).get("kind") == "integration"
 
 
 def is_crew_flagged(participant: Any) -> bool:
@@ -171,14 +181,28 @@ def is_crew_flagged(participant: Any) -> bool:
 
 
 def is_crew_runner_seat(participant: Any, live_key_agent_ids: set[str]) -> bool:
-    """A runner seat that opted in (``crew = true``), holds a live key and is
+    """A runner seat that opted in (``crew = true``), holds a LIVE key and is
     neither an integration nor a guest agent."""
     return (
-        participant_backend(participant) == "runner"
+        is_runner_seat(participant)
         and is_crew_flagged(participant)
-        and not is_excluded_kind(participant)
         and agent_id_of(participant) in live_key_agent_ids
     )
+
+
+def is_caller_hub(room: Any, caller_id: Any) -> bool:
+    """R7: the caller's hub with an agent — ``agent_hub``, top level, and
+    ``metadata.agent_hub.human_id`` is the caller. A thread inherits the
+    hub's room_type and someone else's hub carries their id: neither is it."""
+    room_type = getattr(getattr(room, "room_type", None), "value", getattr(room, "room_type", None))
+    if room_type != RoomType.AGENT_HUB.value:
+        return False
+    if getattr(room, "parent_room_id", None) is not None:
+        return False
+    meta = getattr(room, "metadata_", None)
+    hub = meta.get("agent_hub") if isinstance(meta, dict) else None
+    human_id = hub.get("human_id") if isinstance(hub, dict) else None
+    return isinstance(human_id, str) and caller_id is not None and human_id == str(caller_id)
 
 
 def role_line_of(participant: Any, brigade_roles: dict[str, str] | None = None) -> str | None:
@@ -229,11 +253,6 @@ def task_from_event(event_type: str, data: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _status_value(participant: Any) -> str:
-    status = getattr(participant, "status", None)
-    return str(getattr(status, "value", status) or ParticipantStatus.OFFLINE.value)
-
-
 def _room_type_value(room: Any) -> str:
     room_type = getattr(room, "room_type", None)
     return str(getattr(room_type, "value", room_type) or "")
@@ -247,41 +266,51 @@ def _room_type_value(room: Any) -> str:
 def assemble_crew(
     *,
     now: datetime,
+    caller_id: Any,
     caller_username: str | None,
     runner_seats: Iterable[Any],
+    all_key_agent_ids: set[str],
     live_key_agent_ids: set[str],
     shared_rows: Iterable[tuple[Any, Any, Any]],
     last_messages: dict[str, Any],
     unread_by_room: dict[str, int],
     events: Iterable[Any],
+    gateway_fresh: set[str] | None = None,
+    roster_status: dict[str, str] | None = None,
     brigade_roles: dict[str, str] | None = None,
 ) -> list[CrewEntry]:
     """Turn the raw query results into crew entries (unranked).
 
-    ``runner_seats``       every participant with ``backend = runner`` and
-                           ``crew = true`` (live key / kind / owner decided
-                           here);
-    ``shared_rows``        ``(participant, membership, room)`` for every agent
-                           member of a non-archived room the caller is in;
-    ``last_messages``      participant id → the agent's latest message in a
-                           room the caller is in;
-    ``unread_by_room``     room id → the caller's unread count there;
-    ``events``             recent agent_events (heartbeats, tasks).
+    ``runner_seats``        every participant with ``backend = runner`` and
+                            ``crew = true`` (live key / kind / owner decided
+                            here);
+    ``all_key_agent_ids``   every agent id with ANY key row (R1: a key-holder
+                            is never house);
+    ``live_key_agent_ids``  the subset with a non-revoked key (a seat must
+                            be reachable to be on the crew);
+    ``shared_rows``         ``(participant, membership, room)`` for every agent
+                            member of a non-archived room the caller is in;
+    ``last_messages``       participant id → the agent's latest line;
+    ``unread_by_room``      room id → the caller's unread count there;
+    ``events``              recent agent_events (heartbeats, tasks);
+    ``gateway_fresh``       agent ids whose bridge called the gateway recently;
+    ``roster_status``       Brigade's ``{agent_id: status}`` (None = unknown).
     """
     now = _aware(now)
-    caller = _norm(caller_username)
+    caller = norm_username(caller_username)
+    fresh = gateway_fresh or set()
     slots: dict[str, dict[str, Any]] = {}
 
     def slot_for(participant: Any, group: str) -> dict[str, Any]:
         key = str(participant.id)
         slot = slots.get(key)
         if slot is None:
-            backend = participant_backend(participant)
+            kind = KIND_SEAT if group != GROUP_HOUSE else KIND_BRIGADE
             slot = {
                 "participant": participant,
                 "agent_id": agent_id_of(participant),
-                "backend": backend,
-                "kind": KIND_SEAT if backend == "runner" else KIND_BRIGADE,
+                "backend": "runner" if kind == KIND_SEAT else "brigade",
+                "kind": kind,
                 "owner": seat_owner(participant),
                 "group": group,
                 "hub_room_id": None,
@@ -295,34 +324,37 @@ def assemble_crew(
         if (
             is_crew_runner_seat(participant, live_key_agent_ids)
             and caller is not None
-            and seat_owner(participant) == caller
+            and caller in seat_owners(participant)
         ):
             slot_for(participant, GROUP_OWN_SEAT)
 
     for participant, membership, room in shared_rows:
-        if is_excluded_kind(participant):
+        if participant is None or is_excluded_kind(participant):
             continue
-        backend = participant_backend(participant)
         room_type = _room_type_value(room)
-        is_hub = room_type == RoomType.AGENT_HUB.value
-        if backend == "runner":
+        is_hub = is_caller_hub(room, caller_id)
+        if is_runner_seat(participant):
             if not is_crew_runner_seat(participant, live_key_agent_ids):
                 # A runner seat without the crew flag / a live key is not on
                 # the crew even when the caller shares a room with it.
                 continue
-            owner = seat_owner(participant)
-            group = GROUP_OWN_SEAT if caller is not None and owner == caller else GROUP_PARTNER
-        else:
+            owners = seat_owners(participant)
+            group = GROUP_OWN_SEAT if caller is not None and caller in owners else GROUP_PARTNER
+        elif is_house_agent(participant, all_key_agent_ids):
             if room_type not in (RoomType.AGENT_HUB.value, RoomType.DM.value):
                 # A house agent is on the crew through a hub or an agent DM,
                 # not because it posts in a channel the caller reads.
                 continue
             group = GROUP_HOUSE
+        else:
+            # Webhook / Project-Ops senders, unknown backends, key-holders
+            # wearing a brigade sub: not people, not on the crew.
+            continue
         slot = slot_for(participant, group)
         mode = getattr(membership, "agent_mode", None)
         mode = mode if isinstance(mode, str) and mode else None
-        # A hub membership's mode beats a DM's, which beats any other room's;
-        # a set mode beats an unset one.
+        # The caller's hub membership's mode beats a DM's, which beats any
+        # other room's; a set mode beats an unset one.
         score = (4 if is_hub else 2 if room_type == RoomType.DM.value else 0) + (1 if mode else 0)
         if score > slot["mode_score"]:
             slot["mode_score"] = score
@@ -356,11 +388,16 @@ def assemble_crew(
         heartbeat_fresh = heartbeat_at is not None and now - heartbeat_at <= PRESENCE_HEARTBEAT_FRESH
         if since is None and heartbeat_at is not None and now - heartbeat_at <= HEARTBEAT_FRESH:
             since = heartbeat_at
-        status = _status_value(participant)
-        online = heartbeat_fresh or status == ParticipantStatus.ONLINE.value
+        if slot["kind"] == KIND_SEAT:
+            online = agent_id in fresh
+        else:
+            registered = (
+                roster_status is not None
+                and agent_id in roster_status
+                and roster_status[agent_id] not in _INACTIVE_BRIGADE_STATUSES
+            )
+            online = heartbeat_fresh or registered
         presence = PRESENCE_ONLINE if online else PRESENCE_OFFLINE
-        if online and status == ParticipantStatus.OFFLINE.value:
-            status = ParticipantStatus.ONLINE.value
 
         last = last_messages.get(key)
         last_at = _aware(last.created_at) if last is not None and getattr(last, "created_at", None) else None
@@ -382,7 +419,7 @@ def assemble_crew(
                 last_line=_clip(getattr(last, "content", None), 140) if last is not None else None,
                 last_at=last_at,
                 unread=int(unread_by_room.get(hub_room_id, 0) or 0) if hub_room_id else 0,
-                status=status,
+                status=presence,
                 agent_mode=slot["agent_mode"],
                 current_task=task,
                 since=since,
@@ -412,45 +449,140 @@ def rank_crew(entries: Iterable[CrewEntry], now: datetime) -> list[CrewEntry]:
     return sorted(entries, key=key)
 
 
+def apply_role_lines(entries: Iterable[CrewEntry], roles: dict[str, str] | None) -> None:
+    """Overlay Brigade title/bio on house entries (in place)."""
+    if not roles:
+        return
+    for entry in entries:
+        if entry.kind != KIND_BRIGADE:
+            continue
+        line = roles.get(entry.agent_id)
+        if isinstance(line, str) and line.strip():
+            entry.role_line = line.strip()
+
+
 # ---------------------------------------------------------------------------
-# Queries
+# Queries (column selects only)
 # ---------------------------------------------------------------------------
+
+_PARTICIPANT_COLUMNS = (
+    Participant.id,
+    Participant.participant_type,
+    Participant.username,
+    Participant.keycloak_sub,
+    Participant.display_name,
+    Participant.metadata_,
+    Participant.avatar_url,
+)
+
+
+def _actor(row: Any) -> Actor:
+    return Actor(
+        id=row[0],
+        participant_type=row[1],
+        username=row[2],
+        keycloak_sub=row[3],
+        display_name=row[4],
+        metadata_=row[5] if isinstance(row[5], dict) else None,
+        avatar_url=row[6],
+    )
+
+
+async def load_key_agent_sets(db: AsyncSession) -> tuple[set[str], set[str]]:
+    """``(every agent id with ANY key row, those with a LIVE key)``."""
+    rows = (
+        await db.execute(
+            select(
+                AgentGatewayKey.agent_id,
+                func.bool_or(AgentGatewayKey.revoked_at.is_(None)),
+            ).group_by(AgentGatewayKey.agent_id)
+        )
+    ).all()
+    every = {str(agent_id) for agent_id, _live in rows if agent_id}
+    live = {str(agent_id) for agent_id, live in rows if agent_id and live}
+    return every, live
 
 
 async def live_key_agent_ids(db: AsyncSession) -> set[str]:
-    rows = (
-        await db.execute(
-            select(AgentGatewayKey.agent_id)
-            .where(AgentGatewayKey.revoked_at.is_(None))
-            .distinct()
-        )
-    ).scalars().all()
-    return {str(agent_id) for agent_id in rows if agent_id}
+    return (await load_key_agent_sets(db))[1]
 
 
-async def crew_flagged_runner_seats(db: AsyncSession) -> list[Participant]:
-    """Every runner seat that opted in with ``metadata.crew = true``
-    (JSON ``true`` or the string). Kind / key / owner filtering happens in
-    Python."""
+async def crew_flagged_runner_seats(db: AsyncSession) -> list[Actor]:
+    """Every runner seat that opted in with ``metadata.crew = true`` (JSON
+    ``true`` or a truthy string, any case). Kind / key / owner filtering
+    happens in Python."""
     rows = (
         await db.execute(
-            select(Participant).where(
+            select(*_PARTICIPANT_COLUMNS).where(
                 Participant.participant_type == ParticipantType.AGENT,
                 Participant.metadata_["backend"].astext == "runner",
-                Participant.metadata_[CREW_FLAG_KEY].astext.in_(["true", "1", "yes"]),
+                func.lower(Participant.metadata_[CREW_FLAG_KEY].astext).in_(["true", "1", "yes"]),
             )
         )
-    ).scalars().all()
-    return list(rows)
+    ).all()
+    return [_actor(row) for row in rows]
 
 
-async def list_crew_runner_seats(db: AsyncSession) -> list[Participant]:
+async def list_crew_runner_seats(db: AsyncSession) -> list[Actor]:
     """Every runner seat on ANY crew: crew flag, live key, not an excluded
     kind. The caller-agnostic fallback for the New picker."""
-    live = await live_key_agent_ids(db)
+    _every, live = await load_key_agent_sets(db)
     seats = await crew_flagged_runner_seats(db)
     out = [seat for seat in seats if is_crew_runner_seat(seat, live)]
     out.sort(key=lambda seat: (seat.display_name or seat.username or "").lower())
+    return out
+
+
+@dataclass
+class _RoomRow:
+    id: Any
+    room_type: Any
+    parent_room_id: Any
+    metadata_: dict | None
+
+
+@dataclass
+class _MembershipRow:
+    agent_mode: str | None
+
+
+async def _shared_rows(db: AsyncSession, participant_id: uuid.UUID) -> list[tuple[Actor, _MembershipRow, _RoomRow]]:
+    """Agent members of every non-archived room the caller is in — one
+    column select, no relationship loads."""
+    caller_rooms = select(RoomMember.room_id).where(RoomMember.participant_id == participant_id)
+    rows = (
+        await db.execute(
+            select(
+                *_PARTICIPANT_COLUMNS,
+                RoomMember.agent_mode,
+                Room.id,
+                Room.room_type,
+                Room.parent_room_id,
+                Room.metadata_,
+            )
+            .join(RoomMember, RoomMember.participant_id == Participant.id)
+            .join(Room, Room.id == RoomMember.room_id)
+            .where(
+                Participant.participant_type == ParticipantType.AGENT,
+                Room.is_archived.is_(False),
+                Room.id.in_(caller_rooms),
+            )
+        )
+    ).all()
+    out: list[tuple[Actor, _MembershipRow, _RoomRow]] = []
+    for row in rows:
+        out.append(
+            (
+                _actor(row),
+                _MembershipRow(agent_mode=row[7]),
+                _RoomRow(
+                    id=row[8],
+                    room_type=row[9],
+                    parent_room_id=row[10],
+                    metadata_=row[11] if isinstance(row[11], dict) else None,
+                ),
+            )
+        )
     return out
 
 
@@ -460,11 +592,14 @@ async def build_crew(
     now: datetime,
     *,
     caller_username: str | None = None,
+    redis: Any = None,
     brigade_roles: dict[str, str] | None = None,
 ) -> list[CrewEntry]:
     """The caller's ranked crew (see module docstring). ``caller_username``
     is looked up when not given — it is what ``metadata.owner`` is matched
-    against."""
+    against. ``redis`` supplies presence (gateway freshness for seats, the
+    cached Brigade roster status for house agents); without it every seat
+    reads offline and house agents rely on heartbeats alone."""
 
     def caller_rooms():
         return select(RoomMember.room_id).where(RoomMember.participant_id == participant_id)
@@ -474,25 +609,16 @@ async def build_crew(
             await db.execute(select(Participant.username).where(Participant.id == participant_id))
         ).scalar_one_or_none()
 
-    live = await live_key_agent_ids(db)
+    every, live = await load_key_agent_sets(db)
     runner_seats = await crew_flagged_runner_seats(db)
-    shared_rows = (
-        await db.execute(
-            select(Participant, RoomMember, Room)
-            .join(RoomMember, RoomMember.participant_id == Participant.id)
-            .join(Room, Room.id == RoomMember.room_id)
-            .where(
-                Participant.participant_type == ParticipantType.AGENT,
-                Room.is_archived.is_(False),
-                Room.id.in_(caller_rooms()),
-            )
-        )
-    ).all()
+    shared_rows = await _shared_rows(db, participant_id)
 
     entries = assemble_crew(
         now=now,
+        caller_id=participant_id,
         caller_username=caller_username,
         runner_seats=runner_seats,
+        all_key_agent_ids=every,
         live_key_agent_ids=live,
         shared_rows=shared_rows,
         last_messages={},
@@ -508,7 +634,7 @@ async def build_crew(
     agent_pids = [uuid.UUID(key) for key in by_pid]
     line_rows = (
         await db.execute(
-            select(Message)
+            select(Message.sender_id, Message.content, Message.created_at)
             .where(
                 Message.sender_id.in_(agent_pids),
                 Message.is_deleted.is_(False),
@@ -517,8 +643,11 @@ async def build_crew(
             .distinct(Message.sender_id)
             .order_by(Message.sender_id, Message.created_at.desc())
         )
-    ).scalars().all()
-    last_messages = {str(message.sender_id): message for message in line_rows}
+    ).all()
+    last_messages = {
+        str(sender_id): _RoomLine(content=content, created_at=created_at)
+        for sender_id, content, created_at in line_rows
+    }
 
     hub_ids = [uuid.UUID(entry.hub_room_id) for entry in entries if entry.hub_room_id]
     unread_by_room: dict[str, int] = {}
@@ -556,7 +685,7 @@ async def build_crew(
             continue
         agent_id = agent_id_of(participant)
         identities.extend(
-            [agent_id, participant.username, participant.keycloak_sub, f"agent-{agent_id}"]
+            [agent_id, participant.username or "", participant.keycloak_sub or "", f"agent-{agent_id}"]
         )
     identities = [item for item in identities if item]
     events: list[AgentEvent] = []
@@ -575,18 +704,45 @@ async def build_crew(
             ).scalars().all()
         )
 
+    gateway_fresh: set[str] = set()
+    roster_status: dict[str, str] | None = None
+    if redis is not None:
+        from app.services.agent_availability import _load_roster_status, get_gateway_fresh
+
+        seat_ids = sorted({entry.agent_id for entry in entries if entry.kind == KIND_SEAT})
+        house_ids = [entry.agent_id for entry in entries if entry.kind == KIND_BRIGADE]
+        try:
+            gateway_fresh = await get_gateway_fresh(redis, seat_ids)
+        except Exception:
+            logger.debug("crew_gateway_fresh_failed", exc_info=True)
+        if house_ids:
+            try:
+                roster_status = await _load_roster_status(redis)
+            except Exception:
+                logger.debug("crew_roster_status_failed", exc_info=True)
+
     entries = assemble_crew(
         now=now,
+        caller_id=participant_id,
         caller_username=caller_username,
         runner_seats=runner_seats,
+        all_key_agent_ids=every,
         live_key_agent_ids=live,
         shared_rows=shared_rows,
         last_messages=last_messages,
         unread_by_room=unread_by_room,
         events=events,
+        gateway_fresh=gateway_fresh,
+        roster_status=roster_status,
         brigade_roles=brigade_roles,
     )
     return rank_crew(entries, now)
+
+
+@dataclass
+class _RoomLine:
+    content: str | None
+    created_at: datetime | None
 
 
 async def crew_runner_seats_for(
@@ -599,13 +755,21 @@ async def crew_runner_seats_for(
 
 
 # ---------------------------------------------------------------------------
-# Brigade role lines (title / bio), cached, best-effort
+# Brigade role lines (title / bio): Redis-cached, in-process fallback, 1 s cap
 # ---------------------------------------------------------------------------
 
 _ROLES_CACHE_KEY = "stable:brigade:roster_roles"
 _ROLES_CACHE_TTL = 300
 _ROLES_FAIL_TTL = 30
-_BRIGADE_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+#: The most a crew request waits on Brigade for role lines. A miss falls
+#: back to the last in-process copy (possibly stale), then to metadata.
+ROLES_FETCH_BUDGET_S = 1.0
+_BRIGADE_TIMEOUT = httpx.Timeout(ROLES_FETCH_BUDGET_S, connect=0.5)
+#: In-process copy: survives a Redis outage and stops a cold cache from
+#: sending every concurrent request to Brigade at once.
+_ROLES_MEMO: dict[str, Any] = {"at": 0.0, "roles": {}}
+_ROLES_MEMO_TTL = 300.0
+_ROLES_LOCK: asyncio.Lock | None = None
 
 
 def role_lines_from_roster(items: Any) -> dict[str, str]:
@@ -624,11 +788,42 @@ def role_lines_from_roster(items: Any) -> dict[str, str]:
     return out
 
 
+async def _fetch_brigade_role_lines() -> dict[str, str] | None:
+    """One Brigade ``/agents`` read, or None (not configured / failed)."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    if not settings.brigade_api_key:
+        return None
+    base = settings.brigade_base_url.rstrip("/")
+    if base.endswith("/openai/v1"):
+        base = base[: -len("/openai/v1")]
+    async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as client:
+        resp = await client.get(
+            base + "/agents", headers={"Authorization": f"Bearer {settings.brigade_api_key}"}
+        )
+        resp.raise_for_status()
+        return role_lines_from_roster(resp.json())
+
+
+def _memo_roles() -> dict[str, str]:
+    roles = _ROLES_MEMO.get("roles")
+    return dict(roles) if isinstance(roles, dict) else {}
+
+
+def _memo_fresh() -> bool:
+    return bool(_ROLES_MEMO.get("roles")) and (time.monotonic() - float(_ROLES_MEMO.get("at", 0.0))) < _ROLES_MEMO_TTL
+
+
 async def load_brigade_role_lines(redis: Any) -> dict[str, str]:
-    """Brigade's title/bio per agent, cached in Redis. Never raises: an
-    unreachable Brigade means role lines fall back to participant metadata."""
+    """Brigade's title/bio per agent. Order: fresh in-process copy → Redis
+    → one Brigade read capped at ``ROLES_FETCH_BUDGET_S`` (one at a time per
+    process) → the last in-process copy, however old → ``{}``. Never raises."""
+    global _ROLES_LOCK
+    if _memo_fresh():
+        return _memo_roles()
     try:
-        cached = await redis.get(_ROLES_CACHE_KEY)
+        cached = await redis.get(_ROLES_CACHE_KEY) if redis is not None else None
     except Exception:
         cached = None
     if cached is not None:
@@ -636,40 +831,38 @@ async def load_brigade_role_lines(redis: Any) -> dict[str, str]:
             raw = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
             payload = json.loads(raw)
             roles = payload.get("roles") if isinstance(payload, dict) else None
-            return {str(k): str(v) for k, v in roles.items()} if isinstance(roles, dict) else {}
+            if isinstance(roles, dict) and roles:
+                _ROLES_MEMO.update(at=time.monotonic(), roles={str(k): str(v) for k, v in roles.items()})
+                return _memo_roles()
+            if isinstance(payload, dict) and payload.get("ok") is False:
+                return _memo_roles()
         except Exception:
             logger.debug("brigade_roles_cache_unreadable", exc_info=True)
 
-    roles: dict[str, str] = {}
-    ok = False
-    try:
-        from app.config import get_settings
-
-        settings = get_settings()
-        if settings.brigade_api_key:
-            base = settings.brigade_base_url.rstrip("/")
-            if base.endswith("/openai/v1"):
-                base = base[: -len("/openai/v1")]
-            async with httpx.AsyncClient(timeout=_BRIGADE_TIMEOUT) as client:
-                resp = await client.get(
-                    base + "/agents",
-                    headers={"Authorization": f"Bearer {settings.brigade_api_key}"},
+    if _ROLES_LOCK is None:
+        _ROLES_LOCK = asyncio.Lock()
+    if _ROLES_LOCK.locked():
+        # Somebody in this process is already asking Brigade; don't pile on.
+        return _memo_roles()
+    async with _ROLES_LOCK:
+        roles: dict[str, str] | None = None
+        try:
+            roles = await asyncio.wait_for(_fetch_brigade_role_lines(), ROLES_FETCH_BUDGET_S)
+        except Exception as exc:
+            logger.info("brigade_roles_fetch_failed", error=str(exc)[:200])
+        ok = roles is not None
+        if ok:
+            _ROLES_MEMO.update(at=time.monotonic(), roles=roles)
+        try:
+            if redis is not None:
+                await redis.set(
+                    _ROLES_CACHE_KEY,
+                    json.dumps({"ok": ok, "roles": roles or {}}),
+                    ex=_ROLES_CACHE_TTL if ok else _ROLES_FAIL_TTL,
                 )
-                resp.raise_for_status()
-                roles = role_lines_from_roster(resp.json())
-                ok = True
-    except Exception as exc:
-        logger.info("brigade_roles_fetch_failed", error=str(exc))
-
-    try:
-        await redis.set(
-            _ROLES_CACHE_KEY,
-            json.dumps({"ok": ok, "roles": roles}),
-            ex=_ROLES_CACHE_TTL if ok else _ROLES_FAIL_TTL,
-        )
-    except Exception:
-        logger.debug("brigade_roles_cache_write_failed", exc_info=True)
-    return roles
+        except Exception:
+            logger.debug("brigade_roles_cache_write_failed", exc_info=True)
+        return _memo_roles()
 
 
 __all__ = [
@@ -685,18 +878,23 @@ __all__ = [
     "PRESENCE_OFFLINE",
     "PRESENCE_ONLINE",
     "RECENT_WINDOW",
+    "ROLES_FETCH_BUDGET_S",
     "TASK_FRESH",
     "CrewEntry",
     "agent_id_of",
+    "apply_role_lines",
     "assemble_crew",
     "build_crew",
+    "crew_flagged_runner_seats",
     "crew_runner_seats_for",
     "event_matches",
+    "is_caller_hub",
     "is_crew_runner_seat",
     "is_excluded_kind",
     "is_integration",
     "list_crew_runner_seats",
     "load_brigade_role_lines",
+    "load_key_agent_sets",
     "rank_crew",
     "role_line_of",
     "role_lines_from_roster",

@@ -1,12 +1,13 @@
 """``GET /api/v1/crew`` — the agents the caller can talk to (Nav v3, C3).
 
 The sidebar's Crew section and the phone's Crew tab read this; New → Talk to
-an agent offers its runner seats. Membership and ranking live in
+an agent offers its runner seats. Membership, presence and ranking live in
 ``services/crew.py`` and are shared with ``/home/summary``.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
@@ -17,7 +18,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db, get_redis
-from app.services.crew import CrewEntry, build_crew, load_brigade_role_lines
+from app.services.crew import CrewEntry, apply_role_lines, build_crew, load_brigade_role_lines
 
 logger = structlog.get_logger(__name__)
 
@@ -43,10 +44,11 @@ class CrewRow(BaseModel):
     #: ``own_seat`` (owner == you) | ``house`` (Brigade) | ``partner``
     #: (someone else's seat that shares a room with you).
     group: Literal["own_seat", "house", "partner"]
-    #: ``online`` when a worker_heartbeat landed in the last 6 minutes or the
-    #: participant's status is online; else ``offline``.
+    #: Seats: ``online`` while the runner is calling the gateway (R8). House
+    #: agents: Brigade's roster says registered + enabled, or a worker
+    #: heartbeat landed in the last 6 minutes.
     presence: Literal["online", "offline"]
-    #: The caller's hub with this agent, when one exists (tap → open it).
+    #: The caller's OWN hub with this agent (R7), when one exists.
     hub_room_id: str | None = None
     #: What the runner announced through ``PUT /gateway/me`` (harness,
     #: default_model, default_effort, models[], efforts[], updated_at); null
@@ -87,14 +89,18 @@ async def list_crew(
     """The caller's crew, ranked: own seats, then house agents heard from in
     the last 14 days (most recent first), then partner seats, then the rest
     by name (design §2.1 / §2.0). Guest agents and integrations never
-    appear."""
+    appear. Brigade role lines load alongside the roster (Redis-cached,
+    1 s cap, in-process fallback) and never delay or fail it."""
     now = datetime.now(timezone.utc)
-    roles = await load_brigade_role_lines(redis)
-    entries = await build_crew(
-        db,
-        user["participant_id"],
-        now,
-        caller_username=user.get("username"),
-        brigade_roles=roles,
+    roles, entries = await asyncio.gather(
+        load_brigade_role_lines(redis),
+        build_crew(
+            db,
+            user["participant_id"],
+            now,
+            caller_username=user.get("username"),
+            redis=redis,
+        ),
     )
+    apply_role_lines(entries, roles)
     return [crew_row(entry) for entry in entries]
