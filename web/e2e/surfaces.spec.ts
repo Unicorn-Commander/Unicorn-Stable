@@ -1049,9 +1049,17 @@ test.describe("One conversation list", () => {
         await expect(
           page.getByTestId("nav-home").locator("visible=true").first(),
         ).not.toHaveAttribute("aria-current", "page");
-        await expect(
-          page.getByTestId("nav-directory").locator("visible=true").first(),
-        ).not.toHaveAttribute("aria-current", "page");
+        // Nav v3: the phone has no Directory tab (it is "All agents" under
+        // Crew); the desktop rail keeps it.
+        if (viewport === "desktop") {
+          await expect(
+            page.getByTestId("nav-directory").locator("visible=true").first(),
+          ).not.toHaveAttribute("aria-current", "page");
+        } else {
+          await expect(
+            page.getByTestId("nav-crew").locator("visible=true").first(),
+          ).not.toHaveAttribute("aria-current", "page");
+        }
       }
 
       await page.getByTestId("conv-filter-unread").click();
@@ -1113,7 +1121,13 @@ test.describe("One conversation list", () => {
         fullPage: true,
       });
 
-      await clickTestId(page, "nav-directory");
+      if (viewport === "desktop") {
+        await clickTestId(page, "nav-directory");
+      } else {
+        // Phone: Crew tab → "All agents" is the directory's door.
+        await page.getByTestId("phone-tab-bar").getByTestId("nav-crew").click();
+        await page.getByTestId("crew-all-agents").locator("visible=true").first().click();
+      }
       await expect(page.getByTestId("agents-page")).toBeVisible();
       await assertPageHealth(page, viewport);
     });
@@ -1169,7 +1183,8 @@ interface NavV3World {
  */
 async function stubNavV3World(page: Page): Promise<NavV3World> {
   const world: NavV3World = { threadPosts: [], roomPatches: [], memberPatches: [] };
-  const seatByRoom = new Map<string, { model: string | null; effort: string | null }>();
+  // metadata.seats per room: { <agent_id>: {model, effort} } — per seat, not per room.
+  const seatsByRoom = new Map<string, Record<string, { model: string | null; effort: string | null }>>();
   const existingThread = {
     ...threadRoomRaw(PERSEPHONE_HUB_ID, 0, "Kitchen panel plan"),
     updated_at: "2026-09-28T19:00:00Z",
@@ -1193,11 +1208,10 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
   const created: Array<Record<string, unknown>> = [];
   let threadCounter = 0;
   const hub = () => ({
-    ...hubRoomRaw("persephone"),
+    ...hubRoomRaw("persephone", {
+      metadata_: seatsByRoom.has(PERSEPHONE_HUB_ID) ? { seats: seatsByRoom.get(PERSEPHONE_HUB_ID) } : {},
+    }),
     unread_count: 1,
-    metadata_: seatByRoom.has(PERSEPHONE_HUB_ID)
-      ? { seat: seatByRoom.get(PERSEPHONE_HUB_ID) }
-      : {},
     last_message: {
       id: "msg-hub",
       room_id: PERSEPHONE_HUB_ID,
@@ -1221,16 +1235,32 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     visibility: "public",
     counterpart: null,
     agents: [],
+    metadata_: {},
     updated_at: "2026-09-28T12:00:00Z",
     last_message: null,
   };
-  const rooms = () => [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general];
+  // A shared room: Aaron, Persephone, Shafen's Flow and a customer's guest agent.
+  const taxsq = {
+    ...general,
+    id: "room-taxsq",
+    name: "taxsq-portal",
+    display_name: "taxsq-portal",
+    member_count: 4,
+    agents: [
+      { participant_id: "p-persephone", agent_id: "persephone", display_name: "Persephone", agent_mode: "when_named" },
+      { participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow", agent_mode: "when_named" },
+      { participant_id: "p-taxsq-assistant", agent_id: null, display_name: "Northbridge Tax assistant", agent_mode: "when_named" },
+    ],
+    updated_at: "2026-09-28T11:00:00Z",
+  };
+  const rooms = () => [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general, taxsq];
   const detailFor = (id: string) => {
     if (id === PERSEPHONE_HUB_ID) return hub();
     const own = created.find((room) => room.id === id);
     if (own) return own;
     if (id === existingThread.id) return existingThread;
     if (id === "room-general") return general;
+    if (id === "room-taxsq") return taxsq;
     return hubRoomRaw("claude-code", { id, name: id });
   };
   const json = (body: unknown, status = 200) => ({
@@ -1292,8 +1322,18 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     if (route.request().method() === "PATCH") {
       const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
       world.roomPatches.push({ roomId: id, body });
-      const seat = (body.metadata as { seat?: { model?: string | null; effort?: string | null } } | undefined)?.seat;
-      if (seat) seatByRoom.set(id, { model: seat.model ?? null, effort: seat.effort ?? null });
+      const seats = (
+        body.metadata as
+          | { seats?: Record<string, { model?: string | null; effort?: string | null }> }
+          | undefined
+      )?.seats;
+      if (seats) {
+        const current = { ...(seatsByRoom.get(id) ?? {}) };
+        for (const [agentId, seat] of Object.entries(seats)) {
+          current[agentId] = { model: seat.model ?? null, effort: seat.effort ?? null };
+        }
+        seatsByRoom.set(id, current);
+      }
       await route.fulfill(json(detailFor(id)));
       return;
     }
@@ -1404,6 +1444,73 @@ test.describe("Crew-first nav (v3)", () => {
       await expect(persephoneRow.getByText("New conversation")).toBeVisible();
       await expect(persephoneRow.getByText("Panel v2 is on the wall.")).toBeVisible();
       await page.screenshot({ path: `test-results/NavV3-Hub-Thread-${tag}.png`, fullPage: true });
+
+      // Seat settings (C2): the brain chip on the hub — desktop in the header,
+      // phone from More — with "Default (Fable 5.1 · high)" as the null state.
+      await page.goto(`/c/${PERSEPHONE_HUB_ID}`);
+      await waitForAppReady(page);
+      await expect(page.getByTestId("room-header")).toContainText("Persephone");
+      if (viewport === "desktop") {
+        const chip = page.getByTestId("seat-chip");
+        await expect(chip).toHaveText(/Fable 5\.1 · high/);
+        await chip.click();
+      } else {
+        await page.getByRole("button", { name: "More room actions" }).click();
+        const entry = page.getByTestId("seat-menu-entry");
+        await expect(entry).toContainText("Fable 5.1 · high");
+        await entry.click();
+      }
+      const popover = page.getByTestId("seat-settings");
+      await expect(popover).toBeVisible();
+      await expect(popover.getByTestId("seat-default")).toContainText("Default (Fable 5.1 · high)");
+      await expect(popover.getByTestId("seat-default")).toHaveAttribute("aria-checked", "true");
+      await page.screenshot({ path: `test-results/NavV3-SeatPopover-${tag}.png`, fullPage: false });
+
+      // Opus 5.5 · medium → two PATCH /rooms/{hub} writes, chip follows (acceptance 2).
+      await popover.getByTestId("seat-model-claude-opus-5-5").click();
+      await expect.poll(() => world.roomPatches.length).toBe(1);
+      expect(world.roomPatches[0]).toEqual({
+        roomId: PERSEPHONE_HUB_ID,
+        body: { metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: null } } } },
+      });
+      await popover.getByTestId("seat-effort-medium").click();
+      await expect.poll(() => world.roomPatches.length).toBe(2);
+      expect(world.roomPatches[1]!.body).toEqual({
+        metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: "medium" } } },
+      });
+      if (viewport === "desktop") {
+        await expect(page.getByTestId("seat-chip")).toHaveText(/Opus 5\.5 · medium/);
+      }
+      await popover.getByTestId("seat-mode-listening").click();
+      await expect.poll(() => world.memberPatches.length).toBe(1);
+      expect(world.memberPatches[0]).toEqual({
+        roomId: PERSEPHONE_HUB_ID,
+        participantId: "p-persephone",
+        body: { agent_mode: "listening" },
+      });
+      await expect(popover.getByTestId("seat-mode-listening")).toHaveAttribute("aria-checked", "true");
+      await page.screenshot({ path: `test-results/NavV3-SeatPopover-set-${tag}.png`, fullPage: false });
+      await page.keyboard.press("Escape");
+      await expect(popover).toHaveCount(0);
+
+      // The Brigade model switcher stays out of a seat room's More menu.
+      await page.getByRole("button", { name: "More room actions" }).click();
+      await expect(
+        page.getByRole("button", { name: "Switch model for this conversation" }),
+      ).toHaveCount(0);
+      if (viewport === "mobile") {
+        await expect(page.getByTestId("seat-menu-entry")).toContainText("Opus 5.5 · medium");
+      }
+      await page.keyboard.press("Escape");
+
+      // A shared room's roster marks a guest agent and a partner's seat (§2.0).
+      await page.goto("/c/room-taxsq");
+      await waitForAppReady(page);
+      await expect(page.getByTestId("room-header")).toContainText("taxsq-portal");
+      await page.getByTestId("room-header").getByRole("button", { name: "Members" }).click();
+      await expect(page.getByText("Guest", { exact: true }).first()).toBeVisible();
+      await expect(page.getByTestId("member-partner-seat").first()).toHaveText("Shafen’s seat");
+      await page.screenshot({ path: `test-results/NavV3-Roster-marks-${tag}.png`, fullPage: false });
       await assertPageHealth(page, viewport);
     });
   }

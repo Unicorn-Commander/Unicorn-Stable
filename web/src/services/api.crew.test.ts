@@ -109,20 +109,27 @@ describe("hub and threads", () => {
   });
 });
 
-describe("PATCH /rooms/{id} metadata.seat (C2)", () => {
-  it("writes the seat and reads it back off metadata_", async () => {
+describe("PATCH /rooms/{id} metadata.seats (C2)", () => {
+  it("writes one seat's brain and reads it back off metadata_.seats", async () => {
     const room = await api.updateRoom(PERSEPHONE_HUB_ID, {
-      metadata: { seat: { model: "claude-opus-5-5", effort: "medium" } },
+      metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: "medium" } } },
     });
-    expect(room.metadata_?.seat).toEqual({ model: "claude-opus-5-5", effort: "medium" });
+    expect(room.metadata_?.seats).toEqual({ persephone: { model: "claude-opus-5-5", effort: "medium" } });
+    expect(room.metadata_?.agent_hub).toEqual({ human_id: "p-aaron", agent_id: "persephone" });
   });
 
-  it("rejects a bad effort with 422 and a room with no seat with 409", async () => {
+  it("422 on a bad shape, 403 on someone else's seat, 409 on a room with no seat", async () => {
     await expect(
-      api.updateRoom(PERSEPHONE_HUB_ID, { metadata: { seat: { model: null, effort: "ultra" } } }),
+      api.updateRoom(PERSEPHONE_HUB_ID, { metadata: { seats: { persephone: { model: null, effort: "ultra" } } } }),
     ).rejects.toMatchObject({ status: 422 });
     await expect(
-      api.updateRoom("room-general", { metadata: { seat: { model: "claude-opus-5-5", effort: null } } }),
+      api.updateRoom(PERSEPHONE_HUB_ID, { metadata: { seat: { model: null, effort: "high" } } }),
+    ).rejects.toMatchObject({ status: 422 });
+    await expect(
+      api.updateRoom("room-taxsq", { metadata: { seats: { "shafen-claude-code": { model: null, effort: "max" } } } }),
+    ).rejects.toMatchObject({ status: 403, detail: "ask the seat's owner" });
+    await expect(
+      api.updateRoom("room-general", { metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: null } } } }),
     ).rejects.toMatchObject({ status: 409 });
   });
 });

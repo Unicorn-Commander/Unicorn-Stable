@@ -233,9 +233,15 @@ export const AARON_MEMBER: RoomMember = {
   joined_at: "2026-09-03T15:00:00Z",
 };
 
+/**
+ * A hub is `room_type = agent_hub` AND no parent AND `metadata.agent_hub.
+ * human_id` = the caller. A thread under it carries the same room_type, so
+ * nothing may test the type alone.
+ */
 export function hubRoomRaw(agentId: string, over: Partial<RawRoomListItem> = {}): RawRoomListItem {
   const row = CREW_FIXTURE.find((m) => m.agent_id === agentId);
   const id = row?.hub_room_id ?? `hub-${agentId}`;
+  const { metadata_: extraMeta, ...rest } = over;
   return {
     id,
     name: id,
@@ -250,7 +256,7 @@ export function hubRoomRaw(agentId: string, over: Partial<RawRoomListItem> = {})
     is_archived: false,
     visibility: "private",
     parent_room_id: null,
-    metadata_: {},
+    metadata_: { agent_hub: { human_id: "p-aaron", agent_id: agentId }, ...(extraMeta ?? {}) },
     last_message: null,
     counterpart: {
       participant_id: row?.participant_id ?? `p-${agentId}`,
@@ -266,7 +272,7 @@ export function hubRoomRaw(agentId: string, over: Partial<RawRoomListItem> = {})
         agent_mode: "answers_all",
       },
     ],
-    ...over,
+    ...rest,
   } as RawRoomListItem;
 }
 
@@ -278,6 +284,8 @@ export function threadRoomRaw(parentId: string, n: number, title: string | null 
     id,
     name: id,
     display_name: title ?? "New conversation",
+    // Same room_type as the hub; the parent is what makes it a thread.
+    metadata_: {},
     parent_room_id: parentId,
     updated_at: new Date(Date.parse("2026-09-28T20:30:00Z") + n * 60_000).toISOString(),
     unread_count: 0,

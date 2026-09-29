@@ -18,8 +18,10 @@ import type {
   Room,
   RoomMember,
   RoomSeat,
+  RoomSeats,
   SeatCapabilities,
 } from "@/services/api";
+import { agentPresence } from "@/lib/agentStatus";
 
 export const CREW_GROUP_ORDER: readonly CrewGroup[] = ["own_seat", "house", "partner"] as const;
 
@@ -173,17 +175,58 @@ export function modelFamilyLabel(model: string | null | undefined): string | nul
   return first ? word(first) : null;
 }
 
-/** `metadata.seat` off a room, tolerant of every older shape. */
-export function readRoomSeat(
-  room: { metadata_?: Record<string, unknown> | null } | null | undefined,
-): RoomSeat {
-  const raw = room?.metadata_?.seat;
-  if (!raw || typeof raw !== "object") return { model: null, effort: null };
+const NO_SEAT: RoomSeat = { model: null, effort: null };
+
+function parseSeat(raw: unknown): RoomSeat {
+  if (!raw || typeof raw !== "object") return NO_SEAT;
   const seat = raw as { model?: unknown; effort?: unknown };
   return {
     model: typeof seat.model === "string" && seat.model ? seat.model : null,
     effort: typeof seat.effort === "string" && seat.effort ? seat.effort : null,
   };
+}
+
+/** Every seat's brain in a room: `metadata.seats`, keyed by agent id. */
+export function readRoomSeats(
+  room: { metadata_?: Record<string, unknown> | null } | null | undefined,
+): RoomSeats {
+  const raw = room?.metadata_?.seats;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: RoomSeats = {};
+  for (const [agentId, seat] of Object.entries(raw as Record<string, unknown>)) {
+    if (agentId) out[agentId] = parseSeat(seat);
+  }
+  return out;
+}
+
+/** One seat's brain in a room (`metadata.seats[agent_id]`), tolerant of any shape. */
+export function readRoomSeat(
+  room: { metadata_?: Record<string, unknown> | null } | null | undefined,
+  agentId: string | null | undefined,
+): RoomSeat {
+  if (!agentId) return NO_SEAT;
+  return readRoomSeats(room)[agentId] ?? NO_SEAT;
+}
+
+/**
+ * Is this room the caller's hub with an agent? `room_type = agent_hub` is
+ * not enough — a thread under a hub carries the same type — so it is the
+ * type AND no parent AND, when the server names the hub's human and we
+ * know who we are, that human is us.
+ */
+export function isHubRoom(
+  room: Pick<Room, "type" | "parent_room_id" | "metadata_">,
+  selfIds: readonly (string | null | undefined)[] = [],
+): boolean {
+  if (room.type !== "agent_hub" || room.parent_room_id) return false;
+  const meta = room.metadata_?.agent_hub;
+  const humanId =
+    meta && typeof meta === "object" ? (meta as { human_id?: unknown }).human_id : undefined;
+  if (typeof humanId === "string" && humanId) {
+    const known = selfIds.filter((id): id is string => !!id);
+    if (known.length > 0 && !known.includes(humanId)) return false;
+  }
+  return true;
 }
 
 /**
@@ -204,10 +247,32 @@ export function defaultBrainLabel(caps: SeatCapabilities | null | undefined): st
   return brainLabel({ model: null, effort: null }, caps);
 }
 
-/** The agent hub in the room list that belongs to this crew member, if loaded. */
+function roomHasAgent(
+  room: Room,
+  member: Pick<CrewMember, "agent_id" | "participant_id">,
+): boolean {
+  return (
+    room.counterpart?.agent_id === member.agent_id ||
+    room.brigade_agent_id === member.agent_id ||
+    (room.brigade_agent_ids ?? []).includes(member.agent_id) ||
+    (!!member.participant_id && room.counterpart?.participant_id === member.participant_id) ||
+    (room.agent_members ?? []).some(
+      (row) =>
+        row.agent_id === member.agent_id ||
+        (!!member.participant_id && row.participant_id === member.participant_id),
+    )
+  );
+}
+
+/**
+ * The agent hub in the room list that belongs to this crew member, if
+ * loaded: the server's `hub_room_id` first, else the one hub room with
+ * this agent on the other side (`isHubRoom`, never a thread).
+ */
 export function hubRoomFor(
   member: Pick<CrewMember, "agent_id" | "hub_room_id" | "participant_id">,
   rooms: readonly Room[],
+  selfIds: readonly (string | null | undefined)[] = [],
 ): Room | null {
   if (member.hub_room_id) {
     const byId = rooms.find((room) => room.id === member.hub_room_id);
@@ -216,8 +281,7 @@ export function hubRoomFor(
   return (
     rooms.find(
       (room) =>
-        room.type === "agent_hub" &&
-        !room.parent_room_id &&
+        isHubRoom(room, selfIds) &&
         !room.is_archived &&
         (room.counterpart?.agent_id === member.agent_id ||
           room.brigade_agent_id === member.agent_id ||
@@ -225,6 +289,78 @@ export function hubRoomFor(
             room.counterpart?.participant_id === member.participant_id)),
     ) ?? null
   );
+}
+
+/**
+ * The newest room you share with a partner's seat. A partner's seat has no
+ * hub of yours — asking the server for one is refused ("ask the seat's
+ * owner") — so its row opens the room its owner put it in.
+ */
+export function sharedRoomFor(
+  member: Pick<CrewMember, "agent_id" | "participant_id">,
+  rooms: readonly Room[],
+): Room | null {
+  const candidates = rooms.filter(
+    (room) => !room.is_archived && !room.parent_room_id && roomHasAgent(room, member),
+  );
+  candidates.sort(
+    (a, b) =>
+      Date.parse(b.last_message?.created_at || b.updated_at || "") -
+      Date.parse(a.last_message?.created_at || a.updated_at || ""),
+  );
+  return candidates[0] ?? null;
+}
+
+/** A runner counts as online while it has polled the gateway in this window. */
+export const RUNNER_PRESENCE_WINDOW_MS = 3 * 60_000;
+
+export interface CrewPresenceBadge {
+  online: boolean;
+  /** Tooltip / aria-label for the dot. */
+  label: string;
+  dotClass: string;
+}
+
+/** "Runner not seen for 12 min" from the runner's last announcement. */
+export function runnerSeenLabel(lastSeen: string | null | undefined, now: number): string {
+  const at = lastSeen ? Date.parse(lastSeen) : Number.NaN;
+  if (!Number.isFinite(at)) return "Runner offline";
+  const minutes = Math.max(1, Math.round((now - at) / 60_000));
+  if (minutes < 60) return `Runner not seen for ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `Runner not seen for ${hours} h`;
+  return `Runner not seen for ${Math.round(hours / 24)} d`;
+}
+
+/**
+ * The presence dot on a crew row. For a seat, `presence` means the runner
+ * polled the gateway in the last three minutes, and the tooltip says so;
+ * a house agent keeps Brigade's availability wording.
+ */
+export function crewPresence(member: CrewMember, now = Date.now()): CrewPresenceBadge {
+  const online = member.presence === "online";
+  if (isRunnerSeat(member)) {
+    if (online) {
+      return { online, label: "Runner online", dotClass: agentPresence({ isOnline: true }).dotClass };
+    }
+    return {
+      online,
+      label: runnerSeenLabel(member.seat_capabilities?.updated_at ?? member.last_at, now),
+      dotClass: agentPresence({ availability: "unavailable" }).dotClass,
+    };
+  }
+  if (online) {
+    return {
+      online,
+      label: `${member.display_name} is available`,
+      dotClass: agentPresence({ isOnline: true }).dotClass,
+    };
+  }
+  return {
+    online,
+    label: `${member.display_name} is unavailable`,
+    dotClass: agentPresence({ availability: "unavailable" }).dotClass,
+  };
 }
 
 /**
@@ -241,7 +377,7 @@ export function crewBrainChip(
 ): string | null {
   if (isRunnerSeat(member)) {
     if (!member.seat_capabilities) return null;
-    return brainLabel(readRoomSeat(hubRoom), member.seat_capabilities);
+    return brainLabel(readRoomSeat(hubRoom, member.agent_id), member.seat_capabilities);
   }
   return modelFamilyLabel(rosterAgent?.model);
 }
@@ -250,10 +386,15 @@ export type MemberKindMark =
   | { kind: "guest" }
   | { kind: "partner_seat"; owner: string; label: string };
 
-/** "Shafen's seat" — possessive of a name that may already end in s. */
+/**
+ * "Shafen’s seat" — possessive of a name that may already end in s. The
+ * crew list only carries the owner's USERNAME; a bare lowercase one reads
+ * as a name with its first letter up, a display name is left alone.
+ */
 export function ownerSeatLabel(owner: string): string {
-  const name = owner.trim();
-  if (!name) return "Partner's seat";
+  const raw = owner.trim();
+  if (!raw) return "Partner's seat";
+  const name = /^[a-z][a-z0-9._-]*$/.test(raw) ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
   return `${name}${/s$/i.test(name) ? "’" : "’s"} seat`;
 }
 

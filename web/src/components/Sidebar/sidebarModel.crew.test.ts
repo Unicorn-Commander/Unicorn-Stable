@@ -43,7 +43,10 @@ function hubFor(agentId: string, id: string, over: Partial<Room> = {}): Room {
 }
 
 const persephoneHub = hubFor("persephone", PERSEPHONE_HUB_ID, {
-  metadata_: { seat: { model: "claude-opus-5-5", effort: "medium" } },
+  metadata_: {
+    agent_hub: { human_id: "p-aaron", agent_id: "persephone" },
+    seats: { persephone: { model: "claude-opus-5-5", effort: "medium" } },
+  },
 });
 const rookHub = hubFor("claude-code", ROOK_HUB_ID);
 const astraHub = hubFor("codex-astra", "hub-codex-astra");

@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { lazy, Suspense, useEffect, useState, useMemo } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
@@ -22,6 +22,10 @@ import { LiveCallBanner } from "./LiveCallBanner";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { RoomHeader } from "./RoomHeader";
+import { SeatSettings } from "./SeatSettings";
+import { useCrew } from "@/hooks/useCrew";
+import { findSeatMembers, seatChipLabel } from "@/lib/seatSettings";
+import { readRoomSeat } from "@/lib/crew";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
@@ -131,6 +135,26 @@ export function RoomView({ roomId }: RoomViewProps) {
   // it (last-invited wins; @mention any member agent to address it directly).
   const rosterAgents = useAppStore((s) => s.agents);
   const [searchOpen, setSearchOpen] = useState(false);
+  // The runner seat in this room (Nav v3 C2), matched against the crew list:
+  // RoomResponse.agents[] carries no backend. A 409 on the seat write means
+  // the server disagrees — the chip goes and the Brigade switcher returns.
+  const { crew } = useCrew();
+  const [seatRefused, setSeatRefused] = useState(false);
+  const [seatOpenFor, setSeatOpenFor] = useState<string | null>(null);
+  const [seatRequested, setSeatRequested] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    setSeatRefused(false);
+    setSeatOpenFor(null);
+  }, [roomId]);
+  // `/c/<id>?seat=1` (the crew row's Settings) opens the popover once.
+  useEffect(() => {
+    if (searchParams.get("seat") !== "1") return;
+    setSeatRequested(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("seat");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [pinsOpen, setPinsOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -285,6 +309,46 @@ export function RoomView({ roomId }: RoomViewProps) {
       offUpdated();
     };
   }, [roomId]);
+
+  // Every runner seat in the room, yours first: one chip each (metadata.seats).
+  const seatMatches = useMemo(
+    () => (seatRefused ? [] : findSeatMembers(roomDetail, members, crew)),
+    [seatRefused, roomDetail, members, crew],
+  );
+  useEffect(() => {
+    if (!seatRequested) return;
+    const first = seatMatches.find((match) => match.editable);
+    if (!first) return;
+    setSeatRequested(false);
+    setSeatOpenFor(first.member.agent_id);
+  }, [seatRequested, seatMatches]);
+  // Phones: one More entry per seat of yours, named when there are several.
+  const seatMenus = seatMatches
+    .filter((match) => match.editable)
+    .map((match) => {
+      const label =
+        seatChipLabel(
+          readRoomSeat(roomDetail, match.member.agent_id),
+          match.member.seat_capabilities,
+        ) ?? "seat default";
+      return {
+        key: match.member.agent_id,
+        label: seatMatches.length > 1 ? `${match.member.display_name} · ${label}` : label,
+        onOpen: () => setSeatOpenFor(match.member.agent_id),
+      };
+    });
+  const renderSeatChips = () =>
+    seatMatches.map((match) => (
+      <SeatSettings
+        key={match.member.agent_id}
+        roomId={roomId}
+        room={roomDetail}
+        match={match}
+        open={seatOpenFor === match.member.agent_id}
+        onOpenChange={(next) => setSeatOpenFor(next ? match.member.agent_id : null)}
+        onNoSeat={() => setSeatRefused(true)}
+      />
+    ));
 
   // If the members fetch comes back 403, my membership is gone (I was removed
   // or the room was archived) — eject to home rather than sit on a dead room.
@@ -528,6 +592,10 @@ export function RoomView({ roomId }: RoomViewProps) {
                 })
             : undefined
         }
+        // A seat room's brain is the chip's popover; the Brigade switcher
+        // would do nothing there. Everything else keeps it.
+        showModelSwitcher={seatMatches.length === 0}
+        seatMenus={seatMenus}
       >
           {isDm ? (
             /* 1:1 DM: the person IS the header. Avatar + presence + name,
@@ -586,6 +654,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                     ? dmAgentName
                     : dmPeerName}
               </span>
+              {renderSeatChips()}
             </div>
           ) : (
             <>
@@ -629,6 +698,8 @@ export function RoomView({ roomId }: RoomViewProps) {
           {roomDetail?.project_number && (
             <ProjectNumber number={roomDetail.project_number} />
           )}
+          {/* Seats in a channel or group: the same chips beside the name. */}
+          {renderSeatChips()}
           {/* Topic + its separator are secondary — hide on phones so a long
               topic can't squeeze the room name down to a couple letters. The
               name then takes the full width. md:contents keeps desktop identical. */}

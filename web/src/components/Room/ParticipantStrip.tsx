@@ -30,6 +30,7 @@ import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
 import { livekitIdentityForMember } from "@/lib/broadcast";
 import { isGuestParticipant } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
+import { memberKindMark } from "@/lib/crew";
 
 interface ParticipantStripProps {
   roomId: string;
@@ -404,7 +405,41 @@ function DirectoryPersonRow({
   );
 }
 
+/**
+ * Who this agent is, beside its name (Nav v3 §2.0): an outside account's
+ * agent is a guest, another member's seat carries its owner. Read from the
+ * members payload's metadata; a server that sends none marks nothing.
+ */
+function MemberKindMark({
+  member,
+  selfUsername,
+}: {
+  member: RoomMember;
+  selfUsername: string | null | undefined;
+}) {
+  const mark = memberKindMark(member, selfUsername);
+  if (!mark) return null;
+  if (mark.kind === "guest") {
+    return (
+      <GuestBadge
+        className="shrink-0"
+        title="An outside account's agent — let in for this room, none of our hands"
+      />
+    );
+  }
+  return (
+    <span
+      className="shrink-0 rounded-md border border-line bg-white/[0.03] px-1 py-0.5 text-[9px] font-medium normal-case tracking-normal text-slate-400"
+      title={`${mark.label} — acts on your messages only if its owner listed you as trusted`}
+      data-testid="member-partner-seat"
+    >
+      {mark.label}
+    </span>
+  );
+}
+
 export function ParticipantStrip({ roomId }: ParticipantStripProps) {
+  const selfUsername = useAppStore((s) => s.currentUser?.username);
   const participants =
     useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
   const qc = useQueryClient();
@@ -704,10 +739,11 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p
-                      className="truncate text-xs font-semibold"
+                      className="flex min-w-0 items-center gap-1 text-xs font-semibold"
                       style={{ color: ident.text }}
                     >
-                      {m.display_name}
+                      <span className="truncate">{m.display_name}</span>
+                      <MemberKindMark member={m} selfUsername={selfUsername} />
                     </p>
                     <p className="truncate text-[10px] text-slate-500">
                       <AgentModeChip

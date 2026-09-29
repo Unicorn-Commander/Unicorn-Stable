@@ -142,7 +142,10 @@ function crewSubtitle(member: CrewMember, rooms: readonly Room[]): string {
   else if (member.role_line) parts.push(member.role_line);
   else parts.push(CREW_GROUP_LABEL[member.group]);
   if (member.seat_capabilities) {
-    const brain = brainLabel(readRoomSeat(hubRoomFor(member, rooms)), member.seat_capabilities);
+    const brain = brainLabel(
+      readRoomSeat(hubRoomFor(member, rooms), member.agent_id),
+      member.seat_capabilities,
+    );
     if (brain) parts.push(brain);
   }
   return parts.join(" · ");

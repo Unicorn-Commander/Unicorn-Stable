@@ -608,11 +608,17 @@ export interface CrewMember {
   unread: number;
 }
 
-/** A room's per-conversation brain (`metadata.seat`, C2). Null = the seat's default. */
+/**
+ * One seat's brain in one room (`metadata.seats[agent_id]`, C2). Null on
+ * both = the seat's own default. Per seat, not per room: a room with two of
+ * your seats carries two entries and shows two chips.
+ */
 export interface RoomSeat {
   model: string | null;
   effort: string | null;
 }
+
+export type RoomSeats = Record<string, RoomSeat>;
 
 export interface BrigadeAgent {
   id: string;

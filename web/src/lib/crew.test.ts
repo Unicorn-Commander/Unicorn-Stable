@@ -6,17 +6,22 @@ import {
   canEditSeat,
   crewBrainChip,
   crewFromRoster,
+  crewPresence,
   defaultBrainLabel,
   groupCrew,
   hubRoomFor,
   humanizeModelId,
+  isHubRoom,
   isRunnerSeat,
   memberKindMark,
   modelFamilyLabel,
   modelLabel,
   ownerSeatLabel,
   readRoomSeat,
+  readRoomSeats,
+  runnerSeenLabel,
   seatIndex,
+  sharedRoomFor,
 } from "./crew";
 
 const persephone = CREW_FIXTURE.find((m) => m.agent_id === "persephone")!;
@@ -101,12 +106,28 @@ describe("model labels", () => {
 });
 
 describe("room seat", () => {
-  it("reads metadata.seat tolerantly", () => {
-    expect(readRoomSeat(null)).toEqual({ model: null, effort: null });
-    expect(readRoomSeat({ metadata_: {} })).toEqual({ model: null, effort: null });
-    expect(readRoomSeat({ metadata_: { seat: "junk" } })).toEqual({ model: null, effort: null });
-    expect(readRoomSeat({ metadata_: { seat: { model: "claude-opus-5-5", effort: "" } } })).toEqual({
-      model: "claude-opus-5-5",
+  it("reads metadata.seats per agent, tolerantly", () => {
+    expect(readRoomSeat(null, "persephone")).toEqual({ model: null, effort: null });
+    expect(readRoomSeat({ metadata_: {} }, "persephone")).toEqual({ model: null, effort: null });
+    expect(readRoomSeat({ metadata_: { seats: "junk" } }, "persephone")).toEqual({ model: null, effort: null });
+    const room = {
+      metadata_: {
+        seats: {
+          persephone: { model: "claude-opus-5-5", effort: "" },
+          "claude-code": { model: null, effort: "max" },
+          broken: 7,
+        },
+      },
+    };
+    expect(readRoomSeat(room, "persephone")).toEqual({ model: "claude-opus-5-5", effort: null });
+    expect(readRoomSeat(room, "claude-code")).toEqual({ model: null, effort: "max" });
+    expect(readRoomSeat(room, "grok")).toEqual({ model: null, effort: null });
+    expect(readRoomSeat(room, null)).toEqual({ model: null, effort: null });
+    expect(Object.keys(readRoomSeats(room))).toEqual(["persephone", "claude-code", "broken"]);
+    expect(readRoomSeats(room).broken).toEqual({ model: null, effort: null });
+    // The old per-room key is not a seat.
+    expect(readRoomSeat({ metadata_: { seat: { model: "x", effort: "low" } } }, "persephone")).toEqual({
+      model: null,
       effort: null,
     });
   });
@@ -123,8 +144,17 @@ describe("room seat", () => {
   });
 
   it("chips a seat from its hub and a house agent from the roster", () => {
-    const hub = { metadata_: { seat: { model: "claude-haiku-4-5", effort: "low" } } } as unknown as Room;
+    const hub = {
+      metadata_: {
+        seats: {
+          persephone: { model: "claude-haiku-4-5", effort: "low" },
+          "claude-code": { model: "claude-sonnet-4-5", effort: "max" },
+        },
+      },
+    } as unknown as Room;
     expect(crewBrainChip(persephone, hub)).toBe("Haiku 4.5 · low");
+    const rook = CREW_FIXTURE.find((m) => m.agent_id === "claude-code")!;
+    expect(crewBrainChip(rook, hub)).toBe("Sonnet 4.5 · max");
     expect(crewBrainChip(persephone, null)).toBe("Fable 5.1 · high");
     // A seat that has not announced: no chip, even with a room override.
     expect(crewBrainChip({ ...persephone, seat_capabilities: null }, hub)).toBeNull();
@@ -148,6 +178,48 @@ describe("room seat", () => {
     expect(hubRoomFor(find("grok"), rooms)?.id).toBe("h3");
     expect(hubRoomFor(find("zen"), rooms)?.id).toBe("h4");
     expect(hubRoomFor(find("claude"), rooms)).toBeNull();
+    // Somebody else's hub with the same agent is not yours once we know who we are.
+    const shafens = room({
+      id: "h8",
+      brigade_agent_id: "grok",
+      metadata_: { agent_hub: { human_id: "p-shafen", agent_id: "grok" } },
+    });
+    expect(hubRoomFor(find("grok"), [shafens], ["p-aaron"])).toBeNull();
+    expect(hubRoomFor(find("grok"), [shafens], [])?.id).toBe("h8");
+  });
+
+  it("tests a hub by type, parent and human — never the type alone", () => {
+    const hub = { type: "agent_hub", parent_room_id: null, metadata_: { agent_hub: { human_id: "p-aaron" } } } as unknown as Room;
+    const thread = { ...hub, parent_room_id: "hub-1" } as Room;
+    const unnamed = { type: "agent_hub", parent_room_id: null, metadata_: {} } as Room;
+    const channel = { type: "channel", parent_room_id: null, metadata_: {} } as Room;
+    expect(isHubRoom(hub, ["p-aaron"])).toBe(true);
+    expect(isHubRoom(hub, ["dev-user-001", "p-aaron"])).toBe(true);
+    expect(isHubRoom(hub, ["p-shafen"])).toBe(false);
+    expect(isHubRoom(hub, [null, undefined])).toBe(true);
+    expect(isHubRoom(thread, ["p-aaron"])).toBe(false);
+    expect(isHubRoom(unnamed, ["p-aaron"])).toBe(true);
+    expect(isHubRoom(channel, ["p-aaron"])).toBe(false);
+  });
+
+  it("finds the newest room shared with a partner's seat", () => {
+    const room = (over: Partial<Room> & { id: string }): Room =>
+      ({ name: over.id, description: "", type: "channel", created_at: "", updated_at: "", member_count: 1, unread_count: 0, last_message: null, members: [], agents: [], ...over }) as Room;
+    const flow = CREW_FIXTURE.find((m) => m.agent_id === "shafen-claude-code")!;
+    const older = room({
+      id: "shared-old",
+      updated_at: "2026-09-20T00:00:00Z",
+      agent_members: [{ participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow" }],
+    });
+    const newer = room({
+      id: "shared-new",
+      updated_at: "2026-09-28T00:00:00Z",
+      brigade_agent_ids: ["shafen-claude-code"],
+    });
+    const thread = room({ id: "t", parent_room_id: "shared-new", brigade_agent_id: "shafen-claude-code", updated_at: "2026-09-29T00:00:00Z" });
+    const other = room({ id: "other", brigade_agent_id: "majik", updated_at: "2026-09-29T00:00:00Z" });
+    expect(sharedRoomFor(flow, [older, other, thread, newer])?.id).toBe("shared-new");
+    expect(sharedRoomFor(flow, [other])).toBeNull();
   });
 
   it("indexes runner seats by agent and participant", () => {
@@ -155,6 +227,31 @@ describe("room seat", () => {
     expect(index.byAgent.has("persephone")).toBe(true);
     expect(index.byAgent.has("majik")).toBe(false);
     expect(index.byParticipant.get("p-shafen-claude-code")?.group).toBe("partner");
+  });
+});
+
+describe("runner presence", () => {
+  const now = Date.parse("2026-09-28T21:00:00Z");
+
+  it("says the runner polled recently, or how long ago it was seen", () => {
+    expect(crewPresence(persephone, now)).toMatchObject({ online: true, label: "Runner online" });
+    const stale = { ...persephone, presence: "offline" as const, seat_capabilities: { ...persephone.seat_capabilities!, updated_at: "2026-09-28T20:48:00Z" } };
+    expect(crewPresence(stale, now)).toMatchObject({ online: false, label: "Runner not seen for 12 min" });
+    expect(runnerSeenLabel("2026-09-28T18:00:00Z", now)).toBe("Runner not seen for 3 h");
+    expect(runnerSeenLabel("2026-09-20T18:00:00Z", now)).toBe("Runner not seen for 8 d");
+    expect(runnerSeenLabel(null, now)).toBe("Runner offline");
+    expect(runnerSeenLabel("garbage", now)).toBe("Runner offline");
+    const unannounced = { ...stale, seat_capabilities: null, last_at: "2026-09-28T20:59:30Z" };
+    expect(crewPresence(unannounced, now).label).toBe("Runner not seen for 1 min");
+  });
+
+  it("keeps Brigade wording for house agents", () => {
+    expect(crewPresence(majik, now)).toMatchObject({ online: true, label: "Majik Mane is available" });
+    expect(crewPresence({ ...majik, presence: "offline" }, now)).toMatchObject({
+      online: false,
+      label: "Majik Mane is unavailable",
+    });
+    expect(crewPresence(majik, now).dotClass).not.toBe(crewPresence({ ...majik, presence: "offline" }, now).dotClass);
   });
 });
 
@@ -170,7 +267,7 @@ describe("member roster marks (§2.0)", () => {
     // Someone else looking at the same room sees Aaron's seat as a partner's.
     const seen = memberKindMark(PERSEPHONE_MEMBER, "shafen");
     expect(seen?.kind).toBe("partner_seat");
-    expect(seen && seen.kind === "partner_seat" ? seen.label : null).toBe("aaron’s seat");
+    expect(seen && seen.kind === "partner_seat" ? seen.label : null).toBe("Aaron’s seat");
     const bare: RoomMember = { username: "x", display_name: "X", role: "member", joined_at: "" };
     expect(memberKindMark(bare, "aaron")).toBeNull();
     expect(memberKindMark({ ...bare, metadata: { backend: "runner" } }, "aaron")).toBeNull();
@@ -178,7 +275,9 @@ describe("member roster marks (§2.0)", () => {
 
   it("writes the possessive", () => {
     expect(ownerSeatLabel("Shafen")).toBe("Shafen’s seat");
+    expect(ownerSeatLabel("shafen")).toBe("Shafen’s seat");
     expect(ownerSeatLabel("Jess")).toBe("Jess’ seat");
+    expect(ownerSeatLabel("Shafen Khan")).toBe("Shafen Khan’s seat");
     expect(ownerSeatLabel("  ")).toBe("Partner's seat");
   });
 });

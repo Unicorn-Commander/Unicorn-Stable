@@ -12,9 +12,8 @@ import {
 import clsx from "clsx";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
-import { agentPresence } from "@/lib/agentStatus";
 import { beginThread, openAgentHub } from "@/lib/beginThread";
-import { ownerSeatLabel } from "@/lib/crew";
+import { crewPresence, ownerSeatLabel, sharedRoomFor } from "@/lib/crew";
 import { useCrew } from "@/hooks/useCrew";
 import { useAppStore } from "@/stores/appStore";
 import { useChannelCategories } from "@/stores/categoryStore";
@@ -82,9 +81,23 @@ export function CrewSection({
     }
   }
 
-  /** The row's hub id, ensuring it on the server when the list has none. */
+  /**
+   * The room a row opens: its hub, ensured on the server when the list has
+   * none. A partner's seat has no hub of yours — the server refuses one
+   * ("ask the seat's owner") — so its row opens the newest room you share.
+   */
   async function hubIdFor(row: CrewRow): Promise<string | null> {
     if (row.roomId) return row.roomId;
+    if (row.member.group === "partner") {
+      const shared = sharedRoomFor(row.member, useAppStore.getState().rooms);
+      if (shared) return shared.id;
+      const owner = row.member.owner ? ownerSeatLabel(row.member.owner).replace(/ seat$/, "") : "its owner";
+      useAppStore.getState().pushToast({
+        title: `No room with ${row.member.display_name} yet`,
+        body: `${owner.replace(/’s?$/, "")} has to add their seat to a room you share.`,
+      });
+      return null;
+    }
     const hub = await openAgentHub(row.member.agent_id);
     if (hub) void qc.invalidateQueries({ queryKey: ["rooms", scope] });
     return hub?.id ?? null;
@@ -147,12 +160,9 @@ export function CrewSection({
 
   function renderRow(row: CrewRow): ReactNode {
     const { member } = row;
-    const online = member.presence === "online";
-    const badge = agentPresence({
-      isOnline: online,
-      availability: online ? "available" : "unavailable",
-      name: member.display_name,
-    });
+    // A seat's dot means "the runner polled the gateway in the last three
+    // minutes"; the tooltip says so. House agents keep Brigade's wording.
+    const badge = crewPresence(member);
     const active = !!row.roomId && row.roomId === activeRoomId;
     const menuOpen = menuKey === row.id;
     const subtitle =

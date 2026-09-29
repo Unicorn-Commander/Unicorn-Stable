@@ -7,6 +7,7 @@ import {
   Bookmark,
   ChevronDown,
   Circle,
+  Cpu,
   Database,
   ExternalLink,
   Keyboard,
@@ -115,6 +116,12 @@ export interface RoomHeaderProps {
    * would do nothing.
    */
   showModelSwitcher?: boolean;
+  /**
+   * Phones: the seat chip does not fit the 44px row, so More carries a
+   * "Brain · Fable 5.1 · high" entry per seat of yours that opens the same
+   * popover.
+   */
+  seatMenus?: Array<{ key: string; label: string; onOpen: () => void }>;
 }
 
 export function RoomHeader({
@@ -152,6 +159,7 @@ export function RoomHeader({
   onStartGroupWithAgent,
   onNewConversation,
   showModelSwitcher = true,
+  seatMenus = [],
 }: RoomHeaderProps) {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
@@ -488,6 +496,17 @@ export function RoomHeader({
                 {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                 {muted ? "Unmute room" : "Mute room"}
               </MenuItem>
+              {seatMenus.map((entry) => (
+                <MenuItem
+                  key={entry.key}
+                  onClick={() => run(entry.onOpen)}
+                  className="sm:hidden"
+                  data-testid="seat-menu-entry"
+                >
+                  <Cpu className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 truncate">Brain · {entry.label}</span>
+                </MenuItem>
+              ))}
               {onNewConversation && (
                 <MenuItem
                   onClick={() => run(onNewConversation)}
