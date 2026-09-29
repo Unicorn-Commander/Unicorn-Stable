@@ -1,11 +1,5 @@
 import type { Agent, CrewGroup, CrewMember, Room } from "@/services/api";
-import {
-  CREW_GROUP_LABEL,
-  CREW_GROUP_ORDER,
-  crewBrainChip,
-  crewTargetRoom,
-  type CrewTargetKind,
-} from "@/lib/crew";
+import { CREW_GROUP_LABEL, CREW_GROUP_ORDER, crewBrainChip, crewTargetRoom, type CrewTargetKind, opensHub } from "@/lib/crew";
 import {
   isAgentConversation,
   isDirectRoom,
@@ -915,7 +909,7 @@ export function buildCrewSection(input: CrewSectionInput): CrewSectionModel {
         kind: "crew",
         id: `crew:${member.agent_id}`,
         member,
-        roomId: target?.room.id ?? (target === null && member.group !== "partner" ? member.hub_room_id : null),
+        roomId: target?.room.id ?? (target === null && opensHub(member) ? member.hub_room_id : null),
         hub,
         target: target?.kind ?? null,
         targetLabel: target?.kind === "shared" ? target.label : null,

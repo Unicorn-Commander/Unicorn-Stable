@@ -13,7 +13,7 @@ import clsx from "clsx";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { beginThread, openAgentHub } from "@/lib/beginThread";
-import { crewPresence, ownerSeatLabel } from "@/lib/crew";
+import { crewPresence, opensHub, ownerSeatLabel, SEAT_IN_ITS_ROOMS } from "@/lib/crew";
 import { useCrew } from "@/hooks/useCrew";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { useAppStore } from "@/stores/appStore";
@@ -132,6 +132,15 @@ export function CrewSection({
       });
       return null;
     }
+    if (!opensHub(row.member)) {
+      // One of your seats whose runner does not follow you into new rooms:
+      // a hub made for it would stay silent, so none is made.
+      useAppStore.getState().pushToast({
+        title: `No room with ${row.member.display_name} yet`,
+        body: SEAT_IN_ITS_ROOMS(row.member.display_name),
+      });
+      return null;
+    }
     const hub = await openAgentHub(row.member.agent_id);
     if (hub) void qc.invalidateQueries({ queryKey: ["rooms", scope] });
     return hub?.id ?? null;
@@ -193,7 +202,7 @@ export function CrewSection({
 
   function rowTitle(row: CrewRow): string {
     const name = row.member.display_name;
-    if (row.member.group === "partner") {
+    if (row.member.group === "partner" || !opensHub(row.member)) {
       return row.targetLabel ? `Open ${row.targetLabel} with ${name}` : `No room shared with ${name} yet`;
     }
     return row.brain ? `Open your conversation with ${name} — ${row.brain}` : `Open your conversation with ${name}`;
@@ -201,7 +210,7 @@ export function CrewSection({
 
   function menuFor(row: CrewRow): ReactNode | null {
     const { member } = row;
-    if (member.group === "partner") return null;
+    if (member.group === "partner" || !opensHub(member)) return null;
     const seat = member.kind === "seat";
     return (
       <>

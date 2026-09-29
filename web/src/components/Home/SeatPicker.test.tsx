@@ -26,7 +26,7 @@ function Harness({ onPick, start = "persephone" }: { onPick?: (seat: CrewMember)
 }
 
 describe("SeatPicker", () => {
-  it("shows who the message is for and lists the crew as your seats, the house, partners", () => {
+  it("shows who the message is for and lists your seats, then the house (never a partner's seat)", () => {
     render(<Harness />);
     const button = screen.getByTestId("seat-picker");
     expect(button).toHaveTextContent("Persephone");
@@ -34,7 +34,7 @@ describe("SeatPicker", () => {
     fireEvent.click(button);
     const list = screen.getByRole("listbox", { name: "Who the message is for" });
     const groups = within(list).getAllByRole("group").map((group) => group.getAttribute("aria-label"));
-    expect(groups).toEqual(["Your seats", "House", "Partners"]);
+    expect(groups).toEqual(["Your seats", "House"]);
     const options = within(list).getAllByRole("option");
     expect(options).toHaveLength(SEATS.length);
     expect(options.map((option) => option.getAttribute("data-testid"))).toEqual(
@@ -45,7 +45,8 @@ describe("SeatPicker", () => {
 
   it("says what a seat runs, whose a partner's seat is, and what a house agent is for", () => {
     expect(seatPickerLine(by("persephone"))).toBe("Fable 5.1 · high");
-    expect(seatPickerLine(by("shafen-claude-code"))).toBe("Shafen’s seat");
+    // A partner's row still has a line (the picker no longer lists it; review 2, P1-1).
+    expect(seatPickerLine(CREW_FIXTURE.find((row) => row.agent_id === "shafen-claude-code")!)).toBe("Shafen’s seat");
     expect(seatPickerLine({ ...by("majik"), role_line: " House DJ " })).toBe("House DJ");
     expect(seatPickerLine({ ...by("majik"), role_line: null })).toBeNull();
     // A seat that has not announced what it runs says nothing, not a guess.
@@ -84,9 +85,9 @@ describe("SeatPicker", () => {
     const onPick = vi.fn();
     render(<Harness onPick={onPick} />);
     fireEvent.click(screen.getByTestId("seat-picker"));
-    fireEvent.click(screen.getByTestId("seat-option-shafen-claude-code"));
-    expect(onPick.mock.calls[0]![0].agent_id).toBe("shafen-claude-code");
-    expect(screen.getByTestId("seat-picker")).toHaveTextContent("Flow");
+    fireEvent.click(screen.getByTestId("seat-option-majik"));
+    expect(onPick.mock.calls[0]![0].agent_id).toBe("majik");
+    expect(screen.getByTestId("seat-picker")).toHaveTextContent("Majik Mane");
     fireEvent.click(screen.getByTestId("seat-picker"));
     expect(screen.getByRole("listbox")).toBeTruthy();
     fireEvent.pointerDown(document.body);

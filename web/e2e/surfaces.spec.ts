@@ -1056,7 +1056,10 @@ test.describe("Home v4", () => {
   });
 
   for (const viewport of ["mobile", "desktop"] as const) {
-    test(`a partner's seat: the shared room, named before sending @ ${viewport}`, async ({ page }, testInfo) => {
+    test(`never a partner's seat, nor a seat that does not follow you @ ${viewport}`, async ({ page }, testInfo) => {
+      // Review 2, P1-1: a line posted into a shared room without "@name" is read
+      // by everyone there (customers included) and answered by nobody. And a seat
+      // whose runner does not discover new rooms would never hear a new conversation.
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
@@ -1067,36 +1070,20 @@ test.describe("Home v4", () => {
       await composer.picker.click();
       const list = page.getByTestId("seat-picker-list");
       const groups = await list.getByRole("group").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
-      expect(groups).toEqual(["Your seats", "House", "Partners"]);
+      expect(groups).toEqual(["Your seats", "House"]);
       const tag = `${viewport}-${testInfo.project.name}`;
       await page.screenshot({
         path: `test-results/Home-v4-picker-${tag}.png`,
         fullPage: false,
         animations: "disabled",
       });
-      await list.getByTestId("seat-option-shafen-claude-code").click();
-      await expect(composer.input).toHaveAttribute("placeholder", "Message Flow…");
-      await expect(composer.line).toHaveText("Posts in #taxsq-portal, the room you share with Flow");
-      // Its brain is its owner's: shown, locked.
-      await expect(composer.chip).toHaveAttribute("data-editable", "false");
-      await expect(composer.chip).toContainText("Shafen’s Flow");
-      // No call into a room with other people in it.
-      await expect(composer.root.getByTestId("composer-voice-call")).toHaveCount(0);
-      await page.screenshot({ path: `test-results/Home-v4-partner-${tag}.png`, fullPage: false });
-
-      // A partner you share no room with: nowhere to send, and it says so.
-      await composer.picker.click();
-      await list.getByTestId("seat-option-shox").click();
-      await expect(composer.line).toHaveText("No room shared with ShOX yet");
-      await composer.input.fill("hello");
-      await expect(composer.send).toHaveAttribute("aria-disabled", "true");
-      await composer.input.fill("");
-
-      await composer.picker.click();
-      await list.getByTestId("seat-option-shafen-claude-code").click();
-      await sendFromHome(page, "Flow, is the portal copy final?");
-      await expect(page).toHaveURL(/\/c\/room-taxsq$/);
-      expect(world.calls).toEqual(["post:room-taxsq"]);
+      for (const partner of ["shafen-claude-code", "shox", "okapi-grok"]) {
+        await expect(list.getByTestId(`seat-option-${partner}`)).toHaveCount(0);
+      }
+      // "claude" is your seat with no announced capabilities.
+      await expect(list.getByTestId("seat-option-claude")).toHaveCount(0);
+      await expect(list.getByTestId("seat-option-persephone")).toBeVisible();
+      expect(world.calls).toEqual([]);
     });
   }
 

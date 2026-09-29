@@ -112,6 +112,23 @@ describe("CrewSection", () => {
     expect(useAppStore.getState().toasts[0]?.title).toBe("No room with ShOX yet");
   });
 
+  it("one of your seats that does not follow you: no hub is made, no New or Call, a word instead", async () => {
+    // "claude" is your seat with no announced capabilities: its runner does not
+    // discover new rooms, so a hub made for it would stay silent.
+    renderCrew();
+    const row = await screen.findByTestId("crew-open-claude");
+    expect(row.getAttribute("title")).toBe("No room shared with Claude yet");
+    expect(screen.queryByTestId("crew-menu-claude")).toBeNull();
+    const ensure = vi.spyOn(api, "ensureAgentHub");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    expect(ensure).not.toHaveBeenCalled();
+    ensure.mockRestore();
+    expect(useAppStore.getState().toasts.at(-1)?.title).toBe("No room with Claude yet");
+    expect(useAppStore.getState().toasts.at(-1)?.body).toContain("only answers in the rooms set up for it");
+  });
+
   it("opens the shared room for a partner and the hub for your seat", async () => {
     const { onOpenRoom } = renderCrew();
     fireEvent.click(await screen.findByTestId("crew-open-shafen-claude-code"));

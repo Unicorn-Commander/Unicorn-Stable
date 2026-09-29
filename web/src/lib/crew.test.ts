@@ -1,33 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { coerceOwner, type Agent, type Room, type RoomMember } from "@/services/api";
 import { CREW_FIXTURE, GUEST_AGENT_MEMBER, PARTNER_SEAT_MEMBER, PERSEPHONE_MEMBER } from "@/mocks/crewFixture";
-import {
-  brainLabel,
-  relativeTime,
-  roomClassFloor,
-  canEditSeat,
-  crewBrainChip,
-  crewFromRoster,
-  crewPresence,
-  crewTargetRoom,
-  defaultBrainLabel,
-  groupCrew,
-  hubRoomFor,
-  humanizeModelId,
-  isHubRoom,
-  isRunnerSeat,
-  memberKindMark,
-  modelFamilyLabel,
-  modelLabel,
-  ownerSeatLabel,
-  readRoomSeat,
-  readRoomSeats,
-  RUNNER_OFFLINE_LABEL,
-  RUNNER_ONLINE_LABEL,
-  runnerSeenLabel,
-  seatIndex,
-  sharedRoomFor,
-} from "./crew";
+import { brainLabel, relativeTime, roomClassFloor, canEditSeat, crewBrainChip, crewFromRoster, crewPresence, crewTargetRoom, defaultBrainLabel, groupCrew, hubRoomFor, humanizeModelId, isHubRoom, isRunnerSeat, memberKindMark, modelFamilyLabel, modelLabel, ownerSeatLabel, readRoomSeat, readRoomSeats, RUNNER_OFFLINE_LABEL, RUNNER_ONLINE_LABEL, runnerSeenLabel, seatIndex, sharedRoomFor, opensHub } from "./crew";
 
 const SELF = ["p-aaron"];
 
@@ -397,5 +371,25 @@ describe("member roster marks (§2.0)", () => {
     expect(ownerSeatLabel("Jess")).toBe("Jess’ seat");
     expect(ownerSeatLabel("Shafen Khan")).toBe("Shafen Khan’s seat");
     expect(ownerSeatLabel("  ")).toBe("Partner's seat");
+  });
+});
+
+
+describe("who opens a hub (review 2 follow-up: silent seats)", () => {
+  const base = CREW_FIXTURE.find((row) => row.agent_id === "persephone")!;
+  it("house agents and your seats that announced; never a partner's seat or a seat that did not", () => {
+    expect(opensHub({ group: "house", seat_capabilities: null })).toBe(true);
+    expect(opensHub({ group: "own_seat", seat_capabilities: base.seat_capabilities })).toBe(true);
+    expect(opensHub({ group: "own_seat", seat_capabilities: null })).toBe(false);
+    expect(opensHub({ group: "partner", seat_capabilities: base.seat_capabilities })).toBe(false);
+  });
+  it("a seat that did not announce opens the newest room you share, never its hub", () => {
+    const silent = { ...base, agent_id: "grok", display_name: "Grok", seat_capabilities: null, hub_room_id: "hub-grok" };
+    const hubRoom = { id: "hub-grok", name: "Grok", type: "agent_hub", created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z", member_count: 2, unread_count: 0, last_message: null, members: [], agents: [], parent_room_id: null, brigade_agent_ids: [] } as never;
+    const shared = { id: "room-apparel", name: "apparel-pad", display_name: "apparel-pad", type: "channel", created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-28T00:00:00Z", member_count: 3, unread_count: 0, last_message: null, members: [], agents: [], parent_room_id: null, brigade_agent_ids: ["grok"] } as never;
+    const target = crewTargetRoom(silent, [hubRoom, shared], ["p-aaron"]);
+    expect(target?.kind).toBe("shared");
+    expect(target?.room.id).toBe("room-apparel");
+    expect(crewTargetRoom(silent, [hubRoom], ["p-aaron"])).toBeNull();
   });
 });

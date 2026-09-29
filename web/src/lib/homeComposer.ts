@@ -7,7 +7,7 @@
  * tested without a server or a component.
  */
 import type { Agent, CrewMember, Message, Room, RoomSeat } from "@/services/api";
-import { CREW_GROUP_ORDER, crewFromRoster, crewTargetRoom, hubRoomFor } from "@/lib/crew";
+import { CREW_GROUP_ORDER, crewFromRoster, hubRoomFor, opensHub } from "@/lib/crew";
 import { buildSendRequest, newClientMsgId, type OutgoingSendRequest, type SendRequestBody } from "@/lib/sendPipeline";
 
 /** The house's general assistant: the seat of last resort. */
@@ -42,23 +42,32 @@ function builtInSidekick(): CrewMember {
 }
 
 /**
- * Who the composer can address, in the picker's order: your seats, the
- * house, partners — /crew's rows, each group in the server's order.
+ * Who the composer can address, in the picker's order: your seats, then the
+ * house — /crew's rows, each group in the server's order.
  *
- * With a seat of your own the list is exactly /crew. Without one the list
- * must still hold the seat of last resort, so Sidekick is added to the house
- * (from the roster, else built in) when /crew does not carry it.
+ * Enter starts a NEW conversation, so the list holds only who will hear one
+ * (see `opensHub`): house agents, and your seats whose runner follows you
+ * into new rooms. Left out, on purpose (review 2, P1-1):
+ * - a partner's seat. A line posted into a room you share, without "@name",
+ *   is never answered and is read by everyone there, customers included.
+ * - one of your seats whose runner does not follow you (no announced
+ *   capabilities). A hub made for it would stay silent.
+ *
+ * Without a seat of your own the list must still hold the seat of last
+ * resort, so Sidekick is added to the house (from the roster, else built in)
+ * when /crew does not carry it.
  */
 export function composerSeats(
   crew: readonly CrewMember[],
   roster: readonly Agent[],
 ): CrewMember[] {
-  const rows = CREW_GROUP_ORDER.flatMap((group) => crew.filter((row) => row.group === group));
+  const rows = CREW_GROUP_ORDER.flatMap((group) =>
+    crew.filter((row) => row.group === group && opensHub(row)),
+  );
   if (rows.some((row) => row.group === "own_seat")) return rows;
   if (rows.some((row) => row.group === "house" && isSidekick(row))) return rows;
   const sidekick = crewFromRoster(roster).find(isSidekick) ?? builtInSidekick();
-  const partners = rows.filter((row) => row.group === "partner");
-  return [...rows.filter((row) => row.group !== "partner"), sidekick, ...partners];
+  return [...rows, sidekick];
 }
 
 /**
@@ -99,17 +108,17 @@ export function composerTarget(
   crewAnswered = true,
 ): ComposerTarget {
   if (!seat) return { kind: "none", reason: "No agent to message yet" };
+  // Defensive: composerSeats never offers these (review 2, P1-1).
   if (seat.group === "partner") {
-    const shared = crewTargetRoom(seat, rooms, selfIds, crewAnswered);
-    if (!shared) {
-      return { kind: "none", reason: `No room shared with ${seat.display_name} yet` };
-    }
     return {
-      kind: "shared_room",
-      agentId: seat.agent_id,
-      name: seat.display_name,
-      roomId: shared.room.id,
-      roomLabel: shared.label,
+      kind: "none",
+      reason: `Talk to ${seat.display_name} in a room you share, with @${seat.display_name}`,
+    };
+  }
+  if (!opensHub(seat)) {
+    return {
+      kind: "none",
+      reason: `${seat.display_name} only answers in the rooms set up for it`,
     };
   }
   return {
