@@ -291,16 +291,21 @@ def pick_actor(
         }
 
     others = [m for m in members if str(m.get("participant_id")) != caller_id]
-    if kind in {"mention", "approval"} and sender:
+    if kind == "invite" and creator_id:
+        creator = next((m for m in members if str(m.get("participant_id")) == creator_id), None)
+        if creator:
+            return as_actor(creator)
+    # The face on a row is whoever wrote the line the row previews. Every kind
+    # that carries a sender uses it — not just mentions and approvals. Before
+    # this, an unread group DM fell through to "the first member who isn't
+    # you", so The Colonel's fleet reports wore Persephone's face because her
+    # membership row happened to sort first (Aaron, 2026-09-28).
+    if sender and str(sender.get("participant_id")) != caller_id:
         return as_actor(sender)
     if kind == "agent_waiting":
         agent = next((m for m in others if m.get("participant_type") == "agent"), None)
         if agent:
             return as_actor(agent)
-    if kind == "invite" and creator_id:
-        creator = next((m for m in members if str(m.get("participant_id")) == creator_id), None)
-        if creator:
-            return as_actor(creator)
     human = next((m for m in others if m.get("participant_type") != "agent"), None)
     if human:
         return as_actor(human)
