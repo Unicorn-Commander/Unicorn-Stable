@@ -8,6 +8,13 @@ the class returned to it. A thread is judged on its own lines. Stable's own
 NULL-sender recording notices are house. Every test here FAILED on 45bfb7f;
 the three "mutation-blind" tests pin the query text the earlier tests never
 looked at.
+
+Amended in fix lane 3 (REVIEW-3.md P1-2, P2-1..3, P2-6): the floor verdict is
+``history_shared`` (what was written; membership and the asker are no longer
+inputs), the insert-time rule judges the AUTHOR alone, the history statement
+is two index-friendly subplans, and 024 follows Persephone's mapping. The
+tests below were updated to that contract; ``test_nav_v3_fix3.py`` holds the
+tests that fail on 5ee32e9.
 """
 
 from __future__ import annotations
@@ -292,7 +299,7 @@ class P1_C_StaleJwtRowsAreNotHouse(TestCase):
         self.assertFalse(RC.is_runner_seat(odd))
         self.assertEqual(RC.room_class_facts(HUB, _members(AARON, PERSEPHONE, odd), asking_seat=PERSEPHONE).room_class, "shared")
 
-    def test_migration_024_stamps_backend_runner_on_dev_rows_and_every_seat(self) -> None:
+    def test_migration_024_never_stamps_backend_blindly(self) -> None:
         import importlib.util, pathlib
 
         root = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions" / "024_crew_seat_flags.py"
@@ -304,11 +311,14 @@ class P1_C_StaleJwtRowsAreNotHouse(TestCase):
         with patch.object(mod.op, "get_bind", return_value=conn), patch.object(mod.op, "execute") as op_exec:
             mod.upgrade()
         calls = [(str(c.args[0]), c.args[1] if len(c.args) > 1 else {}) for c in conn.execute.call_args_list]
-        seat_patches = [p["patch"] for s, p in calls if p.get("sub") == "brigade:persephone"]
-        self.assertTrue(any('"backend": "runner"' in patch for patch in seat_patches))
-        dev = [(s, p) for s, p in calls if "brigade:dev-%" in s]
-        self.assertEqual(len(dev), 1)
-        self.assertIn('"backend": "runner"', dev[0][1]["patch"])
+        # REVIEW-3 P2-6: backend is no longer part of the blanket owner merge,
+        # there is no dev-* sweep, and the stamp is guarded by a live key.
+        seat_patches = [p["patch"] for s, p in calls if p.get("sub") == "brigade:persephone" and "patch" in p]
+        self.assertTrue(seat_patches and all('"backend"' not in patch for patch in seat_patches))
+        self.assertEqual([s for s, _p in calls if "brigade:dev-%" in s], [])
+        stamps = [(s, p) for s, p in calls if "jsonb_build_object('backend', 'runner')" in s]
+        self.assertIn("persephone", {p["agent_id"] for _s, p in stamps})
+        self.assertTrue(all("k.revoked_at is null" in s.lower() for s, _p in stamps))
         # P2-13: role_line never overwrites a hand-set value; the rename is marked.
         role_calls = [s for s, p in calls if "role_line" in p.get("patch", "")]
         self.assertTrue(role_calls and all("? 'role_line'" in s for s in role_calls))

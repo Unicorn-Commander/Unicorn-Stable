@@ -254,11 +254,14 @@ class P1_5_DataMigration024(TestCase):
             mod.upgrade()
         calls = [(str(c.args[0]), c.args[1] if len(c.args) > 1 else {}) for c in conn.execute.call_args_list]
         seat_calls = [(sql, params) for sql, params in calls
-                      if "brigade:" in str(params.get("sub", "")) and '"crew": true' in params.get("patch", "")]
+                      if "brigade:" in str(params.get("sub", "")) and '"owner"' in params.get("patch", "")]
         self.assertEqual(len(seat_calls), len(mod.SEAT_OWNERS))
+        self.assertEqual(len(mod.SEAT_OWNERS), 32)   # Persephone's list, measured 2026-09-29
+        crew_subs = {p["sub"] for _s, p in seat_calls if '"crew": true' in p["patch"]}
+        self.assertEqual(crew_subs, {f"brigade:{a}" for a in mod.CREW_SEATS})
         for sql, params in seat_calls:
             self.assertIn("|| cast(:patch as jsonb)", sql.lower())
-            self.assertIn("coalesce(metadata, '{}'::jsonb)", sql.lower())
+            self.assertIn("coalesce(metadata, jsonb_build_object('metadata_null_before_024', true))", sql.lower())
         by_sub = {p["sub"]: p["patch"] for _s, p in seat_calls}
         self.assertIn('"owner": "aaron"', by_sub["brigade:persephone"])
         self.assertIn('"crew": true', by_sub["brigade:persephone"])
@@ -268,7 +271,7 @@ class P1_5_DataMigration024(TestCase):
         joined = "\n".join(sql for sql, _p in calls).lower()
         self.assertIn("display_name = 'rook'", joined)
         self.assertIn("keycloak_sub like 'webhook:%'", joined)
-        self.assertIn("'agent-texts-relay'", joined)
+        self.assertIn("'brigade:texts-relay'", joined)
         self.assertIn("seed_sender_id", joined)
         self.assertNotIn("set metadata = '", joined)  # never a whole-column rewrite
 
