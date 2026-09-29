@@ -98,7 +98,7 @@ export function MeSheet() {
           </button>
           <button
             type="button"
-            className="focus-ring flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-rose-400 transition-colors hover:bg-rose-500/10"
+            className="focus-ring flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-stable-coral transition-colors hover:bg-rose-500/10"
             onClick={() => run(() => logout())}
             data-testid="me-sign-out"
           >

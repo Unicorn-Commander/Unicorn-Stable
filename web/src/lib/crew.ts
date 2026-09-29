@@ -310,11 +310,34 @@ export interface CrewTarget {
 }
 
 /**
+ * Whether a crew row opens (and may create) a hub of yours.
+ *
+ * - A house agent: yes. The server answers for it in any room.
+ * - One of your seats: only once its runner has announced what it runs
+ *   (`seat_capabilities`, `PUT /gateway/me`). Only a runner with room
+ *   discovery on announces, and only such a runner sees a hub or thread
+ *   made after it started. A seat that has not announced answers only in
+ *   the rooms its runner lists, so a hub made for it would stay silent.
+ * - A partner's seat: never (the server refuses: "ask the seat's owner").
+ */
+export function opensHub(member: Pick<CrewMember, "group" | "seat_capabilities">): boolean {
+  if (member.group === "house") return true;
+  if (member.group === "own_seat") return !!member.seat_capabilities;
+  return false;
+}
+
+/** Why one of your seats has no conversation of its own: its runner does not
+ * follow you into new rooms, so it only hears the rooms it lists. */
+export const SEAT_IN_ITS_ROOMS = (name: string): string =>
+  `${name} only answers in the rooms set up for it on its runner, and you share none of them yet.`;
+
+/**
  * The one room a crew row opens — the same answer for the rail, the phone
- * tab and the New sheet. Your seats and house agents open their hub (null
- * when it does not exist yet: the caller may then ask the server for one);
- * a partner's seat opens the newest room you share, in key order, and is
- * never asked for a hub (the server refuses: "ask the seat's owner").
+ * tab and the New sheet. Rows that open a hub (see `opensHub`) get it (null
+ * when it does not exist yet: the caller may then ask the server for one).
+ * A partner's seat, and one of your seats whose runner does not follow you
+ * into new rooms, open the newest room you share, in key order, and are
+ * never asked for a hub.
  */
 export function crewTargetRoom(
   member: CrewMember,
@@ -322,7 +345,7 @@ export function crewTargetRoom(
   selfIds: readonly (string | null | undefined)[],
   crewAnswered = true,
 ): CrewTarget | null {
-  if (member.group === "partner") {
+  if (!opensHub(member)) {
     const shared = sharedRoomFor(member, rooms);
     if (!shared) return null;
     const label = shared.type === "channel" ? `#${roomLabel(shared)}` : roomLabel(shared);

@@ -92,7 +92,7 @@ function Pill({ children, tone }: { children: string; tone: "live" | "rec" }) {
     <span
       className={clsx(
         "rounded-full px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
-        tone === "rec" ? "bg-rose-500/15 text-rose-300" : "bg-stable-mint/15 text-stable-mint",
+        tone === "rec" ? "bg-stable-coral/10 text-stable-coral" : "bg-stable-mint/10 text-stable-mint",
       )}
     >
       {children}
@@ -410,14 +410,14 @@ export function HomeDashboard({
                   <button
                     type="button"
                     onClick={() => void decide(row, "approved")}
-                    className={clsx(SMALL_BUTTON, "bg-stable-mint/15 text-stable-mint")}
+                    className={clsx(SMALL_BUTTON, "bg-stable-mint/10 text-stable-mint")}
                   >
                     Approve
                   </button>
                   <button
                     type="button"
                     onClick={() => void decide(row, "rejected")}
-                    className={clsx(SMALL_BUTTON, "bg-rose-500/10 text-rose-300")}
+                    className={clsx(SMALL_BUTTON, "bg-stable-coral/10 text-stable-coral")}
                   >
                     Decline
                   </button>

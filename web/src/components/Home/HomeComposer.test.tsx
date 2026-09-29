@@ -225,33 +225,27 @@ describe("Home's composer", () => {
     expect(useAppStore.getState().toasts[0]?.title).toBe("Couldn't start a conversation with Persephone");
   });
 
-  it("a partner's seat: says which room, posts there, makes nothing", async () => {
-    const thread = spy(vi.spyOn(api, "createThread"));
-    const post = spy(vi.spyOn(api, "sendMessage")).mockResolvedValue({ ...MESSAGE, room_id: "room-taxsq" });
-    show();
-    fireEvent.click(screen.getByTestId("seat-picker"));
-    fireEvent.click(screen.getByTestId("seat-option-shafen-claude-code"));
-    expect(box().getAttribute("placeholder")).toBe("Message Flow…");
-    expect(screen.getByTestId("home-composer-line")).toHaveTextContent(
-      "Posts in #taxsq-portal, the room you share with Flow",
-    );
-    expect(screen.getByTestId("seat-chip").getAttribute("data-editable")).toBe("false");
-    await send("Is the portal copy final?");
-    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/c/room-taxsq"));
-    expect(thread).not.toHaveBeenCalled();
-    expect(post.mock.calls[0]![0]).toBe("room-taxsq");
-  });
-
-  it("a partner you share no room with: the box says so and sends nothing", async () => {
+  it("never offers a partner's seat: a line without @name in a shared room is read by all and answered by none", async () => {
     const post = spy(vi.spyOn(api, "sendMessage"));
     show();
     fireEvent.click(screen.getByTestId("seat-picker"));
-    fireEvent.click(screen.getByTestId("seat-option-shox"));
-    expect(screen.getByTestId("home-composer-line")).toHaveTextContent("No room shared with ShOX yet");
-    expect(screen.getByTestId("home-composer").getAttribute("data-target")).toBe("none");
-    await send("hello");
+    // Review 2, P1-1: Flow and ShOX are partners' seats in the fixture.
+    expect(screen.queryByTestId("seat-option-shafen-claude-code")).toBeNull();
+    expect(screen.queryByTestId("seat-option-shox")).toBeNull();
+    expect(screen.queryByTestId("seat-option-okapi-grok")).toBeNull();
     expect(post).not.toHaveBeenCalled();
-    expect(box().value).toBe("hello");
+  });
+
+  it("never offers one of your seats whose runner does not follow you into new rooms", async () => {
+    const hub = spy(vi.spyOn(api, "ensureAgentHub"));
+    show();
+    fireEvent.click(screen.getByTestId("seat-picker"));
+    // "claude" is your seat with no announced capabilities: a hub made for it would be silent.
+    expect(screen.queryByTestId("seat-option-claude")).toBeNull();
+    // Seats that announced are offered.
+    expect(screen.getByTestId("seat-option-persephone")).toBeTruthy();
+    expect(screen.getByTestId("seat-option-grok")).toBeTruthy();
+    expect(hub).not.toHaveBeenCalled();
   });
 
   it("a house agent: no brain chip, a hub made on the first message, a call offered", async () => {

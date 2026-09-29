@@ -15,7 +15,7 @@ import clsx from "clsx";
 import { api, type CrewMember, type PeopleDirectoryEntry, type Room } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
-import { CREW_GROUP_LABEL, brainLabel, crewTargetRoom, ownerSeatLabel, readRoomSeat } from "@/lib/crew";
+import { CREW_GROUP_LABEL, brainLabel, crewTargetRoom, opensHub, ownerSeatLabel, readRoomSeat, SEAT_IN_ITS_ROOMS } from "@/lib/crew";
 import { buildToPicks, crewWithRoster, stepPick, type ToPickRef } from "@/lib/newSheetPicker";
 import { useCrew } from "@/hooks/useCrew";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -148,6 +148,14 @@ async function openCrewMember(
     useAppStore.getState().pushToast({
       title: `No room with ${member.display_name} yet`,
       body: `${member.owner ? ownerSeatLabel(member.owner).replace(/’s? seat$/, "") : "Its owner"} has to add their seat to a room you share.`,
+    });
+    return false;
+  }
+  if (!opensHub(member)) {
+    // Its runner does not follow you into new rooms: a hub would be silent.
+    useAppStore.getState().pushToast({
+      title: `No room with ${member.display_name} yet`,
+      body: SEAT_IN_ITS_ROOMS(member.display_name),
     });
     return false;
   }

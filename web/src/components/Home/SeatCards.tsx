@@ -6,7 +6,7 @@ import clsx from "clsx";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { beginThread, openAgentHub } from "@/lib/beginThread";
-import { crewPresence } from "@/lib/crew";
+import { crewPresence, opensHub, SEAT_IN_ITS_ROOMS } from "@/lib/crew";
 import { useCrew } from "@/hooks/useCrew";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
@@ -53,7 +53,11 @@ export function useOwnSeatRows(): CrewRow[] {
         showAll: true,
         collapsed: {},
         roomUnread: (room) => badgeCount(room.id, unreadCounts[room.id] ?? room.unread_count ?? 0),
-      }).groups.flatMap((group) => group.rows),
+      })
+        .groups.flatMap((group) => group.rows)
+        // Seats that follow you into new conversations first; the server's
+        // order is kept inside each part (Array.prototype.sort is stable).
+        .sort((a, b) => Number(opensHub(b.member)) - Number(opensHub(a.member))),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mutedVersion recounts after a mute
     [crew, crewAnswered, currentParticipantId, currentUserId, rooms, agents, unreadCounts, mutedVersion],
   );
@@ -75,6 +79,14 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
 
   async function hubOf(row: CrewRow): Promise<string | null> {
     if (row.roomId) return row.roomId;
+    if (!opensHub(row.member)) {
+      // Its runner does not follow you into new rooms: a hub would be silent.
+      useAppStore.getState().pushToast({
+        title: `No room with ${row.member.display_name} yet`,
+        body: SEAT_IN_ITS_ROOMS(row.member.display_name),
+      });
+      return null;
+    }
     const hub = await openAgentHub(row.member.agent_id);
     if (hub) void queryClient.invalidateQueries({ queryKey: ["rooms", scope] });
     return hub?.id ?? null;
@@ -206,16 +218,18 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
                   onOpenChange={(next) => setMenuFor(next ? row.id : null)}
                   testId={`seat-card-menu-${member.agent_id}`}
                 >
-                  <CrewMenuItem
-                    onClick={() =>
-                      run(row, async (hubId) => {
-                        await beginThread({ roomId: hubId, navigate });
-                      })
-                    }
-                    testId="seat-card-new"
-                  >
-                    <MessageSquarePlus className="h-3.5 w-3.5" /> New conversation
-                  </CrewMenuItem>
+                  {opensHub(member) && (
+                    <CrewMenuItem
+                      onClick={() =>
+                        run(row, async (hubId) => {
+                          await beginThread({ roomId: hubId, navigate });
+                        })
+                      }
+                      testId="seat-card-new"
+                    >
+                      <MessageSquarePlus className="h-3.5 w-3.5" /> New conversation
+                    </CrewMenuItem>
+                  )}
                   <CrewMenuItem
                     onClick={() => run(row, (hubId) => navigate(`/c/${hubId}?seat=1`))}
                     testId="seat-card-settings"

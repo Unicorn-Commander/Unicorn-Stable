@@ -61,15 +61,21 @@ const flow = crew(["shafen-claude-code"])[0]!;
 const majik = crew(["majik"])[0]!;
 
 describe("who the composer addresses", () => {
-  it("lists your seats, then the house, then partners, each in the server's order", () => {
+  it("lists your seats that follow you, then the house, each in the server's order; never a partner's seat", () => {
     const seats = composerSeats(CREW_FIXTURE, []);
     const groups = seats.map((row) => row.group);
     expect(groups).toEqual([...groups].sort((a, b) => order(a) - order(b)));
+    // Review 2, P1-1: no partner's seat, ever.
+    expect(seats.some((row) => row.group === "partner")).toBe(false);
+    // Only your seats whose runner announced capabilities (it follows you into new rooms).
     expect(seats.filter((row) => row.group === "own_seat").map((row) => row.agent_id)).toEqual(
-      CREW_FIXTURE.filter((row) => row.group === "own_seat").map((row) => row.agent_id),
+      CREW_FIXTURE.filter((row) => row.group === "own_seat" && !!row.seat_capabilities).map((row) => row.agent_id),
     );
-    // With a seat of your own the list is exactly /crew.
-    expect(seats).toHaveLength(CREW_FIXTURE.length);
+    expect(seats.map((row) => row.agent_id)).not.toContain("claude");
+    // Every house agent stays: the server answers for it in any room.
+    expect(seats.filter((row) => row.group === "house").map((row) => row.agent_id)).toEqual(
+      CREW_FIXTURE.filter((row) => row.group === "house").map((row) => row.agent_id),
+    );
   });
 
   it("opens on your default agent when it is one of your seats, else on your first seat", () => {
@@ -105,15 +111,15 @@ describe("who the composer addresses", () => {
     expect(defaultComposerSeat([], null)).toBeNull();
   });
 
-  it("adds Sidekick to the house when you have partners and house agents but no seat", () => {
+  it("adds Sidekick to the house when you have house agents but no seat, and drops partners", () => {
     const seats = composerSeats([majik, flow], []);
-    expect(seats.map((row) => row.agent_id)).toEqual(["majik", "sidekick", "shafen-claude-code"]);
+    expect(seats.map((row) => row.agent_id)).toEqual(["majik", "sidekick"]);
     // The house already has Sidekick: nothing is added.
     const sidekick = crew(["sidekick"])[0]!;
-    expect(composerSeats([sidekick, flow], []).map((row) => row.agent_id)).toEqual([
-      "sidekick",
-      "shafen-claude-code",
-    ]);
+    expect(composerSeats([sidekick, flow], []).map((row) => row.agent_id)).toEqual(["sidekick"]);
+    // Your only seat does not follow you: it is not offered, Sidekick is.
+    const claude = crew(["claude"])[0]!;
+    expect(composerSeats([claude], []).map((row) => row.agent_id)).toEqual(["sidekick"]);
   });
 });
 
@@ -162,22 +168,16 @@ describe("where a message lands", () => {
     });
   });
 
-  it("a partner's seat: the newest room you share, named before sending", () => {
+  it("a partner's seat: never a target; it is talked to in a room you share, with @name", () => {
     const target = composerTarget(flow, [older, shared, hub], SELF);
-    expect(target).toEqual({
-      kind: "shared_room",
-      agentId: "shafen-claude-code",
-      name: "Flow",
-      roomId: "room-taxsq",
-      roomLabel: "#taxsq-portal",
-    });
-    expect(composerTargetLine(target)).toBe("Posts in #taxsq-portal, the room you share with Flow");
+    expect(target).toEqual({ kind: "none", reason: "Talk to Flow in a room you share, with @Flow" });
+    expect(composerTargetLine(target)).toBe("Talk to Flow in a room you share, with @Flow");
   });
 
-  it("a partner you share no room with: nowhere, and it says so", () => {
-    const target = composerTarget(flow, [hub], SELF);
-    expect(target).toEqual({ kind: "none", reason: "No room shared with Flow yet" });
-    expect(composerTargetLine(target)).toBe("No room shared with Flow yet");
+  it("one of your seats that does not follow you: nowhere, and it says so", () => {
+    const claude = crew(["claude"])[0]!;
+    const target = composerTarget(claude, [hub], SELF);
+    expect(target).toEqual({ kind: "none", reason: "Claude only answers in the rooms set up for it" });
   });
 
   it("no crew: nowhere", () => {
