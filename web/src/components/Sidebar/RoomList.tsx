@@ -226,8 +226,11 @@ export function RoomList() {
   );
   // Crew and Calls are phone tabs (Nav v3 §2.6). On a desktop the crew is a
   // section above the one list and standing rooms are channel rows in it.
+  // Home has no rail of its own (§2.7): one rail, always — on Home it is the
+  // same Crew and Conversations, with the same search and New.
   const v2Destination =
-    isDesktop && (routedV2Destination === "crew" || routedV2Destination === "calls")
+    routedV2Destination === "home" ||
+    (isDesktop && (routedV2Destination === "crew" || routedV2Destination === "calls"))
       ? "conversations"
       : routedV2Destination;
   const conversationFilter = useNavStore((s) => s.conversationFilter);
@@ -2376,7 +2379,7 @@ export function RoomList() {
     );
   }
 
-  /** Home: crew and conversations. The destination switcher stays on the rail. */
+  /** Home in the five-view shell (the flag's fallback) keeps its own rail. */
   function renderHomeBody() {
     return <HomeRail onOpenRoom={openRoom} />;
   }
@@ -2534,7 +2537,6 @@ export function RoomList() {
   function renderNavBody() {
     if (!roomsLoaded) return renderNavSkeleton();
     if (navV2) {
-      if (v2Destination === "home") return renderHomeBody();
       if (v2Destination === "directory") return renderDirectoryBody();
       if (v2Destination === "crew") return renderCrewBody();
       if (v2Destination === "calls") return renderMeetingsBody();

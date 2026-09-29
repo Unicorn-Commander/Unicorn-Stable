@@ -543,17 +543,7 @@ export function buildRevision(
   return revision.slice(0, 7);
 }
 
-/* ── Dashboard v3 ────────────────────────────────────────────────── */
-
-export const HOME_SECTION_IDS = [
-  "needs_you",
-  "live_now",
-  "crew",
-  "recent",
-  "today",
-] as const;
-
-export type HomeSectionId = (typeof HOME_SECTION_IDS)[number];
+/* ── Home rows ───────────────────────────────────────────────────── */
 
 /** A live call plus the v3 pills. Missing flags mean the detail poll has not landed. */
 export interface HomeLiveCall {
@@ -571,52 +561,6 @@ export interface HomeLiveCall {
     avatar_url: string | null;
     agent_id: string | null;
   } | null;
-}
-
-export function normalizeSectionOrder(
-  order: readonly string[] | null | undefined,
-): HomeSectionId[] {
-  const known = new Set<string>(HOME_SECTION_IDS);
-  const out: HomeSectionId[] = [];
-  for (const id of order ?? []) {
-    if (known.has(id) && !out.includes(id as HomeSectionId)) {
-      out.push(id as HomeSectionId);
-    }
-  }
-  for (const id of HOME_SECTION_IDS) {
-    if (!out.includes(id)) out.push(id);
-  }
-  return out;
-}
-
-export function moveSection(
-  order: readonly HomeSectionId[],
-  id: HomeSectionId,
-  dir: -1 | 1,
-): HomeSectionId[] {
-  const next = [...order];
-  const index = next.indexOf(id);
-  const target = index + dir;
-  if (index < 0 || target < 0 || target >= next.length) return next;
-  const from = next[index];
-  const to = next[target];
-  if (!from || !to) return next;
-  next[index] = to;
-  next[target] = from;
-  return next;
-}
-
-export function reorderSections(
-  order: readonly HomeSectionId[],
-  fromId: HomeSectionId,
-  toId: HomeSectionId,
-): HomeSectionId[] {
-  if (fromId === toId) return [...order];
-  const next = order.filter((id) => id !== fromId);
-  const index = next.indexOf(toId);
-  if (index < 0) return [...order];
-  next.splice(index, 0, fromId);
-  return next;
 }
 
 export function partitionNeedsYou<T extends { stale: boolean }>(
@@ -665,57 +609,6 @@ export function modeLabel(mode: string | null | undefined): string {
     default:
       return "Default";
   }
-}
-
-/**
- * How Home draws a section once the summary has resolved.
- *
- * `content` — rows, header, and a count. Same as a section that already has work.
- * `line` — the section exists and is empty right now: one quiet sentence.
- * `omit` — it has never had content: no header and no zero.
- *
- * When nothing needs you, those quiet lines fold into one "You're all clear".
- * A live call, a crew card, a recent room, or a today row still renders.
- */
-export type SectionChrome = "content" | "line" | "omit";
-
-export interface HomeInboxFacts {
-  /** Fresh and stale needs-you rows. Stale still counts as content. */
-  needsCount: number;
-  liveCount: number;
-  crewCount: number;
-  recentCount: number;
-  /** The user has rooms, including ones recentConversations hides as archived. */
-  hadConversations: boolean;
-  todayCount: number;
-  /** False when Today is unreachable and nothing local stands in. */
-  todayKnown: boolean;
-}
-
-export interface HomeEmptyPolicy {
-  allClear: boolean;
-  sections: Record<HomeSectionId, SectionChrome>;
-}
-
-export function homeEmptyPolicy(facts: HomeInboxFacts): HomeEmptyPolicy {
-  const sections: Record<HomeSectionId, SectionChrome> = {
-    needs_you: facts.needsCount > 0 ? "content" : "line",
-    live_now: facts.liveCount > 0 ? "content" : "line",
-    // No crew cards means the section has never had content.
-    crew: facts.crewCount > 0 ? "content" : "omit",
-    recent:
-      facts.recentCount > 0 ? "content" : facts.hadConversations ? "line" : "omit",
-    today: facts.todayCount > 0 ? "content" : facts.todayKnown ? "line" : "omit",
-  };
-
-  const allClear = facts.needsCount === 0;
-  if (allClear) {
-    sections.needs_you = "omit";
-    if (sections.live_now === "line") sections.live_now = "omit";
-    if (sections.recent === "line") sections.recent = "omit";
-    if (sections.today === "line") sections.today = "omit";
-  }
-  return { allClear, sections };
 }
 
 /** Human DMs starred in People, in that order, then the other recent rooms. */
@@ -801,3 +694,135 @@ export function mergeLiveCalls(
   }
   return out;
 }
+
+/* ── Home v4 (Nav v3 §2.7): a composer, not a report ─────────────── */
+
+/**
+ * The zones under the composer and the seats, in the page's order. The
+ * order is the design's, not a preference: what needs you, what is live,
+ * what is due, where you were.
+ */
+export const HOME_ZONE_IDS = ["needs_you", "live_now", "today", "recent"] as const;
+
+export type HomeZoneId = (typeof HOME_ZONE_IDS)[number];
+
+export const HOME_ZONE_LABEL: Record<HomeZoneId, string> = {
+  needs_you: "Needs you",
+  live_now: "Live now",
+  today: "Today",
+  recent: "Recent",
+};
+
+/** The one line a quiet day says. */
+export const BOARD_CLEAR_LINE = "The board is clear.";
+
+/**
+ * Whether Recent is drawn under a clear board. The design says a quiet day
+ * is the composer, your seats and one line; the conversations are one tap
+ * away in the rail and in Chats. One constant, should that reading change.
+ */
+export const RECENT_ON_A_CLEAR_BOARD = false;
+
+export interface HomeZoneFacts {
+  /** Fresh and stale rows: a stale row still needs you. */
+  needsCount: number;
+  liveCount: number;
+  todayCount: number;
+  recentCount: number;
+  /** Seats of your own, from /crew. */
+  seatCount: number;
+}
+
+export interface HomeZones {
+  /** Your seats are drawn only when you have one. */
+  seats: boolean;
+  /** The zones with rows, in order. A zone without rows is not drawn: no header, no zero, no sentence. */
+  zones: HomeZoneId[];
+  /** Nothing needs you, nothing is live, nothing is due. */
+  boardClear: boolean;
+}
+
+export function homeZones(
+  facts: HomeZoneFacts,
+  options: { recentOnClearBoard?: boolean } = {},
+): HomeZones {
+  const recentOnClearBoard = options.recentOnClearBoard ?? RECENT_ON_A_CLEAR_BOARD;
+  const boardClear = facts.needsCount + facts.liveCount + facts.todayCount <= 0;
+  const has: Record<HomeZoneId, boolean> = {
+    needs_you: facts.needsCount > 0,
+    live_now: facts.liveCount > 0,
+    today: facts.todayCount > 0,
+    recent: facts.recentCount > 0 && (!boardClear || recentOnClearBoard),
+  };
+  return {
+    seats: facts.seatCount > 0,
+    zones: HOME_ZONE_IDS.filter((id) => has[id]),
+    boardClear,
+  };
+}
+
+/** Approvals first, then mentions, then unread from people, then the rest. */
+const NEEDS_YOU_RANK: Record<string, number> = {
+  approval: 0,
+  mention: 1,
+  dm: 2,
+  agent_waiting: 3,
+  invite: 4,
+};
+
+/**
+ * Needs you, in reading order: by kind (approvals, mentions, people, then
+ * agents waiting and invites), newest first inside a kind. A kind this
+ * client does not know sorts last rather than disappearing.
+ */
+export function orderNeedsYou<T extends { kind: string; created_at: string }>(
+  rows: readonly T[],
+): T[] {
+  const stamp = (row: T) => {
+    const at = Date.parse(row.created_at);
+    return Number.isFinite(at) ? at : 0;
+  };
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort(
+      (a, b) =>
+        (NEEDS_YOU_RANK[a.row.kind] ?? 9) - (NEEDS_YOU_RANK[b.row.kind] ?? 9) ||
+        stamp(b.row) - stamp(a.row) ||
+        a.index - b.index,
+    )
+    .map((entry) => entry.row);
+}
+
+/** Recent on Home: one line per conversation, this many at most. */
+export const HOME_RECENT_CAP = 8;
+
+export interface SeatCardFacts {
+  /** What the seat is doing now, from its events. */
+  task: string | null;
+  since: string | null;
+  lastLine: string | null;
+}
+
+/**
+ * What a seat's card says besides its face: the summary's card for the
+ * seat (current task, since, last line), with /crew's last line when the
+ * summary has none. A seat the summary does not know still gets its card.
+ */
+export function seatCardFacts(
+  seat: { agent_id: string; last_line?: string | null },
+  cards: readonly {
+    agent_id: string;
+    current_task?: string | null;
+    since?: string | null;
+    last_line?: string | null;
+  }[],
+): SeatCardFacts {
+  const card = cards.find((row) => row.agent_id === seat.agent_id);
+  const text = (value: string | null | undefined) => (value && value.trim() ? value.trim() : null);
+  return {
+    task: text(card?.current_task),
+    since: text(card?.since),
+    lastLine: text(card?.last_line) ?? text(seat.last_line),
+  };
+}
+

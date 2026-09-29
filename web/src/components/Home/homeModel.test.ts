@@ -15,15 +15,17 @@ import {
   priorityModel,
   rankedFleet,
   serviceEntries,
-  homeEmptyPolicy,
+  BOARD_CLEAR_LINE,
+  HOME_RECENT_CAP,
+  RECENT_ON_A_CLEAR_BOARD,
   homeRailConversations,
+  homeZones,
+  orderNeedsYou,
+  seatCardFacts,
   isCrewWorking,
   mergeLiveCalls,
-  moveSection,
-  normalizeSectionOrder,
   partitionNeedsYou,
   recentConversations,
-  reorderSections,
   todaySectionHidden,
   unreadCountFor,
 } from "./homeModel";
@@ -638,24 +640,7 @@ describe("agentsSegment wording", () => {
   });
 });
 
-describe("dashboard v3", () => {
-  it("keeps the five sections and drops unknown ids", () => {
-    expect(normalizeSectionOrder(["today", "nope", "crew"])).toEqual([
-      "today",
-      "crew",
-      "needs_you",
-      "live_now",
-      "recent",
-    ]);
-  });
-
-  it("moves a section one step and reorders on drop", () => {
-    const order = normalizeSectionOrder(null);
-    expect(moveSection(order, "needs_you", -1)).toEqual(order);
-    expect(moveSection(order, "live_now", -1)[0]).toBe("live_now");
-    expect(reorderSections(order, "today", "needs_you")[0]).toBe("today");
-  });
-
+describe("Home rows", () => {
   it("folds stale needs-you rows out of the fresh list", () => {
     const parts = partitionNeedsYou([
       { id: "a", stale: false },
@@ -701,69 +686,6 @@ describe("dashboard v3", () => {
         NOW,
       ),
     ).toBe(false);
-  });
-
-  it("folds a clear day into one statement and keeps sections that have rows", () => {
-    const clear = homeEmptyPolicy({
-      needsCount: 0,
-      liveCount: 0,
-      crewCount: 0,
-      recentCount: 4,
-      hadConversations: true,
-      todayCount: 0,
-      todayKnown: false,
-    });
-    expect(clear.allClear).toBe(true);
-    expect(clear.sections).toEqual({
-      needs_you: "omit",
-      live_now: "omit",
-      crew: "omit",
-      recent: "content",
-      today: "omit",
-    });
-
-    const withLive = homeEmptyPolicy({
-      needsCount: 0,
-      liveCount: 1,
-      crewCount: 2,
-      recentCount: 0,
-      hadConversations: true,
-      todayCount: 0,
-      todayKnown: true,
-    });
-    expect(withLive.allClear).toBe(true);
-    expect(withLive.sections.live_now).toBe("content");
-    expect(withLive.sections.crew).toBe("content");
-    expect(withLive.sections.needs_you).toBe("omit");
-    expect(withLive.sections.today).toBe("omit");
-    expect(withLive.sections.recent).toBe("omit");
-
-    const busy = homeEmptyPolicy({
-      needsCount: 2,
-      liveCount: 0,
-      crewCount: 0,
-      recentCount: 0,
-      hadConversations: true,
-      todayCount: 0,
-      todayKnown: true,
-    });
-    expect(busy.allClear).toBe(false);
-    expect(busy.sections.needs_you).toBe("content");
-    expect(busy.sections.live_now).toBe("line");
-    expect(busy.sections.crew).toBe("omit");
-    expect(busy.sections.recent).toBe("line");
-    expect(busy.sections.today).toBe("line");
-    expect(
-      homeEmptyPolicy({
-        needsCount: 1,
-        liveCount: 0,
-        crewCount: 0,
-        recentCount: 0,
-        hadConversations: false,
-        todayCount: 0,
-        todayKnown: false,
-      }).sections.recent,
-    ).toBe("omit");
   });
 
   it("pins starred human DMs ahead of the other recent rooms", () => {
@@ -837,3 +759,116 @@ describe("dashboard v3", () => {
     expect(merged[0]?.floor_holder?.display_name).toBe("Majik");
   });
 });
+
+describe("Home v4 zones", () => {
+  const quiet = { needsCount: 0, liveCount: 0, todayCount: 0, recentCount: 6, seatCount: 2 };
+
+  it("a quiet day is the composer, your seats and one line", () => {
+    expect(homeZones(quiet)).toEqual({ seats: true, zones: [], boardClear: true });
+    expect(BOARD_CLEAR_LINE).toBe("The board is clear.");
+    expect(RECENT_ON_A_CLEAR_BOARD).toBe(false);
+  });
+
+  it("draws Recent under a clear board only when asked to", () => {
+    expect(homeZones(quiet, { recentOnClearBoard: true })).toEqual({
+      seats: true,
+      zones: ["recent"],
+      boardClear: true,
+    });
+    expect(homeZones({ ...quiet, recentCount: 0 }, { recentOnClearBoard: true }).zones).toEqual([]);
+  });
+
+  it("an empty zone is not drawn, and the rest keep the design's order", () => {
+    expect(homeZones({ ...quiet, needsCount: 2, todayCount: 1 })).toEqual({
+      seats: true,
+      zones: ["needs_you", "today", "recent"],
+      boardClear: false,
+    });
+    expect(homeZones({ ...quiet, liveCount: 1 }).zones).toEqual(["live_now", "recent"]);
+    expect(homeZones({ ...quiet, liveCount: 1, recentCount: 0 }).zones).toEqual(["live_now"]);
+    expect(
+      homeZones({ needsCount: 1, liveCount: 1, todayCount: 1, recentCount: 1, seatCount: 1 }).zones,
+    ).toEqual(["needs_you", "live_now", "today", "recent"]);
+  });
+
+  it("first run: no seats, nothing else, and the board is still clear", () => {
+    expect(
+      homeZones({ needsCount: 0, liveCount: 0, todayCount: 0, recentCount: 0, seatCount: 0 }),
+    ).toEqual({ seats: false, zones: [], boardClear: true });
+  });
+
+  it("a stale row still needs you", () => {
+    // The caller counts fresh and stale together.
+    expect(homeZones({ ...quiet, needsCount: 1 }).boardClear).toBe(false);
+  });
+
+  it("caps Recent at eight", () => {
+    expect(HOME_RECENT_CAP).toBe(8);
+    const rooms = Array.from({ length: 12 }, (_, index) =>
+      room({ id: `r-${index}`, type: "channel", updated_at: new Date(NOW - index * 60_000).toISOString() }),
+    );
+    expect(recentConversations(rooms, HOME_RECENT_CAP)).toHaveLength(8);
+  });
+});
+
+describe("Needs you, in reading order", () => {
+  const row = (kind: string, minute: number, id = `${kind}-${minute}`) => ({
+    id,
+    kind,
+    created_at: new Date(NOW + minute * 60_000).toISOString(),
+  });
+
+  it("approvals first, then mentions, then people, then the rest — newest first inside a kind", () => {
+    const rows = [
+      row("dm", 5),
+      row("invite", 9),
+      row("mention", 1),
+      row("approval", 2),
+      row("agent_waiting", 8),
+      row("approval", 7),
+      row("mention", 6),
+    ];
+    expect(orderNeedsYou(rows).map((entry) => entry.id)).toEqual([
+      "approval-7",
+      "approval-2",
+      "mention-6",
+      "mention-1",
+      "dm-5",
+      "agent_waiting-8",
+      "invite-9",
+    ]);
+  });
+
+  it("keeps a kind it does not know, last, and does not reorder equal rows", () => {
+    const rows = [row("poll", 3), row("approval", 1, "a"), { ...row("approval", 1, "b") }, row("dm", 0)];
+    expect(orderNeedsYou(rows).map((entry) => entry.id)).toEqual(["a", "b", "dm-0", "poll-3"]);
+    expect(orderNeedsYou([{ kind: "dm", created_at: "not a date" }])).toHaveLength(1);
+    expect(orderNeedsYou([])).toEqual([]);
+  });
+});
+
+describe("a seat's card", () => {
+  const cards = [
+    { agent_id: "persephone", current_task: "Reviewing PR #42", since: "2026-08-07T11:58:00Z", last_line: "On it." },
+    { agent_id: "rook", current_task: null, since: null, last_line: "  " },
+  ];
+
+  it("says what the seat is doing and its last line, from the summary", () => {
+    expect(seatCardFacts({ agent_id: "persephone", last_line: "older" }, cards)).toEqual({
+      task: "Reviewing PR #42",
+      since: "2026-08-07T11:58:00Z",
+      lastLine: "On it.",
+    });
+  });
+
+  it("falls back to /crew's last line, and to nothing", () => {
+    expect(seatCardFacts({ agent_id: "rook", last_line: "Cue sheet is up." }, cards)).toEqual({
+      task: null,
+      since: null,
+      lastLine: "Cue sheet is up.",
+    });
+    expect(seatCardFacts({ agent_id: "zen" }, cards)).toEqual({ task: null, since: null, lastLine: null });
+    expect(seatCardFacts({ agent_id: "zen", last_line: null }, [])).toEqual({ task: null, since: null, lastLine: null });
+  });
+});
+

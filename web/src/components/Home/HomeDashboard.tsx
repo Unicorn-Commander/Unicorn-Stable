@@ -1,86 +1,59 @@
-import { lastLinePreview } from "@/lib/systemLines";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ChevronDown,
-  ChevronUp,
-  MoreHorizontal,
-  Pencil,
-  Phone,
-  Sparkles,
-} from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Pencil } from "lucide-react";
 import clsx from "clsx";
 import { api, type Agent, type Room } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
-import { resolveDefaultAgent } from "@/components/Sidebar/newChat";
+import { lastLinePreview } from "@/lib/systemLines";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { useNavStore } from "@/stores/navStore";
 import { LIVE_CALLS_POLL_MS, useLiveCalls } from "@/hooks/useLiveCalls";
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import type { ActivityTab } from "@/components/Layout/ActivityCenter";
 import { previewText, rowTime } from "./widgets/HomeRow";
 import {
-  homeEmptyPolicy,
+  BOARD_CLEAR_LINE,
+  HOME_RECENT_CAP,
+  HOME_ZONE_LABEL,
+  homeZones,
   isCrewWorking,
   mergeLiveCalls,
-  modeLabel,
-  moveSection,
-  normalizeSectionOrder,
+  orderNeedsYou,
   partitionNeedsYou,
   recentConversations,
-  reorderSections,
   todaySectionHidden,
-  type HomeSectionId,
+  type HomeZoneId,
 } from "./homeModel";
 import {
-  ensureAgentHub,
   fetchHomeSummaryV3,
-  fetchSectionPrefs,
-  homeRequest,
-  saveSectionPrefs,
-  type CrewCard,
   type HomeActor,
-  type HomeSectionPrefs,
   type HomeSummaryV3,
   type NeedsYouRow,
   type PoTaskRow,
   type TodayMeeting,
 } from "./homeClient";
+import { HomeComposer } from "./HomeComposer";
+import { SeatCards, useOwnSeatRows } from "./SeatCards";
 
-const SECTION_LABEL: Record<HomeSectionId, string> = {
-  needs_you: "Needs you",
-  live_now: "Live now",
-  crew: "Your crew",
-  recent: "Recent",
-  today: "Today",
-};
+/** Below `md` the shell is the phone's: tabs at the foot, and Home's composer pinned above them. */
+const PHONE_QUERY = "(max-width: 767px)";
 
-/** One sentence for a section that exists and is empty. Not a card. */
-const QUIET_LINE: Record<HomeSectionId, string> = {
-  needs_you: "You're all clear",
-  live_now: "Nothing live right now.",
-  crew: "",
-  recent: "No conversations yet.",
-  today: "Nothing due today.",
-};
-
-const AGENT_MODES = [
-  ["answers_all", "Answers all"],
-  ["when_named", "When named"],
-  ["listening", "Listening"],
-  ["muted", "Muted"],
-] as const;
-
-function greetingFor(hour: number): string {
-  if (hour < 5) return "Good evening";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+function usePhoneShell(): boolean {
+  const [phone, setPhone] = useState(() => window.matchMedia?.(PHONE_QUERY)?.matches ?? false);
+  useEffect(() => {
+    const mq = window.matchMedia?.(PHONE_QUERY);
+    if (!mq) return;
+    const onChange = (event: MediaQueryListEvent) => setPhone(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return phone;
 }
 
-function ActorFace({ actor, size = 32 }: { actor: HomeActor; size?: number }) {
+function ActorFace({ actor, size = 28 }: { actor: HomeActor; size?: number }) {
   return (
     <Identity
       {...resolveIdentity({
@@ -100,7 +73,7 @@ function RoomFace({
   room,
   selfId,
   agents,
-  size = 32,
+  size = 28,
 }: {
   room: Room;
   selfId: string | null;
@@ -111,24 +84,7 @@ function RoomFace({
 }
 
 function AppFace({ id, name }: { id: string; name: string }) {
-  return (
-    <Identity
-      {...resolveIdentity({ id, display_name: name, name })}
-      size={32}
-    />
-  );
-}
-
-function Count({ n }: { n: number }) {
-  if (n <= 0) return null;
-  return (
-    <span
-      className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300"
-      data-testid="home-count"
-    >
-      {n}
-    </span>
-  );
+  return <Identity {...resolveIdentity({ id, display_name: name, name })} size={28} />;
 }
 
 function Pill({ children, tone }: { children: string; tone: "live" | "rec" }) {
@@ -144,16 +100,52 @@ function Pill({ children, tone }: { children: string; tone: "live" | "rec" }) {
   );
 }
 
-function Skeleton() {
+const ROWS = "overflow-hidden rounded-xl border border-line bg-white/[0.02]";
+const ROW = "border-t border-white/[0.04] first:border-t-0";
+const SMALL_BUTTON =
+  "focus-ring shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold max-md:min-h-9 max-md:px-2.5";
+
+function Zone({
+  id,
+  count,
+  action,
+  children,
+}: {
+  id: HomeZoneId;
+  count: number;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex-1 overflow-y-auto" data-testid="home-skeleton" aria-busy="true">
-      <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-6 sm:px-6">
-        <div className="card h-24 animate-pulse-soft" />
-        {Array.from({ length: 4 }, (_, index) => (
-          <div key={index} className="card space-y-3 p-4">
-            <div className="h-3 w-28 rounded bg-white/[0.06]" />
-            <div className="h-10 rounded-lg bg-white/[0.04]" />
-            <div className="h-10 w-4/5 rounded-lg bg-white/[0.04]" />
+    <section data-testid={`home-zone-${id}`} aria-labelledby={`home-${id}-heading`}>
+      <div className="flex items-center justify-between gap-2 px-1 pb-1.5">
+        <h2
+          id={`home-${id}-heading`}
+          className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500"
+        >
+          {HOME_ZONE_LABEL[id]}
+          {count > 0 && (
+            <span className="ml-1.5 tabular-nums text-slate-400" data-testid="home-count">
+              {count}
+            </span>
+          )}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ZoneSkeleton() {
+  return (
+    <div className="space-y-2" data-testid="home-skeleton" aria-busy="true">
+      <div className="h-2.5 w-20 rounded bg-white/[0.06]" />
+      <div className={clsx(ROWS, "animate-pulse-soft")}>
+        {[0, 1, 2].map((index) => (
+          <div key={index} className={clsx(ROW, "flex items-center gap-3 px-3 py-2.5")}>
+            <div className="h-7 w-7 shrink-0 rounded-full bg-white/[0.05]" />
+            <div className="h-2.5 flex-1 rounded bg-white/[0.05]" />
           </div>
         ))}
       </div>
@@ -162,8 +154,17 @@ function Skeleton() {
 }
 
 /**
- * Dashboard v3 — an inbox. Counts live in the section headers. People and
- * the fleet directory are not on this page.
+ * Home v4 (Nav v3 §2.7) — a composer, not a report.
+ *
+ * The composer is the first thing on the page; your seats sit under it;
+ * then what needs you, what is live, what is due today and where you were,
+ * each only while it has rows. A quiet day is the composer, your seats and
+ * one line. On a phone the order is the same in one column, with the
+ * composer pinned above the tab bar.
+ *
+ * The composer and the seats come from /crew and do not wait for the
+ * summary: a summary that is slow, or fails, costs the zones and nothing
+ * else.
  */
 export function HomeDashboard({
   onOpenActivity,
@@ -181,24 +182,17 @@ export function HomeDashboard({
   const setPeopleDrawerOpen = useAppStore((s) => s.setPeopleDrawerOpen);
   const pushToast = useAppStore((s) => s.pushToast);
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const phone = usePhoneShell();
+  const seatRows = useOwnSeatRows();
 
   const summaryQuery = useQuery({
     queryKey: ["home-summary-v3", activeInstanceId],
     queryFn: fetchHomeSummaryV3,
     refetchInterval: LIVE_CALLS_POLL_MS,
   });
-  const prefsQuery = useQuery({
-    queryKey: ["home-section-prefs", activeInstanceId],
-    queryFn: fetchSectionPrefs,
-  });
   const preferencesQuery = useQuery({
     queryKey: ["my-preferences", activeInstanceId],
     queryFn: () => api.getMyPreferences(),
-    staleTime: 60_000,
-  });
-  const rosterQuery = useQuery({
-    queryKey: ["brigade-roster", activeInstanceId],
-    queryFn: () => api.getAgents(),
     staleTime: 60_000,
   });
   const catalogQuery = useQuery({
@@ -207,69 +201,15 @@ export function HomeDashboard({
     staleTime: 300_000,
   });
 
-  // Shared with the sidebar badges. v3 (above) adds recording, floor, and the inbox.
+  // Shared with the sidebar badges. The summary adds recording and the floor.
   const live = useLiveCalls();
 
   const [draftTick, setDraftTick] = useState(0);
   useEffect(() => subscribeDrafts(() => setDraftTick((n) => n + 1)), []);
   const [staleOpen, setStaleOpen] = useState(false);
-  const [menuFor, setMenuFor] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [dragId, setDragId] = useState<HomeSectionId | null>(null);
 
   const summary: HomeSummaryV3 | undefined = summaryQuery.data;
-  const order = useMemo(
-    () => normalizeSectionOrder(prefsQuery.data?.order),
-    [prefsQuery.data?.order],
-  );
-  const collapsed = useMemo(
-    () => prefsQuery.data?.collapsed ?? {},
-    [prefsQuery.data?.collapsed],
-  );
-
-  const savePrefs = useMutation({
-    mutationFn: (prefs: HomeSectionPrefs) => saveSectionPrefs(prefs),
-    onSuccess: (saved) => {
-      queryClient.setQueryData(["home-section-prefs", activeInstanceId], saved);
-    },
-  });
-
-  const persist = useCallback(
-    (next: HomeSectionPrefs) => {
-      queryClient.setQueryData(["home-section-prefs", activeInstanceId], next);
-      savePrefs.mutate(next);
-    },
-    [activeInstanceId, queryClient, savePrefs],
-  );
-
-  const toggleCollapsed = useCallback(
-    (id: HomeSectionId) => {
-      persist({
-        order,
-        collapsed: { ...collapsed, [id]: !collapsed[id] },
-      });
-    },
-    [collapsed, order, persist],
-  );
-
-  const shift = useCallback(
-    (id: HomeSectionId, dir: -1 | 1) => {
-      persist({ order: moveSection(order, id, dir), collapsed: { ...collapsed } });
-    },
-    [collapsed, order, persist],
-  );
-
-  const dropOn = useCallback(
-    (target: HomeSectionId) => {
-      if (!dragId) return;
-      persist({
-        order: reorderSections(order, dragId, target),
-        collapsed: { ...collapsed },
-      });
-      setDragId(null);
-    },
-    [collapsed, dragId, order, persist],
-  );
 
   const openRoom = useCallback(
     (id: string) => {
@@ -307,66 +247,6 @@ export function HomeDashboard({
     [busy, fail, queryClient],
   );
 
-  const openHub = useCallback(
-    async (card: CrewCard) => {
-      if (busy) return;
-      setBusy(card.agent_id);
-      try {
-        const id = await ensureAgentHub(card);
-        openRoom(id);
-      } catch (error) {
-        fail("Couldn't open the hub", error);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [busy, fail, openRoom],
-  );
-
-  const newThread = useCallback(
-    async (card: CrewCard) => {
-      if (busy) return;
-      setBusy(`thread:${card.agent_id}`);
-      try {
-        const hub = await ensureAgentHub(card);
-        const thread = await homeRequest<{ id: string }>(
-          "POST",
-          `/api/v1/rooms/${hub}/threads`,
-          {},
-        );
-        setMenuFor(null);
-        openRoom(thread.id);
-      } catch (error) {
-        fail("Couldn't start a thread", error);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [busy, fail, openRoom],
-  );
-
-  const changeMode = useCallback(
-    async (card: CrewCard, mode: string) => {
-      if (busy) return;
-      setBusy(`mode:${card.agent_id}`);
-      try {
-        const hub = await ensureAgentHub(card);
-        await homeRequest(
-          "PATCH",
-          `/api/v1/rooms/${hub}/members/${card.participant_id}`,
-          { agent_mode: mode },
-        );
-        setMenuFor(null);
-        await queryClient.invalidateQueries({ queryKey: ["home-summary-v3"] });
-      } catch (error) {
-        fail("Couldn't change mode", error);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [busy, fail, queryClient],
-  );
-
   const joinStanding = useCallback(
     async (meeting: TodayMeeting) => {
       if (meeting.room_id) {
@@ -391,32 +271,6 @@ export function HomeDashboard({
     [busy, fail, openRoom],
   );
 
-  const defaultAgent = useMemo(
-    () => resolveDefaultAgent(rosterQuery.data ?? rosterAgents, preferencesQuery.data?.default_agent_id ?? null),
-    [preferencesQuery.data?.default_agent_id, rosterAgents, rosterQuery.data],
-  );
-
-  const meetAgent = useCallback(async () => {
-    if (busy) return;
-    setBusy("meet");
-    try {
-      const hub = await homeRequest<{ id: string }>(
-        "POST",
-        `/api/v1/agents/${encodeURIComponent(defaultAgent.id)}/hub`,
-      );
-      await api.setOnboardingChecklist({
-        ...(preferencesQuery.data?.onboarding_checklist ?? {}),
-        agent: true,
-      });
-      await queryClient.invalidateQueries({ queryKey: ["rooms"] });
-      openRoom(hub.id);
-    } catch (error) {
-      fail("Couldn't open that conversation", error);
-    } finally {
-      setBusy(null);
-    }
-  }, [busy, defaultAgent.id, fail, openRoom, preferencesQuery.data?.onboarding_checklist, queryClient]);
-
   const seedChannels = useCallback(async () => {
     if (busy) return;
     setBusy("seed");
@@ -436,439 +290,301 @@ export function HomeDashboard({
     }
   }, [busy, fail, preferencesQuery.data?.onboarding_checklist, queryClient]);
 
-  const cold = !roomsLoaded || summaryQuery.isPending;
-  if (cold) return <Skeleton />;
+  const showAllConversations = useCallback(() => {
+    useNavStore.getState().setV2Destination("conversations");
+    const state = useAppStore.getState();
+    if (!state.ui.sidebarOpen) state.toggleSidebar();
+  }, []);
 
-  if (summaryQuery.isError || !summary) {
-    return (
-      <div className="flex-1 overflow-y-auto" data-testid="home-error">
-        <div className="mx-auto max-w-lg px-4 py-16 text-center">
-          <p className="font-display text-lg text-slate-100">Home didn't load</p>
-          <p className="mt-2 text-sm text-slate-400">
-            The summary request failed. Nothing below is filled in.
-          </p>
-          <button
-            type="button"
-            onClick={() => void summaryQuery.refetch()}
-            className="focus-ring gradient-bg mt-4 rounded-lg px-3 py-2 text-xs font-semibold text-white"
-          >
-            Try again
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (rooms.length === 0) {
-    const agentIdentity = resolveIdentity({
-      id: defaultAgent.id,
-      display_name: defaultAgent.name,
-      name: defaultAgent.name,
-      participant_type: "agent",
-    });
-    return (
-      <div className="flex-1 overflow-y-auto" data-testid="home-first-run">
-        <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
-          <section className="card px-5 py-6 sm:px-8" aria-label="Get started">
-            <div className="flex items-center gap-4">
-              <Identity {...agentIdentity} size={56} />
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                  First run
-                </p>
-                <h1 className="font-display text-2xl font-bold text-slate-50">
-                  Meet {defaultAgent.name}
-                </h1>
-                <p className="mt-1 text-sm text-slate-400">
-                  Your workspace starts with one useful conversation.
-                </p>
-              </div>
-            </div>
-            <div className="mt-5 grid gap-2 sm:grid-cols-3">
-              <button
-                type="button"
-                onClick={() => void meetAgent()}
-                disabled={busy === "meet"}
-                className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100"
-              >
-                Meet {defaultAgent.name}
-              </button>
-              <button
-                type="button"
-                onClick={() => void seedChannels()}
-                disabled={busy === "seed"}
-                className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100"
-              >
-                Seed channels
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void api.setOnboardingChecklist({
-                    ...(preferencesQuery.data?.onboarding_checklist ?? {}),
-                    invite: true,
-                  });
-                  setPeopleDrawerOpen(true);
-                }}
-                className="focus-ring rounded-xl border border-line bg-white/[0.05] px-3 py-3 text-left text-sm text-slate-100"
-              >
-                Invite a teammate
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
-    );
-  }
-
-  const home = summary;
-  const needs = partitionNeedsYou(home.needs_you);
-  const recent = recentConversations(rooms);
-  const working = home.crew.filter((card) => isCrewWorking(card, Date.now()));
-  const liveCalls = mergeLiveCalls(live.list, home.live_calls);
-  const catalog = catalogQuery.data ?? [];
-  const serverMeetings = home.today?.meetings ?? null;
-  const standing: TodayMeeting[] =
-    serverMeetings != null
-      ? serverMeetings.filter((meeting) => meeting.kind === "standing")
-      : catalog.map((room) => ({
-          kind: "standing" as const,
-          id: room.slug,
-          title: room.display_name,
-          at: null,
-          room_id: null,
-          slug: room.slug,
-          summary: null,
-        }));
-  const recaps: TodayMeeting[] | null =
-    serverMeetings == null ? null : serverMeetings.filter((meeting) => meeting.kind === "recap");
-  const standingFallback =
-    serverMeetings != null ? standing.length : catalogQuery.isPending ? 1 : catalog.length;
-  const hideToday = todaySectionHidden(home.today, standingFallback);
   const selfId = currentParticipantId ?? currentUser?.id ?? null;
-  const hour = new Date().getHours();
-  const firstName = currentUser?.displayName?.trim().split(/\s+/)[0] ?? "there";
-  const you = resolveIdentity({
-    participant_id: currentParticipantId,
-    id: currentUser?.id,
-    display_name: currentUser?.displayName ?? firstName,
-    avatar_url: currentUser?.avatarUrl,
-    participant_type: "human",
-    is_self: true,
-  });
+  const roomById = useMemo(() => new Map(rooms.map((room) => [room.id, room])), [rooms]);
+  const seatIds = useMemo(() => new Set(seatRows.map((row) => row.member.agent_id)), [seatRows]);
 
-  const roomById = new Map(rooms.map((room) => [room.id, room]));
+  const firstRun = roomsLoaded && rooms.length === 0;
+  const state: "loading" | "error" | "first-run" | "loaded" =
+    !roomsLoaded || summaryQuery.isPending
+      ? "loading"
+      : summaryQuery.isError || !summary
+        ? "error"
+        : firstRun
+          ? "first-run"
+          : "loaded";
 
-  function renderNeeds(rows: NeedsYouRow[]) {
-    return (
-      <ul className="card overflow-hidden">
-        {rows.map((row) => (
-          <li key={`${row.kind}:${row.room.id}:${row.message_id ?? row.created_at}`} className="border-t border-white/[0.04] first:border-t-0">
-            <div className="flex items-start gap-3 px-3 py-2.5">
-              <ActorFace actor={row.actor} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline justify-between gap-2">
-                  <p className="truncate text-sm font-medium text-slate-100">{row.actor.display_name}</p>
-                  <span className="shrink-0 text-[11px] text-slate-500">{rowTime(row.created_at)}</span>
-                </div>
-                <p className="truncate text-xs text-slate-400">
-                  {previewText(row.preview) || "—"}
-                  <span className="text-slate-600"> · </span>
-                  {row.room.display_name}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {row.kind === "approval" && row.message_id && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => void decide(row, "approved")}
-                        className="focus-ring rounded-md bg-stable-mint/15 px-2 py-1 text-[11px] font-semibold text-stable-mint"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void decide(row, "rejected")}
-                        className="focus-ring rounded-md bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-300"
-                      >
-                        Decline
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => openRoom(row.room.id)}
-                    className="focus-ring rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-slate-200"
-                  >
-                    {row.action === "join" ? "Join" : row.action === "reply" ? "Reply" : row.action === "approve" ? "Open" : "Open"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
+  let body: ReactNode = null;
+  let quiet = true;
+
+  if (state === "loading") {
+    quiet = false;
+    body = <ZoneSkeleton />;
+  } else if (state === "error" || !summary) {
+    body = (
+      <div className="px-1 text-sm" data-testid="home-error">
+        <p className="text-slate-300">Home didn't load.</p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          The summary request failed, so nothing below the seats is filled in. The composer works.
+        </p>
+        <button
+          type="button"
+          onClick={() => void summaryQuery.refetch()}
+          className="focus-ring mt-2 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.05]"
+        >
+          Try again
+        </button>
+      </div>
     );
-  }
+  } else {
+    const home = summary;
+    const needs = partitionNeedsYou(home.needs_you);
+    const fresh = orderNeedsYou(needs.fresh);
+    const stale = orderNeedsYou(needs.stale);
+    const recent = recentConversations(rooms, HOME_RECENT_CAP);
+    const liveCalls = mergeLiveCalls(live.list, home.live_calls);
+    // A seat's card says what the seat is doing; this is the house at work.
+    const working = home.crew.filter(
+      (card) => !seatIds.has(card.agent_id) && isCrewWorking(card, Date.now()),
+    );
+    const catalog = catalogQuery.data ?? [];
+    const serverMeetings = home.today?.meetings ?? null;
+    const standing: TodayMeeting[] =
+      serverMeetings != null
+        ? serverMeetings.filter((meeting) => meeting.kind === "standing")
+        : catalog.map((room) => ({
+            kind: "standing" as const,
+            id: room.slug,
+            title: room.display_name,
+            at: null,
+            room_id: null,
+            slug: room.slug,
+            summary: null,
+          }));
+    const recaps: TodayMeeting[] =
+      serverMeetings == null ? [] : serverMeetings.filter((meeting) => meeting.kind === "recap");
+    const standingFallback =
+      serverMeetings != null ? standing.length : catalogQuery.isPending ? 1 : catalog.length;
+    const hideToday = todaySectionHidden(home.today, standingFallback);
+    const tasks: PoTaskRow[] = hideToday ? [] : (home.today?.po_tasks ?? []);
+    // A standing room is always there; it is not something due. Today is
+    // drawn for what has a date, and lists the standing rooms under it.
+    const dated = hideToday ? 0 : tasks.length + recaps.length;
 
-  function renderLive() {
-    if (liveCalls.length === 0 && working.length === 0) return null;
-    return (
-      <ul className="card overflow-hidden">
-        {liveCalls.map((call) => {
-          const room = roomById.get(call.room_id);
-          return (
-            <li key={call.room_id} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
-              {room ? (
-                <RoomFace room={room} selfId={selfId} agents={rosterAgents} />
-              ) : (
-                <Identity
-                  {...resolveIdentity({
-                    type: "channel",
-                    id: call.room_id,
-                    display_name: call.display_name,
-                    name: call.display_name,
-                    member_count: call.participant_count,
-                  })}
-                  size={32}
-                />
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <p className="truncate text-sm font-medium text-slate-100">{call.display_name}</p>
-                  <Pill tone="live">LIVE</Pill>
-                  {call.recording && <Pill tone="rec">REC</Pill>}
-                </div>
-                <p className="truncate text-xs text-slate-400">
-                  {call.participant_count} here
-                  {call.floor_holder ? (
-                    <span className="inline-flex items-center gap-1">
-                      <span className="text-slate-600"> · </span>
-                      <ActorFace actor={call.floor_holder} size={16} />
-                      <span>{call.floor_holder.display_name} has the floor</span>
-                    </span>
-                  ) : null}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => openRoom(call.room_id)}
-                className="focus-ring shrink-0 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-100"
-              >
-                Join
-              </button>
-            </li>
-          );
-        })}
-        {working.map((card) => (
-          <li key={`work:${card.agent_id}`} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5">
-            <ActorFace
-              actor={{
-                participant_id: card.participant_id,
-                kind: "agent",
-                display_name: card.display_name,
-                avatar_url: card.avatar_url,
-                agent_id: card.agent_id,
-              }}
-            />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-slate-100">{card.display_name}</p>
+    const zones = homeZones({
+      needsCount: fresh.length + stale.length,
+      liveCount: liveCalls.length + working.length,
+      todayCount: dated,
+      recentCount: recent.length,
+      seatCount: seatRows.length,
+    });
+    quiet = zones.zones.length === 0;
+
+    const renderNeeds = (rows: NeedsYouRow[]) => (
+      <ul className={ROWS}>
+        {rows.map((row) => (
+          <li
+            key={`${row.kind}:${row.room.id}:${row.message_id ?? row.created_at}`}
+            className={clsx(ROW, "flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2")}
+            data-testid="home-needs-row"
+            data-kind={row.kind}
+          >
+            <ActorFace actor={row.actor} />
+            <div className="min-w-0 flex-1 basis-40">
+              <p className="flex items-baseline gap-2">
+                <span className="min-w-0 truncate text-sm font-medium text-slate-100">
+                  {row.actor.display_name}
+                </span>
+                <span className="shrink-0 text-[11px] text-slate-500">{rowTime(row.created_at)}</span>
+              </p>
               <p className="truncate text-xs text-slate-400">
-                {card.current_task || "Working"}
-                {card.since ? ` · ${rowTime(card.since)}` : ""}
+                {previewText(row.preview) || "—"}
+                {/* The room, when it is not the person: a hub or a DM is named by its face. */}
+                {row.room.display_name && row.room.display_name !== row.actor.display_name && (
+                  <>
+                    <span className="text-slate-600"> · </span>
+                    {row.room.display_name}
+                  </>
+                )}
               </p>
             </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {row.kind === "approval" && row.message_id && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void decide(row, "approved")}
+                    className={clsx(SMALL_BUTTON, "bg-stable-mint/15 text-stable-mint")}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void decide(row, "rejected")}
+                    className={clsx(SMALL_BUTTON, "bg-rose-500/10 text-rose-300")}
+                  >
+                    Decline
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => openRoom(row.room.id)}
+                className={clsx(SMALL_BUTTON, "border border-line text-slate-200")}
+              >
+                {row.action === "join" ? "Join" : row.action === "reply" ? "Reply" : "Open"}
+              </button>
+            </div>
           </li>
         ))}
       </ul>
     );
-  }
 
-  function renderCrew() {
-    if (home.crew.length === 0) return null;
-    return (
-      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {home.crew.map((card) => (
-          <li key={card.agent_id} className="card relative">
-            <button
-              type="button"
-              onClick={() => void openHub(card)}
-              className="focus-ring flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left"
-            >
-              <ActorFace
-                actor={{
-                  participant_id: card.participant_id,
-                  kind: "agent",
-                  display_name: card.display_name,
-                  avatar_url: card.avatar_url,
-                  agent_id: card.agent_id,
-                }}
-                size={40}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-slate-100">{card.display_name}</span>
-                <span className="mt-1 flex flex-wrap items-center gap-1">
-                  <span className="rounded-full bg-stable-purple/15 px-1.5 py-0.5 text-[10px] font-semibold text-stable-purple-light">
-                    {modeLabel(card.agent_mode)}
-                  </span>
-                  <span className="text-[10px] uppercase tracking-wide text-slate-500">{card.status}</span>
-                </span>
-                <span className="mt-1 block truncate text-xs text-slate-400">
-                  {card.last_line || "No recent line"}
-                </span>
-              </span>
-            </button>
-            <button
-              type="button"
-              aria-label={`Actions for ${card.display_name}`}
-              aria-expanded={menuFor === card.agent_id}
-              onClick={() => setMenuFor((current) => (current === card.agent_id ? null : card.agent_id))}
-              className="focus-ring absolute right-2 top-2 rounded-md p-1 text-slate-400 hover:bg-white/[0.06]"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
-            {menuFor === card.agent_id && (
-              <div className="absolute right-2 top-9 z-10 w-44 rounded-xl border border-line bg-slate-950 p-1 shadow-xl">
-                <button type="button" onClick={() => void newThread(card)} className="focus-ring block w-full rounded-lg px-2 py-1.5 text-left text-xs text-slate-100 hover:bg-white/[0.06]">
-                  New thread
-                </button>
+    const zoneBody: Record<HomeZoneId, () => ReactNode> = {
+      needs_you: () => (
+        <Zone
+          id="needs_you"
+          count={fresh.length}
+          action={
+            onOpenActivity && (
+              <button
+                type="button"
+                onClick={() => onOpenActivity("approvals")}
+                className="focus-ring rounded text-[11px] font-medium text-slate-400 hover:text-slate-200"
+              >
+                Activity
+              </button>
+            )
+          }
+        >
+          <div className="space-y-1.5">
+            {fresh.length > 0 && renderNeeds(fresh)}
+            {stale.length > 0 && (
+              <div>
                 <button
                   type="button"
-                  onClick={() => void openHub(card)}
-                  className="focus-ring flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left text-xs text-slate-100 hover:bg-white/[0.06]"
+                  onClick={() => setStaleOpen((open) => !open)}
+                  className="focus-ring rounded px-1 text-[11px] font-medium text-slate-500 hover:text-slate-300"
+                  aria-expanded={staleOpen}
                 >
-                  <Phone className="h-3 w-3" /> Call
+                  Older ({stale.length})
                 </button>
-                <p className="px-2 pt-1 text-[10px] uppercase tracking-wide text-slate-500">Change mode</p>
-                {AGENT_MODES.map(([mode, label]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => void changeMode(card, mode)}
-                    className="focus-ring block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-300 hover:bg-white/[0.06]"
-                  >
-                    {label}
-                  </button>
-                ))}
+                {staleOpen && <div className="mt-1.5">{renderNeeds(stale)}</div>}
               </div>
             )}
-          </li>
-        ))}
-      </ul>
-    );
-  }
-
-  function renderRecent() {
-    if (recent.length === 0) return null;
-    return (
-      <ul className="card overflow-hidden">
-        {recent.map((room) => (
-          <li key={room.id}>
-            <button
-              type="button"
-              onClick={() => openRoom(room.id)}
-              className="focus-ring flex w-full items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 text-left first:border-t-0"
-            >
-              <RoomFace room={room} selfId={selfId} agents={rosterAgents} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate text-sm font-medium text-slate-100">
-                    {room.display_name || room.name}
-                  </span>
-                  {draftTick >= 0 && hasDraft(room.id) && (
-                    <Pencil className="h-3 w-3 shrink-0 text-slate-400" aria-label="Draft" />
+          </div>
+        </Zone>
+      ),
+      live_now: () => (
+        <Zone id="live_now" count={liveCalls.length + working.length}>
+          <ul className={ROWS}>
+            {liveCalls.map((call) => {
+              const room = roomById.get(call.room_id);
+              return (
+                <li
+                  key={call.room_id}
+                  className={clsx(ROW, "flex items-center gap-3 px-3 py-2")}
+                  data-testid="home-live-row"
+                >
+                  {room ? (
+                    <RoomFace room={room} selfId={selfId} agents={rosterAgents} />
+                  ) : (
+                    <Identity
+                      {...resolveIdentity({
+                        type: "channel",
+                        id: call.room_id,
+                        display_name: call.display_name,
+                        name: call.display_name,
+                        member_count: call.participant_count,
+                      })}
+                      size={28}
+                    />
                   )}
-                </span>
-                <span className="block truncate text-xs text-slate-500">
-                  {room.last_message ? previewText(lastLinePreview(room.last_message).text) : "No messages yet"}
-                </span>
-              </span>
-              <span className="shrink-0 text-[11px] text-slate-500">
-                {rowTime(room.last_message?.created_at ?? room.updated_at)}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    );
-  }
-
-  function renderTask(task: PoTaskRow) {
-    const body = (
-      <>
-        <AppFace id="project-ops" name="Project-Ops" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium text-slate-100">{task.title}</span>
-          <span className="block truncate text-xs text-slate-500">
-            {task.project_number ? `${task.project_number} · ` : ""}
-            {task.due_date ? `Due ${task.due_date}` : "Due"}
-            {task.status ? ` · ${task.status}` : ""}
-          </span>
-        </span>
-      </>
-    );
-    if (task.url) {
-      return (
-        <a
-          key={task.id}
-          href={task.url}
-          className="focus-ring flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0"
-        >
-          {body}
-        </a>
-      );
-    }
-    return (
-      <div key={task.id} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
-        {body}
-      </div>
-    );
-  }
-
-  function renderToday() {
-    const tasks = home.today?.po_tasks ?? null;
-    const taskCount = tasks?.length ?? 0;
-    const meetingCount = standing.length + (recaps?.length ?? 0);
-    return (
-      <div className="space-y-3">
-        {tasks == null || tasks.length === 0 ? null : (
-          <div className="card overflow-hidden">{tasks.map(renderTask)}</div>
-        )}
-        {standing.length > 0 && (
-          <ul className="card overflow-hidden">
-            {standing.map((meeting) => (
-              <li key={meeting.id} className="flex items-center gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
-                <Identity
-                  {...resolveIdentity({
-                    type: "channel",
-                    id: meeting.slug || meeting.id,
-                    display_name: meeting.title,
-                    name: meeting.title,
-                    member_count: 1,
-                  })}
-                  size={32}
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-1.5">
+                      <span className="min-w-0 truncate text-sm font-medium text-slate-100">
+                        {call.display_name}
+                      </span>
+                      <Pill tone="live">LIVE</Pill>
+                      {call.recording && <Pill tone="rec">REC</Pill>}
+                    </p>
+                    <p className="truncate text-xs text-slate-400">
+                      {call.participant_count} here
+                      {call.floor_holder ? (
+                        <span>
+                          <span className="text-slate-600"> · </span>
+                          {call.floor_holder.display_name} has the floor
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openRoom(call.room_id)}
+                    className={clsx(SMALL_BUTTON, "bg-white/[0.06] text-slate-100")}
+                  >
+                    Join
+                  </button>
+                </li>
+              );
+            })}
+            {working.map((card) => (
+              <li
+                key={`work:${card.agent_id}`}
+                className={clsx(ROW, "flex items-center gap-3 px-3 py-2")}
+              >
+                <ActorFace
+                  actor={{
+                    participant_id: card.participant_id,
+                    kind: "agent",
+                    display_name: card.display_name,
+                    avatar_url: card.avatar_url,
+                    agent_id: card.agent_id,
+                  }}
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
-                  <p className="text-xs text-slate-500">Standing room</p>
+                  <p className="truncate text-sm font-medium text-slate-100">{card.display_name}</p>
+                  <p className="truncate text-xs text-slate-400">
+                    {card.current_task || "Working"}
+                    {card.since ? ` · ${rowTime(card.since)}` : ""}
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void joinStanding(meeting)}
-                  className="focus-ring shrink-0 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-100"
-                >
-                  Join
-                </button>
               </li>
             ))}
           </ul>
-        )}
-        {recaps == null || recaps.length === 0 ? null : (
-          <ul className="card overflow-hidden">
+        </Zone>
+      ),
+      today: () => (
+        <Zone id="today" count={dated}>
+          <ul className={ROWS}>
+            {tasks.map((task) => {
+              const inner = (
+                <>
+                  <AppFace id="project-ops" name="Project-Ops" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-slate-100">
+                      {task.title}
+                    </span>
+                    <span className="block truncate text-xs text-slate-500">
+                      {task.project_number ? `${task.project_number} · ` : ""}
+                      {task.due_date ? `Due ${task.due_date}` : "Due"}
+                      {task.status ? ` · ${task.status}` : ""}
+                    </span>
+                  </span>
+                </>
+              );
+              return (
+                <li key={task.id} className={ROW} data-testid="home-task-row">
+                  {task.url ? (
+                    <a href={task.url} className="focus-ring flex items-center gap-3 px-3 py-2">
+                      {inner}
+                    </a>
+                  ) : (
+                    <div className="flex items-center gap-3 px-3 py-2">{inner}</div>
+                  )}
+                </li>
+              );
+            })}
             {recaps.map((meeting) => (
-              <li key={meeting.id} className="flex items-start gap-3 border-t border-white/[0.04] px-3 py-2.5 first:border-t-0">
+              <li key={meeting.id} className={clsx(ROW, "flex items-center gap-3 px-3 py-2")}>
                 <AppFace id="meeting-ops" name="Meeting-Ops" />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
                   <p className="truncate text-xs text-slate-400">
                     {meeting.summary || "Recap"}
@@ -877,161 +593,157 @@ export function HomeDashboard({
                 </div>
               </li>
             ))}
+            {standing.map((meeting) => (
+              <li key={meeting.id} className={clsx(ROW, "flex items-center gap-3 px-3 py-2")}>
+                <Identity
+                  {...resolveIdentity({
+                    type: "channel",
+                    id: meeting.slug || meeting.id,
+                    display_name: meeting.title,
+                    name: meeting.title,
+                    member_count: 1,
+                  })}
+                  size={28}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
+                  <p className="text-xs text-slate-500">Standing room</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void joinStanding(meeting)}
+                  className={clsx(SMALL_BUTTON, "bg-white/[0.06] text-slate-100")}
+                >
+                  Join
+                </button>
+              </li>
+            ))}
           </ul>
+        </Zone>
+      ),
+      recent: () => (
+        <Zone
+          id="recent"
+          count={0}
+          action={
+            <button
+              type="button"
+              onClick={showAllConversations}
+              className="focus-ring rounded text-[11px] font-medium text-slate-400 hover:text-slate-200"
+              data-testid="home-recent-all"
+            >
+              Show all
+            </button>
+          }
+        >
+          <ul className={ROWS}>
+            {recent.map((room) => (
+              <li key={room.id} className={ROW}>
+                <button
+                  type="button"
+                  onClick={() => openRoom(room.id)}
+                  className="focus-ring flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-white/[0.03] max-md:min-h-11"
+                  data-testid="home-recent-row"
+                >
+                  <RoomFace room={room} selfId={selfId} agents={rosterAgents} size={20} />
+                  <span className="min-w-0 flex-1 truncate text-[13px]">
+                    <span className="font-medium text-slate-100">{room.display_name || room.name}</span>
+                    {room.last_message && (
+                      <span className="text-slate-500">
+                        {" "}
+                        · {previewText(lastLinePreview(room.last_message).text)}
+                      </span>
+                    )}
+                  </span>
+                  {draftTick >= 0 && hasDraft(room.id) && (
+                    <Pencil className="h-3 w-3 shrink-0 text-slate-400" aria-label="Draft" />
+                  )}
+                  <span className="shrink-0 text-[11px] text-slate-500">
+                    {rowTime(room.last_message?.created_at ?? room.updated_at)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Zone>
+      ),
+    };
+
+    body = (
+      <>
+        {zones.boardClear && state === "loaded" && (
+          <p className="px-1 text-sm text-slate-400" data-testid="home-board-clear">
+            {BOARD_CLEAR_LINE}
+          </p>
         )}
-        {taskCount + meetingCount > 0 && (
-          <span className="sr-only">{taskCount + meetingCount} today</span>
+        {state === "first-run" && (
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-slate-500"
+            data-testid="home-first-run"
+          >
+            <span>No conversations yet.</span>
+            <button
+              type="button"
+              onClick={() => void seedChannels()}
+              disabled={busy === "seed"}
+              className="focus-ring rounded font-medium text-slate-300 underline-offset-2 hover:underline disabled:opacity-50 max-md:min-h-9"
+            >
+              Seed channels
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void api.setOnboardingChecklist({
+                  ...(preferencesQuery.data?.onboarding_checklist ?? {}),
+                  invite: true,
+                });
+                setPeopleDrawerOpen(true);
+              }}
+              className="focus-ring rounded font-medium text-slate-300 underline-offset-2 hover:underline max-md:min-h-9"
+            >
+              Invite a teammate
+            </button>
+          </div>
         )}
-      </div>
+        {zones.zones.map((id) => (
+          <div key={id}>{zoneBody[id]()}</div>
+        ))}
+      </>
     );
   }
 
-  const todayCount =
-    (home.today?.po_tasks?.length ?? 0) + standing.length + (recaps?.length ?? 0);
-  const policy = homeEmptyPolicy({
-    needsCount: needs.fresh.length + needs.stale.length,
-    liveCount: liveCalls.length + working.length,
-    crewCount: home.crew.length,
-    recentCount: recent.length,
-    hadConversations: rooms.length > 0,
-    todayCount: hideToday ? 0 : todayCount,
-    todayKnown: !hideToday,
-  });
-
-  const sections: Record<HomeSectionId, { count: number; body: ReactNode; hidden?: boolean }> = {
-    needs_you: {
-      count: needs.fresh.length,
-      body: (
-        <div className="space-y-2">
-          {needs.fresh.length === 0 && needs.stale.length === 0 ? null : (
-            <>
-              {needs.fresh.length > 0 && renderNeeds(needs.fresh)}
-              {needs.stale.length > 0 && (
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setStaleOpen((open) => !open)}
-                    className="focus-ring text-xs font-medium text-slate-500"
-                    aria-expanded={staleOpen}
-                  >
-                    Stale ({needs.stale.length})
-                  </button>
-                  {staleOpen && <div className="mt-2">{renderNeeds(needs.stale)}</div>}
-                </div>
-              )}
-            </>
-          )}
-          {onOpenActivity && (
-            <button
-              type="button"
-              onClick={() => onOpenActivity("approvals")}
-              className="focus-ring text-xs font-medium text-slate-400"
-            >
-              Open activity
-            </button>
-          )}
-        </div>
-      ),
-    },
-    live_now: { count: liveCalls.length + working.length, body: renderLive() },
-    crew: { count: home.crew.length, body: renderCrew() },
-    recent: { count: recent.length, body: renderRecent() },
-    today: {
-      count: todayCount,
-      hidden: hideToday,
-      body: renderToday(),
-    },
-  };
+  const cards = summary?.crew ?? [];
 
   return (
-    <div className="flex-1 overflow-y-auto" data-testid="home-loaded">
-      <div
-        className="animate-fade-in mx-auto w-full max-w-5xl px-4 py-6 sm:px-6"
-        data-testid="home-dashboard"
-      >
-        <header className="card mb-4 flex items-center gap-3 px-4 py-4 sm:px-5">
-          <Identity {...you} size={40} />
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-              <Sparkles className="mr-1 inline h-3 w-3" aria-hidden="true" />
-              Unicorn Stable
-            </p>
-            <h1 className="font-display text-xl font-bold text-slate-50 sm:text-2xl">
-              {greetingFor(hour)}, {firstName}
-            </h1>
-          </div>
-        </header>
-        <div className="space-y-4">
-          {policy.allClear && (
-            <p className="px-1 text-sm text-slate-300" data-testid="home-all-clear">
-              You're all clear
-            </p>
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
+      data-testid={state === "loaded" || state === "first-run" ? "home-loaded" : `home-${state}-state`}
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          className={clsx(
+            "animate-fade-in mx-auto w-full max-w-[52rem] space-y-5 px-4 pb-8 sm:px-6",
+            // A quiet day opens like a blank page: the box a third of the way
+            // down. With rows under it, the box goes to the top.
+            phone ? "pt-4" : quiet ? "pt-[14vh]" : "pt-8",
           )}
-          {order.map((id) => {
-            const section = sections[id];
-            const chrome = policy.sections[id];
-            if (section.hidden || chrome === "omit") return null;
-            if (chrome === "line") {
-              return (
-                <p
-                  key={id}
-                  className="px-1 text-xs text-slate-500"
-                  data-testid={`home-quiet-${id}`}
-                >
-                  {QUIET_LINE[id]}
-                </p>
-              );
-            }
-            const isCollapsed = collapsed[id] === true;
-            return (
-              <section
-                key={id}
-                data-testid={`home-section-${id}`}
-                aria-labelledby={`home-${id}-heading`}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={() => dropOn(id)}
-              >
-                <div className="mb-2 flex items-center gap-1">
-                  <button
-                    type="button"
-                    id={`home-${id}-heading`}
-                    draggable
-                    onDragStart={() => setDragId(id)}
-                    onClick={() => toggleCollapsed(id)}
-                    aria-expanded={!isCollapsed}
-                    className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 text-left"
-                  >
-                    <ChevronDown
-                      className={clsx("h-4 w-4 shrink-0 text-slate-500 transition", isCollapsed && "-rotate-90")}
-                    />
-                    <span className="font-display text-sm font-semibold text-slate-200">
-                      {SECTION_LABEL[id]}
-                    </span>
-                    <Count n={section.count} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Move ${SECTION_LABEL[id]} up`}
-                    onClick={() => shift(id, -1)}
-                    className="focus-ring rounded-md p-1 text-slate-500 hover:bg-white/[0.05]"
-                  >
-                    <ChevronUp className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Move ${SECTION_LABEL[id]} down`}
-                    onClick={() => shift(id, 1)}
-                    className="focus-ring rounded-md p-1 text-slate-500 hover:bg-white/[0.05]"
-                  >
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                {!isCollapsed && section.body}
-              </section>
-            );
-          })}
+          data-testid="home-dashboard"
+          data-state={state}
+        >
+          <h1 className="sr-only">Home</h1>
+          {!phone && <HomeComposer />}
+          <SeatCards rows={seatRows} cards={cards} />
+          {body}
         </div>
       </div>
+      {phone && (
+        <div
+          className="shrink-0 border-t border-line bg-surface-0/80 backdrop-blur-xl"
+          data-testid="home-composer-pinned"
+        >
+          <HomeComposer pinned />
+        </div>
+      )}
     </div>
   );
 }

@@ -285,6 +285,7 @@ export function AppShell() {
   const location = useLocation();
   const isAgentsView = location.pathname === "/agents";
   const isBridgeView = location.pathname === "/bridge";
+  const isHomeView = !isAgentsView && !isBridgeView;
   // The phone bottom tabs (Nav v3 §2.6) show outside a room, and inside one
   // while the drawer is open. The padding keeps the drawer footer, the main
   // pane and the FAB above them.
@@ -541,7 +542,22 @@ export function AppShell() {
         useConversationUi.getState().openNewSheet();
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      // ⌘⇧K goes Home and puts the cursor in the composer, from anywhere.
+      // ⌘K alone was the quick switcher's before Home had a composer, and
+      // stays the quick switcher's.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        const state = useAppStore.getState();
+        if (window.matchMedia?.("(max-width: 767px)")?.matches && state.ui.sidebarOpen) {
+          state.toggleSidebar();
+        }
+        useNavStore.getState().setV2Destination("home");
+        navigate("/");
+        // After the route: Home mounts its composer, then takes the focus.
+        requestAnimationFrame(() => useConversationUi.getState().focusHomeComposer());
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setSwitcherOpen(true);
         return;
@@ -976,7 +992,10 @@ export function AppShell() {
         {createRoomModalOpen && <CreateRoomModal />}
       </AnimatePresence>
       <NewSheet />
-      {!activeRoomId && (
+      {/* Not on Home itself: its composer is pinned where this button would
+          float, and is the "new" of that screen. The lists in the drawer
+          keep it. */}
+      {!activeRoomId && !(isHomeView && !sidebarOpen) && (
         <button
           type="button"
           onClick={() => useConversationUi.getState().openNewSheet()}

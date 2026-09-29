@@ -582,8 +582,136 @@ test.describe("Chat opens on the newest message", () => {
   }
 });
 
-test.describe("Home inbox", () => {
-  test("does not call the day clear before the summary resolves", async ({ page }) => {
+/** A busy day for Home v4: an approval, a mention, an unread DM (out of order
+ *  on purpose), a recorded call, a seat at work, a task due, a standing room. */
+function busyHomeV4Summary() {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+  const actor = (id: string, name: string, kind: "agent" | "human", agentId: string | null = null) => ({
+    participant_id: id,
+    kind,
+    display_name: name,
+    avatar_url: null,
+    agent_id: agentId,
+  });
+  const roomRef = (id: string, name: string, type: string) => ({
+    id,
+    display_name: name,
+    room_type: type,
+    parent_room_id: null,
+  });
+  return {
+    generated_at: new Date().toISOString(),
+    live_calls: [
+      {
+        room_id: "room-ops",
+        display_name: "ops",
+        room_type: "channel",
+        participant_count: 3,
+        has_agent: true,
+        recording: true,
+        floor_holder: actor("user-jason", "Nate Ellison", "human"),
+      },
+    ],
+    counts: {
+      unread_rooms: 2,
+      mention_rooms: 1,
+      approvals_pending: 1,
+      agents_available: 3,
+      people_online: 2,
+      worker_last_seen_at: null,
+    },
+    needs_you: [
+      {
+        kind: "dm",
+        actor: actor("user-jason", "Nate Ellison", "human"),
+        room: roomRef("room-dm-jason", "Nate Ellison", "dm"),
+        preview: "Thursday still works",
+        created_at: minutesAgo(4),
+        action: "reply",
+        stale: false,
+        message_id: "msg-dm-1",
+      },
+      {
+        kind: "mention",
+        actor: actor("user-shafen", "Shafen Khan", "human"),
+        room: roomRef("room-taxsq", "taxsq-portal", "channel"),
+        preview: "@aaron can you look at the portal copy?",
+        created_at: minutesAgo(12),
+        action: "open",
+        stale: false,
+        message_id: "msg-mention-1",
+      },
+      {
+        kind: "approval",
+        actor: actor("p-persephone", "Persephone", "agent", "persephone"),
+        room: roomRef(PERSEPHONE_HUB_ID, "Persephone", "agent_hub"),
+        preview: "Deploy Project-Ops e87eb20 to dogfood",
+        created_at: minutesAgo(20),
+        action: "approve",
+        stale: false,
+        message_id: "msg-approve-1",
+      },
+    ],
+    crew: [
+      {
+        agent_id: "persephone",
+        participant_id: "p-persephone",
+        display_name: "Persephone",
+        avatar_url: null,
+        status: "available",
+        agent_mode: "answers_all",
+        current_task: "Reviewing PR #42",
+        last_line: "Two PRs are waiting on you.",
+        since: minutesAgo(2),
+        hub_room_id: PERSEPHONE_HUB_ID,
+      },
+    ],
+    today: {
+      po_tasks: [
+        {
+          id: "task-1",
+          title: "Ship the north star",
+          due_date: "2026-09-29",
+          status: "PENDING",
+          project_number: "P-00115",
+          url: null,
+        },
+      ],
+      meetings: [
+        { kind: "standing", id: "standup", title: "Morning standup", at: null, room_id: "room-war", slug: "standup", summary: null },
+      ],
+    },
+  };
+}
+
+/** Home's composer, wherever this viewport draws it. */
+function homeComposer(page: Page) {
+  const composer = page.getByTestId("home-composer");
+  return {
+    root: composer,
+    input: composer.getByLabel("Message input"),
+    send: composer.getByTestId("composer-send"),
+    picker: composer.getByTestId("seat-picker"),
+    chip: composer.getByTestId("seat-chip"),
+    line: composer.getByTestId("home-composer-line"),
+  };
+}
+
+/** Type and send. The send button, not Enter: a touch keyboard's Enter is a new line. */
+async function sendFromHome(page: Page, text: string) {
+  const composer = homeComposer(page);
+  await composer.input.fill(text);
+  await expect(composer.send).toHaveAttribute("aria-disabled", "false");
+  await composer.send.click();
+}
+
+/**
+ * Home v4 (Nav v3 §2.7): a composer first, your seats under it, then only
+ * the zones that have rows. Captures: quiet day, busy day, first run with no
+ * seats — at 390 and 1440.
+ */
+test.describe("Home v4", () => {
+  test("the composer does not wait for the summary, and the board is not called clear before it", async ({ page }) => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -596,90 +724,432 @@ test.describe("Home inbox", () => {
         body: JSON.stringify(emptyHomeSummary()),
       });
     });
+    await stubNavV3World(page);
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await page.goto("/");
     await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.input).toBeVisible();
+    await expect(composer.picker).toContainText("Persephone");
+    await expect(page.getByTestId("home-seats")).toBeVisible();
     await expect(page.getByTestId("home-skeleton")).toBeVisible();
-    await expect(page.getByTestId("home-all-clear")).toHaveCount(0);
+    await expect(page.getByTestId("home-board-clear")).toHaveCount(0);
     release();
-    await expect(page.getByTestId("home-all-clear")).toBeVisible();
-    await expect(page.locator("#home-needs_you-heading")).toHaveCount(0);
+    await expect(page.getByTestId("home-board-clear")).toHaveText("The board is clear.");
+    await expect(page.getByTestId("home-skeleton")).toHaveCount(0);
+  });
+
+  test("a summary that fails costs the zones, not the composer", async ({ page }) => {
+    await page.route("**/api/v1/home/summary**", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
+    );
+    await stubNavV3World(page);
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("home-error")).toBeVisible({ timeout: 30_000 });
+    await expect(homeComposer(page).input).toBeVisible();
+    await expect(page.getByTestId("home-seats")).toBeVisible();
+    await expect(page.getByTestId("home-board-clear")).toHaveCount(0);
   });
 
   for (const viewport of ["mobile", "desktop"] as const) {
-    test(`clear day is one line @ ${viewport}`, async ({ page }, testInfo) => {
+    test(`quiet day: the composer, your seats, one line @ ${viewport}`, async ({ page }, testInfo) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
+      await stubNavV3World(page);
       await page.goto("/");
       await waitForAppReady(page);
-      await expect(page.getByTestId("home-all-clear")).toHaveText("You're all clear");
-      await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
-      await expect(page.locator("#home-needs_you-heading")).toHaveCount(0);
-      await expect(page.locator("#home-live_now-heading")).toHaveCount(0);
-      await expect(page.locator("#home-crew-heading")).toHaveCount(0);
-      await expect(page.locator("#home-today-heading")).toHaveCount(0);
-      await expect(page.locator("#home-recent-heading")).toBeVisible();
-      await expect(page.getByTestId("home-count")).toHaveText("4");
+      const home = page.getByTestId("home-dashboard");
+      await expect(home).toHaveAttribute("data-state", "loaded");
+      const composer = homeComposer(page);
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Persephone…");
+      await expect(composer.picker).toContainText("Persephone");
+      await expect(composer.chip).toContainText("Fable 5.1 · high");
+      await expect(composer.line).toHaveCount(0);
 
-      const capture = `HomeClear-${viewport}-${testInfo.project.name}`;
-      await page.screenshot({ path: `test-results/${capture}.png`, fullPage: true });
+      // Your seats: every seat of yours, a card each, no Call in its menu.
+      const cards = page.getByTestId("seat-card");
+      await expect(cards).toHaveCount(CREW_FIXTURE.filter((row) => row.group === "own_seat").length);
+      await expect(cards.nth(0)).toContainText("Persephone");
+      await expect(cards.nth(0).getByTestId("seat-card-presence")).toHaveAttribute("aria-label", "Runner online");
+      await expect(cards.nth(0).getByTestId("seat-card-unread")).toHaveText("1");
+
+      // One line, and nothing else: no zone, no header, no zero, no greeting.
+      await expect(page.getByTestId("home-board-clear")).toHaveText("The board is clear.");
+      await expect(page.locator('[data-testid^="home-zone-"]')).toHaveCount(0);
+      await expect(page.getByTestId("home-count")).toHaveCount(0);
+      await expect(home.getByRole("heading", { level: 1 })).toHaveText("Home");
+      await expect(home.getByText(/Good (morning|afternoon|evening)/)).toHaveCount(0);
+      await expect(home.getByText("Unicorn Stable")).toHaveCount(0);
 
       if (viewport === "mobile") {
-        await page.getByRole("button", { name: "Open sidebar" }).click();
+        // Pinned above the tab bar, and nothing floats over it.
+        const pinned = (await page.getByTestId("home-composer-pinned").boundingBox())!;
+        const tabs = (await page.getByTestId("phone-tab-bar").boundingBox())!;
+        expect(pinned.y + pinned.height).toBeLessThanOrEqual(tabs.y + 1);
+        expect(pinned.y + pinned.height).toBeGreaterThan(tabs.y - 4);
+        await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+        // The seats scroll sideways inside the page; the page does not.
+        const scroll = await page.evaluate(() => ({
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        }));
+        expect(scroll.page).toBeLessThanOrEqual(1);
+      } else {
+        // The composer is the first thing on the page.
+        const first = await home.evaluate(
+          (el) =>
+            Array.from(el.children)
+              .find((child) => !child.classList.contains("sr-only"))
+              ?.getAttribute("data-testid"),
+        );
+        expect(first).toBe("home-composer");
+        // The cursor is in it on arrival — where there is a pointer; a touch
+        // screen would answer a focus with its keyboard.
+        if (await page.evaluate(() => window.matchMedia("(hover: hover)").matches)) {
+          await expect(composer.input).toBeFocused();
+        }
+        // One rail, always: Crew and Conversations, not a rail of Home's own.
+        await expect(page.getByTestId("crew-section")).toBeVisible();
+        await expect(page.getByTestId("conversations-card")).toBeVisible();
+        await expect(page.getByTestId("home-rail")).toHaveCount(0);
       }
-      await expect(page.getByTestId("home-rail")).toBeVisible();
-      await expect(page.getByTestId("home-rail-recent")).toBeVisible();
-      await expect(page.getByTestId("home-rail-crew")).toHaveCount(0);
-      await expect(page.getByTestId("home-rail-pinned")).toHaveCount(0);
-      if (viewport === "mobile") {
-        await page.screenshot({
-          path: `test-results/HomeClear-rail-${viewport}-${testInfo.project.name}.png`,
-          fullPage: true,
-        });
-      }
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/Home-v4-quiet-${tag}.png`, fullPage: false });
+
+      // A seat's menu: New conversation and Settings. No Call until voice ships.
+      await cards.nth(0).getByTestId("seat-card-menu-persephone").click();
+      const menu = page.getByRole("menu", { name: "Options for Persephone" });
+      await expect(menu.getByRole("menuitem")).toHaveText(["New conversation", "Settings"]);
+      await page.keyboard.press("Escape");
+      await expect(menu).toHaveCount(0);
       await assertPageHealth(page, viewport);
     });
 
-    test(`busy day keeps the sections that have rows @ ${viewport}`, async ({ page }, testInfo) => {
+    test(`busy day: what needs you, what is live, what is due, where you were @ ${viewport}`, async ({ page }, testInfo) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
-      await fulfillSummary(page, busyHomeSummary());
+      await fulfillSummary(page, busyHomeV4Summary());
+      await stubNavV3World(page);
       await page.goto("/");
       await waitForAppReady(page);
-      await expect(page.getByTestId("home-all-clear")).toHaveCount(0);
-      await expect(page.getByTestId("home-section-needs_you")).toBeVisible();
-      await expect(page.getByTestId("home-section-live_now")).toBeVisible();
-      await expect(page.getByTestId("home-section-crew")).toBeVisible();
-      await expect(page.getByTestId("home-section-recent")).toBeVisible();
-      await expect(page.getByTestId("home-section-today")).toBeVisible();
-      await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Join" })).toBeVisible();
-      await expect(page.getByText("When named").first()).toBeVisible();
-      await expect(page.getByText("Ship the north star")).toBeVisible();
+      const home = page.getByTestId("home-dashboard");
+      await expect(home).toHaveAttribute("data-state", "loaded");
+      await expect(page.getByTestId("home-board-clear")).toHaveCount(0);
+
+      // The zones, in the design's order, after the seats.
+      const order = await home.locator('[data-testid="home-composer"], [data-testid="home-seats"], [data-testid^="home-zone-"]')
+        .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid")));
+      expect(order).toEqual(
+        viewport === "mobile"
+          ? ["home-seats", "home-zone-needs_you", "home-zone-live_now", "home-zone-today", "home-zone-recent"]
+          : ["home-composer", "home-seats", "home-zone-needs_you", "home-zone-live_now", "home-zone-today", "home-zone-recent"],
+      );
+
+      // The seat's card says what it is doing now.
+      const card = page.getByTestId("seat-card").first();
+      await expect(card.getByTestId("seat-card-task")).toContainText("Reviewing PR #42");
+      await expect(card.getByTestId("seat-card-task")).toHaveText("Reviewing PR #42· 2m");
+      // All of it: a task cut to "Reviewing P…" says nothing.
+      const cut = await card.getByTestId("seat-card-task").locator("span").first()
+        .evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+      expect(cut).toBe(false);
+      await expect(card.getByTestId("seat-card-line")).toHaveText("Two PRs are waiting on you.");
+
+      // Needs you: the approval first, then the mention, then the person —
+      // each with the face and the name of whoever wrote it.
+      const needs = page.getByTestId("home-needs-row");
+      await expect(needs).toHaveCount(3);
+      expect(await needs.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-kind")))).toEqual([
+        "approval",
+        "mention",
+        "dm",
+      ]);
+      await expect(needs.nth(0)).toContainText("Persephone");
+      await expect(needs.nth(0).getByRole("button", { name: "Approve" })).toBeVisible();
+      await expect(needs.nth(1)).toContainText("Shafen Khan");
+      await expect(needs.nth(2)).toContainText("Nate Ellison");
+      await expect(needs.nth(2).getByRole("button", { name: "Reply" })).toBeVisible();
+
+      const liveRow = page.getByTestId("home-live-row");
+      await expect(liveRow).toHaveCount(1);
+      await expect(liveRow).toContainText("LIVE");
+      await expect(liveRow).toContainText("REC");
+      await expect(liveRow).toContainText("Nate Ellison has the floor");
+      await expect(liveRow.getByRole("button", { name: "Join" })).toBeVisible();
+
+      await expect(page.getByTestId("home-task-row")).toContainText("Ship the north star");
+      await expect(page.getByTestId("home-zone-today")).toContainText("Morning standup");
+
+      // Recent: one line each, eight at most, and a way to the rest.
+      const recent = page.getByTestId("home-recent-row");
+      await expect(recent).toHaveCount(8);
+      const heights = await recent.evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+      expect(Math.max(...heights)).toBeLessThanOrEqual(viewport === "mobile" ? 46 : 34);
       await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
       const counts = await page.getByTestId("home-count").allTextContents();
-      expect(counts).not.toContain("0");
+      expect(counts).toEqual(["3", "1", "1"]);
 
-      await page.screenshot({
-        path: `test-results/HomeBusy-${viewport}-${testInfo.project.name}.png`,
-        fullPage: true,
-      });
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/Home-v4-busy-${tag}.png`, fullPage: false });
+      await page.screenshot({ path: `test-results/Home-v4-busy-full-${tag}.png`, fullPage: true });
 
-      if (viewport === "mobile") {
-        await page.getByRole("button", { name: "Open sidebar" }).click();
-      }
-      await expect(page.getByTestId("home-rail-crew-persephone")).toBeVisible();
-      await expect(page.getByTestId("home-rail-recent")).toBeVisible();
-      if (viewport === "mobile") {
-        await page.screenshot({
-          path: `test-results/HomeBusy-rail-${viewport}-${testInfo.project.name}.png`,
-          fullPage: true,
-        });
-      }
+      // "Show all" is the Chats list.
+      await page.getByTestId("home-recent-all").click();
+      await expect(page.getByTestId("conversations-card").locator("visible=true").first()).toBeVisible();
       await assertPageHealth(page, viewport);
     });
+
+    test(`first run, no seats: the composer speaks to Sidekick @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      const world = await stubNavV3World(page, { noRooms: true, crew: [] });
+      await page.goto("/");
+      await waitForAppReady(page);
+      const home = page.getByTestId("home-dashboard");
+      await expect(home).toHaveAttribute("data-state", "first-run");
+      const composer = homeComposer(page);
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Sidekick…");
+      await expect(composer.picker).toContainText("Sidekick");
+      // A house agent has no brain chip, and there is no seat to draw a card for.
+      await expect(composer.chip).toHaveCount(0);
+      await expect(page.getByTestId("home-seats")).toHaveCount(0);
+      await expect(page.locator('[data-testid^="home-zone-"]')).toHaveCount(0);
+      await expect(page.getByTestId("home-first-run")).toContainText("No conversations yet.");
+      await expect(page.getByRole("button", { name: "Seed channels" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Invite a teammate" })).toBeVisible();
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/Home-v4-first-run-${tag}.png`, fullPage: false });
+      await assertPageHealth(page, viewport);
+
+      // The first line makes the hub, the conversation and the message.
+      await sendFromHome(page, "What can you do here?");
+      await expect(page).toHaveURL(/\/c\/hub-sidekick-t-00000001$/);
+      expect(world.calls).toEqual(["hub:sidekick", "thread:hub-sidekick", "post:hub-sidekick-t-00000001"]);
+    });
   }
+
+  test("Enter starts a conversation: the thread, then the message, then you are in it", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.input).toHaveAttribute("placeholder", "Message Persephone…");
+    await composer.input.fill("Plan the kitchen panel rollout for Thursday, and list what is blocking it");
+    if (testInfo.project.name === "chromium-mobile") await composer.send.click();
+    else await composer.input.press("Enter");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    // Known hub: no hub request. Default brain: no seat write.
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `post:${threadId}`]);
+    // Titled from the first line, sixty characters.
+    expect(world.threadBodies[0]?.body).toEqual({
+      title: "Plan the kitchen panel rollout for Thursday, and list what…",
+    });
+    const post = world.posts[0]!.body;
+    expect(post.content).toBe("Plan the kitchen panel rollout for Thursday, and list what is blocking it");
+    expect(post.content_type).toBe("text");
+    expect(typeof post.client_msg_id).toBe("string");
+    expect(post.metadata).toBeUndefined();
+    // The message is in the room, and Home's box is empty again.
+    await expect(page.getByTestId("room-view")).toBeVisible();
+    await expect(page.getByText("Plan the kitchen panel rollout for Thursday", { exact: false }).first()).toBeVisible();
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(homeComposer(page).input).toHaveValue("");
+  });
+
+  test("a picked brain is written to the new conversation before the message", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await composer.chip.click();
+    const panel = page.getByTestId("seat-settings");
+    await expect(panel).toContainText("Persephone · new conversation");
+    await expect(panel.getByTestId("seat-mode-listening")).toHaveCount(0);
+    await panel.getByTestId("seat-model-claude-opus-5-5").click();
+    await panel.getByTestId("seat-effort-max").click();
+    await expect(composer.chip).toContainText("Opus 5.5 · max");
+    await page.screenshot({
+      path: `test-results/Home-v4-brain-desktop-${testInfo.project.name}.png`,
+      fullPage: false,
+      animations: "disabled",
+    });
+    await page.keyboard.press("Escape");
+    // Nothing was written by picking.
+    expect(world.calls).toEqual([]);
+    await sendFromHome(page, "Draft the Doe filing outline");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `seat:${threadId}`, `post:${threadId}`]);
+    expect(world.roomPatches[0]).toEqual({
+      roomId: threadId,
+      body: { metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: "max" } } } },
+    });
+    // The room's own chip says the same.
+    await expect(page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]')).toContainText("Opus 5.5 · max");
+  });
+
+  test("the post fails: you are in the conversation, with the draft", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failPost: true });
+    await page.goto("/");
+    await waitForAppReady(page);
+    await sendFromHome(page, "/council is the cap right?");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `post:${threadId}`]);
+    // Titled from what was asked; the command rides in the post's metadata.
+    expect(world.threadBodies[0]?.body).toEqual({ title: "is the cap right?" });
+    expect(world.posts[0]?.body).toMatchObject({ content: "is the cap right?", metadata: { council: true } });
+    await expect(page.getByText("Not sent", { exact: true })).toBeVisible();
+    // As typed: the command is still a command in the room's box.
+    const roomInput = page.getByTestId("room-view").getByLabel("Message input");
+    await expect(roomInput).toHaveValue("/council is the cap right?");
+    // And Home's box did not keep a second copy.
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(homeComposer(page).input).toHaveValue("");
+  });
+
+  test("the conversation cannot be made: you are still on Home, with the draft", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failThread: true });
+    await page.goto("/");
+    await waitForAppReady(page);
+    await sendFromHome(page, "Are the GPU lanes clear?");
+    await expect(page.getByText("Couldn't start a conversation with Persephone")).toBeVisible();
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`]);
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(homeComposer(page).input).toHaveValue("Are the GPU lanes clear?");
+    await expect(homeComposer(page).send).toHaveAttribute("aria-disabled", "false");
+  });
+
+  test("the brain cannot be set: the message is not posted", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failSeat: true });
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await composer.chip.click();
+    await page.getByTestId("seat-settings").getByTestId("seat-effort-max").click();
+    await page.keyboard.press("Escape");
+    await sendFromHome(page, "Think hard about the lease terms");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `seat:${threadId}`]);
+    expect(world.posts).toEqual([]);
+    await expect(page.getByText("The brain was not set — not sent")).toBeVisible();
+    await expect(page.getByTestId("room-view").getByLabel("Message input")).toHaveValue(
+      "Think hard about the lease terms",
+    );
+  });
+
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`a partner's seat: the shared room, named before sending @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      const world = await stubNavV3World(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      const composer = homeComposer(page);
+      await composer.picker.click();
+      const list = page.getByTestId("seat-picker-list");
+      const groups = await list.getByRole("group").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+      expect(groups).toEqual(["Your seats", "House", "Partners"]);
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({
+        path: `test-results/Home-v4-picker-${tag}.png`,
+        fullPage: false,
+        animations: "disabled",
+      });
+      await list.getByTestId("seat-option-shafen-claude-code").click();
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Flow…");
+      await expect(composer.line).toHaveText("Posts in #taxsq-portal, the room you share with Flow");
+      // Its brain is its owner's: shown, locked.
+      await expect(composer.chip).toHaveAttribute("data-editable", "false");
+      await expect(composer.chip).toContainText("Shafen’s Flow");
+      // No call into a room with other people in it.
+      await expect(composer.root.getByTestId("composer-voice-call")).toHaveCount(0);
+      await page.screenshot({ path: `test-results/Home-v4-partner-${tag}.png`, fullPage: false });
+
+      // A partner you share no room with: nowhere to send, and it says so.
+      await composer.picker.click();
+      await list.getByTestId("seat-option-shox").click();
+      await expect(composer.line).toHaveText("No room shared with ShOX yet");
+      await composer.input.fill("hello");
+      await expect(composer.send).toHaveAttribute("aria-disabled", "true");
+      await composer.input.fill("");
+
+      await composer.picker.click();
+      await list.getByTestId("seat-option-shafen-claude-code").click();
+      await sendFromHome(page, "Flow, is the portal copy final?");
+      await expect(page).toHaveURL(/\/c\/room-taxsq$/);
+      expect(world.calls).toEqual(["post:room-taxsq"]);
+    });
+  }
+
+  test("⌘⇧K comes home to the composer; ⌘K is still the quick switcher", async ({ page, browserName }, testInfo) => {
+    test.skip(testInfo.project.name === "chromium-mobile", "a phone has no chords");
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/c/room-general");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("room-view")).toBeVisible();
+    expect(browserName).toBe("chromium");
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.getByTestId("home-dashboard")).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(homeComposer(page).input).toBeFocused();
+    await page.keyboard.type("from anywhere");
+    await expect(homeComposer(page).input).toHaveValue("from anywhere");
+    await homeComposer(page).input.fill("");
+
+    await page.keyboard.press("Control+K");
+    await expect(page.getByRole("dialog").filter({ hasText: /Jump to|Switch|Search/ }).first()).toBeVisible();
+  });
+
+  test("opens on your default agent when it is one of your seats", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    // Rook's seat is the agent `claude-code`.
+    await stubNavV3World(page, { defaultAgentId: "claude-code" });
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.picker).toContainText("Rook");
+    await expect(composer.input).toHaveAttribute("placeholder", "Message Rook…");
+    await expect(composer.chip).toContainText("Opus 5.5 · medium");
+  });
+
+  test("a house agent takes a call from the composer; a seat does not", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.picker).toContainText("Persephone");
+    await expect(composer.root.getByTestId("composer-voice-call")).toHaveCount(0);
+    await composer.picker.click();
+    await page.getByTestId("seat-option-majik").click();
+    await expect(composer.input).toHaveAttribute("placeholder", "Message Majik Mane…");
+    await expect(composer.chip).toHaveCount(0);
+    await expect(composer.root.getByTestId("composer-voice-call")).toBeVisible();
+    await expect(composer.root.getByTestId("composer-video-call")).toBeVisible();
+  });
 });
 
 test.describe("Accessibility sweep (report only)", () => {
@@ -1234,6 +1704,15 @@ test.describe("One conversation list", () => {
 // ---- Nav v3: crew-first (design/nav-v3-crew-first-20260928) -----------------
 
 interface NavV3World {
+  /**
+   * Every write, in the order it arrived: `hub:<agent>`, `thread:<hub>`,
+   * `seat:<room>`, `post:<room>`.
+   */
+  calls: string[];
+  /** Bodies of every POST /rooms/{id}/messages. */
+  posts: Array<{ roomId: string; body: Record<string, unknown> }>;
+  /** Bodies of every POST /rooms/{id}/threads. */
+  threadBodies: Array<{ hubId: string; body: Record<string, unknown> }>;
   /** Hub ids that received POST /threads, in order. */
   threadPosts: string[];
   /** Bodies of every PATCH /rooms/{id}. */
@@ -1247,8 +1726,30 @@ interface NavV3World {
  * shell talks to (C2 + C3). Persephone's hub carries one existing thread so
  * the sidebar has something to nest; a new one is created live by the test.
  */
-async function stubNavV3World(page: Page): Promise<NavV3World> {
-  const world: NavV3World = { threadPosts: [], roomPatches: [], memberPatches: [] };
+interface NavV3Options {
+  /** POST /rooms/{id}/messages answers 503. */
+  failPost?: boolean;
+  /** PATCH /rooms/{id} with seats answers 403 "ask the seat's owner". */
+  failSeat?: boolean;
+  /** POST /rooms/{id}/threads answers 403. */
+  failThread?: boolean;
+  /** A first run: no rooms at all. */
+  noRooms?: boolean;
+  /** The /crew answer; the twelve-row fixture by default. */
+  crew?: unknown[];
+  /** `default_agent_id` in the caller's preferences. */
+  defaultAgentId?: string | null;
+}
+
+async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<NavV3World> {
+  const world: NavV3World = {
+    calls: [],
+    posts: [],
+    threadBodies: [],
+    threadPosts: [],
+    roomPatches: [],
+    memberPatches: [],
+  };
   // metadata.seats per room: { <agent_id>: {model, effort} } — per seat, not per room.
   const seatsByRoom = new Map<string, Record<string, { model: string | null; effort: string | null }>>();
   const existingThread = {
@@ -1366,15 +1867,10 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     channel("room-war", "war-room", "2026-09-28T08:00:00Z", "Room is open"),
     channel("room-dev", "dev", "2026-09-28T07:00:00Z", "PR #42 ready"),
   ];
-  const rooms = () => [
-    hub(),
-    ...created,
-    existingThread,
-    hubRoomRaw("claude-code"),
-    general,
-    taxsq,
-    ...extras,
-  ];
+  const rooms = () =>
+    options.noRooms
+      ? [...created]
+      : [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general, taxsq, ...extras];
   const detailFor = (id: string) => {
     if (id === PERSEPHONE_HUB_ID) return hub();
     const own = created.find((room) => room.id === id);
@@ -1392,7 +1888,20 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     body: JSON.stringify(body),
   });
 
-  await stubCrew(page);
+  if (options.crew) {
+    await page.route("**/api/v1/crew**", (route) => route.fulfill(json(options.crew)));
+  } else {
+    await stubCrew(page);
+  }
+  await page.route("**/api/v1/users/me/preferences", (route) =>
+    route.fulfill(
+      json({
+        default_agent_id: options.defaultAgentId ?? null,
+        favorite_people_ids: [],
+        onboarding_checklist: {},
+      }),
+    ),
+  );
   await page.route("**/api/v1/rooms**", async (route) => {
     const url = route.request().url();
     if (!/\/api\/v1\/rooms(\?|$)/.test(url)) {
@@ -1404,8 +1913,35 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
   });
   await page.route("**/api/v1/rooms/*/recordings**", (route) => route.fulfill(json([])));
   await page.route("**/api/v1/rooms/browse**", (route) => route.fulfill(json([])));
+  const posted = new Map<string, Array<Record<string, unknown>>>();
   await page.route("**/api/v1/rooms/*/messages**", (route) => {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    if (route.request().method() === "POST") {
+      const roomId = parts[3]!;
+      const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+      world.calls.push(`post:${roomId}`);
+      world.posts.push({ roomId, body });
+      if (options.failPost) return route.fulfill(json({ detail: "The room is not taking messages" }, 503));
+      const at = new Date().toISOString();
+      const message = {
+        id: `msg-posted-${world.posts.length}`,
+        room_id: roomId,
+        sender_id: "p-aaron",
+        sender_name: "Aaron Stransky",
+        sender_type: "human",
+        sender_avatar: null,
+        content: body.content,
+        content_type: body.content_type ?? "text",
+        thread_id: null,
+        reply_count: 0,
+        edited: false,
+        created_at: at,
+        updated_at: at,
+        metadata: { ...((body.metadata as Record<string, unknown>) ?? {}), client_msg_id: body.client_msg_id },
+      };
+      posted.set(roomId, [...(posted.get(roomId) ?? []), message]);
+      return route.fulfill(json(message, 201));
+    }
     // The existing thread was started from one of Persephone's lines: its
     // first entry is the seed, under its true author.
     // #ops carries the server-worded system lines: the text names nobody,
@@ -1454,7 +1990,7 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
         ? [threadSeedMessageRaw(existingThread.id as string, PERSEPHONE_HUB_ID)]
         : parts[3] === "room-ops"
           ? [...opsLines].reverse()
-          : [];
+          : [...(posted.get(parts[3]!) ?? [])].reverse();
     return route.fulfill(json({ messages, cursor: null, has_more: false }));
   });
   const membersFor = (roomId: string) =>
@@ -1479,9 +2015,20 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
     const parentId = parts[3]!;
     if (route.request().method() === "POST") {
+      const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+      world.calls.push(`thread:${parentId}`);
+      world.threadBodies.push({ hubId: parentId, body });
+      if (options.failThread) {
+        await route.fulfill(json({ detail: "This room is archived" }, 403));
+        return;
+      }
       threadCounter += 1;
       world.threadPosts.push(parentId);
-      const thread = threadRoomRaw(parentId, threadCounter);
+      const thread = threadRoomRaw(
+        parentId,
+        threadCounter,
+        typeof body.title === "string" ? body.title : undefined,
+      );
       created.push(thread);
       await route.fulfill(json(thread, 201));
       return;
@@ -1490,7 +2037,10 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
   });
   await page.route("**/api/v1/agents/*/hub", async (route) => {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
-    await route.fulfill(json(detailFor(parts[3] === "persephone" ? PERSEPHONE_HUB_ID : `hub-${parts[3]}`)));
+    world.calls.push(`hub:${parts[3]}`);
+    const made = detailFor(parts[3] === "persephone" ? PERSEPHONE_HUB_ID : `hub-${parts[3]}`);
+    if (options.noRooms && !created.some((room) => room.id === made.id)) created.push(made);
+    await route.fulfill(json(made));
   });
   await page.route("**/api/v1/rooms/*", async (route) => {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
@@ -1507,6 +2057,11 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
           | { seats?: Record<string, { model?: string | null; effort?: string | null }> }
           | undefined
       )?.seats;
+      if (seats) world.calls.push(`seat:${id}`);
+      if (seats && options.failSeat) {
+        await route.fulfill(json({ detail: "ask the seat's owner" }, 403));
+        return;
+      }
       if (seats) {
         const current = { ...(seatsByRoom.get(id) ?? {}) };
         for (const [agentId, seat] of Object.entries(seats)) {

@@ -2,7 +2,7 @@ import { getToken, refreshToken } from "@/services/auth";
 import { useFederationStore } from "@/stores/federationStore";
 
 /**
- * v3 home summary and the section layout prefs.
+ * The home summary (v3 of the contract).
  *
  * These calls stay in Home so the shared `api.getHomeSummary()` poll (sidebar
  * live-call badges) keeps its v1 shape. Both hit the same participant record
@@ -99,11 +99,6 @@ export interface HomeSummaryV3 {
   today: TodayBlock | null;
 }
 
-export interface HomeSectionPrefs {
-  order: string[];
-  collapsed: Record<string, boolean>;
-}
-
 function activeBaseUrl(): string {
   const fed = useFederationStore.getState();
   return (
@@ -172,12 +167,4 @@ export async function ensureAgentHub(card: {
     `/api/v1/agents/${encodeURIComponent(card.agent_id)}/hub`,
   );
   return hub.id;
-}
-
-export function fetchSectionPrefs(): Promise<HomeSectionPrefs> {
-  return homeRequest<HomeSectionPrefs>("GET", "/api/v1/home/section-prefs");
-}
-
-export function saveSectionPrefs(prefs: HomeSectionPrefs): Promise<HomeSectionPrefs> {
-  return homeRequest<HomeSectionPrefs>("PUT", "/api/v1/home/section-prefs", prefs);
 }

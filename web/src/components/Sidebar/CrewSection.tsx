@@ -205,11 +205,11 @@ export function CrewSection({
     const seat = member.kind === "seat";
     return (
       <>
-        <MenuItem onClick={() => newConversation(row)} testId="crew-menu-new">
+        <CrewMenuItem onClick={() => newConversation(row)} testId="crew-menu-new">
           <MessageSquarePlus className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           New conversation
-        </MenuItem>
-        <MenuItem
+        </CrewMenuItem>
+        <CrewMenuItem
           onClick={() => call(row)}
           disabled={seat}
           title={seat ? SEAT_CALL_UNAVAILABLE : undefined}
@@ -217,12 +217,12 @@ export function CrewSection({
         >
           <Phone className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           Call
-        </MenuItem>
+        </CrewMenuItem>
         {member.group === "own_seat" && (
-          <MenuItem onClick={() => openSettings(row)} testId="crew-menu-settings">
+          <CrewMenuItem onClick={() => openSettings(row)} testId="crew-menu-settings">
             <Settings2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
             Settings
-          </MenuItem>
+          </CrewMenuItem>
         )}
       </>
     );
@@ -512,13 +512,15 @@ export function CrewSection({
  * The row's ⋮ menu with the keyboard model every other menu here has:
  * focus moves in on open, arrows cycle, Escape closes and returns focus.
  */
-function CrewRowMenu({
+/** The ⋮ of a crew row, and of a seat's card on Home. */
+export function CrewRowMenu({
   name,
   agentId,
   open,
   alwaysVisible,
   onOpenChange,
   children,
+  testId,
 }: {
   name: string;
   agentId: string;
@@ -526,6 +528,8 @@ function CrewRowMenu({
   alwaysVisible: boolean;
   onOpenChange: (open: boolean) => void;
   children: ReactNode;
+  /** The trigger's test id; the rail's own by default. */
+  testId?: string;
 }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -567,12 +571,13 @@ function CrewRowMenu({
         }}
         className={clsx(
           "focus-ring shrink-0 rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100",
-          alwaysVisible ? "p-2" : "p-1",
+          // Always there means a finger may be what presses it.
+          alwaysVisible ? "p-2 max-md:p-3" : "p-1",
         )}
         aria-label={`Options for ${name}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        data-testid={`crew-menu-${agentId}`}
+        data-testid={testId ?? `crew-menu-${agentId}`}
       >
         <MoreVertical className="h-3.5 w-3.5" />
       </button>
@@ -598,7 +603,7 @@ function CrewRowMenu({
   );
 }
 
-function MenuItem({
+export function CrewMenuItem({
   onClick,
   children,
   disabled = false,
