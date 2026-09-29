@@ -221,7 +221,10 @@ export function HomeDashboard({
     () => normalizeSectionOrder(prefsQuery.data?.order),
     [prefsQuery.data?.order],
   );
-  const collapsed = prefsQuery.data?.collapsed ?? {};
+  const collapsed = useMemo(
+    () => prefsQuery.data?.collapsed ?? {},
+    [prefsQuery.data?.collapsed],
+  );
 
   const savePrefs = useMutation({
     mutationFn: (prefs: HomeSectionPrefs) => saveSectionPrefs(prefs),

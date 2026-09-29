@@ -1091,7 +1091,7 @@ function PromoteToProjectOpsModal({
     return () => {
       active = false;
     };
-  }, []);
+  }, [message.room_id]);
 
   const preview = buildDescriptionPreview(message, description);
 
