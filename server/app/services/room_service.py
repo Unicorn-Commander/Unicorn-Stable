@@ -2315,6 +2315,8 @@ class RoomService:
         self,
         room_id: uuid.UUID,
         caller_id: uuid.UUID | str | None = None,
+        *,
+        guest_view: bool = False,
     ) -> list[dict[str, Any]]:
         """Get all members of a room with their participant info.
 
@@ -2353,8 +2355,16 @@ class RoomService:
         availability = await get_agent_availability(
             self._presence.redis, set(agent_ids_by_participant.values())
         )
-        owner_names = await self._owner_display_names(
-            [participant for _m, participant in rows if participant.participant_type == ParticipantType.AGENT]
+        # A GUEST caller learns an agent's ``kind`` and nothing else: never
+        # who owns a seat (their username and display name, even when that
+        # owner is not in the room) nor which agents have shell hands
+        # (``backend``). Members get the full subset.
+        owner_names = (
+            {}
+            if guest_view
+            else await self._owner_display_names(
+                [participant for _m, participant in rows if participant.participant_type == ParticipantType.AGENT]
+            )
         )
 
         members: list[dict[str, Any]] = []
@@ -2416,7 +2426,11 @@ class RoomService:
                 "agent_mode": getattr(membership, "agent_mode", None),
                 "context_depth": getattr(membership, "context_depth", None),
                 "metadata": (
-                    self._member_metadata_subset(participant, owner_names)
+                    (
+                        {"kind": participant_kind(participant)}
+                        if guest_view
+                        else self._member_metadata_subset(participant, owner_names)
+                    )
                     if participant.participant_type == ParticipantType.AGENT
                     else None
                 ),
