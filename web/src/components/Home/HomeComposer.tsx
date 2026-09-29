@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { api, type CrewMember, type RoomSeat } from "@/services/api";
@@ -18,6 +18,7 @@ import {
   titleSource,
 } from "@/lib/homeComposer";
 import { seatPatchBody } from "@/lib/seatSettings";
+import { sendFingerprint } from "@/lib/sendPipeline";
 import type { CallKind } from "@/lib/callEntry";
 import { useAppStore } from "@/stores/appStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
@@ -46,7 +47,20 @@ export function HomeComposer({
   className?: string;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
+  // A send can outlive Home (a slow network, a click elsewhere): it goes to
+  // the conversation only while Home is still what is on screen (review 2,
+  // P2-5); otherwise it says where the message went.
+  const mounted = useRef(true);
+  const path = useRef(location.pathname);
+  path.current = location.pathname;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const scope = useFederationStore((s) => s.activeInstanceId);
   const rooms = useAppStore((s) => s.rooms);
   const roster = useAppStore((s) => s.agents);
@@ -93,9 +107,13 @@ export function HomeComposer({
       extraMetadata?: Record<string, unknown>,
     ): Promise<boolean> => {
       if (!selected) return false;
+      const startedOn = path.current;
+      const stillHere = () => mounted.current && path.current === startedOn;
+      const typed = getDraft(HOME_DRAFT_KEY);
       const result = await startConversation(
         {
           ensureHub: (agentId) => api.ensureAgentHub(agentId),
+          setArchived: (roomId, archived) => api.updateRoom(roomId, { is_archived: archived }),
           createThread: (hubId, body) => api.createThread(hubId, body),
           setSeat: (roomId, agentId, seat) => api.updateRoom(roomId, seatPatchBody(agentId, seat)),
           post: (roomId, body) => api.sendMessage(roomId, body),
@@ -106,36 +124,43 @@ export function HomeComposer({
           attachments,
           extraMetadata,
           seat: canEditSeat(selected) ? brain : null,
-          titleFrom: titleSource(getDraft(HOME_DRAFT_KEY), content),
+          titleFrom: titleSource(typed, content),
         },
       );
 
+      // What exists now is in the list before the next poll: a hub made (or
+      // reopened) on the way, and the conversation — carrying the brain it
+      // was given, so its chip says so from the first frame (review 2, P2-2).
+      const state = useAppStore.getState();
+      const hub = result.hub;
+      if (hub) {
+        if (state.rooms.some((room) => room.id === hub.id)) state.updateRoom(hub.id, hub);
+        else state.upsertRoom(hub);
+      }
+      const thread = result.status === "failed" ? result.left : result.thread;
+      if (thread) {
+        const parentId = thread.parent_room_id;
+        if (parentId) {
+          state.setRooms(noteThreadOnParent(useAppStore.getState().rooms, parentId, thread));
+        }
+        if (!useAppStore.getState().rooms.some((room) => room.id === thread.id)) {
+          useAppStore.getState().upsertRoom(thread);
+        }
+      }
+      if (hub || thread) {
+        void queryClient.invalidateQueries({ queryKey: ["rooms", scope] });
+        void queryClient.invalidateQueries({ queryKey: ["crew", scope] });
+      }
+
       if (result.status === "failed") {
+        // Nothing was posted, and nothing empty is left (it was taken back):
+        // the box keeps the text and the files.
         useAppStore.getState().pushToast({
           ...conversationFailureNotice(result, selected.display_name),
           kind: "error",
         });
         return false;
       }
-
-      // The conversation exists: the rail and the room know it before the
-      // next poll does.
-      const state = useAppStore.getState();
-      if (result.hub) {
-        if (state.rooms.some((room) => room.id === result.hub!.id)) state.updateRoom(result.hub.id, result.hub);
-        else state.upsertRoom(result.hub);
-      }
-      if (result.thread) {
-        const parentId = result.thread.parent_room_id;
-        if (parentId) {
-          state.setRooms(noteThreadOnParent(useAppStore.getState().rooms, parentId, result.thread));
-        }
-        if (!useAppStore.getState().rooms.some((room) => room.id === result.thread!.id)) {
-          useAppStore.getState().upsertRoom(result.thread);
-        }
-      }
-      void queryClient.invalidateQueries({ queryKey: ["rooms", scope] });
-      void queryClient.invalidateQueries({ queryKey: ["crew", scope] });
       void queryClient.invalidateQueries({ queryKey: ["home-summary-v3"] });
 
       if (result.status === "sent") {
@@ -151,22 +176,38 @@ export function HomeComposer({
               /* A checklist that did not save is not the message's problem. */
             });
         }
-        navigate(`/c/${result.roomId}`);
+        if (stillHere()) {
+          navigate(`/c/${result.roomId}`);
+        } else {
+          useAppStore.getState().pushToast({
+            title: `Sent to ${selected.display_name}`,
+            body: "Open the conversation",
+            roomId: result.roomId,
+            kind: "success",
+          });
+        }
         return true;
       }
 
-      // Not sent, and there is a conversation to be in: what was typed (as
-      // typed, a command still a command) and what was attached go there.
-      saveDraft(result.roomId, getDraft(HOME_DRAFT_KEY) || content);
+      // The post got no answer and may have landed. The conversation stays;
+      // what was typed (a command still a command), the files and the send's
+      // id go there, so sending it again cannot post it twice (P2-6).
+      saveDraft(result.roomId, typed || content);
       if (attachments?.length) {
         useConversationUi.getState().handAttachments(result.roomId, attachments);
       }
+      useConversationUi.getState().handSend(result.roomId, {
+        clientMsgId: result.clientMsgId,
+        fingerprint: sendFingerprint(content, attachments, extraMetadata),
+      });
       clearDraft(HOME_DRAFT_KEY);
+      const opened = stillHere();
       useAppStore.getState().pushToast({
-        ...conversationFailureNotice(result, selected.display_name),
+        ...conversationFailureNotice(result, selected.display_name, opened),
+        ...(opened ? {} : { roomId: result.roomId }),
         kind: "error",
       });
-      navigate(`/c/${result.roomId}`);
+      if (opened) navigate(`/c/${result.roomId}`);
       return true;
     },
     [selected, target, brain, navigate, queryClient, scope, preferences.data?.onboarding_checklist],

@@ -993,11 +993,15 @@ test.describe("Home v4", () => {
       roomId: threadId,
       body: { metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: "max" } } } },
     });
-    // The room's own chip says the same.
-    await expect(page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]')).toContainText("Opus 5.5 · max");
+    // The room's own chip says the same, once Home is gone (review 2, P2-2 and T1).
+    await expect(page.getByTestId("room-view")).toBeVisible();
+    await expect(page.getByTestId("home-composer")).toHaveCount(0);
+    await expect(
+      page.getByTestId("room-header").locator('[data-testid="seat-chip"][data-agent-id="persephone"]'),
+    ).toContainText("Opus 5.5 · max");
   });
 
-  test("the post fails: you are in the conversation, with the draft", async ({ page }) => {
+  test("the post gets no answer: you are in the conversation with the draft, and sending again reuses its id", async ({ page }) => {
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await stubHomeSummary(page);
     const world = await stubNavV3World(page, { failPost: true });
@@ -1006,18 +1010,59 @@ test.describe("Home v4", () => {
     await sendFromHome(page, "/council is the cap right?");
     const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
     await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    // A 503 may have landed: the conversation is kept, not taken back.
     expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `post:${threadId}`]);
     // Titled from what was asked; the command rides in the post's metadata.
     expect(world.threadBodies[0]?.body).toEqual({ title: "is the cap right?" });
     expect(world.posts[0]?.body).toMatchObject({ content: "is the cap right?", metadata: { council: true } });
-    await expect(page.getByText("Not sent", { exact: true })).toBeVisible();
+    await expect(page.getByText("Not confirmed", { exact: true })).toBeVisible();
     // As typed: the command is still a command in the room's box.
     const roomInput = page.getByTestId("room-view").getByLabel("Message input");
     await expect(roomInput).toHaveValue("/council is the cap right?");
+    // Sent again from there, it keeps its id: the server would answer with
+    // the original rather than post it twice (review 2, P2-6).
+    await roomInput.focus();
+    await page.getByTestId("room-view").getByTestId("composer-send").click();
+    await expect.poll(() => world.posts.length).toBe(2);
+    expect(world.posts[1]!.body.client_msg_id).toBe(world.posts[0]!.body.client_msg_id);
     // And Home's box did not keep a second copy.
     await page.goto("/");
     await waitForAppReady(page);
     await expect(homeComposer(page).input).toHaveValue("");
+  });
+
+  test("the server refuses the post: you are still on Home with the draft, and nothing empty is left", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failPost: true, failPostStatus: 403 });
+    await page.goto("/");
+    await waitForAppReady(page);
+    await sendFromHome(page, "Status on the kitchen panel?");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page.getByText("Not sent", { exact: true })).toBeVisible();
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `post:${threadId}`, `archive:${threadId}`]);
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(homeComposer(page).input).toHaveValue("Status on the kitchen panel?");
+  });
+
+  test("a send that outlives Home does not pull you out of where you went", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { postDelayMs: 2500 });
+    await page.goto("/");
+    await waitForAppReady(page);
+    await sendFromHome(page, "Summarise the ops channel");
+    // Elsewhere while the post is on its way (review 2, P2-5).
+    await page.getByTestId("conversations-card").getByText("ops", { exact: true }).first().click();
+    await expect(page).toHaveURL(/\/c\/room-ops$/);
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect.poll(() => world.calls).toContain(`post:${threadId}`);
+    const toast = page.getByText(`Sent to Persephone`, { exact: true });
+    await expect(toast).toBeVisible({ timeout: 15_000 });
+    await expect(page).toHaveURL(/\/c\/room-ops$/);
+    // The toast opens it.
+    await toast.click();
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
   });
 
   test("the conversation cannot be made: you are still on Home, with the draft", async ({ page }) => {
@@ -1034,7 +1079,7 @@ test.describe("Home v4", () => {
     await expect(homeComposer(page).send).toHaveAttribute("aria-disabled", "false");
   });
 
-  test("the brain cannot be set: the message is not posted", async ({ page }) => {
+  test("the brain cannot be set: nothing is posted, and nothing empty is left", async ({ page }) => {
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await stubHomeSummary(page);
     const world = await stubNavV3World(page, { failSeat: true });
@@ -1046,13 +1091,12 @@ test.describe("Home v4", () => {
     await page.keyboard.press("Escape");
     await sendFromHome(page, "Think hard about the lease terms");
     const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
-    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
-    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `seat:${threadId}`]);
+    await expect(page.getByText("The brain was not set — nothing was sent")).toBeVisible();
+    // The conversation made for it is taken back; the draft stays on Home.
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `seat:${threadId}`, `archive:${threadId}`]);
     expect(world.posts).toEqual([]);
-    await expect(page.getByText("The brain was not set — not sent")).toBeVisible();
-    await expect(page.getByTestId("room-view").getByLabel("Message input")).toHaveValue(
-      "Think hard about the lease terms",
-    );
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(composer.input).toHaveValue("Think hard about the lease terms");
   });
 
   for (const viewport of ["mobile", "desktop"] as const) {
@@ -1868,8 +1912,12 @@ interface NavV3World {
  * the sidebar has something to nest; a new one is created live by the test.
  */
 interface NavV3Options {
-  /** POST /rooms/{id}/messages answers 503. */
+  /** POST /rooms/{id}/messages fails: 503 (no answer the client can trust) unless `failPostStatus`. */
   failPost?: boolean;
+  /** The status a failing post answers with (a 4xx is a refusal). */
+  failPostStatus?: number;
+  /** Hold every post this long before answering. */
+  postDelayMs?: number;
   /** PATCH /rooms/{id} with seats answers 403 "ask the seat's owner". */
   failSeat?: boolean;
   /** POST /rooms/{id}/threads answers 403. */
@@ -2009,10 +2057,18 @@ async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<N
     channel("room-dev", "dev", "2026-09-28T07:00:00Z", "PR #42 ready"),
   ];
   const rooms = () =>
-    options.noRooms
+    (options.noRooms
       ? [...created]
-      : [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general, taxsq, ...extras];
-  const detailFor = (id: string) => {
+      : [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general, taxsq, ...extras]
+    ).map((room) => withSeats(room as { id?: unknown; metadata_?: unknown }));
+  /** A room as the server answers it: the seats written to it (review 2, C6). */
+  const withSeats = <R extends { id?: unknown; metadata_?: unknown }>(room: R): R => {
+    const seats = seatsByRoom.get(room.id as string);
+    if (!seats) return room;
+    return { ...room, metadata_: { ...((room.metadata_ as Record<string, unknown>) ?? {}), seats } };
+  };
+  const detailFor = (id: string) => withSeats(detailRoom(id));
+  const detailRoom = (id: string) => {
     if (id === PERSEPHONE_HUB_ID) return hub();
     const own = created.find((room) => room.id === id);
     if (own) return own;
@@ -2021,7 +2077,9 @@ async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<N
     if (id === "room-taxsq") return taxsq;
     const extra = extras.find((room) => room.id === id);
     if (extra) return extra;
-    return hubRoomRaw("claude-code", { id, name: id });
+    // A hub made on the way names its own agent (review 2, T6).
+    const agent = id.startsWith("hub-") ? id.slice(4) : "claude-code";
+    return hubRoomRaw(agent, { id, name: id });
   };
   const json = (body: unknown, status = 200) => ({
     status,
@@ -2055,14 +2113,20 @@ async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<N
   await page.route("**/api/v1/rooms/*/recordings**", (route) => route.fulfill(json([])));
   await page.route("**/api/v1/rooms/browse**", (route) => route.fulfill(json([])));
   const posted = new Map<string, Array<Record<string, unknown>>>();
-  await page.route("**/api/v1/rooms/*/messages**", (route) => {
+  await page.route("**/api/v1/rooms/*/messages**", async (route) => {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
     if (route.request().method() === "POST") {
       const roomId = parts[3]!;
       const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
       world.calls.push(`post:${roomId}`);
       world.posts.push({ roomId, body });
-      if (options.failPost) return route.fulfill(json({ detail: "The room is not taking messages" }, 503));
+      if (options.postDelayMs) await new Promise((resolve) => setTimeout(resolve, options.postDelayMs));
+      if (options.failPost) {
+        const status = options.failPostStatus ?? 503;
+        return route.fulfill(
+          json({ detail: status < 500 ? "You can't post here" : "The room is not taking messages" }, status),
+        );
+      }
       const at = new Date().toISOString();
       const message = {
         id: `msg-posted-${world.posts.length}`,
@@ -2199,6 +2263,11 @@ async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<N
           | undefined
       )?.seats;
       if (seats) world.calls.push(`seat:${id}`);
+      if (typeof body.is_archived === "boolean") {
+        world.calls.push(`${body.is_archived ? "archive" : "unarchive"}:${id}`);
+        const made = created.find((room) => room.id === id);
+        if (made) made.is_archived = body.is_archived;
+      }
       if (seats && options.failSeat) {
         await route.fulfill(json({ detail: "ask the seat's owner" }, 403));
         return;

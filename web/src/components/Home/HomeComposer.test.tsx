@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { api, type Message, type Room } from "@/services/api";
 import { crewQueryKey } from "@/hooks/useCrew";
 import { CREW_FIXTURE, PERSEPHONE_HUB_ID } from "@/mocks/crewFixture";
@@ -9,6 +9,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { getDraft } from "@/utils/drafts";
+import { sendFingerprint } from "@/lib/sendPipeline";
 import { HOME_DRAFT_KEY, HomeComposer } from "./HomeComposer";
 
 vi.mock("@/hooks/useStableRoom", () => ({
@@ -82,7 +83,15 @@ const MESSAGE = {
 } as Message;
 
 function Where() {
-  return <p data-testid="where">{useLocation().pathname}</p>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <p data-testid="where">{useLocation().pathname}</p>
+      <button type="button" data-testid="go-elsewhere" onClick={() => navigate("/c/room-elsewhere")}>
+        elsewhere
+      </button>
+    </>
+  );
 }
 
 function show() {
@@ -128,7 +137,7 @@ beforeEach(() => {
     toasts: [],
     unreadCounts: {},
   });
-  useConversationUi.setState({ handedAttachments: {} });
+  useConversationUi.setState({ handedAttachments: {}, handedSends: {} });
   spy(vi.spyOn(api, "getCrew")).mockResolvedValue(CREW_FIXTURE);
   spy(vi.spyOn(api, "getMyPreferences")).mockResolvedValue({
     default_agent_id: null,
@@ -193,12 +202,18 @@ describe("Home's composer", () => {
     });
   });
 
-  it("the post fails: you are on the thread, and the draft and the file are in its box", async () => {
+  it("the post gets no answer: on the thread, with the draft, the files and the send's id", async () => {
     spy(vi.spyOn(api, "createThread")).mockResolvedValue(THREAD);
-    spy(vi.spyOn(api, "sendMessage")).mockRejectedValue({ status: 503, detail: "The room is not taking messages" });
+    const post = spy(vi.spyOn(api, "sendMessage")).mockRejectedValue({
+      status: 503,
+      detail: "The room is not taking messages",
+    });
+    const archive = spy(vi.spyOn(api, "updateRoom"));
     show();
     await send("/council is the cap right?");
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/c/thread-1"));
+    // It may have landed: nothing is taken back.
+    expect(archive).not.toHaveBeenCalled();
     // As typed: the command is still a command.
     expect(getDraft("thread-1")).toBe("/council is the cap right?");
     expect(getDraft(HOME_DRAFT_KEY)).toBe("");
@@ -206,10 +221,71 @@ describe("Home's composer", () => {
     expect(state.rooms.some((r) => r.id === "thread-1")).toBe(true);
     expect(state.messages["thread-1"]).toBeUndefined();
     expect(state.toasts[0]).toMatchObject({
-      title: "Not sent",
-      body: "The room is not taking messages. The conversation is open and your message is in its box.",
+      title: "Not confirmed",
+      body: "The room is not taking messages. It may have gone through. Your message is in the conversation's box; sending it again will not post it twice.",
       kind: "error",
     });
+    // The room's send of the same message reuses the id (the server dedupes on it).
+    const sentId = (post.mock.calls[0]![1] as { client_msg_id: string }).client_msg_id;
+    const fingerprint = sendFingerprint("is the cap right?", undefined, { council: true });
+    expect(useConversationUi.getState().takeHandedSend("thread-1", fingerprint)).toBe(sentId);
+  });
+
+  it("the server refuses the post: still on Home with what you typed, and no empty conversation", async () => {
+    spy(vi.spyOn(api, "createThread")).mockResolvedValue(THREAD);
+    spy(vi.spyOn(api, "sendMessage")).mockRejectedValue({ status: 403, detail: "You can't post here" });
+    const archive = spy(vi.spyOn(api, "updateRoom")).mockResolvedValue({ ...THREAD, is_archived: true });
+    show();
+    await send("Status?");
+    await waitFor(() => expect(useAppStore.getState().toasts).toHaveLength(1));
+    expect(archive).toHaveBeenCalledWith("thread-1", { is_archived: true });
+    expect(screen.getByTestId("where").textContent).toBe("/");
+    expect(box().value).toBe("Status?");
+    expect(getDraft(HOME_DRAFT_KEY)).toBe("Status?");
+    // The taken-back conversation is not put in the list.
+    expect(useAppStore.getState().rooms.some((r) => r.id === "thread-1")).toBe(false);
+    expect(useAppStore.getState().toasts[0]).toMatchObject({
+      title: "Not sent",
+      body: "You can't post here. Your message is still in the box.",
+    });
+  });
+
+  it("a send that outlives Home does not pull you out of where you went", async () => {
+    let finish: (room: typeof THREAD) => void = () => {};
+    spy(vi.spyOn(api, "createThread")).mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    spy(vi.spyOn(api, "sendMessage")).mockResolvedValue(MESSAGE);
+    show();
+    fireEvent.change(box(), { target: { value: "Plan the panel", selectionStart: 14 } });
+    fireEvent.keyDown(box(), { key: "Enter" });
+    // Elsewhere before the conversation exists.
+    fireEvent.click(screen.getByTestId("go-elsewhere"));
+    expect(screen.getByTestId("where").textContent).toBe("/c/room-elsewhere");
+    await act(async () => finish(THREAD));
+    await waitFor(() => expect(useAppStore.getState().toasts).toHaveLength(1));
+    expect(screen.getByTestId("where").textContent).toBe("/c/room-elsewhere");
+    // It went, and the toast opens it.
+    expect(useAppStore.getState().messages["thread-1"]?.items.map((m) => m.id)).toEqual(["msg-1"]);
+    expect(useAppStore.getState().toasts[0]).toMatchObject({
+      title: "Sent to Persephone",
+      roomId: "thread-1",
+      kind: "success",
+    });
+  });
+
+  it("the new conversation carries the brain you picked into the list", async () => {
+    spy(vi.spyOn(api, "createThread")).mockResolvedValue(THREAD);
+    spy(vi.spyOn(api, "sendMessage")).mockResolvedValue(MESSAGE);
+    const seats = { persephone: { model: "claude-opus-5-5", effort: "max" } };
+    const patch = spy(vi.spyOn(api, "updateRoom")).mockResolvedValue({ ...THREAD, metadata_: { seats } });
+    show();
+    fireEvent.click(screen.getByTestId("seat-chip"));
+    fireEvent.click(screen.getByTestId("seat-model-claude-opus-5-5"));
+    fireEvent.click(screen.getByTestId("seat-effort-max"));
+    await send("Draft the outline");
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/c/thread-1"));
+    expect(patch).toHaveBeenCalledWith("thread-1", { metadata: { seats } });
+    // Review 2, P2-2: the room reads its chip from the list's copy.
+    expect(useAppStore.getState().rooms.find((r) => r.id === "thread-1")?.metadata_).toEqual({ seats });
   });
 
   it("the thread cannot be made: you are still on Home with what you typed", async () => {

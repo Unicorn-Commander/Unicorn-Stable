@@ -43,6 +43,21 @@ interface ConversationUiState {
   handedAttachments: Record<string, HandedAttachment[]>;
   handAttachments: (roomId: string, attachments: HandedAttachment[]) => void;
   takeAttachments: (roomId: string) => HandedAttachment[];
+  /**
+   * The identity of a send Home could not confirm (it may have landed): the
+   * room's next send of the same message reuses its client_msg_id, so the
+   * server answers with the original instead of posting it twice (review 2,
+   * P2-6). Taken once; a different message gets a new id.
+   */
+  handedSends: Record<string, HandedSend>;
+  handSend: (roomId: string, send: HandedSend) => void;
+  takeHandedSend: (roomId: string, fingerprint: string) => string | null;
+}
+
+export interface HandedSend {
+  clientMsgId: string;
+  /** `sendFingerprint` of what was posted. */
+  fingerprint: string;
 }
 
 export interface HandedAttachment {
@@ -102,5 +117,17 @@ export const useConversationUi = create<ConversationUiState>((set, get) => ({
       return { handedAttachments: next };
     });
     return handed;
+  },
+  handedSends: {},
+  handSend: (roomId, send) => set((s) => ({ handedSends: { ...s.handedSends, [roomId]: send } })),
+  takeHandedSend: (roomId, fingerprint) => {
+    const handed = get().handedSends[roomId];
+    if (!handed) return null;
+    set((s) => {
+      const next = { ...s.handedSends };
+      delete next[roomId];
+      return { handedSends: next };
+    });
+    return handed.fingerprint === fingerprint ? handed.clientMsgId : null;
   },
 }));

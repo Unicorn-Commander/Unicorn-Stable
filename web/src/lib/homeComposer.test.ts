@@ -9,6 +9,7 @@ import {
   conversationTitle,
   defaultComposerSeat,
   seatNeedsWrite,
+  postRefused,
   startConversation,
   titleSource,
   type ComposerTarget,
@@ -225,12 +226,16 @@ describe("the sequence behind Enter", () => {
         calls.push(`hub:${agentId}`);
         return room({ id: "hub-new", type: "agent_hub" });
       }),
+      setArchived: vi.fn(async (roomId: string, archived: boolean) => {
+        calls.push(`${archived ? "archive" : "unarchive"}:${roomId}`);
+      }),
       createThread: vi.fn(async (hubId: string, body: { title?: string | null }) => {
         calls.push(`thread:${hubId}:${body.title ?? ""}`);
         return thread;
       }),
       setSeat: vi.fn(async (roomId: string, agentId: string) => {
         calls.push(`seat:${roomId}:${agentId}`);
+        return undefined;
       }),
       post: vi.fn(async (roomId: string) => {
         calls.push(`post:${roomId}`);
@@ -275,17 +280,48 @@ describe("the sequence behind Enter", () => {
 
   it("a picked brain is written to the thread before the message is posted", async () => {
     const { made, calls } = deps();
-    await startConversation(made, {
+    const result = await startConversation(made, {
       target: newConversation,
       content: "hi",
       seat: { model: "claude-opus-5-5", effort: null },
     });
     expect(calls).toEqual([`thread:${PERSEPHONE_HUB_ID}:hi`, "seat:thread-1:persephone", "post:thread-1"]);
+    // The thread comes back carrying the brain it was given (review 2, P2-2):
+    // the room's chip must not show the default once Home is gone.
+    expect(result.status === "sent" && result.thread?.metadata_).toEqual({
+      seats: { persephone: { model: "claude-opus-5-5", effort: null } },
+    });
     expect(made.setSeat).toHaveBeenCalledWith("thread-1", "persephone", { model: "claude-opus-5-5", effort: null });
     // The seat's own settings need no write.
     expect(seatNeedsWrite({ model: null, effort: null })).toBe(false);
     expect(seatNeedsWrite(null)).toBe(false);
     expect(seatNeedsWrite({ model: null, effort: "max" })).toBe(true);
+  });
+
+  it("takes the thread's seats from the server's answer when it gives one", async () => {
+    const saved = { seats: { persephone: { model: "claude-opus-5-5", effort: "max" } }, class_floor: "private" };
+    const { made } = deps({ setSeat: vi.fn(async () => ({ id: "thread-1", metadata_: saved })) });
+    const result = await startConversation(made, {
+      target: newConversation,
+      content: "hi",
+      seat: { model: "claude-opus-5-5", effort: "max" },
+    });
+    expect(result.status === "sent" && result.thread?.metadata_).toEqual(saved);
+  });
+
+  it("reopens a hub you archived before asking it for a thread (review 2, P2-9)", async () => {
+    const { made, calls } = deps({
+      ensureHub: vi.fn(async (agentId: string) => {
+        calls.push(`hub:${agentId}`);
+        return room({ id: "hub-old", type: "agent_hub", is_archived: true });
+      }),
+    });
+    const result = await startConversation(made, {
+      target: { ...newConversation, agentId: "majik", name: "Majik Mane", hubRoomId: null },
+      content: "hi",
+    });
+    expect(calls).toEqual(["hub:majik", "unarchive:hub-old", "thread:hub-old:hi", "post:thread-1"]);
+    expect(result).toMatchObject({ status: "sent", hub: { id: "hub-old", is_archived: false } });
   });
 
   it("attachments and a command's metadata ride in the post, the model beside them", async () => {
@@ -327,31 +363,82 @@ describe("the sequence behind Enter", () => {
     expect(made.post).not.toHaveBeenCalled();
   });
 
-  it("the brain cannot be set: the thread exists, the message is NOT posted", async () => {
-    const { made } = deps({ setSeat: vi.fn(async () => Promise.reject({ status: 403, detail: "ask the seat's owner" })) });
+  it("the brain cannot be set: nothing is posted, and the empty conversation is taken back", async () => {
+    const { made, calls } = deps({
+      setSeat: vi.fn(async () => Promise.reject({ status: 403, detail: "ask the seat's owner" })),
+    });
     const result = await startConversation(made, {
       target: newConversation,
       content: "hi",
       seat: { model: null, effort: "max" },
     });
-    expect(result).toMatchObject({ status: "unsent", stage: "seat", roomId: "thread-1" });
+    expect(calls).toEqual([`thread:${PERSEPHONE_HUB_ID}:hi`, "archive:thread-1"]);
+    expect(result).toMatchObject({ status: "failed", stage: "seat", left: null });
     expect(made.post).not.toHaveBeenCalled();
     expect(conversationFailureNotice(result as never, "Persephone")).toEqual({
-      title: "The brain was not set — not sent",
-      body: "ask the seat's owner. The conversation is open and your message is in its box; set the brain there, then send.",
+      title: "The brain was not set — nothing was sent",
+      body: "ask the seat's owner. Your message is still in the box.",
     });
   });
 
-  it("the post fails: the thread exists — go there with the draft", async () => {
-    const { made } = deps({ post: vi.fn(async () => Promise.reject(new Error("offline"))) });
-    const result = await startConversation(made, { target: newConversation, content: "hi" });
-    expect(result).toMatchObject({
-      status: "unsent",
-      stage: "post",
-      roomId: "thread-1",
-      thread: { id: "thread-1", parent_room_id: PERSEPHONE_HUB_ID },
+  it("the server refuses the post: the empty conversation is taken back, the draft stays on Home", async () => {
+    const { made, calls } = deps({
+      post: vi.fn(async () => Promise.reject({ status: 403, detail: "You can't post here" })),
     });
-    expect(conversationFailureNotice(result as never, "Persephone").title).toBe("Not sent");
+    const result = await startConversation(made, { target: newConversation, content: "hi" });
+    expect(calls).toEqual([`thread:${PERSEPHONE_HUB_ID}:hi`, "archive:thread-1"]);
+    expect(result).toMatchObject({ status: "failed", stage: "post", left: null });
+    expect(conversationFailureNotice(result as never, "Persephone")).toEqual({
+      title: "Not sent",
+      body: "You can't post here. Your message is still in the box.",
+    });
+  });
+
+  it("a conversation that cannot be taken back is named, not hidden", async () => {
+    const { made } = deps({
+      post: vi.fn(async () => Promise.reject({ status: 422, detail: "Too long" })),
+      setArchived: vi.fn(async () => Promise.reject({ status: 500 })),
+    });
+    const result = await startConversation(made, { target: newConversation, content: "hi" });
+    expect(result).toMatchObject({ status: "failed", stage: "post", left: { id: "thread-1" } });
+    expect(conversationFailureNotice(result as never, "Persephone").body).toBe(
+      "Too long. An empty conversation with Persephone is left in the list. Your message is still in the box.",
+    );
+  });
+
+  it("the post gets no answer: it may have landed, so the conversation stays and the draft goes there with its id", async () => {
+    for (const error of [
+      { status: 0, message: "Request timed out", detail: "The server did not respond in time." },
+      { status: 503, detail: "The room is not taking messages" },
+      new TypeError("Failed to fetch"),
+    ]) {
+      const { made, calls } = deps({ post: vi.fn(async () => Promise.reject(error)) });
+      const result = await startConversation(made, { target: newConversation, content: "hi", clientMsgId: "cid-7" });
+      // No take-back: the message may be in there.
+      expect(calls).toEqual([`thread:${PERSEPHONE_HUB_ID}:hi`]);
+      expect(made.setArchived).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        status: "unconfirmed",
+        roomId: "thread-1",
+        clientMsgId: "cid-7",
+        thread: { id: "thread-1", parent_room_id: PERSEPHONE_HUB_ID },
+        body: { content: "hi", client_msg_id: "cid-7" },
+      });
+    }
+    expect(postRefused({ status: 404 })).toBe(true);
+    expect(postRefused({ status: 500 })).toBe(false);
+    expect(postRefused({ status: 0 })).toBe(false);
+    expect(postRefused(new Error("x"))).toBe(false);
+  });
+
+  it("says where an unconfirmed message went, open or not", async () => {
+    const { made } = deps({ post: vi.fn(async () => Promise.reject({ status: 0, detail: "The server did not respond in time." })) });
+    const result = await startConversation(made, { target: newConversation, content: "hi" });
+    expect(conversationFailureNotice(result as never, "Persephone")).toEqual({
+      title: "Not confirmed",
+      body: "The server did not respond in time. It may have gone through. Your message is in the conversation's box; sending it again will not post it twice.",
+    });
+    expect(conversationFailureNotice(result as never, "Persephone", false).body).toContain("(open it here)");
   });
 
   it("a partner's seat: one post into the shared room, nothing created", async () => {
@@ -368,8 +455,7 @@ describe("the sequence behind Enter", () => {
     expect(sent).toMatchObject({ status: "sent", roomId: "room-taxsq", thread: null });
     const failing = deps({ post: vi.fn(async () => Promise.reject(new Error("offline"))) });
     expect(await startConversation(failing.made, { target, content: "hi" })).toMatchObject({
-      status: "unsent",
-      stage: "post",
+      status: "unconfirmed",
       roomId: "room-taxsq",
     });
   });

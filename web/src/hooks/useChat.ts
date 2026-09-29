@@ -17,7 +17,9 @@ import {
   pendingSendMetadata,
   buildSendRequest,
   droppedMetadataKeys,
+  sendFingerprint,
 } from "@/lib/sendPipeline";
+import { useConversationUi } from "@/stores/conversationUiStore";
 
 /** Human-readable message for a rejected send. Mirrors the errorMessage()
  *  convention elsewhere: FastAPI `detail` first, then statusText/message. */
@@ -462,7 +464,13 @@ export function useChat(roomId: string | null): UseChatReturn {
       // id derives from the client_msg_id, the POST carries it, the server
       // stamps it into metadata (so the echo carries it back), and a retry
       // replays the SAME id so the server can dedupe.
-      const clientMsgId = newClientMsgId();
+      // A send Home could not confirm arrives with its id: the same message,
+      // sent again from here, keeps it (the server dedupes on it).
+      const clientMsgId =
+        useConversationUi
+          .getState()
+          .takeHandedSend(roomId, sendFingerprint(trimmedContent, attachments, extraMetadata)) ??
+        newClientMsgId();
       const optimisticId = optimisticIdFor(clientMsgId);
       const requestSnapshot: OutgoingSendRequest = {
         content: trimmedContent,

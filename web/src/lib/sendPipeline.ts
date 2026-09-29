@@ -598,3 +598,22 @@ export function droppedMetadataKeys(
   return Object.keys(metadata ?? {}).filter((key) => !kept.has(key));
 }
 
+/**
+ * One send, as a string: what was posted (content, files, the command's
+ * metadata). A send handed from Home to a conversation keeps its
+ * client_msg_id only while what is sent again is the same message — the
+ * server dedupes on the id alone and would answer an edited resend with the
+ * original.
+ */
+export function sendFingerprint(
+  content: string,
+  attachments?: readonly { url: string }[] | null,
+  extraMetadata?: Record<string, unknown> | null,
+): string {
+  return JSON.stringify([
+    content.trim(),
+    (attachments ?? []).map((file) => file.url),
+    extraMetadata ?? null,
+  ]);
+}
+

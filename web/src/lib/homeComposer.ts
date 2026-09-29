@@ -9,6 +9,7 @@
 import type { Agent, CrewMember, Message, Room, RoomSeat } from "@/services/api";
 import { CREW_GROUP_ORDER, crewFromRoster, hubRoomFor, opensHub } from "@/lib/crew";
 import { buildSendRequest, newClientMsgId, type OutgoingSendRequest, type SendRequestBody } from "@/lib/sendPipeline";
+import { applySeatToRoom } from "@/lib/seatSettings";
 
 /** The house's general assistant: the seat of last resort. */
 export const SIDEKICK_ID = "sidekick";
@@ -167,9 +168,15 @@ export function seatNeedsWrite(seat: RoomSeat | null | undefined): seat is RoomS
 export interface ConversationDeps {
   /** POST /agents/{id}/hub — idempotent. */
   ensureHub: (agentId: string) => Promise<Room>;
+  /**
+   * PATCH /rooms/{id} {is_archived}. Reopens a hub you archived (it takes no
+   * thread while archived), and takes back a conversation nothing was
+   * posted into.
+   */
+  setArchived: (roomId: string, archived: boolean) => Promise<unknown>;
   /** POST /rooms/{hub}/threads */
   createThread: (hubId: string, body: { title?: string | null }) => Promise<Room>;
-  /** PATCH /rooms/{id} {metadata: {seats: {<agent_id>: …}}} */
+  /** PATCH /rooms/{id} {metadata: {seats: {<agent_id>: …}}} — answers with the room. */
   setSeat: (roomId: string, agentId: string, seat: RoomSeat) => Promise<unknown>;
   /** POST /rooms/{id}/messages */
   post: (roomId: string, body: SendRequestBody) => Promise<Message>;
@@ -191,33 +198,65 @@ export interface ConversationInput {
 }
 
 export type ConversationResult =
-  /** The message is in the room. */
+  /** The message is in the room. The thread carries the brain it was given. */
   | { status: "sent"; roomId: string; hub: Room | null; thread: Room | null; message: Message }
   /**
-   * Nothing to land in: the hub or the thread could not be made (or there
-   * was no target). Stay on Home, the draft untouched.
-   */
-  | { status: "failed"; stage: "target" | "hub" | "thread"; error: unknown }
-  /**
-   * The conversation exists and the message is not in it: its brain could
-   * not be set, or the post failed. Go there, the draft in its box.
+   * Nothing was posted: stay on Home, the draft untouched. A conversation
+   * made for it was taken back (archived); `left` is one that could not be.
    */
   | {
-      status: "unsent";
-      stage: "seat" | "post";
+      status: "failed";
+      stage: "target" | "hub" | "thread" | "seat" | "post";
+      error: unknown;
+      hub: Room | null;
+      left: Room | null;
+    }
+  /**
+   * The post got no answer (a network error, a timeout, a 5xx): it may have
+   * landed. Its conversation stays, and the draft goes there with its
+   * client_msg_id, so sending it again cannot post it twice.
+   */
+  | {
+      status: "unconfirmed";
       roomId: string;
       hub: Room | null;
       thread: Room | null;
       error: unknown;
+      clientMsgId: string;
+      body: SendRequestBody;
     };
 
 /**
- * Enter on Home. For your seat or a house agent: make sure of the hub,
- * start a thread under it titled from the first line, set the thread's
- * brain when one was picked, post. For a partner's seat: post into the
- * shared room. Every step is awaited before the next, and a failed step
- * stops the sequence — a message is never posted into a conversation whose
- * brain is not the one that was picked.
+ * The server said no (4xx): the message did not land, and the same request
+ * would be refused again. Anything else — no answer, a 5xx, a gateway
+ * timeout — may have landed.
+ */
+export function postRefused(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500;
+}
+
+/** The thread as the server now has it: its seats, from the PATCH's answer when it gave one. */
+function withSeat(thread: Room, agentId: string, seat: RoomSeat, saved: unknown): Room {
+  const metadata = (saved as { metadata_?: unknown } | null)?.metadata_;
+  if (metadata && typeof metadata === "object") {
+    return { ...thread, metadata_: metadata as Record<string, unknown> };
+  }
+  return applySeatToRoom(thread, agentId, seat);
+}
+
+/**
+ * Enter on Home. For your seat or a house agent: make sure of the hub
+ * (reopening it if you archived it), start a thread under it titled from
+ * the first line, set the thread's brain when one was picked, post. Every
+ * step is awaited before the next, and a failed step stops the sequence —
+ * a message is never posted into a conversation whose brain is not the one
+ * that was picked.
+ *
+ * No empty conversation is left behind (review 2): when the brain cannot be
+ * set, or the server refuses the post, the thread just made is taken back
+ * and the draft stays on Home. Only a post that got no answer keeps its
+ * thread — it may have landed — and the draft moves there with its id.
  */
 export async function startConversation(
   deps: ConversationDeps,
@@ -225,11 +264,12 @@ export async function startConversation(
 ): Promise<ConversationResult> {
   const { target } = input;
   if (target.kind === "none") {
-    return { status: "failed", stage: "target", error: new Error(target.reason) };
+    return { status: "failed", stage: "target", error: new Error(target.reason), hub: null, left: null };
   }
+  const clientMsgId = input.clientMsgId ?? newClientMsgId();
   const body = buildSendRequest(
     {
-      clientMsgId: input.clientMsgId ?? newClientMsgId(),
+      clientMsgId,
       request: {
         content: input.content,
         attachments: input.attachments,
@@ -244,7 +284,16 @@ export async function startConversation(
       const message = await deps.post(target.roomId, body);
       return { status: "sent", roomId: target.roomId, hub: null, thread: null, message };
     } catch (error) {
-      return { status: "unsent", stage: "post", roomId: target.roomId, hub: null, thread: null, error };
+      if (postRefused(error)) return { status: "failed", stage: "post", error, hub: null, left: null };
+      return {
+        status: "unconfirmed",
+        roomId: target.roomId,
+        hub: null,
+        thread: null,
+        error,
+        clientMsgId,
+        body,
+      };
     }
   }
 
@@ -253,9 +302,15 @@ export async function startConversation(
   if (!hubId) {
     try {
       hub = await deps.ensureHub(target.agentId);
+      // /crew names only live hubs; one you archived comes back from the
+      // ensure archived, and would refuse the thread (review 2, P2-9).
+      if (hub.is_archived) {
+        await deps.setArchived(hub.id, false);
+        hub = { ...hub, is_archived: false };
+      }
       hubId = hub.id;
     } catch (error) {
-      return { status: "failed", stage: "hub", error };
+      return { status: "failed", stage: "hub", error, hub: null, left: null };
     }
   }
 
@@ -265,15 +320,27 @@ export async function startConversation(
       title: conversationTitle(input.titleFrom ?? input.content) || null,
     });
   } catch (error) {
-    return { status: "failed", stage: "thread", error };
+    return { status: "failed", stage: "thread", error, hub, left: null };
   }
   thread = { ...thread, parent_room_id: thread.parent_room_id ?? hubId };
+  const made = thread;
+
+  /** Take back the conversation nothing was posted into; null once it is gone. */
+  const takeBack = async (): Promise<Room | null> => {
+    try {
+      await deps.setArchived(made.id, true);
+      return null;
+    } catch {
+      return made;
+    }
+  };
 
   if (seatNeedsWrite(input.seat)) {
     try {
-      await deps.setSeat(thread.id, target.agentId, input.seat);
+      const saved = await deps.setSeat(thread.id, target.agentId, input.seat);
+      thread = withSeat(thread, target.agentId, input.seat, saved);
     } catch (error) {
-      return { status: "unsent", stage: "seat", roomId: thread.id, hub, thread, error };
+      return { status: "failed", stage: "seat", error, hub, left: await takeBack() };
     }
   }
 
@@ -281,14 +348,22 @@ export async function startConversation(
     const message = await deps.post(thread.id, body);
     return { status: "sent", roomId: thread.id, hub, thread, message };
   } catch (error) {
-    return { status: "unsent", stage: "post", roomId: thread.id, hub, thread, error };
+    if (postRefused(error)) {
+      return { status: "failed", stage: "post", error, hub, left: await takeBack() };
+    }
+    return { status: "unconfirmed", roomId: thread.id, hub, thread, error, clientMsgId, body };
   }
 }
 
-/** What the toast says when the sequence did not end in a sent message. */
+/**
+ * What the toast says when the sequence did not end in a sent message.
+ * `opened`: the conversation is on screen (Home was still showing), so the
+ * words point at its box rather than at the toast.
+ */
 export function conversationFailureNotice(
   result: Exclude<ConversationResult, { status: "sent" }>,
   name: string,
+  opened = true,
 ): { title: string; body: string } {
   const detail =
     (result.error as { detail?: unknown } | null)?.detail ??
@@ -296,22 +371,26 @@ export function conversationFailureNotice(
     "";
   const words = typeof detail === "string" && detail.trim() ? detail.trim() : "The request failed";
   const said = /[.!?]$/.test(words) ? words : `${words}.`;
-  if (result.status === "failed") {
+  if (result.status === "unconfirmed") {
     return {
-      title:
-        result.stage === "thread"
-          ? `Couldn't start a conversation with ${name}`
-          : result.stage === "hub"
-            ? `Couldn't reach ${name}`
-            : "Nothing to send to",
-      body: `${said} Your message is still in the box.`,
+      title: "Not confirmed",
+      body: `${said} It may have gone through. Your message is in the conversation's box${
+        opened ? "" : " (open it here)"
+      }; sending it again will not post it twice.`,
     };
   }
-  return {
-    title: result.stage === "seat" ? "The brain was not set — not sent" : "Not sent",
-    body:
-      result.stage === "seat"
-        ? `${said} The conversation is open and your message is in its box; set the brain there, then send.`
-        : `${said} The conversation is open and your message is in its box.`,
-  };
+  const left = result.left ? ` An empty conversation with ${name} is left in the list.` : "";
+  const kept = " Your message is still in the box.";
+  switch (result.stage) {
+    case "target":
+      return { title: "Nothing to send to", body: `${said}${kept}` };
+    case "hub":
+      return { title: `Couldn't reach ${name}`, body: `${said}${kept}` };
+    case "thread":
+      return { title: `Couldn't start a conversation with ${name}`, body: `${said}${kept}` };
+    case "seat":
+      return { title: "The brain was not set — nothing was sent", body: `${said}${left}${kept}` };
+    case "post":
+      return { title: "Not sent", body: `${said}${left}${kept}` };
+  }
 }
