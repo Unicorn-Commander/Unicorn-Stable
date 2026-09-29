@@ -582,6 +582,18 @@ export function recentConversations(rooms: Room[], cap = 12): Room[] {
   return [...human, ...other].slice(0, cap);
 }
 
+/**
+ * Home v4's Recent: the last conversations touched, newest first, whatever
+ * they are (review 2, P2-11 — putting people first drew "1 day" above
+ * "now"). The same rooms as `recentConversations`, in time order.
+ */
+export function recentInTimeOrder(rooms: Room[], cap = 12): Room[] {
+  return rooms
+    .filter((room) => !room.is_archived)
+    .sort(sortByRecency)
+    .slice(0, cap);
+}
+
 /** Heartbeat / task "since" newer than this still counts as working. */
 export const CREW_WORKING_MS = 90_000;
 

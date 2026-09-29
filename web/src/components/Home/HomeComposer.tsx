@@ -13,9 +13,13 @@ import {
   composerTarget,
   composerTargetLine,
   conversationFailureNotice,
-  defaultComposerSeat,
+  firstRunIntro,
+  HOME_STARTERS,
+  openingSeat,
+  readLastSeat,
   startConversation,
   titleSource,
+  writeLastSeat,
 } from "@/lib/homeComposer";
 import { seatPatchBody } from "@/lib/seatSettings";
 import { sendFingerprint } from "@/lib/sendPipeline";
@@ -31,6 +35,13 @@ export const HOME_DRAFT_KEY = "home:composer";
 
 const DEFAULT_BRAIN: RoomSeat = { model: null, effort: null };
 
+/** What the composer says while /crew is failing: it waits rather than re-address. */
+export const CREW_UNAVAILABLE = "Crew unavailable — retrying";
+
+function isTouch(): boolean {
+  return typeof window !== "undefined" && (window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
+}
+
 /**
  * Home's composer (Nav v3 §2.7): the room's composer, with who the message
  * is for at its left and the conversation's brain at its right. Enter starts
@@ -40,10 +51,16 @@ const DEFAULT_BRAIN: RoomSeat = { model: null, effort: null };
  */
 export function HomeComposer({
   pinned = false,
+  starters = false,
+  firstRun = false,
   className,
 }: {
   /** Pinned above the phone's tab bar: menus open upward, the padding is the bar's. */
   pinned?: boolean;
+  /** A quiet page: three prompts to start from, under the box (above it when pinned). */
+  starters?: boolean;
+  /** No conversations yet: the line under the box says who Sidekick is. */
+  firstRun?: boolean;
   className?: string;
 }) {
   const navigate = useNavigate();
@@ -67,34 +84,38 @@ export function HomeComposer({
   const currentParticipantId = useAppStore((s) => s.currentParticipantId);
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   const focusNonce = useConversationUi((s) => s.homeComposerNonce);
-  const { crew, loaded, crewAnswered } = useCrew();
+  const { crew, loaded, crewAnswered, unavailable } = useCrew();
   const preferences = useQuery({
     queryKey: ["my-preferences", scope],
     queryFn: () => api.getMyPreferences(),
     staleTime: 60_000,
   });
 
-  const [pickedId, setPickedId] = useState<string | null>(null);
+  // The last seat picked on this device, per server (ruling 9): read once
+  // per server, written on every pick.
+  const [picked, setPicked] = useState(() => ({ scope, id: readLastSeat(scope) }));
+  const pickedId = picked.scope === scope ? picked.id : readLastSeat(scope);
   const [brains, setBrains] = useState<Record<string, RoomSeat>>({});
   const [brainOpen, setBrainOpen] = useState(false);
+  const [fill, setFill] = useState<{ text: string; nonce: number } | null>(null);
 
   // The default seat needs both answers; until then nothing is addressed,
   // so a fast Enter cannot go to the wrong seat. A preferences request that
   // has failed once is not waited for: the default agent is a preference,
-  // and the composer is not.
-  const loading = !loaded || (preferences.isPending && preferences.failureCount === 0);
+  // and the composer is not. A /crew that is failing holds the box too: the
+  // roster's house is not who you meant (review 2, P2-7).
+  const loading = !loaded || unavailable || (preferences.isPending && preferences.failureCount === 0);
   const seats = useMemo(() => (loading ? [] : composerSeats(crew, roster)), [loading, crew, roster]);
   const selected: CrewMember | null = useMemo(
-    () =>
-      seats.find((seat) => seat.agent_id === pickedId) ??
-      defaultComposerSeat(seats, preferences.data?.default_agent_id ?? null),
+    () => openingSeat(seats, pickedId, preferences.data?.default_agent_id ?? null),
     [seats, pickedId, preferences.data?.default_agent_id],
   );
   const target = useMemo(
     () => composerTarget(selected, rooms, [currentParticipantId, currentUserId], crewAnswered),
     [selected, rooms, currentParticipantId, currentUserId, crewAnswered],
   );
-  const line = loading ? null : composerTargetLine(target);
+  const intro = firstRun && !loading ? firstRunIntro(selected, isTouch()) : null;
+  const line = unavailable ? CREW_UNAVAILABLE : loading ? null : (composerTargetLine(target) ?? intro);
   const brain = (selected && brains[selected.agent_id]) || DEFAULT_BRAIN;
   const sharedRoom =
     target.kind === "shared_room" ? rooms.find((room) => room.id === target.roomId) ?? null : null;
@@ -271,6 +292,36 @@ export function HomeComposer({
       )
     ) : null;
 
+  // A quiet page's three prompts (review 2, D4): a pick fills the box and
+  // sends nothing. On a phone they sit above the pinned box, in one row
+  // that scrolls; on a wider screen, under it.
+  const starterRow =
+    starters && selected && !loading ? (
+      <div
+        className={clsx(
+          "mx-auto flex w-full max-w-[52rem] gap-1.5",
+          pinned
+            ? "overflow-x-auto px-2 pb-0.5 pt-2 [scrollbar-width:none] sm:px-3"
+            : "flex-wrap px-1 pt-3",
+        )}
+        role="group"
+        aria-label="Start from"
+        data-testid="home-starters"
+      >
+        {HOME_STARTERS.map((text) => (
+          <button
+            key={text}
+            type="button"
+            onClick={() => setFill((current) => ({ text, nonce: (current?.nonce ?? 0) + 1 }))}
+            className="focus-ring shrink-0 rounded-full border border-line bg-white/[0.03] px-3 py-1.5 text-xs text-slate-300 transition-colors hover:border-line-strong hover:bg-white/[0.05] hover:text-slate-100 pointer-coarse:min-h-11"
+            data-testid="home-starter"
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
   return (
     // Raised: the box has a backdrop filter, which pens its menus' layers
     // inside it, and what follows on the page is positioned too.
@@ -279,6 +330,7 @@ export function HomeComposer({
       data-testid="home-composer"
       data-target={target.kind}
     >
+      {pinned && starterRow}
       <MessageInput
         roomId={null}
         draftKey={HOME_DRAFT_KEY}
@@ -290,30 +342,41 @@ export function HomeComposer({
             selected={selected}
             loading={loading}
             onSelect={(seat) => {
-              setPickedId(seat.agent_id);
+              setPicked({ scope, id: seat.agent_id });
+              writeLastSeat(scope, seat.agent_id);
               setBrainOpen(false);
             }}
           />
         }
         trailing={chip}
         call={call}
-        blockedReason={loading ? "Loading your crew" : target.kind === "none" ? target.reason : null}
+        blockedReason={
+          unavailable
+            ? CREW_UNAVAILABLE
+            : loading
+              ? "Loading your crew"
+              : target.kind === "none"
+                ? target.reason
+                : null
+        }
         focusNonce={focusNonce}
+        fill={fill}
         menus={pinned ? "above" : "below"}
-        className={pinned ? "px-2 pb-2 pt-1.5 sm:px-3" : "px-0 py-0"}
+        className={pinned ? "px-1.5 pb-2 pt-1.5 sm:px-3" : "px-0 py-0"}
       />
       {line && (
         <p
           className={clsx(
             "mx-auto w-full max-w-[52rem] text-[11px] leading-snug",
             pinned ? "px-4 pb-1.5" : "px-2 pt-1.5",
-            target.kind === "none" ? "text-stable-gold" : "text-slate-500",
+            target.kind === "none" || unavailable ? "text-stable-gold" : "text-slate-500",
           )}
           data-testid="home-composer-line"
         >
           {line}
         </p>
       )}
+      {!pinned && starterRow}
     </div>
   );
 }

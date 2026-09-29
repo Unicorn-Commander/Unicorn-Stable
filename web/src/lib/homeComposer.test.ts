@@ -8,7 +8,12 @@ import {
   conversationFailureNotice,
   conversationTitle,
   defaultComposerSeat,
+  firstRunIntro,
+  HOME_STARTERS,
+  openingSeat,
+  readLastSeat,
   seatNeedsWrite,
+  writeLastSeat,
   postRefused,
   startConversation,
   titleSource,
@@ -99,28 +104,99 @@ describe("who the composer addresses", () => {
     expect(defaultComposerSeat(seats, "gone-agent")?.agent_id).toBe("sidekick");
   });
 
-  it("no crew at all: Sidekick from the roster, else built in", () => {
+  it("no crew at all: Sidekick from the roster, and nobody made up (review 2, P2-8)", () => {
     const fromRoster = composerSeats([], [agent("majik", "Majik Mane"), agent("sidekick", "Sidekick")]);
     expect(fromRoster.map((row) => row.agent_id)).toEqual(["sidekick"]);
     expect(fromRoster[0]).toMatchObject({ group: "house", kind: "brigade", hub_room_id: null });
-    const builtIn = composerSeats([], []);
-    expect(builtIn.map((row) => [row.agent_id, row.display_name])).toEqual([["sidekick", "Sidekick"]]);
-    expect(defaultComposerSeat(builtIn, null)?.agent_id).toBe("sidekick");
-    // Not entitled to it: the roster's row is not used, the built-in one is.
-    const refused = composerSeats([], [agent("sidekick", "Sidekick", { entitled: false })]);
-    expect(refused[0]?.participant_id).toBe("");
+    expect(defaultComposerSeat(fromRoster, null)?.agent_id).toBe("sidekick");
+    // No Sidekick on this server: none is invented. The server would mint a
+    // placeholder agent and a hub for it that nobody answers in.
+    expect(composerSeats([], [])).toEqual([]);
+    expect(composerSeats([], [agent("sidekick", "Sidekick", { entitled: false })])).toEqual([]);
     expect(defaultComposerSeat([], null)).toBeNull();
+    // With nobody to address, the box says so.
+    expect(composerTarget(null, [], SELF)).toEqual({ kind: "none", reason: "No agent to message yet" });
   });
 
-  it("adds Sidekick to the house when you have house agents but no seat, and drops partners", () => {
-    const seats = composerSeats([majik, flow], []);
+  it("adds the roster's Sidekick to the house when you have house agents but no seat, and drops partners", () => {
+    const roster = [agent("sidekick", "Sidekick")];
+    const seats = composerSeats([majik, flow], roster);
     expect(seats.map((row) => row.agent_id)).toEqual(["majik", "sidekick"]);
+    // Not in the roster: only the house there is.
+    expect(composerSeats([majik, flow], []).map((row) => row.agent_id)).toEqual(["majik"]);
     // The house already has Sidekick: nothing is added.
     const sidekick = crew(["sidekick"])[0]!;
-    expect(composerSeats([sidekick, flow], []).map((row) => row.agent_id)).toEqual(["sidekick"]);
+    expect(composerSeats([sidekick, flow], roster).map((row) => row.agent_id)).toEqual(["sidekick"]);
     // Your only seat does not follow you: it is not offered, Sidekick is.
     const claude = crew(["claude"])[0]!;
-    expect(composerSeats([claude], []).map((row) => row.agent_id)).toEqual(["sidekick"]);
+    expect(composerSeats([claude], roster).map((row) => row.agent_id)).toEqual(["sidekick"]);
+  });
+
+  it("opens on the seat last picked on this device while it is still offered (ruling 9)", () => {
+    const seats = composerSeats(CREW_FIXTURE, []);
+    const own = seats.filter((row) => row.group === "own_seat");
+    // Picked before: it wins over the default agent.
+    expect(openingSeat(seats, "majik", own[0]!.agent_id)?.agent_id).toBe("majik");
+    expect(openingSeat(seats, own[1]!.agent_id, null)?.agent_id).toBe(own[1]!.agent_id);
+    // Gone from the crew, or no longer following you (not offered): today's default.
+    expect(openingSeat(seats, "gone-agent", null)?.agent_id).toBe(own[0]!.agent_id);
+    expect(openingSeat(seats, "claude", null)?.agent_id).toBe(own[0]!.agent_id);
+    expect(openingSeat(seats, "shafen-claude-code", null)?.agent_id).toBe(own[0]!.agent_id);
+    expect(openingSeat(seats, null, null)?.agent_id).toBe(own[0]!.agent_id);
+  });
+
+  it("keeps the last pick per server, and never throws when storage does", () => {
+    const stored = new Map<string, string>();
+    const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const use = (value: unknown) =>
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value });
+    try {
+      use({
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => void stored.set(key, value),
+      });
+      expect(readLastSeat("uc")).toBeNull();
+      writeLastSeat("uc", "rook");
+      writeLastSeat("other", "majik");
+      expect(readLastSeat("uc")).toBe("rook");
+      expect(readLastSeat("other")).toBe("majik");
+      expect(readLastSeat(null)).toBeNull();
+      // A private window, a blocked site: storage throws. Nothing breaks.
+      use({
+        getItem: () => {
+          throw new Error("SecurityError");
+        },
+        setItem: () => {
+          throw new Error("QuotaExceededError");
+        },
+      });
+      expect(readLastSeat("uc")).toBeNull();
+      expect(() => writeLastSeat("uc", "rook")).not.toThrow();
+      // No storage at all.
+      use(undefined);
+      expect(readLastSeat("uc")).toBeNull();
+      expect(() => writeLastSeat("uc", "rook")).not.toThrow();
+    } finally {
+      if (real) Object.defineProperty(globalThis, "localStorage", real);
+    }
+  });
+});
+
+describe("a quiet page (review 2, D4)", () => {
+  it("offers three starters", () => {
+    expect(HOME_STARTERS).toHaveLength(3);
+    for (const text of HOME_STARTERS) expect(text.length).toBeLessThanOrEqual(40);
+  });
+
+  it("says who Sidekick is and what Enter does on a first run, and only for Sidekick", () => {
+    const sidekick = crew(["sidekick"])[0]!;
+    expect(firstRunIntro(sidekick, false)).toBe(
+      "Sidekick is this server's assistant: ask it anything, and Enter starts a conversation.",
+    );
+    // A touch keyboard's Enter is a new line: there, Send does it.
+    expect(firstRunIntro(sidekick, true)).toContain("Send starts a conversation");
+    expect(firstRunIntro(majik, false)).toBeNull();
+    expect(firstRunIntro(null, false)).toBeNull();
   });
 });
 

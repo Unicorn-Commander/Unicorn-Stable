@@ -52,7 +52,7 @@ export function PhoneTabBar() {
   const setV2Destination = useNavStore((s) => s.setV2Destination);
   const keyboardUp = useSoftKeyboard();
 
-  // Threads count (a seat answers in a thread); Home carries the invites too.
+  // Threads count (a seat answers in a thread); Home carries only the invites.
   const badges = useMemo(
     () =>
       shellBadges({

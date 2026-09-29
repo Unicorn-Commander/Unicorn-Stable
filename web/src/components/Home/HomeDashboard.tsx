@@ -23,7 +23,7 @@ import {
   mergeLiveCalls,
   orderNeedsYou,
   partitionNeedsYou,
-  recentConversations,
+  recentInTimeOrder,
   todaySectionHidden,
   type HomeZoneId,
 } from "./homeModel";
@@ -100,10 +100,21 @@ function Pill({ children, tone }: { children: string; tone: "live" | "rec" }) {
   );
 }
 
+/** "PENDING", "in_progress" → "Pending", "In progress". */
+export function humanStatus(status: string): string {
+  const words = status.replace(/[_-]+/g, " ").trim().toLowerCase();
+  return words ? words[0]!.toUpperCase() + words.slice(1) : status;
+}
+
+/** The row's room, when it is not the person: a hub or a DM is named by its face. */
+function otherRoom(row: NeedsYouRow): boolean {
+  return !!row.room.display_name && row.room.display_name !== row.actor.display_name;
+}
+
 const ROWS = "overflow-hidden rounded-xl border border-line bg-white/[0.02]";
 const ROW = "border-t border-white/[0.04] first:border-t-0";
 const SMALL_BUTTON =
-  "focus-ring shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold max-md:min-h-9 max-md:px-2.5";
+  "focus-ring shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold max-md:min-h-9 max-md:px-2.5 pointer-coarse:min-h-11 pointer-coarse:px-3";
 
 function Zone({
   id,
@@ -337,7 +348,7 @@ export function HomeDashboard({
     const needs = partitionNeedsYou(home.needs_you);
     const fresh = orderNeedsYou(needs.fresh);
     const stale = orderNeedsYou(needs.stale);
-    const recent = recentConversations(rooms, HOME_RECENT_CAP);
+    const recent = recentInTimeOrder(rooms, HOME_RECENT_CAP);
     const liveCalls = mergeLiveCalls(live.list, home.live_calls);
     // A seat's card says what the seat is doing; this is the house at work.
     const working = home.crew.filter(
@@ -394,9 +405,17 @@ export function HomeDashboard({
                 <span className="shrink-0 text-[11px] text-slate-500">{rowTime(row.created_at)}</span>
               </p>
               <p className="truncate text-xs text-slate-400">
+                {/* A mention is about where it was said: the room goes first, so a
+                    narrow row cuts the line, not the room (review 2, D10). */}
+                {row.kind === "mention" && otherRoom(row) && (
+                  <>
+                    <span className="text-slate-300" data-testid="home-needs-room">{row.room.display_name}</span>
+                    <span className="text-slate-600"> · </span>
+                  </>
+                )}
                 {previewText(row.preview) || "—"}
                 {/* The room, when it is not the person: a hub or a DM is named by its face. */}
-                {row.room.display_name && row.room.display_name !== row.actor.display_name && (
+                {row.kind !== "mention" && otherRoom(row) && (
                   <>
                     <span className="text-slate-600"> · </span>
                     {row.room.display_name}
@@ -551,7 +570,10 @@ export function HomeDashboard({
         </Zone>
       ),
       today: () => (
-        <Zone id="today" count={dated}>
+        // The count is the rows drawn, standing rooms too (review 2, P2-11:
+        // "TODAY 1" sat over two rows). Whether Today shows at all still
+        // goes by what has a date.
+        <Zone id="today" count={dated + standing.length}>
           <ul className={ROWS}>
             {tasks.map((task) => {
               const inner = (
@@ -564,7 +586,7 @@ export function HomeDashboard({
                     <span className="block truncate text-xs text-slate-500">
                       {task.project_number ? `${task.project_number} · ` : ""}
                       {task.due_date ? `Due ${task.due_date}` : "Due"}
-                      {task.status ? ` · ${task.status}` : ""}
+                      {task.status ? ` · ${humanStatus(task.status)}` : ""}
                     </span>
                   </span>
                 </>
@@ -644,6 +666,7 @@ export function HomeDashboard({
                   onClick={() => openRoom(room.id)}
                   className="focus-ring flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-white/[0.03] max-md:min-h-11"
                   data-testid="home-recent-row"
+                  data-at={room.last_message?.created_at ?? room.updated_at}
                 >
                   <RoomFace room={room} selfId={selfId} agents={rosterAgents} size={20} />
                   <span className="min-w-0 flex-1 truncate text-[13px]">
@@ -713,6 +736,8 @@ export function HomeDashboard({
   }
 
   const cards = summary?.crew ?? [];
+  // A quiet page offers somewhere to start (review 2, D4).
+  const startersShown = quiet && (state === "loaded" || state === "first-run");
 
   return (
     <div
@@ -731,7 +756,7 @@ export function HomeDashboard({
           data-state={state}
         >
           <h1 className="sr-only">Home</h1>
-          {!phone && <HomeComposer />}
+          {!phone && <HomeComposer starters={startersShown} firstRun={state === "first-run"} />}
           <SeatCards rows={seatRows} cards={cards} />
           {body}
         </div>
@@ -741,7 +766,7 @@ export function HomeDashboard({
           className="shrink-0 border-t border-line bg-surface-0/80 backdrop-blur-xl"
           data-testid="home-composer-pinned"
         >
-          <HomeComposer pinned />
+          <HomeComposer pinned starters={startersShown} firstRun={state === "first-run"} />
         </div>
       )}
     </div>

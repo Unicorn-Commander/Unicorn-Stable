@@ -14,32 +14,10 @@ import { applySeatToRoom } from "@/lib/seatSettings";
 /** The house's general assistant: the seat of last resort. */
 export const SIDEKICK_ID = "sidekick";
 
-function isSidekick(member: Pick<CrewMember, "agent_id" | "display_name">): boolean {
+export function isSidekick(member: Pick<CrewMember, "agent_id" | "display_name">): boolean {
   return (
     member.agent_id === SIDEKICK_ID || member.display_name.trim().toLowerCase() === SIDEKICK_ID
   );
-}
-
-/** Sidekick when neither /crew nor the roster has it: the built-in fallback. */
-function builtInSidekick(): CrewMember {
-  return {
-    agent_id: SIDEKICK_ID,
-    participant_id: "",
-    display_name: "Sidekick",
-    avatar_url: null,
-    role_line: null,
-    backend: "brigade",
-    kind: "brigade",
-    owner: null,
-    group: "house",
-    presence: "unknown",
-    hub_room_id: null,
-    seat_capabilities: null,
-    last_line: null,
-    last_at: null,
-    last_seen_at: null,
-    unread: 0,
-  };
 }
 
 /**
@@ -54,9 +32,11 @@ function builtInSidekick(): CrewMember {
  * - one of your seats whose runner does not follow you (no announced
  *   capabilities). A hub made for it would stay silent.
  *
- * Without a seat of your own the list must still hold the seat of last
- * resort, so Sidekick is added to the house (from the roster, else built in)
- * when /crew does not carry it.
+ * Without a seat of your own, Sidekick is added to the house when the
+ * roster has it and /crew does not carry it. Only a Sidekick this server
+ * has: one made up here would have the server mint a placeholder agent and
+ * a hub nobody answers in (review 2, P2-8). With nobody at all, the list is
+ * empty and the composer says "No agent to message yet".
  */
 export function composerSeats(
   crew: readonly CrewMember[],
@@ -67,8 +47,72 @@ export function composerSeats(
   );
   if (rows.some((row) => row.group === "own_seat")) return rows;
   if (rows.some((row) => row.group === "house" && isSidekick(row))) return rows;
-  const sidekick = crewFromRoster(roster).find(isSidekick) ?? builtInSidekick();
-  return [...rows, sidekick];
+  const sidekick = crewFromRoster(roster).find(isSidekick);
+  return sidekick ? [...rows, sidekick] : rows;
+}
+
+/**
+ * What a quiet page offers under the box (review 2, D4). A pick fills the
+ * box; nothing is sent until Enter.
+ */
+export const HOME_STARTERS = [
+  "What's on my board today?",
+  "Summarise yesterday's calls",
+  "Draft a reply to my latest email",
+] as const;
+
+/** First run: who Sidekick is and what Enter does, in one sentence. */
+export function firstRunIntro(
+  seat: Pick<CrewMember, "agent_id" | "display_name"> | null | undefined,
+  touch: boolean,
+): string | null {
+  if (!seat || !isSidekick(seat)) return null;
+  return `${seat.display_name} is this server's assistant: ask it anything, and ${touch ? "Send" : "Enter"} starts a conversation.`;
+}
+
+/**
+ * The seat the composer was last pointed at on this device, per server
+ * (ruling 9 on Home v4). Storage can be missing or refuse (a private
+ * window, a blocked site): every access is guarded, and a seat that cannot
+ * be read is simply today's default.
+ */
+const LAST_SEAT_KEY = "stable.home.lastSeat";
+
+function lastSeatKey(scope: string | null | undefined): string {
+  return `${LAST_SEAT_KEY}:${scope ?? "local"}`;
+}
+
+export function readLastSeat(scope: string | null | undefined): string | null {
+  try {
+    const value = globalThis.localStorage?.getItem(lastSeatKey(scope));
+    return value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLastSeat(scope: string | null | undefined, agentId: string): void {
+  try {
+    globalThis.localStorage?.setItem(lastSeatKey(scope), agentId);
+  } catch {
+    /* Not kept: the next visit opens on the default, which is what it did before. */
+  }
+}
+
+/**
+ * The seat the composer opens on: the one last picked on this device while
+ * it is still offered (a seat that went, or no longer follows you into new
+ * conversations, is not in `seats`), else today's default.
+ */
+export function openingSeat(
+  seats: readonly CrewMember[],
+  lastPicked: string | null | undefined,
+  defaultAgentId: string | null | undefined,
+): CrewMember | null {
+  return (
+    (lastPicked ? seats.find((seat) => seat.agent_id === lastPicked) : undefined) ??
+    defaultComposerSeat(seats, defaultAgentId)
+  );
 }
 
 /**

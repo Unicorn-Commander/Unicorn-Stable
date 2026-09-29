@@ -32,7 +32,8 @@ describe("shellBadges", () => {
       isMuted: () => false,
       pendingInvites: 0,
     });
-    expect(out).toEqual({ conversations: 1, home: 1 });
+    // Home does not repeat Chats' number (review 2, P2-11).
+    expect(out).toEqual({ conversations: 1, home: 0 });
     const mentioned = shellBadges({
       rooms: [hub, thread, channel, channelThread],
       unreadCounts: { "hub-t-1": 3, "general-t-1": 5 },
@@ -43,7 +44,7 @@ describe("shellBadges", () => {
     expect(mentioned.conversations).toBe(2);
   });
 
-  it("respects mute and adds invites to Home only", () => {
+  it("respects mute; Home counts the invites, and only them", () => {
     const out = shellBadges({
       rooms: [hub, thread],
       unreadCounts: { hub: 1, "hub-t-1": 3 },
@@ -51,6 +52,6 @@ describe("shellBadges", () => {
       isMuted: (id) => id === "hub-t-1",
       pendingInvites: 2,
     });
-    expect(out).toEqual({ conversations: 1, home: 3 });
+    expect(out).toEqual({ conversations: 1, home: 2 });
   });
 });

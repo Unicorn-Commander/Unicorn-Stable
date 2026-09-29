@@ -25,6 +25,21 @@ export interface CrewState {
   /** /crew answered at least once: `hub_room_id` is the truth, not a room-list search. */
   crewAnswered: boolean;
   isPending: boolean;
+  /**
+   * /crew failed and has never answered, on a server that has the route (not
+   * a 404): the list is not known. The roster fallback still fills the rail,
+   * but who a message is FOR must not quietly change on a 5xx — Home's
+   * composer holds and says so (review 2, P2-7).
+   */
+  unavailable: boolean;
+}
+
+/** Retries before a failure counts: two, and none for a route the server does not have. */
+export const CREW_RETRIES = 2;
+
+export function crewRetry(failureCount: number, error: unknown): boolean {
+  if ((error as { status?: number } | null)?.status === 404) return false;
+  return failureCount < CREW_RETRIES;
 }
 
 /**
@@ -32,6 +47,8 @@ export interface CrewState {
  * route (404) — or cannot be reached — falls back to the Brigade roster as
  * house rows, so "Talk to an agent" keeps working against a stale server.
  * The roster fallback never invents seats, partners, guests or integrations.
+ * Anything but a 404 is retried twice first (P2-7): one 5xx on arrival no
+ * longer re-addresses Home.
  */
 export function useCrew(): CrewState {
   const scope = useFederationStore((s) => s.activeInstanceId);
@@ -41,9 +58,11 @@ export function useCrew(): CrewState {
     queryFn: () => api.getCrew(),
     staleTime: CREW_STALE_MS,
     refetchInterval: CREW_POLL_MS,
-    retry: false,
+    retry: crewRetry,
   });
   const fromRoster = query.data === undefined && query.isError;
+  const notThere = (query.error as { status?: number } | null)?.status === 404;
+  const unavailable = query.data === undefined && !notThere && (query.isError || query.failureCount > 0);
   const crew = useMemo(
     () => (query.data ? query.data : fromRoster ? crewFromRoster(agents) : []),
     [query.data, fromRoster, agents],
@@ -54,6 +73,7 @@ export function useCrew(): CrewState {
     fromRoster,
     crewAnswered: query.data !== undefined,
     isPending: query.isPending,
+    unavailable,
   };
 }
 

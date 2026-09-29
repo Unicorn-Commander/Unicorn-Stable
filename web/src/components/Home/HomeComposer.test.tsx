@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
-import { api, type Message, type Room } from "@/services/api";
+import { api, type CrewMember, type Message, type Room } from "@/services/api";
 import { crewQueryKey } from "@/hooks/useCrew";
 import { CREW_FIXTURE, PERSEPHONE_HUB_ID } from "@/mocks/crewFixture";
 import { useAppStore } from "@/stores/appStore";
@@ -10,7 +10,8 @@ import { useConversationUi } from "@/stores/conversationUiStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { getDraft } from "@/utils/drafts";
 import { sendFingerprint } from "@/lib/sendPipeline";
-import { HOME_DRAFT_KEY, HomeComposer } from "./HomeComposer";
+import { HOME_STARTERS, writeLastSeat } from "@/lib/homeComposer";
+import { CREW_UNAVAILABLE, HOME_DRAFT_KEY, HomeComposer } from "./HomeComposer";
 
 vi.mock("@/hooks/useStableRoom", () => ({
   useStableRoom: () => ({ isConnected: false, isConnecting: false }),
@@ -94,10 +95,13 @@ function Where() {
   );
 }
 
-function show() {
+function show(
+  options: { crew?: CrewMember[] | null; starters?: boolean; firstRun?: boolean } = {},
+) {
   const scope = useFederationStore.getState().activeInstanceId;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(crewQueryKey(scope), CREW_FIXTURE);
+  // null: nothing cached, /crew is asked.
+  if (options.crew !== null) client.setQueryData(crewQueryKey(scope), options.crew ?? CREW_FIXTURE);
   client.setQueryData(["my-preferences", scope], {
     default_agent_id: null,
     favorite_people_ids: [],
@@ -105,7 +109,7 @@ function show() {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={["/"]}>
-        <HomeComposer />
+        <HomeComposer starters={options.starters} firstRun={options.firstRun} />
         <Where />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -341,5 +345,79 @@ describe("Home's composer", () => {
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/c/thread-9"));
     expect(hub).toHaveBeenCalledWith(general.agent_id);
     expect(useAppStore.getState().rooms.some((r) => r.id === "hub-general")).toBe(true);
+  });
+});
+
+describe("Home's composer remembers, waits and offers (fix round 2)", () => {
+  const scope = () => useFederationStore.getState().activeInstanceId;
+  const majik = CREW_FIXTURE.find((row) => row.agent_id === "majik")!;
+
+  it("opens on the seat last picked on this device, and on the default once it is not offered (ruling 9)", () => {
+    const first = show();
+    fireEvent.click(screen.getByTestId("seat-picker"));
+    fireEvent.click(screen.getByTestId("seat-option-majik"));
+    expect(box().getAttribute("placeholder")).toBe(`Message ${majik.display_name}…`);
+    first.unmount();
+    // Back on Home later: the same seat.
+    const again = show();
+    expect(box().getAttribute("placeholder")).toBe(`Message ${majik.display_name}…`);
+    again.unmount();
+    // Gone from the crew: today's default.
+    show({ crew: CREW_FIXTURE.filter((row) => row.agent_id !== "majik") });
+    expect(box().getAttribute("placeholder")).toBe("Message Persephone…");
+    cleanup();
+    // Still on the crew but no longer following you into new conversations
+    // (no announced capabilities): not offered, so the default.
+    writeLastSeat(scope(), "claude");
+    show();
+    expect(box().getAttribute("placeholder")).toBe("Message Persephone…");
+  });
+
+  it("holds while /crew is failing, rather than address someone you did not mean (review 2, P2-7)", async () => {
+    const getCrew = vi.mocked(api.getCrew);
+    getCrew.mockReset();
+    getCrew.mockRejectedValueOnce({ status: 503, detail: "The crew is not answering" });
+    getCrew.mockResolvedValue(CREW_FIXTURE);
+    // The roster the old fallback would have addressed instead.
+    useAppStore.setState({
+      agents: [
+        { id: "sidekick", name: "Sidekick", display_name: "Sidekick", description: "", avatar_url: null, status: "active", capabilities: [], model: "" },
+      ] as never,
+    });
+    show({ crew: null });
+    await waitFor(() => expect(screen.getByTestId("home-composer-line")).toHaveTextContent(CREW_UNAVAILABLE));
+    expect(box().getAttribute("placeholder")).toBe("Message…");
+    expect(screen.getByTestId("composer-send").getAttribute("title")).toBe(CREW_UNAVAILABLE);
+    // Its retry answers: the seat you meant, and the line goes.
+    await waitFor(() => expect(box().getAttribute("placeholder")).toBe("Message Persephone…"), { timeout: 4000 });
+    expect(screen.queryByTestId("home-composer-line")).toBeNull();
+    expect(getCrew).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers three starters on a quiet page: a pick fills the box and sends nothing (review 2, D4)", () => {
+    const post = spy(vi.spyOn(api, "sendMessage"));
+    show({ starters: true });
+    const starters = screen.getAllByTestId("home-starter");
+    expect(starters.map((button) => button.textContent)).toEqual([...HOME_STARTERS]);
+    fireEvent.click(starters[1]!);
+    expect(box().value).toBe(HOME_STARTERS[1]);
+    expect(getDraft(HOME_DRAFT_KEY)).toBe(HOME_STARTERS[1]);
+    expect(document.activeElement).toBe(box());
+    fireEvent.click(starters[2]!);
+    expect(box().value).toBe(HOME_STARTERS[2]);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("offers none on a page with rows", () => {
+    show();
+    expect(screen.queryByTestId("home-starters")).toBeNull();
+  });
+
+  it("on a first run, says who Sidekick is and what Enter does", () => {
+    show({ crew: CREW_FIXTURE.filter((row) => row.group === "house"), firstRun: true });
+    expect(box().getAttribute("placeholder")).toBe("Message Sidekick…");
+    expect(screen.getByTestId("home-composer-line")).toHaveTextContent(
+      "Sidekick is this server's assistant: ask it anything, and Enter starts a conversation.",
+    );
   });
 });
