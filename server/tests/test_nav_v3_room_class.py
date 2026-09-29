@@ -6,7 +6,7 @@ in it and every runner seat present is that human's; house agents are the
 R1 allowlist (``brigade:`` sub, no ``kind``, no key row). Guests (human or
 agent), someone else's seat, any other agent and the sticky floor make it
 ``shared``; a channel is a channel. The history / seed / parent rules are
-pinned in tests/test_nav_v3_fix_lane.py.
+pinned in tests/test_nav_v3_fix_class.py and tests/test_nav_v3_fix2_class.py.
 """
 
 from __future__ import annotations
@@ -96,7 +96,6 @@ class ClassifyRoomCounts(TestCase):
         self.assertEqual(classify_room(RoomType.AGENT_HUB, 1, 0, 1), "shared")
         self.assertEqual(classify_room(RoomType.DM, 0, 0, 0), "shared")
         self.assertEqual(classify_room(RoomType.AGENT_HUB, 1, 0, 0, floor="shared"), "shared")
-        self.assertEqual(classify_room(RoomType.AGENT_HUB, 1, 0, 0, parent_class="shared"), "shared")
 
 
 class ClassifyRoomMembers(TestCase):

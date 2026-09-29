@@ -33,13 +33,16 @@ from app.services.livekit_service import LiveKitService
 from app.services.mentions import parse_mentions
 from app.services.presence_service import PresenceService
 from app.services.room_class import (
+    CLASS_FLOOR_KEY,
     SEATS_METADATA_KEY,
     SeatSettingError,
     agent_id_of_sub,
+    insert_makes_room_shared,
     is_runner_seat,
     norm_username,
+    participant_kind,
+    seat_owner,
     seat_owners,
-    stamp_class_floor_shared,
     validate_seats_setting,
 )
 
@@ -235,11 +238,6 @@ class RoomService:
         later "New chat" fail with 409 forever (the user can't start a new
         conversation at all).
         """
-        if name.startswith(RESERVED_ROOM_NAME_PREFIX):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Room names may not start with '{RESERVED_ROOM_NAME_PREFIX}'",
-            )
         existing = (
             await self._db.execute(select(Room).where(Room.name == name))
         ).scalar_one_or_none()
@@ -790,10 +788,6 @@ class RoomService:
         if was_archived:
             room.is_archived = False
         try:
-            if agent_rows:
-                # R2: membership removal floors the class (the reclaimed DM
-                # keeps the agents' old lines).
-                await stamp_class_floor_shared(self._db, [room.id])
             await self._db.commit()
             await self._db.refresh(room)
         except Exception:
@@ -1509,6 +1503,33 @@ class RoomService:
         display = display or "New thread"
         slug = f"{parent.name[:80]}-t-{uuid.uuid4().hex[:8]}"
 
+        # Seed members from the parent's roster in one query: agents keep
+        # their mode; humans come along only when @-mentioned. Read here so
+        # the seed line's author can be judged against the thread's members
+        # before the room exists (insert-time floor, P2-2).
+        handles: set[str] = set(parse_mentions(display).handles)
+        if seed is not None:
+            handles |= set(parse_mentions(seed.content).handles)
+        member_rows = await self._db.execute(
+            select(RoomMember, Participant)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(RoomMember.room_id == parent.id)
+        )
+        parent_members = list(member_rows.all())
+        seeded_participants: list[Any] = [creator] if creator is not None else []
+        for _membership, participant in parent_members:
+            if participant.id == creator_id:
+                continue
+            if participant.participant_type == ParticipantType.AGENT or (
+                handles and (participant.username or "").casefold() in handles
+            ):
+                seeded_participants.append(participant)
+        if seed is not None and insert_makes_room_shared(
+            parent.room_type, seeded_participants, getattr(seed, "sender", None)
+        ):
+            # A stranger's line as the seed: the thread is shared from birth.
+            meta[CLASS_FLOOR_KEY] = "shared"
+
         room = await self.create_room(
             name=slug,
             display_name=display,
@@ -1526,18 +1547,8 @@ class RoomService:
         # the Tasks panel and promote-to-task pre-fill keep working inside it.
         room.project_number = getattr(parent, "project_number", None)
 
-        # Seed members from the parent's roster in one query: agents keep
-        # their mode; humans come along only when @-mentioned.
-        handles: set[str] = set(parse_mentions(display).handles)
-        if seed is not None:
-            handles |= set(parse_mentions(seed.content).handles)
-        member_rows = await self._db.execute(
-            select(RoomMember, Participant)
-            .join(Participant, Participant.id == RoomMember.participant_id)
-            .where(RoomMember.room_id == parent.id)
-        )
         member_ids: list[uuid.UUID] = [creator_id]
-        for membership, participant in member_rows.all():
+        for membership, participant in parent_members:
             if participant.id == creator_id:
                 continue
             if participant.participant_type == ParticipantType.AGENT:
@@ -1858,6 +1869,13 @@ class RoomService:
 
         new_display = " ".join((display_name or "").split()) or room.display_name
         new_name = (name or "").strip().lower() or group_slug_base(new_display)
+        if new_name.startswith(RESERVED_ROOM_NAME_PREFIX):
+            # Client-supplied names only (P2-5): thread slugs and server-made
+            # rooms are exempt, this one comes from the request.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Room names may not start with '{RESERVED_ROOM_NAME_PREFIX}'",
+            )
         if not ROOM_SLUG_RE.fullmatch(new_name) or len(new_name) > 100:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2032,9 +2050,6 @@ class RoomService:
             )
 
         await self._db.delete(membership)
-        # R2: whoever leaves, their lines stay in the window — the room is
-        # never private again (sticky floor).
-        await stamp_class_floor_shared(self._db, [room_id])
         await self._db.commit()
 
         logger.info(
@@ -2121,7 +2136,7 @@ class RoomService:
             )
 
         if seats_patch:
-            self._authorize_seats_setting(room, membership, seats_value or {})
+            await self._authorize_seats_setting(room, membership, seats_value or {})
 
         if display_name is not None:
             room.display_name = display_name
@@ -2195,20 +2210,17 @@ class RoomService:
         logger.info("room_updated", room_id=str(room_id))
         return room
 
-    @staticmethod
-    def _authorize_seats_setting(
-        room: Room, membership: RoomMember, seats: dict[str, Any]
+    async def _authorize_seats_setting(
+        self, room: Room, membership: RoomMember, seats: dict[str, Any]
     ) -> None:
-        """R6's gate for ``metadata.seats``: the room must be live (409 when
-        archived); every agent id must be a runner seat that is a member of
-        the room (409 otherwise); and the caller must be that seat's OWNER
+        """R6's gate for ``metadata.seats``, in the design's ladder (422 →
+        403 → 409): the caller must be each seat's OWNER
         (``participants.metadata.owner``) — 403 otherwise, whoever owns the
-        room."""
-        if bool(getattr(room, "is_archived", False)):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This room is archived",
-            )
+        room — judged from the member row when the seat is in the room and
+        from the seat's own row when it is not; then the seat must be a
+        runner seat that is a member of a live room (409 otherwise)."""
+        from app.services.agent_access import owned_seat_owners
+
         caller = getattr(membership, "participant", None)
         me = norm_username(getattr(caller, "username", None))
         seats_in_room: dict[str, Any] = {}
@@ -2219,21 +2231,34 @@ class RoomService:
             agent_id = agent_id_of_sub(getattr(participant, "keycloak_sub", None))
             if agent_id:
                 seats_in_room[agent_id] = participant
+
+        def refuse_not_owner(agent_id: str) -> HTTPException:
+            return HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Only the owner of '{agent_id}' can set that seat's model "
+                    "and effort — ask the seat's owner"
+                ),
+            )
+
         for agent_id in seats:
             seat = seats_in_room.get(agent_id)
-            if seat is None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"'{agent_id}' is not a runner seat in this room",
-                )
-            if me is None or me not in seat_owners(seat):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        f"Only the owner of '{agent_id}' can set that seat's model "
-                        "and effort — ask the seat's owner"
-                    ),
-                )
+            if seat is not None:
+                if me is None or me not in seat_owners(seat):
+                    raise refuse_not_owner(agent_id)
+                continue
+            owners = await owned_seat_owners(self._db, agent_id)
+            if owners and (me is None or me not in owners):
+                raise refuse_not_owner(agent_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"'{agent_id}' is not a runner seat in this room",
+            )
+        if bool(getattr(room, "is_archived", False)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This room is archived",
+            )
 
     async def archive_room(
         self,
@@ -2334,6 +2359,9 @@ class RoomService:
         availability = await get_agent_availability(
             self._presence.redis, set(agent_ids_by_participant.values())
         )
+        owner_names = await self._owner_display_names(
+            [participant for _m, participant in rows if participant.participant_type == ParticipantType.AGENT]
+        )
 
         members: list[dict[str, Any]] = []
         for membership, participant in rows:
@@ -2387,9 +2415,58 @@ class RoomService:
                 # (in a call) without Brigade having it enabled.
                 "availability": avail,
                 "availability_reason": avail_reason,
+                # Nav v3: the seat's standing in this room (the Mode popover)
+                # and a GUEST-SAFE metadata subset for the roster marks —
+                # kind / backend / owner / owner_display_name and nothing
+                # else. Humans and guests carry none.
+                "agent_mode": getattr(membership, "agent_mode", None),
+                "context_depth": getattr(membership, "context_depth", None),
+                "metadata": (
+                    self._member_metadata_subset(participant, owner_names)
+                    if participant.participant_type == ParticipantType.AGENT
+                    else None
+                ),
             })
 
         return members
+
+    @staticmethod
+    def _member_metadata_subset(
+        participant: Participant, owner_names: dict[str, str]
+    ) -> dict[str, Any]:
+        """``{kind, backend, owner, owner_display_name}`` of an agent member
+        — the four facts the web roster marks need, never the whole JSONB
+        (which carries seat capabilities, avatar overrides, …)."""
+        meta = participant.metadata_ if isinstance(participant.metadata_, dict) else {}
+        owner = seat_owner(participant)
+        return {
+            "kind": participant_kind(participant),
+            "backend": participant_backend(participant) if meta.get("backend") is not None else None,
+            "owner": owner,
+            "owner_display_name": owner_names.get(owner) if owner else None,
+        }
+
+    async def _owner_display_names(self, agents: list[Participant]) -> dict[str, str]:
+        """``{owner username: display_name}`` for every owner named by the
+        given agent rows — one query, none when no seat is owned."""
+        owners: set[str] = set()
+        for participant in agents:
+            owners |= set(seat_owners(participant))
+        if not owners:
+            return {}
+        rows = (
+            await self._db.execute(
+                select(Participant.username, Participant.display_name).where(
+                    Participant.participant_type == ParticipantType.HUMAN,
+                    func.lower(Participant.username).in_(sorted(owners)),
+                )
+            )
+        ).all()
+        return {
+            (norm_username(username) or ""): display_name
+            for username, display_name in rows
+            if username
+        }
 
     async def _require_role(
         self,
@@ -2506,8 +2583,6 @@ class RoomService:
         ).scalar_one_or_none()
 
         await self._db.delete(target)
-        # R2: a removed member's lines stay in the window — sticky floor.
-        await stamp_class_floor_shared(self._db, [room_id])
         await self._db.commit()
 
         # Best-effort: evict from the live LiveKit room too. Identity matches

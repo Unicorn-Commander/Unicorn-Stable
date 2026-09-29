@@ -36,7 +36,6 @@ from app.services.crew import (
     live_key_agent_ids,
     role_line_of,
 )
-from app.services.room_class import stamp_class_floor_shared
 from app.services.agent_access import ensure_agent_access, entitled_agent_ids
 from app.services.agent_availability import classify, get_gateway_fresh
 from app.services.livekit_service import LiveKitService
@@ -481,10 +480,7 @@ async def _entitlement_set(
         return None
     try:
         return await entitled_agent_ids(
-            db,
-            participant_id=user["participant_id"],
-            agent_ids=agent_ids,
-            username=user.get("username"),
+            db, participant_id=user["participant_id"], agent_ids=agent_ids
         )
     except Exception:
         logger.warning("agent_entitlement_annotation_failed", exc_info=True)
@@ -1188,11 +1184,6 @@ async def remove_brigade_agent(
         # residency instead of all of them (and never leaves the responder
         # answering as the agent that was just evicted).
         room.metadata_ = remove_resident_agent(room.metadata_, brigade_agent_id)
-        # Nav v3 R2: any membership removal floors the room's class at shared
-        # (the evicted agent's lines stay in the window). SQL || merge on the
-        # row; mirrored onto the loaded metadata so this commit keeps both.
-        room.metadata_ = {**(room.metadata_ or {}), "class_floor": "shared"}
-        await stamp_class_floor_shared(db, [room.id])
         await db.commit()
 
     # Best-effort eviction from LiveKit. Identity is whatever the worker

@@ -209,9 +209,10 @@ class P1_1_MemberScopeFollowsTheHuman(IsolatedAsyncioTestCase):
         a = RC.RoomLite(id=uuid.uuid4(), name="persephone", livekit_room_name="stable-persephone")
         b = RC.RoomLite(id=uuid.uuid4(), name="mallory-room", livekit_room_name="stable-mallory-room")
         db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(scalars=[a.id, b.id]))  # owner present in both
         kept = await G._scope_filter_rooms(db, SimpleNamespace(allowed_rooms=["persephone"], human_sub=None), seat, [a, b])
         self.assertEqual([r.name for r in kept], ["persephone"])
-        db.execute.assert_not_awaited()
+        db.execute.assert_awaited_once()
 
     async def test_member_scoped_key_lists_rooms_where_the_owner_is_present(self) -> None:
         seat = _seat()
@@ -238,6 +239,10 @@ class P1_1_MemberScopeFollowsTheHuman(IsolatedAsyncioTestCase):
 
 
 class R5_OnlyTheOwnerAddsASeat(IsolatedAsyncioTestCase):
+    """The owner is matched against the caller's DB username, looked up by
+    participant id (fix lane 2, P2-7) — so an owned seat costs two lookups,
+    anything else one."""
+
     def _user(self, username, ptype="human"):
         return {"participant_id": uuid.uuid4(), "username": username, "participant_type": ptype}
 
@@ -245,7 +250,7 @@ class R5_OnlyTheOwnerAddsASeat(IsolatedAsyncioTestCase):
         from app.services import agent_access as AA
 
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(scalar={"backend": "runner", "owner": "aaron"}))
+        db.execute = AsyncMock(side_effect=[_Result(scalar={"backend": "runner", "owner": "aaron"}), _Result(scalar="mallory")])
         with patch.object(AA, "resolve_agent_access", new=AsyncMock(return_value=(True, "default_open"))):
             with self.assertRaises(HTTPException) as ctx:
                 await AA.ensure_agent_access(db, self._user("mallory"), "persephone", surface="room_member_invite")
@@ -256,21 +261,28 @@ class R5_OnlyTheOwnerAddsASeat(IsolatedAsyncioTestCase):
         from app.services import agent_access as AA
 
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(scalar={"backend": "runner", "owner": ["shafen", "shafenkhan"]}))
+        db.execute = AsyncMock(side_effect=[
+            _Result(scalar={"backend": "runner", "owner": ["shafen", "shafenkhan"]}),
+            _Result(scalar="ShafenKhan"),
+        ])
         with patch.object(AA, "resolve_agent_access", new=AsyncMock(return_value=(True, "default_open"))) as resolve:
-            await AA.ensure_agent_access(db, self._user("ShafenKhan"), "flow", surface="agent_hub")
+            await AA.ensure_agent_access(db, self._user("whatever-the-token-says"), "flow", surface="agent_hub")
         resolve.assert_awaited_once()
         db.execute = AsyncMock(return_value=_Result(scalar=None))  # Majik: NULL metadata
         with patch.object(AA, "resolve_agent_access", new=AsyncMock(return_value=(True, "default_open"))) as resolve:
             await AA.ensure_agent_access(db, self._user("mallory"), "majik", surface="agent_hub")
         resolve.assert_awaited_once()
+        db.execute.assert_awaited_once()  # no username lookup for an unowned agent
 
-    async def test_the_worker_principal_still_passes(self) -> None:
+    async def test_the_worker_principal_still_passes_for_unowned_agents(self) -> None:
         from app.services import agent_access as AA
 
         db = AsyncMock()
-        await AA.ensure_agent_access(db, self._user("worker", ptype="agent"), "persephone", surface="agent_hub")
-        db.execute.assert_not_awaited()
+        db.execute = AsyncMock(return_value=_Result(scalar=None))
+        with patch.object(AA, "resolve_agent_access", new=AsyncMock()) as resolve:
+            await AA.ensure_agent_access(db, self._user("worker", ptype="agent"), "majik", surface="agent_hub")
+        resolve.assert_not_awaited()      # grants never gate the worker
+        db.execute.assert_awaited_once()  # but the owner check ran
 
     async def test_roster_marks_owned_seats_unentitled_for_others(self) -> None:
         from app.services import agent_access as AA
@@ -278,10 +290,11 @@ class R5_OnlyTheOwnerAddsASeat(IsolatedAsyncioTestCase):
         db = AsyncMock()
         db.execute = AsyncMock(side_effect=[
             _Result(rows=[("brigade:persephone", {"backend": "runner", "owner": "aaron"}), ("brigade:majik", None)]),
+            _Result(scalar="mallory"),
             _Result(scalars=[]),
         ])
         with patch.object(AA, "_default_is_open", return_value=True):
-            entitled = await AA.entitled_agent_ids(db, participant_id=uuid.uuid4(), agent_ids=["persephone", "majik"], username="mallory")
+            entitled = await AA.entitled_agent_ids(db, participant_id=uuid.uuid4(), agent_ids=["persephone", "majik"])
         self.assertEqual(entitled, {"majik"})
 
 

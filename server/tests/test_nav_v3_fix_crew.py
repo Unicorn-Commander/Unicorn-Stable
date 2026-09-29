@@ -250,10 +250,11 @@ class P1_5_DataMigration024(TestCase):
     def test_upgrade_is_a_merge_and_names_every_seat_and_integration(self) -> None:
         mod = _load_migration("024_crew_seat_flags")
         conn = MagicMock()
-        with patch.object(mod.op, "get_bind", return_value=conn):
+        with patch.object(mod.op, "get_bind", return_value=conn), patch.object(mod.op, "execute"):
             mod.upgrade()
         calls = [(str(c.args[0]), c.args[1] if len(c.args) > 1 else {}) for c in conn.execute.call_args_list]
-        seat_calls = [(sql, params) for sql, params in calls if "brigade:" in str(params.get("sub", ""))]
+        seat_calls = [(sql, params) for sql, params in calls
+                      if "brigade:" in str(params.get("sub", "")) and '"crew": true' in params.get("patch", "")]
         self.assertEqual(len(seat_calls), len(mod.SEAT_OWNERS))
         for sql, params in seat_calls:
             self.assertIn("|| cast(:patch as jsonb)", sql.lower())
@@ -261,8 +262,9 @@ class P1_5_DataMigration024(TestCase):
         by_sub = {p["sub"]: p["patch"] for _s, p in seat_calls}
         self.assertIn('"owner": "aaron"', by_sub["brigade:persephone"])
         self.assertIn('"crew": true', by_sub["brigade:persephone"])
-        self.assertIn("role_line", by_sub["brigade:claude-code"])
         self.assertIn('["shafen", "shafenkhan"]', by_sub["brigade:shox"])
+        role_subs = {p["sub"] for _s, p in calls if "role_line" in p.get("patch", "")}
+        self.assertEqual(role_subs, {"brigade:claude-code", "brigade:persephone"})
         joined = "\n".join(sql for sql, _p in calls).lower()
         self.assertIn("display_name = 'rook'", joined)
         self.assertIn("keycloak_sub like 'webhook:%'", joined)
@@ -273,13 +275,15 @@ class P1_5_DataMigration024(TestCase):
     def test_downgrade_removes_only_what_upgrade_set(self) -> None:
         mod = _load_migration("024_crew_seat_flags")
         conn = MagicMock()
-        with patch.object(mod.op, "get_bind", return_value=conn):
+        with patch.object(mod.op, "get_bind", return_value=conn), patch.object(mod.op, "execute"):
             mod.downgrade()
         joined = "\n".join(str(c.args[0]) for c in conn.execute.call_args_list).lower()
-        self.assertIn("metadata - 'crew' - 'owner' - 'role_line'", joined)
+        self.assertIn("metadata - 'crew' - 'owner'", joined)
+        self.assertIn("metadata - 'role_line'", joined)
+        self.assertIn("metadata ->> 'role_line' = :role", joined)  # only the migration's own line
         self.assertIn("metadata - 'kind'", joined)
         self.assertIn("display_name = 'rook'", joined)
-
+        self.assertIn("display_name_by_024", joined)               # only the marked rename
 
 class P1_5_PickerFallback(IsolatedAsyncioTestCase):
     async def test_no_flagged_seat_anywhere_keeps_the_two_entry_fallback(self) -> None:

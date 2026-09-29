@@ -2558,7 +2558,6 @@ class GuestSessionReaperTests(IsolatedAsyncioTestCase):
                 _scalars_result([session]),                        # sessions
                 _scalars_result([room]),                           # rooms
                 _scalars_result([]),                               # membership DELETE
-                _scalars_result([]),                               # class_floor stamp (Nav v3 R2)
                 _scalars_result([participant]),                    # participants
             ]
         )

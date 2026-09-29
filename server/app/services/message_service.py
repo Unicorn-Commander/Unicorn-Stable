@@ -17,6 +17,11 @@ from app.models.room import Room, RoomMember
 from app.models.activity import ActivityEvent, ActivityEventType
 from app.services.livekit_service import LiveKitService
 from app.services.mentions import parse_mentions
+from app.services.room_class import (
+    class_floor_of,
+    insert_makes_room_shared,
+    stamp_class_floor_shared,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -242,12 +247,38 @@ class MessageService:
 
         room_result = await self._db.execute(
             select(
-                Room.livekit_room_name, Room.room_type, Room.is_archived, Room.parent_room_id
+                Room.livekit_room_name,
+                Room.room_type,
+                Room.is_archived,
+                Room.parent_room_id,
+                Room.metadata_,
             ).where(Room.id == room_id)
         )
         room_row = room_result.one_or_none()
         lk_room_name = room_row[0] if room_row else None
         room_type_str = room_row[1].value if room_row and room_row[1] else "channel"
+
+        # Nav v3 (R2 / P2-2): floor the room's class the moment a line by
+        # someone foreign to it lands, judged viewer-independently over the
+        # current members plus this author (no history read) — so the seat
+        # polls never pay for the history aggregate once the verdict is
+        # cached. Best-effort and after the commit: the message is already
+        # in; a failed stamp is caught by the read path's full judgement.
+        try:
+            room_meta = room_row[4] if room_row is not None and len(room_row) >= 5 else None
+            author = next(
+                (p for m, p in member_rows if str(m.participant_id) == str(sender_id)), None
+            )
+            if author is not None and insert_makes_room_shared(
+                room_row[1] if room_row else None,
+                [p for _m, p in member_rows],
+                author,
+                floor=class_floor_of(room_meta),
+            ):
+                await stamp_class_floor_shared(self._db, [room_id])
+                await self._db.commit()
+        except Exception:
+            logger.warning("class_floor_on_insert_failed", room_id=str(room_id), exc_info=True)
 
         # Design §3: any new message unarchives a thread. Decided off the row
         # already fetched above (no extra query on the common path); the one

@@ -567,11 +567,6 @@ async def _terminate_sessions(
             RoomMember.participant_id.in_(participant_ids),
         )
     )
-    # Nav v3 R2: a guest's lines outlive the guest — the room's class is
-    # floored at shared for good (rooms.metadata.class_floor).
-    from app.services.room_class import stamp_class_floor_shared
-
-    await stamp_class_floor_shared(db, [room.id])
     await db.commit()
 
     participants = (

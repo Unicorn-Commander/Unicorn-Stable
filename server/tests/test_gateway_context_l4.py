@@ -15,7 +15,7 @@ from app.api import gateway as G
 from app.services.room_class import RoomClassFacts
 
 # Nav v3: the mirror also computes the room's class (history-aware, with
-# its own queries); pinned in tests/test_nav_v3_fix_lane.py. Patched here so
+# its own queries); pinned in tests/test_nav_v3_fix_class.py. Patched here so
 # these L4 assertions stay about seat id / mode / depth.
 FACTS = RoomClassFacts(room_class="private", humans=1, own_seats=0, foreign_seats=0, guests=0)
 

@@ -5,7 +5,7 @@ Validated first (422), then each entry is allowed only for that seat's
 OWNER (``participants.metadata.owner``) whoever owns the room; 409 when the
 agent is not a runner seat in the room or the room is archived. A PATCH
 that carries anything else keeps the owner/admin rule. The owner-vs-room-
-owner cases are pinned in tests/test_nav_v3_fix_lane.py (R6).
+owner cases are pinned in tests/test_nav_v3_fix_class.py (R6).
 """
 
 from __future__ import annotations
@@ -140,7 +140,9 @@ class SeatsSettingPatch(IsolatedAsyncioTestCase):
         aaron = _human()
         me = _member(aaron, MemberRole.OWNER)
         room = _room([me])
-        svc, db = self._svc(_res(me), _res(room))
+        # Not in the room → the seat's own row is consulted for its owner
+        # (403 before 409); the caller owns it, so: 409.
+        svc, db = self._svc(_res(me), _res(room), _res({"backend": "runner", "owner": "aaron"}))
         with self.assertRaises(HTTPException) as ctx:
             await svc.update_room(room.id, aaron.id, metadata={"seats": {"persephone": {"effort": "high"}}})
         self.assertEqual(ctx.exception.status_code, 409)

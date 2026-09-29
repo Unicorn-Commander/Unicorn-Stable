@@ -316,10 +316,6 @@ class P0_2_HistoryAndSeedsCount(TestCase):
         # The owner's own line as a seed is fine.
         self.assertEqual(_facts(AARON, PERSEPHONE, has_seed=True, seed_sender=AARON).room_class, "private")
 
-    def test_a_thread_is_never_more_private_than_its_parent(self) -> None:
-        self.assertEqual(_facts(AARON, PERSEPHONE, parent_class="shared").room_class, "shared")
-        self.assertEqual(_facts(AARON, PERSEPHONE, parent_class="private").room_class, "private")
-
     def test_the_floor_is_sticky(self) -> None:
         facts = _facts(AARON, PERSEPHONE, floor="shared")
         self.assertEqual(facts.room_class, "shared")
@@ -370,64 +366,10 @@ class P0_2_CreateThreadRecordsTheTrueAuthor(IsolatedAsyncioTestCase):
         self.assertEqual(seed_lines[0].content_type, ContentType.SYSTEM)
 
 
-class P0_2_MembershipRemovalWritesTheFloor(IsolatedAsyncioTestCase):
-    def _floor_updates(self, db) -> list:
-        out = []
-        for call in db.execute.await_args_list:
-            stmt = call.args[0]
-            try:
-                sql = _sql(stmt)
-            except Exception:
-                continue
-            if "update rooms" in sql and "metadata" in sql:
-                params = stmt.compile(dialect=postgresql.dialect()).params
-                if any(v == {"class_floor": "shared"} for v in params.values()):
-                    out.append(stmt)
-        return out
-
-    async def test_leave_room_floors_the_class(self) -> None:
-        from app.services.room_service import RoomService
-
-        db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[_Result(scalar=SimpleNamespace(id=uuid.uuid4())), _Result()])
-        db.delete = AsyncMock()
-        db.commit = AsyncMock()
-        svc = RoomService(db=db, livekit=AsyncMock(), presence=AsyncMock())
-        await svc.leave_room(uuid.uuid4(), uuid.uuid4())
-        self.assertEqual(len(self._floor_updates(db)), 1)
-        db.commit.assert_awaited_once()
-
-    async def test_remove_member_floors_the_class(self) -> None:
-        from app.services.room_service import RoomService
-
-        room_id, actor_id, target_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-        actor = SimpleNamespace(role=MemberRole.OWNER, participant_id=actor_id)
-        target = SimpleNamespace(role=MemberRole.MEMBER, participant_id=target_id)
-        room = SimpleNamespace(id=room_id, livekit_room_name="stable-x")
-        db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[
-            _Result(scalar=actor), _Result(scalar=target), _Result(scalar=room),
-            _Result(scalar=SimpleNamespace(username="mallory", id=target_id)), _Result(),
-        ])
-        db.delete = AsyncMock()
-        db.commit = AsyncMock()
-        svc = RoomService(db=db, livekit=AsyncMock(), presence=AsyncMock())
-        await svc.remove_member(room_id, actor_id, target_id)
-        self.assertEqual(len(self._floor_updates(db)), 1)
-
-    async def test_gateway_leave_and_kick_floor_the_class(self) -> None:
-        room = SimpleNamespace(id=uuid.uuid4(), name="crew", livekit_room_name="stable-crew")
-        seat = SimpleNamespace(id=uuid.uuid4())
-        db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[_Result(scalar=seat), _Result(), _Result()])
-        db.commit = AsyncMock()
-        principal = SimpleNamespace(agent_id="persephone", allowed_rooms=["crew"])
-        with patch.object(G, "_gateway_rate_limit", new=AsyncMock()), \
-             patch.object(G, "_resolve_room", new=AsyncMock(return_value=room)), \
-             patch.object(G, "_enforce_scope", new=AsyncMock()), \
-             patch.object(G, "clear_relay_pending", new=AsyncMock()):
-            await G.gateway_leave_room(room="crew", principal=principal, db=db, livekit=AsyncMock(), redis=AsyncMock())
-        self.assertEqual(len(self._floor_updates(db)), 1)
+class P0_2_FloorIsAnSqlMerge(IsolatedAsyncioTestCase):
+    """What writes a floor is pinned in tests/test_nav_v3_fix2_class.py (the
+    viewer-independent verdict and the insert path; never a removal). Here:
+    HOW it is written."""
 
     async def test_stamp_is_an_sql_merge_not_a_rewrite(self) -> None:
         db = AsyncMock()
@@ -442,15 +384,14 @@ class P0_2_MembershipRemovalWritesTheFloor(IsolatedAsyncioTestCase):
         hub = RC.RoomLite(id=uuid.uuid4(), room_type=AGENT_HUB, metadata_={})
         chan = RC.RoomLite(id=uuid.uuid4(), room_type=RoomType.CHANNEL, metadata_={})
         floored = RC.RoomLite(id=uuid.uuid4(), room_type=AGENT_HUB, metadata_={"class_floor": "shared"})
-        shared = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0)
-        facts = {str(hub.id): shared, str(chan.id): RC.RoomClassFacts("channel", 2, 0, 0, 0), str(floored.id): shared}
+        shared = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0, base_class="shared")
+        facts = {str(hub.id): shared, str(chan.id): RC.RoomClassFacts("channel", 2, 0, 0, 0, base_class="channel"), str(floored.id): shared}
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_Result())
         stamped = await RC.apply_class_floors(db, [hub, chan, floored], facts)
         self.assertEqual(stamped, [hub.id])
         self.assertEqual(hub.metadata_["class_floor"], "shared")
         db.execute.assert_awaited_once()
-
 
 class P0_2_GatewayListJudgesTheHistory(IsolatedAsyncioTestCase):
     """The rooms list: a departed author (Mallory) stays in the history, so
@@ -471,16 +412,15 @@ class P0_2_GatewayListJudgesTheHistory(IsolatedAsyncioTestCase):
         results = [
             _Result(scalar=PERSEPHONE),                                       # seat row
             _Result(rows=[self._room_row(room_id)]),                          # seat's rooms
-        ]
-        if "@member" in principal_rooms:
-            results.append(_Result(scalars=[room_id]))                        # owner present
-        results += [
+            _Result(scalars=[room_id]),                                       # owner present (every key kind)
             _Result(rows=[self._member_row(room_id, AARON), self._member_row(room_id, PERSEPHONE, "answers_all")]),
             _Result(scalars=["persephone"]),                                  # key agent ids
-            _Result(rows=[(room_id, history)]),                               # history
-            _Result(rows=[self._actor_row(MALLORY)] if MALLORY.id in history else []),
-            _Result(rowcount=1),                                              # floor stamp
+            _Result(rows=[(room_id, history, False)]),                        # history
         ]
+        if MALLORY.id in history:
+            results.append(_Result(rows=[self._actor_row(MALLORY)]))          # the unknown sender
+            results.append(_Result(rowcount=1))                               # floor stamp
+        results.append(_Result(rows=[(room_id, NOW)]))                        # last_message_at
         db.execute = AsyncMock(side_effect=results)
         db.commit = AsyncMock()
         principal = SimpleNamespace(agent_id="persephone", allowed_rooms=list(principal_rooms), auth_kind="key", human_sub=None)
@@ -494,6 +434,7 @@ class P0_2_GatewayListJudgesTheHistory(IsolatedAsyncioTestCase):
         self.assertEqual(rows[0].room_class, "shared")
         self.assertEqual(rows[0].humans, 2)
         self.assertIn("humans_2", rows[0].class_reasons)
+        self.assertEqual(rows[0].last_message_at, NOW)
         db.commit.assert_awaited_once()  # the floor was written
         self.assertEqual(rl.await_args.kwargs["bucket"], "gw_rooms")  # P2-3: its own bucket
 
@@ -605,12 +546,14 @@ class R6_SeatsAreKeyedByAgentAndOwned(IsolatedAsyncioTestCase):
         aaron = _human("aaron")
         me = self._member(aaron, MemberRole.OWNER)
         room = self._room([me, self._member(MAJIK)])
-        svc, _db = self._svc(_Result(scalar=me), _Result(scalar=room))
+        # The seat is not in the room: its own row says who owns it (the
+        # caller) → not a 403, a 409.
+        svc, _db = self._svc(_Result(scalar=me), _Result(scalar=room), _Result(scalar={"backend": "runner", "owner": "aaron"}))
         with self.assertRaises(HTTPException) as ctx:
             await svc.update_room(room.id, aaron.id, metadata={"seats": {"persephone": {"effort": "max"}}})
         self.assertEqual(ctx.exception.status_code, 409)
         with self.assertRaises(HTTPException) as ctx:
-            svc2, _ = self._svc(_Result(scalar=me), _Result(scalar=room))
+            svc2, _ = self._svc(_Result(scalar=me), _Result(scalar=room), _Result(scalar=None))
             await svc2.update_room(room.id, aaron.id, metadata={"seats": {"majik": {"effort": "max"}}})
         self.assertEqual(ctx.exception.status_code, 409)
 
@@ -729,10 +672,6 @@ class P2_StablePrefixIsReserved(IsolatedAsyncioTestCase):
             RoomCreate(name="stable-persephone", display_name="Squat")
         RoomCreate(name="stables-and-barns", display_name="ok")
 
-    async def test_room_service_refuses_the_prefix(self) -> None:
-        from app.services.room_service import RoomService
-
-        svc = RoomService(db=AsyncMock(), livekit=AsyncMock(), presence=AsyncMock())
-        with self.assertRaises(HTTPException) as ctx:
-            await svc.create_room(name="stable-persephone", display_name="Squat", room_type="channel", creator_id=uuid.uuid4())
-        self.assertEqual(ctx.exception.status_code, 422)
+    # The service-level check moved to client-supplied names only (threads
+    # under legacy stable-* rooms must keep working): see
+    # tests/test_nav_v3_fix2_surface.py::StablePrefixOnlyOnClientNames.

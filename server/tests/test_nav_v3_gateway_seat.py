@@ -6,7 +6,7 @@
 * ``GET /gateway/rooms/{room}/context`` gains ``room_class`` and ``seat``;
 * ``PUT /gateway/me``: validated capabilities merged into the seat
   participant's ``metadata.seat_capabilities`` by an SQL ``||``.
-The history / scope / floor rules are pinned in tests/test_nav_v3_fix_lane.py.
+The history / scope / floor rules are pinned in tests/test_nav_v3_fix_class.py.
 """
 
 from __future__ import annotations
@@ -127,9 +127,9 @@ class ListRooms(IsolatedAsyncioTestCase):
             _res(rows=[member_row(hub_id, aaron), member_row(hub_id, persephone, "answers_all"),
                        member_row(shared_id, aaron), member_row(shared_id, shafen), member_row(shared_id, persephone)]),
             _res(scalars=["persephone"]),                                       # key agent ids
-            _res(rows=[(hub_id, [aaron.id, persephone.id]), (shared_id, [aaron.id, shafen.id])]),  # history
-            _res(rows=[]),                                                      # no unknown senders
+            _res(rows=[(hub_id, [aaron.id, persephone.id], False), (shared_id, [aaron.id, shafen.id], False)]),  # history
             _res(),                                                             # floor stamp (shared room)
+            _res(rows=[(hub_id, NOW)]),                                         # last_message_at
         ])
         db.commit = AsyncMock()
         principal = SimpleNamespace(agent_id="persephone", allowed_rooms=["@member"], auth_kind="key", human_sub=None)
@@ -137,6 +137,7 @@ class ListRooms(IsolatedAsyncioTestCase):
             out = await G.gateway_list_rooms(principal=principal, db=db, redis=AsyncMock())
         self.assertEqual([(r.name, r.room_class, r.agent_mode) for r in out],
                          [("hub-fa65c5631810", "private", "answers_all"), ("crew", "shared", None)])
+        self.assertEqual([r.last_message_at for r in out], [NOW, None])
         db.commit.assert_awaited_once()
         rooms_sql = str(db.execute.await_args_list[1].args[0]).lower()
         self.assertIn("rooms.is_archived is false", rooms_sql)
