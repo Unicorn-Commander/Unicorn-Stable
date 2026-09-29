@@ -8,6 +8,10 @@ key kind; R5 matches the caller's DB username and covers agent principals
 and the facilitator; mint takes an owner and caps the id. Every test here
 FAILED on 45bfb7f.
 
+Amended in fix lane 4 (REVIEW-4.md P2-4, P2-6): the key API takes one owner
+name, and the boundary judges agent-ness by the sender's ROW, so the boundary
+tests below hand it one.
+
 Amended in fix lane 3 (REVIEW-3.md P1-1, P2-3, P2-5): ``via`` is NOT a
 forgeable identity key (spoken lines carry ``via: "voice"`` and must keep it);
 client metadata is an allowlist applied at the public HTTP boundary, not
@@ -238,21 +242,25 @@ class HumanPostsCannotForgeAgentMetadata(IsolatedAsyncioTestCase):
         from app.api.messages import sanitize_client_message
         from app.schemas.message import MessageCreate
 
-        human = {"participant_id": uuid.uuid4(), "participant_type": "human", "sub": "kc-mallory", "username": "mallory"}
-        guest = {"participant_id": uuid.uuid4(), "participant_type": "guest", "sub": "guest:abc", "username": "guest-abc", "is_guest": True}
-        gateway = {"participant_id": uuid.uuid4(), "sub": "brigade:persephone", "username": "agent-persephone"}
-        worker = {"participant_id": uuid.uuid4(), "participant_type": "agent", "sub": "svc", "username": "agent-triage"}
+        user = {"participant_id": uuid.uuid4()}
+        human = SimpleNamespace(participant_type=ParticipantType.HUMAN, keycloak_sub="kc-mallory", username="mallory")
+        guest = SimpleNamespace(participant_type=ParticipantType.GUEST, keycloak_sub="guest:abc", username="guest-abc")
+        seat = SimpleNamespace(participant_type=ParticipantType.AGENT, keycloak_sub="brigade:persephone", username="agent-persephone")
+        worker = SimpleNamespace(participant_type=ParticipantType.AGENT, keycloak_sub="svc", username="agent-triage")
         forged = {"agent_id": "persephone", "gateway": True, "on_behalf_of": "kc-aaron", "via": "mcp",
                   "client_msg_id": "c1", "attachments": [{"id": "a1"}]}
+        kept_by_an_agent = {"via": "mcp", "client_msg_id": "c1", "attachments": [{"id": "a1"}]}
 
-        def clean(user, metadata=forged):
+        def clean(sender, metadata=forged):
             body = MessageCreate(content="x", metadata=None if metadata is None else dict(metadata))
-            return sanitize_client_message(body, user).metadata
+            return sanitize_client_message(body, user, sender).metadata
 
-        for user in (human, guest):
-            self.assertEqual(clean(user), {"client_msg_id": "c1", "attachments": [{"id": "a1"}]})
-        self.assertEqual(clean(gateway), forged)                                  # its own id: untouched
-        self.assertEqual(clean(worker), {**forged, "agent_id": "triage"})         # never another agent's (P2-5)
+        for sender in (human, guest, None):
+            self.assertEqual(clean(sender), {"client_msg_id": "c1", "attachments": [{"id": "a1"}]})
+        # An agent's row keeps its metadata minus the gateway's stamps, and
+        # its agent_id is its own (P2-5, REVIEW-4 P2-6).
+        self.assertEqual(clean(seat), {**kept_by_an_agent, "agent_id": "persephone"})
+        self.assertEqual(clean(worker), {**kept_by_an_agent, "agent_id": "triage"})
         self.assertIsNone(clean(human, None))
 
     async def test_a_forged_agent_id_never_reaches_storage(self) -> None:
@@ -265,7 +273,10 @@ class HumanPostsCannotForgeAgentMetadata(IsolatedAsyncioTestCase):
         user = {"participant_id": stored.sender_id, "participant_type": "human", "sub": "kc-mallory", "username": "mallory", "display_name": "Mallory", "email": None}
         raw = MessageCreate(content="hi", content_type="text", metadata={"agent_id": "persephone", "gateway": True, "via": "mcp", "client_msg_id": "c9"})
         # What FastAPI does for the public route: the body dependency, then the handler.
-        body = await M.client_message_body(raw, user)
+        sender_row = SimpleNamespace(participant_type=ParticipantType.HUMAN, keycloak_sub="kc-mallory", username="mallory")
+        lookup = AsyncMock()
+        lookup.execute = AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: sender_row))
+        body = await M.client_message_body(raw, user, lookup)
         from app.schemas.message import MessageResponse
 
         shown = MessageResponse(id=stored.id, room_id=stored.room_id, sender_id=stored.sender_id, sender_type="human",

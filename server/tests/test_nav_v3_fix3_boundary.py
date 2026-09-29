@@ -9,6 +9,11 @@ post ``content_type: "system"``. An agent principal's ``agent_id`` is its
 own, on write and on the seat's read.
 
 Every test here FAILED on 5ee32e9 unless its docstring says it is a pin.
+
+Amended in fix lane 4 (REVIEW-4.md P2-6): agent-ness is a fact about the
+sender's ROW, not about the token, so the agent tests below hand the
+boundary a row (``_post(..., sender=…)``). ``test_nav_v3_fix4_boundary.py``
+holds the tests that fail on e20c618.
 """
 
 from __future__ import annotations
@@ -100,14 +105,23 @@ class _FakeRedis:
         return self.counts.get(key)
 
 
-def _public_app(user) -> FastAPI:
+def _sender_row(participant_type, keycloak_sub, username):
+    """The three columns the boundary reads of the caller's participant row."""
+    return SimpleNamespace(participant_type=participant_type, keycloak_sub=keycloak_sub, username=username)
+
+
+def _public_app(user, sender=None) -> FastAPI:
     """The real messages router behind FastAPI. Only the credentials, the
     session, LiveKit and Redis are swapped, so the request goes through the
-    route's own body dependency and its own rate limiter."""
+    route's own body dependency and its own rate limiter. ``sender`` is the
+    caller's participant row as the session returns it (default: a human)."""
+    row = sender or _sender_row(ParticipantType.HUMAN, user.get("sub"), user.get("username"))
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: row))
     app = FastAPI()
     app.include_router(M.router, prefix="/api/v1")
     app.dependency_overrides[get_guest_or_member] = lambda: user
-    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_livekit] = lambda: AsyncMock()
     app.dependency_overrides[get_redis] = lambda: _FakeRedis()
     return app
@@ -130,11 +144,11 @@ def _quiet_side_effects():
     return stack
 
 
-async def _post(user, body: dict, room_id=None):
+async def _post(user, body: dict, room_id=None, sender=None):
     """POST /api/v1/rooms/{id}/messages over HTTP, as ``user``."""
     svc = _FakeMessageService()
     with _quiet_side_effects(), patch.object(M, "_build_message_service", return_value=svc):
-        async with AsyncClient(transport=ASGITransport(app=_public_app(user)), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=_public_app(user, sender)), base_url="http://test") as client:
             response = await client.post(f"/api/v1/rooms/{room_id or uuid.uuid4()}/messages", json=body)
     return response, svc
 
@@ -207,8 +221,9 @@ class P1_1_SpokenLinesKeepViaVoice(IsolatedAsyncioTestCase):
         room_id = uuid.uuid4()
         guest = {"participant_id": uuid.uuid4(), "participant_type": "guest", "sub": "guest:abc", "is_guest": True,
                  "guest_room_id": str(room_id), "username": "guest-abc", "display_name": "Jordan"}
+        row = _sender_row(ParticipantType.GUEST, "guest:abc", "guest-abc")
         response, svc = await _post(guest, {"content": "hi", "metadata": {"via": "voice", "facilitate": True, "agent_id": "zen",
-                                                                          "brigade_agent_id": "zen", "kind": "recording"}}, room_id)
+                                                                          "brigade_agent_id": "zen", "kind": "recording"}}, room_id, row)
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(svc.stored[0]["metadata"], {"facilitate": True})
         response, svc = await _post(guest, {"content": "Recording started", "content_type": "system"}, room_id)
@@ -220,7 +235,8 @@ class P1_1_SpokenLinesKeepViaVoice(IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(svc.stored, [])
         with self.assertRaises(HTTPException) as ctx:
-            M.sanitize_client_message(MessageCreate(content="x", content_type="system"), {"participant_type": "guest", "is_guest": True})
+            M.sanitize_client_message(MessageCreate(content="x", content_type="system"), {"participant_type": "guest", "is_guest": True},
+                                      _sender_row(ParticipantType.GUEST, "guest:abc", "guest-abc"))
         self.assertEqual(ctx.exception.status_code, 422)
         # Every type the web really sends passes.
         for ctype in ("text", "action", "image", "file"):
@@ -272,20 +288,22 @@ class P2_5_AgentIdComesFromThePrincipal(IsolatedAsyncioTestCase):
     async def test_an_agent_principal_posting_as_another_agent_is_stored_as_itself(self) -> None:
         worker = {"participant_id": uuid.uuid4(), "participant_type": "agent", "sub": "kc-svc-uuid", "username": "agent-triage",
                   "display_name": "Triage", "email": None}
-        response, svc = await _post(worker, {"content": "done", "metadata": {"agent_id": "persephone", "via": "tool"}})
+        row = _sender_row(ParticipantType.AGENT, "kc-svc-uuid", "agent-triage")
+        response, svc = await _post(worker, {"content": "done", "metadata": {"agent_id": "persephone", "via": "tool"}}, sender=row)
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(svc.stored[0]["metadata"], {"via": "tool", "agent_id": "triage"})
 
     def test_the_body_cannot_name_another_agent(self) -> None:
-        worker = {"participant_id": uuid.uuid4(), "participant_type": "agent", "sub": "kc-svc-uuid", "username": "agent-triage"}
+        user = {"participant_id": uuid.uuid4()}
+        worker = _sender_row(ParticipantType.AGENT, "kc-svc-uuid", "agent-triage")
         body = M.sanitize_client_message(
-            MessageCreate(content="x", metadata={"agent_id": "persephone", "via": "tool", "delegated_from": {"agent_id": "majik"}}), worker)
+            MessageCreate(content="x", metadata={"agent_id": "persephone", "via": "tool", "delegated_from": {"agent_id": "majik"}}), user, worker)
         self.assertEqual(body.metadata, {"via": "tool", "delegated_from": {"agent_id": "majik"}, "agent_id": "triage"})
-        gateway = {"participant_id": uuid.uuid4(), "sub": "brigade:grok", "username": "agent-grok"}
-        self.assertEqual(M.sanitize_client_message(MessageCreate(content="x", metadata={"agent_id": "zen"}), gateway).metadata, {"agent_id": "grok"})
-        self.assertEqual(M.principal_agent_id(worker), "triage")
+        gateway = _sender_row(ParticipantType.AGENT, "brigade:grok", "agent-grok")
+        self.assertEqual(M.sanitize_client_message(MessageCreate(content="x", metadata={"agent_id": "zen"}), user, gateway).metadata, {"agent_id": "grok"})
+        self.assertEqual(M.agent_id_of_identity(worker.keycloak_sub, worker.username), "triage")
         # No agent_id claimed → nothing added.
-        self.assertEqual(M.sanitize_client_message(MessageCreate(content="x", metadata={"via": "tool"}), worker).metadata, {"via": "tool"})
+        self.assertEqual(M.sanitize_client_message(MessageCreate(content="x", metadata={"via": "tool"}), user, worker).metadata, {"via": "tool"})
 
     def test_the_gateway_read_keeps_only_the_senders_own_agent_id(self) -> None:
         grok = _seat("grok")
@@ -296,7 +314,7 @@ class P2_5_AgentIdComesFromThePrincipal(IsolatedAsyncioTestCase):
         kept = G.scrub_identity_on_read([(m, m.response) for m in (service_own, service_borrowed)])
         self.assertEqual([m.metadata for m in kept], [{"agent_id": "svc-triage"}, {}])
         # Write and read bind to the same id.
-        self.assertEqual(M.principal_agent_id({"sub": "3f0c-kc-uuid", "username": "svc-triage"}), G._sender_agent_id(service))
+        self.assertEqual(M.agent_id_of_identity("3f0c-kc-uuid", "svc-triage"), G._sender_agent_id(service))
         borrowed = SimpleNamespace(sender=grok, response=_response("agent", {"agent_id": "persephone", "gateway": True}))
         unknown = SimpleNamespace(sender=None, response=_response("agent", {"agent_id": "persephone"}))
         human = SimpleNamespace(sender=_human("mallory"), response=_response("human", {"agent_id": "persephone", "gateway": True, "on_behalf_of": "kc-aaron",

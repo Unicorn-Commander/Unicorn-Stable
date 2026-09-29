@@ -112,23 +112,26 @@ AGENT_IDENTITY_METADATA_KEYS: frozenset[str] = frozenset(
     {"agent_id", "on_behalf_of", "gateway", "brigade_agent_id"}
 )
 
-#: content_type values a human or guest may never claim: a client-made
-#: "system" line would reach a seat as ``[system] text`` with no author.
+#: content_type values no caller of the public route may claim: a
+#: client-made "system" line would reach a seat as ``[system] text``.
 RESERVED_CONTENT_TYPES: frozenset[str] = frozenset({"system"})
 
-
-def _principal_is_agent(user: dict[str, Any] | None) -> bool:
-    """The gateway's derived identity (``sub = brigade:<id>``) or an
-    agent-typed principal."""
-    user = user or {}
-    return user.get("participant_type") == "agent" or str(user.get("sub") or "").startswith("brigade:")
+#: What an AGENT sender may not put on its own line through the public
+#: route (REVIEW-4 P2-6). ``brigade_agent_id`` picks the read-aloud voice,
+#: ``on_behalf_of`` and ``gateway`` are the gateway's own stamps, ``kind``
+#: feeds the room class's notice rule and ``source`` decides whether a line
+#: can be regenerated. ``agent_id`` is BOUND to the sender's row instead of
+#: dropped.
+AGENT_BODY_DROPPED_KEYS: frozenset[str] = frozenset(
+    {"brigade_agent_id", "on_behalf_of", "gateway", "kind", "source"}
+)
 
 
 def agent_id_of_identity(sub: Any, username: Any) -> str | None:
     """The one agent id an agent identity may speak as: the ``brigade:<id>``
     sub, else the ``agent-<id>`` username, else the username itself. Used on
-    write (the principal) and on the seat's read (the stored sender), so the
-    two always agree."""
+    write (the sender's row) and on the seat's read (the stored sender), so
+    the two always agree."""
     sub = str(sub or "")
     if sub.startswith("brigade:"):
         return sub[len("brigade:") :] or None
@@ -138,60 +141,97 @@ def agent_id_of_identity(sub: Any, username: Any) -> str | None:
     return username or None
 
 
-def principal_agent_id(user: dict[str, Any] | None) -> str | None:
-    """The agent id an agent principal may speak as: its own, from the
-    credential — never from a request body (P2-5)."""
-    user = user or {}
-    return agent_id_of_identity(user.get("sub"), user.get("username"))
+def sender_is_agent(sender: Any) -> bool:
+    """Agent-ness is a fact about the SENDER'S ROW
+    (``participants.participant_type``), never about the token that carried
+    the request: a human's row signed in through a ``*-agent`` client is
+    still a human's row, and its lines are a human's lines."""
+    if sender is None:
+        return False
+    ptype = getattr(sender, "participant_type", None)
+    return str(getattr(ptype, "value", ptype) or "") == "agent"
 
 
-def sanitize_client_message(body: MessageCreate, user: dict[str, Any] | None) -> MessageCreate:
-    """THE public client boundary for message create (Nav v3, REVIEW-3 P1-1).
+def sanitize_client_message(
+    body: MessageCreate, user: dict[str, Any] | None, sender: Any = None
+) -> MessageCreate:
+    """THE public client boundary for message create (Nav v3, REVIEW-3 P1-1,
+    REVIEW-4 P2-6). ``sender`` is the caller's participant ROW (anything
+    with ``participant_type``, ``keycloak_sub``, ``username``); without one
+    the caller is held to the strictest rule.
 
-    * A HUMAN or GUEST post keeps only :data:`CLIENT_MESSAGE_METADATA_KEYS`
-      and may not claim a reserved ``content_type`` (422).
-    * An AGENT principal keeps its metadata, but ``agent_id`` is bound to the
-      principal: whatever the body says is replaced by the caller's own id.
+    * Nobody may claim a reserved ``content_type`` (422).
+    * A HUMAN or GUEST row keeps only :data:`CLIENT_MESSAGE_METADATA_KEYS`.
+    * An AGENT row keeps its metadata minus
+      :data:`AGENT_BODY_DROPPED_KEYS`, and ``agent_id`` is bound to the row:
+      whatever the body says is replaced by the sender's own id.
 
     Server paths never come through here — the internal voice route, the
     relay, recording notices and the gateway stamp their own metadata and
     call :func:`send_message` directly, so ``via: "voice"`` survives to
     storage and to the seat's poll."""
-    metadata = body.metadata
-    if _principal_is_agent(user):
-        if metadata and "agent_id" in metadata:
-            own = principal_agent_id(user)
-            bound = {k: v for k, v in metadata.items() if k != "agent_id"}
-            if own:
-                bound["agent_id"] = own
-            return body.model_copy(update={"metadata": bound})
-        return body
     if body.content_type in RESERVED_CONTENT_TYPES:
         raise HTTPException(
             status_code=422,
             detail=f"content_type '{body.content_type}' is reserved for the server",
         )
+    metadata = body.metadata
     if not metadata:
         return body
-    cleaned = {k: v for k, v in metadata.items() if k in CLIENT_MESSAGE_METADATA_KEYS}
-    if len(cleaned) != len(metadata):
+    if sender_is_agent(sender):
+        cleaned = {k: v for k, v in metadata.items() if k not in AGENT_BODY_DROPPED_KEYS}
+        if "agent_id" in cleaned:
+            own = agent_id_of_identity(
+                getattr(sender, "keycloak_sub", None), getattr(sender, "username", None)
+            )
+            cleaned.pop("agent_id")
+            if own:
+                cleaned["agent_id"] = own
+    else:
+        cleaned = {k: v for k, v in metadata.items() if k in CLIENT_MESSAGE_METADATA_KEYS}
+    dropped = sorted(str(k) for k in set(metadata) - set(cleaned))
+    if dropped:
         logger.info(
             "message_metadata_dropped_at_boundary",
-            dropped=sorted(str(k) for k in set(metadata) - set(cleaned)),
+            dropped=dropped,
             participant_id=str((user or {}).get("participant_id")),
         )
+    if cleaned == metadata:
+        return body
     return body.model_copy(update={"metadata": cleaned})
+
+
+async def load_sender_row(db: AsyncSession, participant_id: Any) -> Any:
+    """The three columns the boundary judges a sender by, or None."""
+    if participant_id is None:
+        return None
+    return (
+        await db.execute(
+            select(
+                Participant.participant_type,
+                Participant.keycloak_sub,
+                Participant.username,
+            ).where(Participant.id == participant_id)
+        )
+    ).one_or_none()
 
 
 async def client_message_body(
     body: MessageCreate,
     user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MessageCreate:
     """FastAPI dependency: the request body of ``POST /rooms/{id}/messages``
     after :func:`sanitize_client_message`. Only an HTTP request resolves it;
     a direct call to :func:`send_message` (gateway, internal routes) does
-    not, which is the point."""
-    return sanitize_client_message(body, user)
+    not, which is the point.
+
+    The sender's row is read only when the body carries metadata — a plain
+    message costs no extra statement."""
+    sender = None
+    if body.metadata and body.content_type not in RESERVED_CONTENT_TYPES:
+        sender = await load_sender_row(db, (user or {}).get("participant_id"))
+    return sanitize_client_message(body, user, sender)
 
 
 def _build_message_service(
