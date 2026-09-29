@@ -9,6 +9,10 @@ NULL-sender recording notices are house. Every test here FAILED on 45bfb7f;
 the three "mutation-blind" tests pin the query text the earlier tests never
 looked at.
 
+Amended in fix lane 4 (REVIEW-4.md P2-1, P2-7, P2-8): the insert-time floor
+runs in a SAVEPOINT, 024 marks what it overwrites, and ``create_thread`` no
+longer reads the creator's row for a name.
+
 Amended in fix lane 3 (REVIEW-3.md P1-2, P2-1..3, P2-6): the floor verdict is
 ``history_shared`` (what was written; membership and the asker are no longer
 inputs), the insert-time rule judges the AUTHOR alone, the history statement
@@ -323,10 +327,10 @@ class P1_C_StaleJwtRowsAreNotHouse(TestCase):
         calls = [(str(c.args[0]), c.args[1] if len(c.args) > 1 else {}) for c in conn.execute.call_args_list]
         # REVIEW-3 P2-6: backend is no longer part of the blanket owner merge,
         # there is no dev-* sweep, and the stamp is guarded by a live key.
-        seat_patches = [p["patch"] for s, p in calls if p.get("sub") == "brigade:persephone" and "patch" in p]
+        seat_patches = [p["patch"] for s, p in calls if p.get("sub") == "brigade:persephone" and '"owner"' in p.get("patch", "")]
         self.assertTrue(seat_patches and all('"backend"' not in patch for patch in seat_patches))
         self.assertEqual([s for s, _p in calls if "brigade:dev-%" in s], [])
-        stamps = [(s, p) for s, p in calls if "jsonb_build_object('backend', 'runner')" in s]
+        stamps = [(s, p) for s, p in calls if p.get("patch") == '{"backend": "runner"}']
         self.assertIn("persephone", {p["agent_id"] for _s, p in stamps})
         self.assertTrue(all("k.revoked_at is null" in s.lower() for s, _p in stamps))
         # P2-13: role_line never overwrites a hand-set value; the rename is marked.
@@ -342,7 +346,7 @@ class P1_C_StaleJwtRowsAreNotHouse(TestCase):
             mod.downgrade()
         down = "\n".join(str(c.args[0]) for c in conn.execute.call_args_list)
         self.assertIn("metadata ->> 'display_name_by_024' = 'Rook'", down)
-        self.assertIn("metadata ->> 'role_line' = :role", down)
+        self.assertIn("WHERE metadata ? 'role_line_before_024'", down)   # only a line 024 itself wrote
         self.assertIn("drop index if exists ix_messages_room_id_sender_id", " ".join(str(c.args[0]) for c in op_exec.call_args_list).lower())
 
 

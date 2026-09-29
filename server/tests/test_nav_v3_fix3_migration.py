@@ -9,6 +9,11 @@ seed backfill reads the SOURCE line's real author. Measured against a real
 PostgreSQL 17 as well (see the lane report); these tests pin the SQL.
 
 Every test here FAILED on 5ee32e9 unless its docstring says it is a pin.
+
+Amended in fix lane 4 (REVIEW-4.md P2-7): perry gets nothing from 024, and
+every key it writes leaves a ``<key>_before_024`` marker that downgrade
+restores from. ``test_nav_v3_fix4_migration.py`` holds the tests that fail
+on e20c618.
 """
 
 from __future__ import annotations
@@ -43,7 +48,7 @@ def _run(mod, direction):
 
 class P2_6_Migration024(TestCase):
     AARON_CREW = {"persephone", "claude-code", "claude", "claude-dev", "codex", "codex-astra", "chatgpt", "chat-companion", "grok",
-                  "zen", "deepseek-flash", "producer", "osprey", "tern", "perry", "qwen-35b", "colonel", "gunny", "gfl-studio-director"}
+                  "zen", "deepseek-flash", "producer", "osprey", "tern", "qwen-35b", "colonel", "gunny", "gfl-studio-director"}
     AARON_WORKERS = {"planning-officer", "corporal-scratch", "contracts-counsel", "accounting-cfo"}
     SHAFEN_CREW = {"shafen-claude-code", "dev-shafen-z13", "shox", "okapi-grok", "gerenuk-codex", "kudu-sonnet", "oryx-gpt",
                    "dikdik-haiku", "eland-qwen"}
@@ -57,11 +62,12 @@ class P2_6_Migration024(TestCase):
         self.assertEqual(set(mod.INTEGRATION_IDS), {"texts-relay", "talk-controls-app", "reddit-scout", "taxsq-dryrun", "deploy2-smoke", "webhook-dev-stable"})
         self.assertEqual(set(mod.GUEST_AGENT_IDS), {"guest-northbridgetax", "statewide-agent"})
         self.assertEqual(mod.BRIGADE_SERVED_IDS, ("perry",))
-        # 32 seats, and no id is two things at once.
-        self.assertEqual(len(mod.SEAT_OWNERS), 32)
-        groups = [set(mod.CREW_SEATS), set(mod.WORKER_SEATS), set(mod.INTEGRATION_IDS), set(mod.GUEST_AGENT_IDS)]
+        # 31 seats (perry is Persephone's call per deploy), and no id is two
+        # things at once.
+        self.assertEqual(len(mod.SEAT_OWNERS), 31)
+        groups = [set(mod.CREW_SEATS), set(mod.WORKER_SEATS), set(mod.INTEGRATION_IDS), set(mod.GUEST_AGENT_IDS),
+                  set(mod.BRIGADE_SERVED_IDS)]
         self.assertEqual(sum(len(g) for g in groups), len(set().union(*groups)))
-        self.assertTrue(set(mod.BRIGADE_SERVED_IDS) <= set(mod.SEAT_OWNERS))
 
     def test_owner_and_crew_stamps(self) -> None:
         calls, _ops = _run(_load_024(), "upgrade")
@@ -75,13 +81,14 @@ class P2_6_Migration024(TestCase):
     def test_backend_is_stamped_only_with_a_live_key_and_never_on_a_brigade_served_row(self) -> None:
         mod = _load_024()
         calls, _ops = _run(mod, "upgrade")
-        stamps = [(sql, p) for sql, p in calls if "jsonb_build_object('backend', 'runner')" in sql]
-        self.assertEqual({p["agent_id"] for _s, p in stamps}, set(mod.SEAT_OWNERS) - {"perry"})
+        stamps = [(sql, p) for sql, p in calls if p.get("patch") == '{"backend": "runner"}']
+        self.assertEqual({p["agent_id"] for _s, p in stamps}, set(mod.SEAT_OWNERS))
+        self.assertNotIn("perry", {p["agent_id"] for _s, p in stamps})
         for sql, _p in stamps:
             low = sql.lower()
             self.assertIn("from agent_gateway_keys k", low)
             self.assertIn("k.revoked_at is null", low)
-            self.assertIn("coalesce(p.metadata ->> 'backend', '') <> 'runner'", low)
+            self.assertIn("coalesce(metadata ->> 'backend', '') <> 'runner'", low)
             self.assertIn("backend_before_024", low)                                         # the old value is kept
         joined = "\n".join(sql for sql, _p in calls).lower()
         self.assertNotIn("brigade:dev-%", joined)                                            # no blanket dev-* stamp
@@ -116,8 +123,8 @@ class P2_6_Migration024(TestCase):
         self.assertIn("jsonb_set(metadata - 'backend_before_024', '{backend}', metadata -> 'backend_before_024')", joined)
         self.assertIn("(metadata - 'backend') - 'backend_before_024'", joined)   # there was none before
         self.assertIn("metadata ->> 'display_name_by_024' = 'rook'", joined)
-        self.assertIn("metadata ->> 'role_line' = :role", joined)
-        self.assertIn("metadata ->> 'kind' = 'guest_agent'", joined)
+        self.assertIn("where metadata ? 'role_line_before_024'", joined)
+        self.assertIn("where metadata ? 'kind_before_024'", joined)
         self.assertIn("drop index if exists ix_messages_room_id_sender_id", ops.lower())
         # A row that had NO metadata before upgrade has none again.
         self.assertIn("when metadata - 'metadata_null_before_024' = '{}'::jsonb then null", joined)

@@ -15,13 +15,17 @@ THE MAPPING below is Persephone's, decided from the LIVE key list (32
 non-revoked key agent ids, measured 2026-09-29). Nothing is guessed beyond
 it: an id that is not listed gets no owner and no kind from this migration.
 
+* ``perry`` GETS NOTHING. He exists in both worlds — a gateway key AND a
+  place in Brigade's roster — and an ``owner`` alone would make him
+  non-house, so every room he is in would read ``shared`` and ``/crew``
+  would list him as Aaron's seat. Persephone decides him per deploy; ids in
+  ``BRIGADE_SERVED_IDS`` are skipped by every statement here.
+* A list-form ``owner`` means ONE PERSON WITH TWO ACCOUNTS (Shafen's rows
+  ``shafen`` and ``shafenkhan``) and must never name two people. Only this
+  operator-reviewed migration writes a list; the key API takes one name.
 * ``backend = "runner"`` is stamped ONLY on a listed seat whose agent id
-  holds a non-revoked gateway key AND is not served by Brigade
-  (``BRIGADE_SERVED_IDS``), and only when the row does not already say
-  ``runner``. The previous value is kept under ``backend_before_024`` so
-  downgrade restores it. A row Brigade serves today is never flipped — the
-  in-process responder skips ``runner`` rows, so flipping one would take a
-  live persona off the air.
+  holds a non-revoked gateway key, and only when the row does not already
+  say ``runner``.
 * ``agent-claude-code`` is renamed "Rook" (the gateway minted it as "Claude
   Code" from its agent id) — marked, so downgrade never touches a hand-set
   name — and both Rook and Persephone get a ``role_line`` unless they
@@ -32,12 +36,23 @@ it: an id that is not listed gets no owner and no kind from this migration.
 * ``ix_messages_room_id_sender_id``: the room-class history read
   (distinct sender ids per room) is an index-only scan of it.
 
-Idempotent: every statement is a ``||`` merge or a conditional UPDATE; a
-re-run changes nothing. Downgrade removes only what upgrade set and
-restores what it changed: ``backend`` goes back to its previous value, and
-a row whose metadata was NULL is NULL again (``metadata_null_before_024``).
-Measured on PostgreSQL 17 (2026-09-29): upgrade twice gives an identical
-table; upgrade then downgrade gives the table it started from.
+EVERY KEY THIS MIGRATION WRITES LEAVES A MARKER, ``<key>_before_024``,
+holding the value the row had before (JSON null when it had none). That is
+what makes the two promises below true rather than approximately true:
+
+* Idempotent. A marker is written once; a re-run finds it and changes
+  nothing. Measured on PostgreSQL 17: upgrade twice gives an identical
+  table.
+* Downgrade is the inverse. Each marked key goes back to the marked value
+  (or is removed when there was none), the marker comes off, and a row
+  whose metadata was NULL is NULL again. A pre-existing ``owner``,
+  ``crew``, ``kind``, ``backend`` or ``role_line`` — one the JWT path or an
+  operator had set before this ran — is therefore RESTORED, not removed.
+  Measured on PostgreSQL 17: upgrade then downgrade gives the table it
+  started from.
+
+What downgrade does NOT undo: ``thread.seed_sender_id`` (a fact about a
+line, harmless to older code) — and any row this migration never touched.
 """
 
 from __future__ import annotations
@@ -55,6 +70,7 @@ branch_labels = None
 depends_on = None
 
 AARON = "aaron"
+#: One person, two accounts. Never two people.
 SHAFEN = ["shafen", "shafenkhan"]
 
 #: Conversational seats: owned, on the crew.
@@ -76,7 +92,6 @@ CREW_SEATS: dict[str, str | list[str]] = {
             "producer",
             "osprey",
             "tern",
-            "perry",
             "qwen-35b",
             "colonel",
             "gunny",
@@ -122,10 +137,10 @@ INTEGRATION_IDS: tuple[str, ...] = (
 #: Outside accounts' agents (no owner, never crew).
 GUEST_AGENT_IDS: tuple[str, ...] = ("guest-northbridgetax", "statewide-agent")
 
-#: Ids that exist in BOTH worlds: a seat in the list above that Brigade
-#: also serves today. Their ``backend`` is left exactly as it is, for
-#: Persephone to decide per id (deploy notes). Measured 2026-09-29: perry is
-#: in Brigade's roster (General Counsel); producer is not.
+#: Ids that exist in BOTH worlds: a gateway key and a place in Brigade's
+#: roster. This migration writes NOTHING to them — no owner, no crew, no
+#: backend — whatever list they might also appear in. Measured 2026-09-29:
+#: perry is in Brigade's roster (General Counsel); producer is not.
 BRIGADE_SERVED_IDS: tuple[str, ...] = ("perry",)
 
 ROLE_LINES: dict[str, str] = {
@@ -134,9 +149,13 @@ ROLE_LINES: dict[str, str] = {
 }
 
 #: Markers upgrade leaves so downgrade can restore exactly what it changed.
+MARKER_SUFFIX = "_before_024"
+#: Every metadata key this migration may write, i.e. every key downgrade
+#: restores from its marker.
+MARKED_KEYS: tuple[str, ...] = ("owner", "crew", "backend", "kind", "role_line")
 RENAME_MARKER = "display_name_by_024"
-BACKEND_MARKER = "backend_before_024"
-NULL_MARKER = "metadata_null_before_024"
+BACKEND_MARKER = "backend" + MARKER_SUFFIX
+NULL_MARKER = "metadata_null" + MARKER_SUFFIX
 INDEX_NAME = "ix_messages_room_id_sender_id"
 
 #: The row's metadata, or — when it has none — an object that says so.
@@ -145,10 +164,38 @@ INDEX_NAME = "ix_messages_room_id_sender_id"
 _METADATA_OR_MARKED = f"COALESCE(metadata, jsonb_build_object('{NULL_MARKER}', true))"
 
 
-def _merge_sql(where: str) -> str:
+def marker_of(key: str) -> str:
+    return key + MARKER_SUFFIX
+
+
+def _stamp_sql(where: str, keys: tuple[str, ...] | list[str]) -> str:
+    """Merge ``:patch`` into the rows ``where`` names. For each of ``keys``
+    (the keys the patch sets) the value the row had BEFORE is saved under
+    its marker — once: a row that already carries the marker keeps it, so a
+    re-run changes nothing."""
+    base = _METADATA_OR_MARKED
+    markers = "".join(
+        f" || CASE WHEN {base} ? '{marker_of(key)}' THEN '{{}}'::jsonb "
+        f"ELSE jsonb_build_object('{marker_of(key)}', COALESCE({base} -> '{key}', 'null'::jsonb)) END"
+        for key in keys
+    )
     return (
-        f"UPDATE participants SET metadata = {_METADATA_OR_MARKED} || "
+        f"UPDATE participants SET metadata = {base}{markers} || "
         f"CAST(:patch AS jsonb) WHERE {where}"
+    )
+
+
+def _restore_sql(key: str) -> str:
+    """Put ``key`` back to what its marker says (remove it when the marker
+    is JSON null) and take the marker off — on exactly the rows upgrade
+    marked."""
+    marker = marker_of(key)
+    return (
+        "UPDATE participants SET metadata = "
+        f"CASE WHEN metadata -> '{marker}' = 'null'::jsonb "
+        f"THEN (metadata - '{key}') - '{marker}' "
+        f"ELSE jsonb_set(metadata - '{marker}', '{{{key}}}', metadata -> '{marker}') END "
+        f"WHERE metadata ? '{marker}'"
     )
 
 
@@ -173,43 +220,47 @@ def _integration_where() -> str:
     )
 
 
-def _backend_stamp_sql() -> str:
-    """``backend = runner`` for one listed seat — only with a live key, only
-    when not Brigade-served, only when it would change something; the old
-    value is kept under the marker (JSON null when there was none)."""
-    return (
-        "UPDATE participants p SET metadata = COALESCE(p.metadata, '{}'::jsonb) "
-        f"|| jsonb_build_object('{BACKEND_MARKER}', COALESCE(p.metadata -> 'backend', 'null'::jsonb)) "
-        "|| jsonb_build_object('backend', 'runner') "
-        "WHERE p.keycloak_sub = :sub "
-        "AND COALESCE(p.metadata ->> 'backend', '') <> 'runner' "
-        f"AND NOT (COALESCE(p.metadata, '{{}}'::jsonb) ? '{BACKEND_MARKER}') "
-        "AND EXISTS (SELECT 1 FROM agent_gateway_keys k "
-        "WHERE k.agent_id = :agent_id AND k.revoked_at IS NULL)"
-    )
+#: ``backend = runner`` for one listed seat — only with a live key, and only
+#: when it would change something.
+_BACKEND_WHERE = (
+    "keycloak_sub = :sub "
+    "AND COALESCE(metadata ->> 'backend', '') <> 'runner' "
+    "AND EXISTS (SELECT 1 FROM agent_gateway_keys k "
+    "WHERE k.agent_id = :agent_id AND k.revoked_at IS NULL)"
+)
 
 
 def upgrade() -> None:
     conn = op.get_bind()
 
     for agent_id, owner in SEAT_OWNERS.items():
+        if agent_id in BRIGADE_SERVED_IDS:
+            continue
         patch: dict = {"owner": owner}
         if agent_id in CREW_SEATS:
             patch["crew"] = True
         conn.execute(
-            sa.text(_merge_sql("keycloak_sub = :sub")),
+            sa.text(_stamp_sql("keycloak_sub = :sub", list(patch))),
             {"sub": f"brigade:{agent_id}", "patch": json.dumps(patch)},
         )
-        if agent_id not in BRIGADE_SERVED_IDS:
-            conn.execute(
-                sa.text(_backend_stamp_sql()),
-                {"sub": f"brigade:{agent_id}", "agent_id": agent_id},
-            )
+        conn.execute(
+            sa.text(_stamp_sql(_BACKEND_WHERE, ["backend"])),
+            {
+                "sub": f"brigade:{agent_id}",
+                "agent_id": agent_id,
+                "patch": json.dumps({"backend": "runner"}),
+            },
+        )
         role = ROLE_LINES.get(agent_id)
         if role:
             # Never over a hand-set role_line.
             conn.execute(
-                sa.text(_merge_sql("keycloak_sub = :sub AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'role_line')")),
+                sa.text(
+                    _stamp_sql(
+                        f"keycloak_sub = :sub AND NOT ({_METADATA_OR_MARKED} ? 'role_line')",
+                        ["role_line"],
+                    )
+                ),
                 {"sub": f"brigade:{agent_id}", "patch": json.dumps({"role_line": role})},
             )
 
@@ -225,12 +276,15 @@ def upgrade() -> None:
         {"patch": json.dumps({RENAME_MARKER: "Rook"})},
     )
 
+    served = _quoted([f"brigade:{a}" for a in BRIGADE_SERVED_IDS])
     conn.execute(
-        sa.text(_merge_sql(_integration_where())),
+        sa.text(_stamp_sql(f"{_integration_where()} AND keycloak_sub NOT IN ({served})", ["kind"])),
         {"patch": json.dumps({"kind": "integration"})},
     )
     conn.execute(
-        sa.text(_merge_sql(_ids_where(GUEST_AGENT_IDS))),
+        sa.text(
+            _stamp_sql(f"{_ids_where(GUEST_AGENT_IDS)} AND keycloak_sub NOT IN ({served})", ["kind"])
+        ),
         {"patch": json.dumps({"kind": "guest_agent"})},
     )
 
@@ -266,54 +320,16 @@ def downgrade() -> None:
     conn = op.get_bind()
     op.execute(sa.text(f"DROP INDEX IF EXISTS {INDEX_NAME}"))
 
-    # backend: exactly the rows upgrade changed go back to what they were.
-    conn.execute(
-        sa.text(
-            "UPDATE participants SET metadata = "
-            f"CASE WHEN metadata -> '{BACKEND_MARKER}' = 'null'::jsonb "
-            f"THEN (metadata - 'backend') - '{BACKEND_MARKER}' "
-            f"ELSE jsonb_set(metadata - '{BACKEND_MARKER}', '{{backend}}', metadata -> '{BACKEND_MARKER}') END "
-            f"WHERE metadata ? '{BACKEND_MARKER}'"
-        )
-    )
-    for agent_id in SEAT_OWNERS:
-        conn.execute(
-            sa.text(
-                "UPDATE participants SET metadata = metadata - 'crew' - 'owner' "
-                "WHERE keycloak_sub = :sub AND metadata IS NOT NULL"
-            ),
-            {"sub": f"brigade:{agent_id}"},
-        )
-        role = ROLE_LINES.get(agent_id)
-        if role:
-            # Only the migration's own line comes off; a hand-set one stays.
-            conn.execute(
-                sa.text(
-                    "UPDATE participants SET metadata = metadata - 'role_line' "
-                    "WHERE keycloak_sub = :sub AND metadata ->> 'role_line' = :role"
-                ),
-                {"sub": f"brigade:{agent_id}", "role": role},
-            )
+    # Every key upgrade wrote goes back to what its marker says, on exactly
+    # the rows upgrade marked.
+    for key in MARKED_KEYS:
+        conn.execute(sa.text(_restore_sql(key)))
     conn.execute(
         sa.text(
             "UPDATE participants SET display_name = 'Claude Code', "
             f"metadata = metadata - '{RENAME_MARKER}' "
             "WHERE keycloak_sub = 'brigade:claude-code' AND display_name = 'Rook' "
             f"AND metadata ->> '{RENAME_MARKER}' = 'Rook'"
-        )
-    )
-    conn.execute(
-        sa.text(
-            "UPDATE participants SET metadata = metadata - 'kind' "
-            "WHERE metadata IS NOT NULL AND metadata ->> 'kind' = 'integration' AND "
-            + _integration_where()
-        )
-    )
-    conn.execute(
-        sa.text(
-            "UPDATE participants SET metadata = metadata - 'kind' "
-            "WHERE metadata IS NOT NULL AND metadata ->> 'kind' = 'guest_agent' AND "
-            + _ids_where(GUEST_AGENT_IDS)
         )
     )
     # Last: a row that had no metadata before upgrade has none again, unless

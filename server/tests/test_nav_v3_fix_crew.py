@@ -256,7 +256,7 @@ class P1_5_DataMigration024(TestCase):
         seat_calls = [(sql, params) for sql, params in calls
                       if "brigade:" in str(params.get("sub", "")) and '"owner"' in params.get("patch", "")]
         self.assertEqual(len(seat_calls), len(mod.SEAT_OWNERS))
-        self.assertEqual(len(mod.SEAT_OWNERS), 32)   # Persephone's list, measured 2026-09-29
+        self.assertEqual(len(mod.SEAT_OWNERS), 31)   # Persephone's list (2026-09-29) without perry (REVIEW-4 P2-7)
         crew_subs = {p["sub"] for _s, p in seat_calls if '"crew": true' in p["patch"]}
         self.assertEqual(crew_subs, {f"brigade:{a}" for a in mod.CREW_SEATS})
         for sql, params in seat_calls:
@@ -281,10 +281,13 @@ class P1_5_DataMigration024(TestCase):
         with patch.object(mod.op, "get_bind", return_value=conn), patch.object(mod.op, "execute"):
             mod.downgrade()
         joined = "\n".join(str(c.args[0]) for c in conn.execute.call_args_list).lower()
-        self.assertIn("metadata - 'crew' - 'owner'", joined)
-        self.assertIn("metadata - 'role_line'", joined)
-        self.assertIn("metadata ->> 'role_line' = :role", joined)  # only the migration's own line
-        self.assertIn("metadata - 'kind'", joined)
+        # REVIEW-4 P2-7: each key goes back to what its marker says, on
+        # exactly the rows upgrade marked — so a hand-set value is restored,
+        # never removed.
+        for key in ("owner", "crew", "backend", "kind", "role_line"):
+            self.assertIn(f"where metadata ? '{key}_before_024'", joined)
+            self.assertIn(f"(metadata - '{key}') - '{key}_before_024'", joined)
+        self.assertNotIn("metadata - 'crew' - 'owner'", joined)
         self.assertIn("display_name = 'rook'", joined)
         self.assertIn("display_name_by_024", joined)               # only the marked rename
 
