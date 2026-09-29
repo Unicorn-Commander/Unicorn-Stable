@@ -1,3 +1,4 @@
+import { registerServiceWorker } from "@/lib/serviceWorker";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -102,8 +103,13 @@ createRoot(rootElement).render(
 
 // PWA: register the service worker (app-shell offline cache + a push handler
 // wired for later). Best-effort — a failure never affects the running app.
+// The URL names the build (lib/serviceWorker): each release is a new cache
+// key at the edge, and the one registration at "/" is updated to it.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    void registerServiceWorker(
+      navigator.serviceWorker,
+      import.meta.env.VITE_GIT_SHA as string | undefined,
+    );
   });
 }

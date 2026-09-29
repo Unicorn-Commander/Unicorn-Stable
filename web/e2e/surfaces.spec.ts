@@ -1139,6 +1139,34 @@ test.describe("Home v4", () => {
   });
 });
 
+test.describe("Service worker", () => {
+  test("is registered at a URL naming the build, and updates the old registration in place", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const registrations = () =>
+      page.evaluate(async () =>
+        (await navigator.serviceWorker.getRegistrations()).map((registration) => ({
+          scope: new URL(registration.scope).pathname,
+          script: (registration.active ?? registration.waiting ?? registration.installing)?.scriptURL ?? "",
+        })),
+      );
+    // A client from before: /sw.js at the root scope, registered from a page
+    // the app does not run on.
+    await page.goto("/silent-check-sso.html");
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+    });
+    expect(await registrations()).toEqual([{ scope: "/", script: expect.stringMatching(/\/sw\.js$/) }]);
+    // The app registers its build's URL: the same registration, a new script.
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect
+      .poll(registrations, { timeout: 30_000 })
+      .toEqual([{ scope: "/", script: expect.stringMatching(/\/sw\.js\?v=dev$/) }]);
+  });
+});
+
 test.describe("Accessibility sweep (report only)", () => {
   for (const surface of SURFACES) {
     test(`a11y:${surface.name}`, async ({ page }) => {
