@@ -1,3 +1,4 @@
+import { lastLinePreview } from "@/lib/systemLines";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -779,7 +780,7 @@ export function HomeDashboard({
                   )}
                 </span>
                 <span className="block truncate text-xs text-slate-500">
-                  {room.last_message ? previewText(room.last_message.content) : "No messages yet"}
+                  {room.last_message ? previewText(lastLinePreview(room.last_message).text) : "No messages yet"}
                 </span>
               </span>
               <span className="shrink-0 text-[11px] text-slate-500">

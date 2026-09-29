@@ -1,3 +1,4 @@
+import { lastLinePreview } from "@/lib/systemLines";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -29,7 +30,7 @@ import {
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Room } from "@/services/api";
+import { api, type Message, type Room } from "@/services/api";
 import { ws } from "@/services/websocket";
 import {
   isMuted,
@@ -169,6 +170,29 @@ function DraftPencil() {
       aria-label="Draft saved"
       className="ml-1 h-3 w-3 shrink-0 text-slate-500"
     />
+  );
+}
+
+/** "Name: line" for a message; a system line is its own sentence, unnamed. */
+function LastLine({
+  message,
+  nameClassName,
+  format,
+}: {
+  message: Message;
+  nameClassName: string;
+  format: (content: string) => string;
+}) {
+  const line = lastLinePreview(message);
+  return (
+    <>
+      {line.sender && (
+        <>
+          <span className={nameClassName}>{line.sender}:</span>{" "}
+        </>
+      )}
+      {format(line.text)}
+    </>
   );
 }
 
@@ -1098,7 +1122,7 @@ export function RoomList() {
               </div>
               {room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
-                  {formatLastMessage(room.last_message.content)}
+                  {formatLastMessage(lastLinePreview(room.last_message).text)}
                 </p>
               )}
             </div>
@@ -1220,10 +1244,7 @@ export function RoomList() {
               <span className="truncate text-[13px]">
                 {room.last_message ? (
                   <>
-                    <span className="font-medium">
-                      {room.last_message.sender_name}:
-                    </span>{" "}
-                    {formatLastMessage(room.last_message.content)}
+                    <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                   </>
                 ) : (
                   <span className="italic text-slate-500">
@@ -1649,10 +1670,7 @@ export function RoomList() {
               </div>
               {room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
-                  <span className="font-medium text-slate-500">
-                    {room.last_message.sender_name}:
-                  </span>{" "}
-                  {formatLastMessage(room.last_message.content)}
+                  <LastLine message={room.last_message} nameClassName="font-medium text-slate-500" format={formatLastMessage} />
                 </p>
               )}
             </div>
@@ -2158,10 +2176,7 @@ export function RoomList() {
                     <span className="min-w-0 flex-1 truncate text-[13px]">
                       {room.last_message ? (
                         <>
-                          <span className="font-medium">
-                            {room.last_message.sender_name}:
-                          </span>{" "}
-                          {formatLastMessage(room.last_message.content)}
+                          <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                         </>
                       ) : (
                         <span className="italic text-slate-500">

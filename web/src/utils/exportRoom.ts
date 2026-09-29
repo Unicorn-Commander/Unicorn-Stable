@@ -6,6 +6,7 @@
  * download. Purely client-side — no backend endpoint needed.
  */
 import { api, type Room, type Message } from "@/services/api";
+import { isSystemLine, systemLineText } from "@/lib/systemLines";
 
 const MAX_PAGES = 40; // safety cap: ~2000 messages at 50/page
 const PAGE_SIZE = 50;
@@ -52,8 +53,11 @@ function fmtTime(iso: string): string {
   });
 }
 
-function toMarkdown(room: Room, messages: Message[]): string {
+/** Exported for its test. */
+export function toMarkdown(room: Room, messages: Message[]): string {
   const title = room.name || room.display_name || "Conversation";
+  // Names for the ids a system line carries, as far as the room row has them.
+  const members = Array.isArray(room.members) ? room.members : [];
   const lines: string[] = [];
   lines.push(`# ${title}`);
   lines.push("");
@@ -68,8 +72,9 @@ function toMarkdown(room: Room, messages: Message[]): string {
 
   let lastDay = "";
   for (const m of messages) {
-    if (m.content_type === "system") {
-      lines.push(`> _${(m.content || "").trim()}_`);
+    if (isSystemLine(m)) {
+      // The server's words name nobody; the sentence comes from metadata.
+      lines.push(`> _${(systemLineText(m, members) ?? m.content ?? "").trim()}_`);
       lines.push("");
       continue;
     }

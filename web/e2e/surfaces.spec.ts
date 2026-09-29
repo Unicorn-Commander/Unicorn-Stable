@@ -1361,10 +1361,53 @@ async function stubNavV3World(page: Page): Promise<NavV3World> {
     const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
     // The existing thread was started from one of Persephone's lines: its
     // first entry is the seed, under its true author.
+    // #ops carries the server-worded system lines: the text names nobody,
+    // the starter / reason / title ride in metadata.
+    const systemLine = (
+      id: string,
+      at: string,
+      content: string,
+      metadata: Record<string, unknown>,
+      sender: { id: string | null; name: string | null; type: string } = { id: null, name: null, type: "system" },
+    ) => ({
+      id,
+      room_id: "room-ops",
+      sender_id: sender.id,
+      sender_name: sender.name,
+      sender_type: sender.type,
+      content,
+      content_type: "system",
+      created_at: at,
+      updated_at: at,
+      is_edited: false,
+      is_deleted: false,
+      reply_count: 0,
+      metadata,
+    });
+    const opsLines = [
+      systemLine(
+        "msg-ops-thread",
+        "2026-09-28T09:50:00Z",
+        "Channel thread started",
+        { kind: "thread_started", thread_room_id: "room-ops-t-1", thread_title: "Launch checklist", created_by: "p-aaron", seed_message_id: null },
+        { id: "p-aaron", name: "Aaron Stransky", type: "human" },
+      ),
+      systemLine("msg-ops-rec-1", "2026-09-28T09:52:00Z", "Audio recording started", {
+        kind: "recording", event: "started", recording_kind: "audio", recording_id: "rec-1", started_by: "p-aaron", reason: "user",
+      }),
+      systemLine("msg-ops-rec-2", "2026-09-28T09:58:00Z", "Audio recording stopped", {
+        kind: "recording", event: "stopped", recording_kind: "audio", recording_id: "rec-1", started_by: "p-aaron", reason: "room_idle",
+      }),
+      systemLine("msg-ops-rec-3", "2026-09-28T09:59:00Z", "Recording failed", {
+        kind: "recording", event: "failed", recording_id: "rec-2", egress_id: "EG_1", reason: "egress crashed: no track",
+      }),
+    ];
     const messages =
       parts[3] === existingThread.id
         ? [threadSeedMessageRaw(existingThread.id as string, PERSEPHONE_HUB_ID)]
-        : [];
+        : parts[3] === "room-ops"
+          ? [...opsLines].reverse()
+          : [];
     return route.fulfill(json({ messages, cursor: null, has_more: false }));
   });
   const membersFor = (roomId: string) =>
@@ -1744,11 +1787,28 @@ test.describe("Crew-first nav (v3)", () => {
       // A thread's seed line says where it came from, under its true author.
       await page.goto(`/c/${PERSEPHONE_HUB_ID}-t-00000000`);
       await waitForAppReady(page);
+      // The list paints only once its pin settled; capture after that.
+      await page.locator('[data-testid="message-list"][data-pin-settled="true"]').waitFor({ timeout: 30_000 });
       const seedLine = page.getByTestId("thread-seed");
       await expect(seedLine).toBeVisible();
       await expect(seedLine).toContainText("Started from Persephone’s message");
       await expect(seedLine).toContainText("Panel v2 is on the wall");
       await page.screenshot({ path: `test-results/NavV3-Thread-seed-${tag}.png`, fullPage: false });
+
+      // Server-worded system lines name nobody in their text; the web puts
+      // the starter, the reason and the thread's title back from metadata.
+      await page.goto("/c/room-ops");
+      await waitForAppReady(page);
+      await page.locator('[data-testid="message-list"][data-pin-settled="true"]').waitFor({ timeout: 30_000 });
+      const lines = page.getByTestId("system-line");
+      await expect(lines).toHaveCount(4);
+      await expect(lines.nth(0)).toHaveText("Aaron Stransky started a thread: Launch checklist");
+      await expect(lines.nth(1)).toHaveText("Audio recording started · by Aaron Stransky");
+      await expect(lines.nth(2)).toHaveText(
+        "Audio recording stopped · the room went idle · started by Aaron Stransky",
+      );
+      await expect(lines.nth(3)).toHaveText("Recording failed · egress crashed: no track");
+      await page.screenshot({ path: `test-results/NavV3-System-lines-${tag}.png`, fullPage: false });
       await assertPageHealth(page, viewport);
     });
   }
