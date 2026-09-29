@@ -411,12 +411,22 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
       <header className="flex shrink-0 items-center gap-3 border-b border-white/[0.06] px-4 py-3">
         <StableMark className="h-6 w-6 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h1 className="truncate text-sm font-semibold text-slate-100">
+          {/* Wraps: on a phone the REC pill takes the next line and may
+              shorten. Beside the title it pushed the room's name out of the
+              header and ran under Leave. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h1
+              className="min-w-0 max-w-full truncate text-sm font-semibold text-slate-100"
+              data-testid="guest-room-name"
+            >
               {session.roomName || "Room"}
             </h1>
             <GuestBadge />
-            <RecPillLive roomId={session.roomId} members={members} />
+            <RecPillLive
+              roomId={session.roomId}
+              members={members}
+              className="!max-w-full !shrink"
+            />
           </div>
           <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
             <span
@@ -464,8 +474,15 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
         </p>
       )}
 
+      {/* On a phone the stage holds a fixed share of the height and the
+          roster and chat take the rest, scrolling inside it. As two flexible
+          boxes the chat's own content set its height, so a transcript of a
+          dozen lines squeezed the video to nothing and drew over it. */}
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 lg:flex-row">
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div
+          className="flex h-[34dvh] min-h-56 shrink-0 flex-col lg:h-auto lg:min-h-0 lg:flex-1"
+          data-testid="guest-stage"
+        >
           <GuestVideoStage
             session={session}
             members={members}
@@ -473,10 +490,10 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
           />
         </div>
 
-        <aside className="flex min-h-0 w-full flex-col gap-3 lg:w-80 lg:shrink-0">
+        <aside className="flex min-h-0 w-full flex-1 flex-col gap-3 overflow-y-auto lg:w-80 lg:flex-none lg:overflow-visible">
           <section
             className={clsx(
-              "flex flex-col rounded-xl border border-white/[0.06] bg-slate-950/40 p-2",
+              "shrink-0 flex-col rounded-xl border border-white/[0.06] bg-slate-950/40 p-2",
               showRoster ? "flex" : "hidden lg:flex",
             )}
             data-testid="guest-roster"
@@ -500,7 +517,10 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
             </ul>
           </section>
 
-          <section className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/[0.06] bg-slate-950/40">
+          <section
+            className="flex min-h-[9.5rem] flex-1 flex-col rounded-xl border border-white/[0.06] bg-slate-950/40 lg:min-h-0"
+            data-testid="guest-chat"
+          >
             <h2 className="shrink-0 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               Chat
             </h2>
@@ -508,7 +528,7 @@ export function GuestRoom({ session, onEnded, onLeave }: GuestRoomProps) {
               ref={listRef}
               role="log"
               aria-live="polite"
-              className="min-h-32 flex-1 overflow-y-auto pb-2"
+              className="min-h-16 flex-1 overflow-y-auto pb-2 lg:min-h-32"
             >
               {visible.length === 0 ? (
                 <li className="px-3 py-4 text-center text-xs italic text-slate-600">

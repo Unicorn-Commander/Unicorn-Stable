@@ -30,7 +30,10 @@ export function RecPill({
         className,
       )}
     >
-      {label}
+      {/* The ellipsis needs a block of its own: on the flex container the
+          label was cut mid-letter instead. The padding (taken back by the
+          margin) keeps descenders inside the block's clip. */}
+      <span className="-my-1 min-w-0 truncate py-1">{label}</span>
     </span>
   );
 }

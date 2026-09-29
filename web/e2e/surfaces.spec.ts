@@ -2013,6 +2013,22 @@ test.describe("Guest room (a guest's shapes)", () => {
       await expect(lines.nth(3)).toHaveText("Audio recording started · by Aaron Stransky");
       await expect(lines).toHaveCount(4);
 
+      // While it records, the header still says which room this is, and
+      // the pill stays clear of the buttons beside it.
+      const box = async (testId: string) => {
+        const rect = await room.getByTestId(testId).first().boundingBox();
+        expect(rect, testId).not.toBeNull();
+        return rect!;
+      };
+      await expect(room.getByTestId("rec-pill")).toBeVisible();
+      expect((await box("guest-room-name")).width).toBeGreaterThan(60);
+      const pill = await box("rec-pill");
+      const beside =
+        viewport === "mobile"
+          ? await box("guest-roster-toggle")
+          : (await room.getByRole("button", { name: "Leave" }).boundingBox())!;
+      expect(pill.x + pill.width).toBeLessThanOrEqual(beside.x + 1);
+
       const tag = `${viewport}-${testInfo.project.name}`;
       await page.screenshot({ path: `test-results/NavV3-Guest-room-${tag}.png`, fullPage: false });
 
@@ -2031,4 +2047,41 @@ test.describe("Guest room (a guest's shapes)", () => {
       await assertPageHealth(page, viewport);
     });
   }
+
+  test("a phone keeps the stage and the composer under a long transcript", async ({ page }, testInfo) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    const { room } = await joinGuestRoom(
+      page,
+      Array.from({ length: 40 }, (_, i) =>
+        guestLine(
+          `long-${i}`,
+          minutesAgo(60 - i),
+          GUEST_AARON,
+          `Line ${i} of a long transcript, long enough to wrap on a phone.`,
+        ),
+      ),
+    );
+    await expect(room.getByText("Line 39 of a long transcript")).toBeVisible();
+    const tag = `mobile-${testInfo.project.name}`;
+    for (const roster of ["closed", "open"] as const) {
+      if (roster === "open") await page.getByTestId("guest-roster-toggle").click();
+      const stage = (await room.getByTestId("guest-stage").boundingBox())!;
+      const chat = (await room.getByTestId("guest-chat").boundingBox())!;
+      const composer = (await room.getByLabel("Message the room").boundingBox())!;
+      // The video keeps its share of the screen …
+      expect(stage.height, `stage, roster ${roster}`).toBeGreaterThanOrEqual(220);
+      // … nothing is drawn over it …
+      const below = roster === "open" ? (await room.getByTestId("guest-roster").boundingBox())! : chat;
+      expect(below.y, `under the stage, roster ${roster}`).toBeGreaterThanOrEqual(stage.y + stage.height);
+      // … and with the roster closed the message box is on the screen.
+      if (roster === "closed") {
+        expect(composer.y + composer.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height);
+      }
+      await page.screenshot({
+        path: `test-results/NavV3-Guest-long-${roster}-${tag}.png`,
+        fullPage: false,
+      });
+    }
+    await assertPageHealth(page, "mobile");
+  });
 });
