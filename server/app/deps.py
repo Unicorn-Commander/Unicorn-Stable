@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.gateway_auth import (
     GatewayAuthError,
     is_gateway_key,
+    resolve_key_room_scope,
     room_in_key_scope,
     verify_gateway_key,
 )
@@ -391,7 +392,7 @@ async def get_room_controller(
     ).scalar_one_or_none()
     if room is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    if not room_in_key_scope(principal.allowed_rooms, room):
+    if not await resolve_key_room_scope(db, principal.allowed_rooms, principal.agent_id, room):
         logger.info(
             "room_control_denied",
             reason="room_out_of_key_scope",

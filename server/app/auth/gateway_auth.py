@@ -203,9 +203,26 @@ async def verify_gateway_key(raw_key: str, db: AsyncSession) -> GatewayPrincipal
     )
 
 
+#: ``allowed_rooms`` token meaning "any room where this key's agent participant
+#: is a member" (Nav v3, C1). Resolved against ``room_members`` at check time,
+#: so a seat follows its human into every hub, thread and room it is added
+#: to without a key re-scope. Explicit names and ``"*"`` keep their meaning.
+MEMBER_SCOPE = "@member"
+
+
+def key_scope_wants_membership(allowed_rooms: list | None) -> bool:
+    """True when the allowlist carries the ``@member`` token."""
+    return bool(allowed_rooms) and MEMBER_SCOPE in allowed_rooms
+
+
 def room_in_key_scope(allowed_rooms: list | None, room) -> bool:
     """The gateway's allowlist rule, shared with the voice-settings path:
-    ``"*"`` = any room; otherwise either name form must be listed."""
+    ``"*"`` = any room; otherwise either name form must be listed.
+
+    Pure and name-based on purpose. The ``@member`` token needs a database
+    lookup — see :func:`resolve_key_room_scope`, which every scope check
+    should call so the two rules cannot drift.
+    """
     if allowed_rooms is None:
         return False
     return (
@@ -215,12 +232,54 @@ def room_in_key_scope(allowed_rooms: list | None, room) -> bool:
     )
 
 
+async def agent_is_room_member(db: AsyncSession, agent_id: str, room_id) -> bool:
+    """Is the agent participant for ``agent_id`` (``keycloak_sub =
+    brigade:<agent_id>``) a member of ``room_id``?"""
+    from app.models.participant import Participant
+    from app.models.room import RoomMember
+
+    row = (
+        await db.execute(
+            select(RoomMember.id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id == room_id,
+                Participant.keycloak_sub == f"brigade:{agent_id}",
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
+async def resolve_key_room_scope(
+    db: AsyncSession, allowed_rooms: list | None, agent_id: str, room
+) -> bool:
+    """The full key-scope rule: names / ``*`` as :func:`room_in_key_scope`,
+    then ``@member`` against the seat's live membership. ``None`` (the JWT
+    path) is never a key scope."""
+    if allowed_rooms is None:
+        return False
+    if room_in_key_scope(allowed_rooms, room):
+        return True
+    if not key_scope_wants_membership(allowed_rooms):
+        return False
+    room_id = getattr(room, "id", None)
+    if room_id is None:
+        return False
+    return await agent_is_room_member(db, agent_id, room_id)
+
+
 __all__ = [
     "GatewayPrincipal",
     "GatewayAuthError",
     "KEY_PREFIXES",
+    "MEMBER_SCOPE",
     "TALK_CONTROLS_AGENT_ID",
+    "agent_is_room_member",
     "is_gateway_key",
+    "key_scope_wants_membership",
+    "resolve_key_room_scope",
     "room_in_key_scope",
     "validate_gateway_jwt",
     "verify_gateway_key",
