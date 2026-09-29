@@ -42,8 +42,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
 from app.api.messages import (
-    FORGEABLE_METADATA_KEYS,
+    AGENT_IDENTITY_METADATA_KEYS,
     _build_message_service,
+    agent_id_of_identity,
     _msg_to_response,
     send_message,
 )
@@ -674,18 +675,38 @@ async def gateway_post_message(
     return result
 
 
-def scrub_forged_on_read(messages: list[MessageResponse]) -> list[MessageResponse]:
-    """The read half of the forged-metadata defense: a line whose sender is
-    NOT an agent never reaches a seat wearing agent-only metadata
-    (``agent_id``, ``on_behalf_of``, ``gateway``, ``via``) — including rows
-    stored before the write-side scrub existed. Agent lines are untouched."""
-    for message in messages:
-        if getattr(message, "sender_type", None) == "agent":
-            continue
-        meta = getattr(message, "metadata", None)
-        if isinstance(meta, dict) and FORGEABLE_METADATA_KEYS & set(meta):
-            message.metadata = {k: v for k, v in meta.items() if k not in FORGEABLE_METADATA_KEYS}
-    return messages
+def _sender_agent_id(sender: Any) -> str | None:
+    """The agent id a stored line's SENDER may speak as — the same rule the
+    write side binds a principal to (``agent_id_of_identity``)."""
+    if sender is None:
+        return None
+    return agent_id_of_identity(getattr(sender, "keycloak_sub", None), getattr(sender, "username", None))
+
+
+def scrub_identity_on_read(pairs: list[tuple[Any, MessageResponse]]) -> list[MessageResponse]:
+    """What a seat reads never carries a borrowed identity (covers rows
+    stored before the public boundary existed):
+
+    * a line whose sender is NOT an agent loses the identity keys
+      (``agent_id``, ``on_behalf_of``, ``gateway``, ``brigade_agent_id``);
+    * an agent's line keeps ``agent_id`` only when it is the sender's own.
+
+    Provenance is untouched: a spoken line keeps ``via: "voice"`` — the
+    runner answers a by-name spoken address only when it sees it."""
+    out: list[MessageResponse] = []
+    for message, response in pairs:
+        meta = getattr(response, "metadata", None)
+        if isinstance(meta, dict) and meta:
+            if getattr(response, "sender_type", None) == "agent":
+                claimed = meta.get("agent_id")
+                if claimed is not None and claimed != _sender_agent_id(getattr(message, "sender", None)):
+                    response.metadata = {k: v for k, v in meta.items() if k != "agent_id"}
+            elif AGENT_IDENTITY_METADATA_KEYS & set(meta):
+                response.metadata = {
+                    k: v for k, v in meta.items() if k not in AGENT_IDENTITY_METADATA_KEYS
+                }
+        out.append(response)
+    return out
 
 
 @router.get("/rooms/{room}/messages", response_model=MessageListResponse)
@@ -736,8 +757,11 @@ async def gateway_get_messages(
 
     svc = _build_message_service(db, livekit)
     result = await svc.get_messages(room_id=room_obj.id, cursor=cursor, limit=limit)
-    messages = scrub_forged_on_read(
-        [_msg_to_response(item["message"], item["reply_count"]) for item in result["messages"]]
+    messages = scrub_identity_on_read(
+        [
+            (item["message"], _msg_to_response(item["message"], item["reply_count"]))
+            for item in result["messages"]
+        ]
     )
     # Classify AFTER the page is read (P2-1): a line committed between the
     # two would otherwise ride out under a class judged before it existed.

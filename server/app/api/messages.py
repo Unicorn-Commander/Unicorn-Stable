@@ -91,35 +91,106 @@ async def list_activity_events(
     ) for e, m, room_name, actor_name in rows]
 
 
-#: Message-metadata keys only the GATEWAY may set: they say "an agent wrote
-#: this" (``agent_id``, ``gateway``), on whose behalf (``on_behalf_of``) and
-#: through what (``via``). A human or guest body that carries them is
-#: forging an agent line; they are dropped before storage so neither the
-#: web nor a runner's poll ever sees a human's text wearing a seat's id.
-FORGEABLE_METADATA_KEYS: frozenset[str] = frozenset({"agent_id", "on_behalf_of", "gateway", "via"})
+#: The metadata keys the WEB client sends when it creates a message (measured
+#: in web/src, 2026-09-29): ``attachments`` (hooks/useChat.ts), the composer's
+#: slash commands ``research`` / ``facilitate`` / ``council`` / ``poll``
+#: (components/Room/MessageInput.tsx), and ``client_msg_id`` (also a body
+#: field; the server stamps it). The guest client sends none. A human or
+#: guest post keeps EXACTLY these — an allowlist, because every other key is
+#: either identity (``agent_id``, ``on_behalf_of``, ``gateway``,
+#: ``brigade_agent_id``), provenance the server stamps itself (``via``,
+#: ``kind``, ``voice``, ``source``, ``seed_sender_id``) or unknown.
+CLIENT_MESSAGE_METADATA_KEYS: frozenset[str] = frozenset(
+    {"attachments", "client_msg_id", "research", "facilitate", "council", "poll"}
+)
+
+#: Identity keys a NON-AGENT line never shows on the gateway read — covers
+#: rows stored before the allowlist existed. ``via`` is provenance, not
+#: identity: a spoken line keeps ``via: "voice"`` all the way to the seat.
+AGENT_IDENTITY_METADATA_KEYS: frozenset[str] = frozenset(
+    {"agent_id", "on_behalf_of", "gateway", "brigade_agent_id"}
+)
+
+#: content_type values a human or guest may never claim: a client-made
+#: "system" line would reach a seat as ``[system] text`` with no author.
+RESERVED_CONTENT_TYPES: frozenset[str] = frozenset({"system"})
 
 
 def _principal_is_agent(user: dict[str, Any] | None) -> bool:
     """The gateway's derived identity (``sub = brigade:<id>``) or an
-    agent-typed principal — the only callers that may stamp agent metadata."""
+    agent-typed principal."""
     user = user or {}
     return user.get("participant_type") == "agent" or str(user.get("sub") or "").startswith("brigade:")
 
 
-def scrub_forgeable_metadata(metadata: dict[str, Any] | None, user: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Defense in depth for the runner (Nav v3): strip agent-only keys from a
-    HUMAN or GUEST post; everything else (``client_msg_id``, attachments…)
-    is kept as sent. Agent principals pass through untouched."""
-    if not metadata or _principal_is_agent(user):
-        return metadata
-    cleaned = {k: v for k, v in metadata.items() if k not in FORGEABLE_METADATA_KEYS}
+def agent_id_of_identity(sub: Any, username: Any) -> str | None:
+    """The one agent id an agent identity may speak as: the ``brigade:<id>``
+    sub, else the ``agent-<id>`` username, else the username itself. Used on
+    write (the principal) and on the seat's read (the stored sender), so the
+    two always agree."""
+    sub = str(sub or "")
+    if sub.startswith("brigade:"):
+        return sub[len("brigade:") :] or None
+    username = str(username or "")
+    if username.startswith("agent-"):
+        return username[len("agent-") :] or None
+    return username or None
+
+
+def principal_agent_id(user: dict[str, Any] | None) -> str | None:
+    """The agent id an agent principal may speak as: its own, from the
+    credential — never from a request body (P2-5)."""
+    user = user or {}
+    return agent_id_of_identity(user.get("sub"), user.get("username"))
+
+
+def sanitize_client_message(body: MessageCreate, user: dict[str, Any] | None) -> MessageCreate:
+    """THE public client boundary for message create (Nav v3, REVIEW-3 P1-1).
+
+    * A HUMAN or GUEST post keeps only :data:`CLIENT_MESSAGE_METADATA_KEYS`
+      and may not claim a reserved ``content_type`` (422).
+    * An AGENT principal keeps its metadata, but ``agent_id`` is bound to the
+      principal: whatever the body says is replaced by the caller's own id.
+
+    Server paths never come through here — the internal voice route, the
+    relay, recording notices and the gateway stamp their own metadata and
+    call :func:`send_message` directly, so ``via: "voice"`` survives to
+    storage and to the seat's poll."""
+    metadata = body.metadata
+    if _principal_is_agent(user):
+        if metadata and "agent_id" in metadata:
+            own = principal_agent_id(user)
+            bound = {k: v for k, v in metadata.items() if k != "agent_id"}
+            if own:
+                bound["agent_id"] = own
+            return body.model_copy(update={"metadata": bound})
+        return body
+    if body.content_type in RESERVED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"content_type '{body.content_type}' is reserved for the server",
+        )
+    if not metadata:
+        return body
+    cleaned = {k: v for k, v in metadata.items() if k in CLIENT_MESSAGE_METADATA_KEYS}
     if len(cleaned) != len(metadata):
         logger.info(
-            "message_metadata_scrubbed",
-            dropped=sorted(set(metadata) - set(cleaned)),
+            "message_metadata_dropped_at_boundary",
+            dropped=sorted(str(k) for k in set(metadata) - set(cleaned)),
             participant_id=str((user or {}).get("participant_id")),
         )
-    return cleaned
+    return body.model_copy(update={"metadata": cleaned})
+
+
+async def client_message_body(
+    body: MessageCreate,
+    user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
+) -> MessageCreate:
+    """FastAPI dependency: the request body of ``POST /rooms/{id}/messages``
+    after :func:`sanitize_client_message`. Only an HTTP request resolves it;
+    a direct call to :func:`send_message` (gateway, internal routes) does
+    not, which is the point."""
+    return sanitize_client_message(body, user)
 
 
 def _build_message_service(
@@ -284,7 +355,7 @@ async def _find_recent_send_by_client_msg_id(
 )
 async def send_message(
     room_id: uuid.UUID,
-    body: MessageCreate,
+    body: Annotated[MessageCreate, Depends(client_message_body)],
     user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
@@ -353,7 +424,11 @@ async def send_message(
     # metadata so (a) this lookup can find it and (b) the ws echo carries it
     # back to the sender as a delivery acknowledgement.
     client_msg_id = (body.client_msg_id or "").strip() or None
-    metadata = scrub_forgeable_metadata(body.metadata, user)
+    # NOT sanitized here: this function is shared with the server's own
+    # paths (internal voice, relay, gateway), which stamp metadata
+    # themselves. Client input is sanitized at the HTTP boundary by the
+    # ``client_message_body`` dependency above.
+    metadata = body.metadata
     if client_msg_id:
         existing = await _find_recent_send_by_client_msg_id(
             db,

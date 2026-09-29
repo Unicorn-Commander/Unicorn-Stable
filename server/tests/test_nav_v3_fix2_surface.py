@@ -229,20 +229,26 @@ class GatewayRowsLastMessageAndOwnerRule(IsolatedAsyncioTestCase):
 
 
 class HumanPostsCannotForgeAgentMetadata(IsolatedAsyncioTestCase):
-    def test_scrub_rule(self) -> None:
-        from app.api.messages import scrub_forgeable_metadata
+    def test_boundary_rule(self) -> None:
+        from app.api.messages import sanitize_client_message
+        from app.schemas.message import MessageCreate
 
-        human = {"participant_id": uuid.uuid4(), "participant_type": "human", "sub": "kc-mallory"}
-        guest = {"participant_id": uuid.uuid4(), "participant_type": "guest", "sub": "guest:abc"}
-        gateway = {"participant_id": uuid.uuid4(), "sub": "brigade:persephone"}
-        worker = {"participant_id": uuid.uuid4(), "participant_type": "agent", "sub": "svc"}
+        human = {"participant_id": uuid.uuid4(), "participant_type": "human", "sub": "kc-mallory", "username": "mallory"}
+        guest = {"participant_id": uuid.uuid4(), "participant_type": "guest", "sub": "guest:abc", "username": "guest-abc", "is_guest": True}
+        gateway = {"participant_id": uuid.uuid4(), "sub": "brigade:persephone", "username": "agent-persephone"}
+        worker = {"participant_id": uuid.uuid4(), "participant_type": "agent", "sub": "svc", "username": "agent-triage"}
         forged = {"agent_id": "persephone", "gateway": True, "on_behalf_of": "kc-aaron", "via": "mcp",
                   "client_msg_id": "c1", "attachments": [{"id": "a1"}]}
+
+        def clean(user, metadata=forged):
+            body = MessageCreate(content="x", metadata=None if metadata is None else dict(metadata))
+            return sanitize_client_message(body, user).metadata
+
         for user in (human, guest):
-            self.assertEqual(scrub_forgeable_metadata(dict(forged), user), {"client_msg_id": "c1", "attachments": [{"id": "a1"}]})
-        for user in (gateway, worker):
-            self.assertEqual(scrub_forgeable_metadata(dict(forged), user), forged)
-        self.assertIsNone(scrub_forgeable_metadata(None, human))
+            self.assertEqual(clean(user), {"client_msg_id": "c1", "attachments": [{"id": "a1"}]})
+        self.assertEqual(clean(gateway), forged)                                  # its own id: untouched
+        self.assertEqual(clean(worker), {**forged, "agent_id": "triage"})         # never another agent's (P2-5)
+        self.assertIsNone(clean(human, None))
 
     async def test_a_forged_agent_id_never_reaches_storage(self) -> None:
         from app.api import messages as M
@@ -252,40 +258,43 @@ class HumanPostsCannotForgeAgentMetadata(IsolatedAsyncioTestCase):
                                  metadata_={}, parent_id=None, is_edited=False, edited_at=None, is_deleted=False, created_at=NOW, sender=None)
         svc = SimpleNamespace(send_message=AsyncMock(return_value=stored))
         user = {"participant_id": stored.sender_id, "participant_type": "human", "sub": "kc-mallory", "username": "mallory", "display_name": "Mallory", "email": None}
-        body = MessageCreate(content="hi", content_type="text", metadata={"agent_id": "persephone", "gateway": True, "via": "mcp", "client_msg_id": "c9"})
+        raw = MessageCreate(content="hi", content_type="text", metadata={"agent_id": "persephone", "gateway": True, "via": "mcp", "client_msg_id": "c9"})
+        # What FastAPI does for the public route: the body dependency, then the handler.
+        body = await M.client_message_body(raw, user)
+        from app.schemas.message import MessageResponse
+
+        shown = MessageResponse(id=stored.id, room_id=stored.room_id, sender_id=stored.sender_id, sender_type="human",
+                                sender_name="Mallory", content="hi", content_type="text", metadata={}, created_at=NOW)
         with patch.object(M, "_build_message_service", return_value=svc), \
              patch.object(M, "_find_recent_send_by_client_msg_id", new=AsyncMock(return_value=None)), \
-             patch.object(M, "_msg_to_response", return_value=SimpleNamespace(metadata={})), \
+             patch.object(M, "_msg_to_response", return_value=shown), \
              patch.object(M, "_maybe_dispatch_mention_emails", new=AsyncMock()), \
-             patch("app.services.push_service.dispatch_message_pushes", new=AsyncMock(), create=True), \
-             patch.object(M, "_ws_broadcast_room", new=AsyncMock(), create=True):
-            try:
-                await M.send_message(room_id=stored.room_id, body=body, user=user, db=AsyncMock(), livekit=AsyncMock(), request=None)
-            except Exception:
-                pass  # side effects after the store are not under test here
+             patch.object(M, "_ws_broadcast_room", new=AsyncMock()), \
+             patch("app.services.push_service.dispatch_message_pushes", new=AsyncMock(), create=True):
+            await M.send_message(room_id=stored.room_id, body=body, user=user, db=AsyncMock(), livekit=AsyncMock(), request=None)
         svc.send_message.assert_awaited_once()
         metadata = svc.send_message.await_args.kwargs["metadata"]
-        self.assertNotIn("agent_id", metadata)
-        self.assertNotIn("gateway", metadata)
-        self.assertNotIn("via", metadata)
-        self.assertEqual(metadata["client_msg_id"], "c9")
+        self.assertEqual(metadata, {"client_msg_id": "c9"})
 
     async def test_a_forged_row_already_stored_never_reaches_the_gateway_read(self) -> None:
         from app.schemas.message import MessageResponse
 
-        def response(sender_type, metadata):
-            return MessageResponse(
+        def line(sender, sender_type, metadata):
+            response = MessageResponse(
                 id=uuid.uuid4(), room_id=uuid.uuid4(), sender_id=uuid.uuid4(), sender_type=sender_type,
                 sender_name="x", content="hi", content_type="text", metadata=metadata, created_at=NOW,
             )
+            return SimpleNamespace(sender=sender, response=response)
 
         forged = {"agent_id": "persephone", "gateway": True, "on_behalf_of": "kc-aaron", "via": "mcp", "client_msg_id": "c1"}
-        human_line = response("human", dict(forged))
-        guest_line = response("guest", dict(forged))
-        agent_line = response("agent", dict(forged))
+        guest = SimpleNamespace(id=uuid.uuid4(), username="guest-1", keycloak_sub="guest:1", participant_type=ParticipantType.GUEST, metadata_={})
+        human_line = line(_human("mallory"), "human", dict(forged))
+        guest_line = line(guest, "guest", dict(forged))
+        agent_line = line(_seat(), "agent", dict(forged))
+        borrowed = line(_seat("grok"), "agent", dict(forged))        # another agent's id on an agent's line
         room = SimpleNamespace(id=uuid.uuid4(), room_type=HUB, parent_room_id=None, metadata_={})
-        facts = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=1, base_class="shared")
-        items = [{"message": m, "reply_count": 0} for m in (human_line, guest_line, agent_line)]
+        facts = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=1)
+        items = [{"message": m, "reply_count": 0} for m in (human_line, guest_line, agent_line, borrowed)]
         svc = SimpleNamespace(get_messages=AsyncMock(return_value={"messages": items, "cursor": None, "has_more": False}))
         with patch.object(G, "_gateway_rate_limit", new=AsyncMock()), \
              patch.object(G, "_resolve_room", new=AsyncMock(return_value=room)), \
@@ -295,12 +304,14 @@ class HumanPostsCannotForgeAgentMetadata(IsolatedAsyncioTestCase):
              patch.object(G, "_classify_for_seat", new=AsyncMock(return_value=facts)), \
              patch.object(G, "touch_bridge_seen", new=AsyncMock()), \
              patch.object(G, "clear_relay_pending", new=AsyncMock()), \
-             patch.object(G, "_msg_to_response", side_effect=lambda m, _rc: m), \
+             patch.object(G, "_msg_to_response", side_effect=lambda m, _rc: m.response), \
              patch.object(G, "_build_message_service", return_value=svc):
             out = await G.gateway_get_messages(room="hub", principal=SimpleNamespace(agent_id="persephone"), db=AsyncMock(), livekit=AsyncMock(), redis=AsyncMock(), cursor=None, limit=50)
-        self.assertEqual(out.messages[0].metadata, {"client_msg_id": "c1"})
-        self.assertEqual(out.messages[1].metadata, {"client_msg_id": "c1"})
+        # `via` is how the line arrived, not who wrote it: it stays.
+        self.assertEqual(out.messages[0].metadata, {"via": "mcp", "client_msg_id": "c1"})
+        self.assertEqual(out.messages[1].metadata, {"via": "mcp", "client_msg_id": "c1"})
         self.assertEqual(out.messages[2].metadata, forged)  # the agent's own line keeps its stamps
+        self.assertEqual(out.messages[3].metadata, {k: v for k, v in forged.items() if k != "agent_id"})
 
 
 # ---------------------------------------------------------------------------
