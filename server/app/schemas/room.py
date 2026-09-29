@@ -302,7 +302,21 @@ class InvitePreviewResponse(BaseModel):
 class ContextSender(BaseModel):
     id: uuid.UUID | None = None
     name: str
+    #: The author's server identity, as data: a consumer never has to map
+    #: ids to usernames itself, nor trust ``name`` (a display name, which
+    #: its owner chooses). Both are null for a line with no sender.
+    username: str | None = None
+    participant_type: str | None = None  # human | agent | guest
     kind: str  # human | agent | guest | system
+
+
+class ContextReplyTo(BaseModel):
+    """The author of the line a reply answers, as the server knows them.
+    All null when the server cannot say (the parent or its author is gone)."""
+
+    id: uuid.UUID | None = None
+    username: str | None = None
+    participant_type: str | None = None
 
 
 class ContextEntry(BaseModel):
@@ -314,8 +328,13 @@ class ContextEntry(BaseModel):
     sender: ContextSender
     # message | reply | voice | system
     kind: str
+    #: For a reply: the rendered form, ``↳ reply to <display name>: <text>``
+    #: (kept for consumers that only read ``text``).
     text: str
     parent_id: uuid.UUID | None = None
+    #: Replies only: the reply as it was written, and whom it answers.
+    raw_text: str | None = None
+    reply_to: ContextReplyTo | None = None
 
 
 class ContextResponse(BaseModel):
