@@ -1577,8 +1577,35 @@ test.describe("Crew-first nav (v3)", () => {
         await expect(menu.getByTestId("crew-menu-new")).toBeVisible();
         await expect(menu.getByTestId("crew-menu-call")).toBeDisabled();
         await expect(menu.getByTestId("crew-menu-settings")).toBeVisible();
+        // The menu is on top: the rows under it are positioned too, and
+        // were painted over it.
+        const covered = await menu.getByRole("menuitem").evaluateAll((items) =>
+          items
+            .filter((item) => {
+              const box = item.getBoundingClientRect();
+              const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+              return !top || !(item === top || item.contains(top));
+            })
+            .map((item) => item.textContent),
+        );
+        expect(covered).toEqual([]);
+        // Past its fade-in: a frame caught mid-way reads as a see-through menu.
+        await page.screenshot({
+          path: `test-results/NavV3-Crew-menu-${tag}.png`,
+          fullPage: false,
+          animations: "disabled",
+        });
+        // Escape closes it at once, from wherever the focus is.
         await page.keyboard.press("Escape");
         await expect(menu).toHaveCount(0);
+        // So does a press anywhere else on the page — here the empty
+        // stretch of the top bar, outside the sidebar.
+        await rows.nth(0).hover();
+        await rows.nth(0).getByTestId("crew-menu-persephone").click();
+        await expect(menu).toBeVisible();
+        await page.mouse.click(760, 28);
+        await expect(menu).toHaveCount(0);
+        await expect(page.getByTestId("home-dashboard")).toBeVisible();
         // Density (P1-9): with 12 crew rows present the one list still shows
         // at least six conversations on 1440×900, under sticky filters.
         await expect(page.getByTestId("conversation-list-sticky")).toBeVisible();

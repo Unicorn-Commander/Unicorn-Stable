@@ -133,6 +133,19 @@ describe("CrewSection", () => {
     fireEvent.keyDown(seatMenu, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu", { name: "Options for Persephone" })).toBeNull());
 
+    // … and from the trigger, before focus has moved into the menu.
+    const trigger = screen.getByTestId("crew-menu-persephone");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menu", { name: "Options for Persephone" })).toBeTruthy();
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Options for Persephone" })).toBeNull();
+    // … and a press anywhere outside it, while a press inside keeps it.
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(screen.getByRole("menu", { name: "Options for Persephone" }));
+    expect(screen.getByRole("menu", { name: "Options for Persephone" })).toBeTruthy();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu", { name: "Options for Persephone" })).toBeNull();
+
     fireEvent.click(screen.getByTestId("crew-menu-majik"));
     const houseMenu = screen.getByRole("menu", { name: "Options for Majik Mane" });
     expect((within(houseMenu).getByTestId("crew-menu-call") as HTMLButtonElement).disabled).toBe(false);

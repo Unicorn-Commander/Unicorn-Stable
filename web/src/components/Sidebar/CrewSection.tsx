@@ -305,7 +305,9 @@ export function CrewSection({
     return (
       <li
         key={row.id}
-        className="relative"
+        // Raised while its menu is open: the rows after it are positioned
+        // too, and painted over the menu.
+        className={clsx("relative", menuOpen && "z-30")}
         data-testid="crew-row"
         data-group={member.group}
         data-agent-id={member.agent_id}
@@ -355,7 +357,9 @@ export function CrewSection({
             (chip || items) && (
               <span
                 className={clsx(
-                  "pointer-events-none absolute top-1/2 -translate-y-1/2 items-center gap-1",
+                  // Centred by the box, not a transform: a transform would
+                  // pen the menu's layer and its click-away inside this span.
+                  "pointer-events-none absolute inset-y-0 items-center gap-1",
                   // Clear of the unread badge, which keeps the row's far end.
                   row.unread > 0 ? "right-9" : "right-1",
                   // display, not opacity: an invisible overlay would still
@@ -525,9 +529,35 @@ function CrewRowMenu({
 }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const closeRef = useRef(onOpenChange);
+  closeRef.current = onOpenChange;
   useMenuKeyboard(open, menuRef, btnRef, () => onOpenChange(false));
+  // Heard on the document while open. The menu's own keys are heard only
+  // once focus has moved into it, a frame after it opens — Escape pressed
+  // from the trigger went nowhere; and the click-away below is a fixed box,
+  // which an ancestor with a backdrop filter pens inside the sidebar.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      closeRef.current(false);
+      btnRef.current?.focus();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const root = rootRef.current;
+      if (root && event.target instanceof Node && root.contains(event.target)) return;
+      closeRef.current(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [open]);
   return (
-    <span className="relative inline-flex">
+    <span ref={rootRef} className="relative inline-flex">
       <button
         ref={btnRef}
         type="button"
