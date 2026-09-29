@@ -39,6 +39,7 @@ from sqlalchemy import cast, delete, func, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
 from app.api.messages import (
@@ -477,11 +478,20 @@ class PatchKeyBody(BaseModel):
     allowed_rooms: list[str] | None = None
     rate_limit_rpm: int | None = Field(default=None, ge=1, le=600)
     can_manage_voice_settings: bool | None = None
+    #: Set (or change) the human who owns this key's seat. Stamped on the
+    #: seat's participant row by merge; the row is created if the seat has
+    #: never posted. The only way to own a seat minted before owners existed.
+    owner: str | list[str] | None = None
 
     @field_validator("allowed_rooms")
     @classmethod
     def _rooms(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else validate_allowed_rooms(value)
+
+    @field_validator("owner")
+    @classmethod
+    def _owner(cls, value: Any) -> str | list[str] | None:
+        return validate_owner(value)
 
 
 SeatEffort = Literal["low", "medium", "high", "max"]
@@ -1556,25 +1566,52 @@ async def mint_gateway_key(
     db.add(row)
     await db.commit()
     await db.refresh(row)
+    key_id, key_prefix = str(row.id), row.key_prefix
+    allowed_rooms, rate_limit_rpm = row.allowed_rooms, row.rate_limit_rpm
+    can_manage = bool(row.can_manage_voice_settings)
+    stored_owner: Any = None
+    owner_stamped = body.owner is None
     if body.owner is not None:
-        await _stamp_seat_owner(db, agent_id, body.owner)
-    logger.info("gateway_key_minted", agent_id=agent_id, key_id=str(row.id), owned=body.owner is not None)
+        # The key is committed and its raw value exists only in this
+        # response: a failed stamp must never cost the caller the key.
+        try:
+            seat = await _stamp_seat_owner(db, agent_id, body.owner)
+            stored_owner = (seat.metadata_ or {}).get("owner")
+            owner_stamped = True
+        except Exception:
+            logger.warning("gateway_key_owner_stamp_failed", agent_id=agent_id, exc_info=True)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    logger.info("gateway_key_minted", agent_id=agent_id, key_id=key_id, owned=stored_owner is not None)
     return {
-        "id": str(row.id),
+        "id": key_id,
         "agent_id": agent_id,
         "key": raw,  # shown ONCE
-        "key_prefix": row.key_prefix,
-        "allowed_rooms": row.allowed_rooms,
-        "rate_limit_rpm": row.rate_limit_rpm,
-        "can_manage_voice_settings": bool(row.can_manage_voice_settings),
-        "owner": body.owner,
+        "key_prefix": key_prefix,
+        "allowed_rooms": allowed_rooms,
+        "rate_limit_rpm": rate_limit_rpm,
+        "can_manage_voice_settings": can_manage,
+        # The owner STORED on the seat's row (an existing owner is kept at
+        # mint; PATCH the key to change it).
+        "owner": stored_owner,
+        "owner_stamped": owner_stamped,
     }
 
 
-async def _stamp_seat_owner(db: AsyncSession, agent_id: str, owner: str | list[str]) -> Participant:
-    """Own the seat at mint (P2-9): create its participant row (backend
-    runner, owner) when it has never posted, else merge ``owner`` in by SQL
-    ``||`` when the row has none. An existing owner is never overwritten."""
+async def _stamp_seat_owner(
+    db: AsyncSession, agent_id: str, owner: str | list[str], *, overwrite: bool = False
+) -> Participant:
+    """Own the seat (P2-9): create its participant row (backend runner,
+    owner) when it has never posted, else merge ``owner`` in by SQL ``||``.
+    At mint an existing owner is kept; ``overwrite`` (PATCH) replaces it.
+
+    ``backend`` on an EXISTING row is never touched here. A row without one
+    is exactly what a Brigade-served agent looks like, and an operator's
+    owner stamp must not silence it (REVIEW-3 P2-6). The seat flips its own
+    row to ``runner`` the first time it announces itself or posts through
+    the gateway — evidence that a runner really serves the id."""
     seat = await _find_seat_participant(db, agent_id)
     if seat is None:
         seat = Participant(
@@ -1596,18 +1633,25 @@ async def _stamp_seat_owner(db: AsyncSession, agent_id: str, owner: str | list[s
         else:
             await db.refresh(seat)
             return seat
-    if not seat_owners(seat):
+    if overwrite or not seat_owners(seat):
+        patch: dict[str, Any] = {"owner": owner}
         await db.execute(
             update(Participant)
             .where(Participant.id == seat.id)
             .values(
                 metadata_=func.coalesce(Participant.metadata_, cast({}, JSONB)).op("||")(
-                    cast({"owner": owner, "backend": "runner"}, JSONB)
+                    cast(patch, JSONB)
                 )
             )
         )
         await db.commit()
-        seat.metadata_ = {**(seat.metadata_ or {}), "owner": owner, "backend": "runner"}
+        merged = {**(seat.metadata_ or {}), **patch}
+        if hasattr(seat, "_sa_instance_state"):
+            # Show the merge on the loaded row without scheduling an ORM
+            # write of the whole column over a concurrent PUT /gateway/me.
+            set_committed_value(seat, "metadata_", merged)
+        else:
+            seat.metadata_ = merged
     return seat
 
 
@@ -1666,8 +1710,7 @@ async def patch_gateway_key(
     if body.can_manage_voice_settings is not None:
         row.can_manage_voice_settings = bool(body.can_manage_voice_settings)
     await db.commit()
-    logger.info("gateway_key_patched", key_id=str(key_id), agent_id=row.agent_id)
-    return {
+    out = {
         "id": str(row.id),
         "agent_id": row.agent_id,
         "key_prefix": row.key_prefix,
@@ -1677,6 +1720,14 @@ async def patch_gateway_key(
         "can_manage_voice_settings": bool(row.can_manage_voice_settings),
         "revoked": False,
     }
+    if body.owner is not None:
+        # The operator's explicit choice: stamped on the seat's row by merge
+        # (the row is created when the seat has never posted). The only way
+        # to own a seat whose key was minted before owners existed.
+        seat = await _stamp_seat_owner(db, out["agent_id"], body.owner, overwrite=True)
+        out["owner"] = (seat.metadata_ or {}).get("owner")
+    logger.info("gateway_key_patched", key_id=str(key_id), agent_id=out["agent_id"], owner_set=body.owner is not None)
+    return out
 
 
 @router.delete("/keys/{key_id}")
