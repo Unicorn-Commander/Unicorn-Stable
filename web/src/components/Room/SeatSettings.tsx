@@ -9,13 +9,7 @@ import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { AGENT_MODES, AGENT_MODE_LABEL, agentModeLabel, type AgentMode } from "@/lib/conversation";
-import {
-  modelLabel,
-  ownerSeatLabel,
-  readRoomSeat,
-  roomClassFloor,
-  SHARED_FLOOR_REASON,
-} from "@/lib/crew";
+import { modelLabel, readRoomSeat, roomClassFloor, SHARED_FLOOR_REASON } from "@/lib/crew";
 import {
   applySeatToRoom,
   effectiveEffort,
@@ -31,6 +25,7 @@ import {
   seatPatchBody,
   seatRefusalKind,
   type SeatMemberMatch,
+  seatOwnerPossessive,
 } from "@/lib/seatSettings";
 
 export interface SeatSettingsProps {
@@ -220,7 +215,7 @@ export function SeatSettings({
   // phones, over the header icons).
   const chipClass =
     "max-w-[16rem] items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium";
-  const ownerName = match.member.owner ? ownerSeatLabel(match.member.owner).replace(/ seat$/, "") : null;
+  const ownerName = seatOwnerPossessive(match.member);
   const face = (
     <Identity
       {...resolveIdentity({
@@ -288,6 +283,17 @@ export function SeatSettings({
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {/* First, above the fold: it changes what every choice below means,
+          and at the foot of a scrolling panel it was cut off on both widths. */}
+      {roomClassFloor(storeRoom?.metadata_ ? storeRoom : room) === "shared" && (
+        <p
+          className="mx-3 mb-1 mt-0.5 shrink-0 rounded-lg border border-stable-gold/30 bg-stable-gold/10 px-2 py-1.5 text-[11px] leading-snug text-stable-gold"
+          data-testid="seat-shared-floor"
+        >
+          <span className="font-semibold">Shared.</span> {SHARED_FLOOR_REASON}
+        </p>
+      )}
 
       <p id={`seat-model-heading-${agentId}`} className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         Model
@@ -416,14 +422,6 @@ export function SeatSettings({
       <p className="px-3 pb-1.5 pt-2 text-[11px] leading-snug text-slate-500">
         Applies from the next reply in this conversation only.
       </p>
-      {roomClassFloor(storeRoom?.metadata_ ? storeRoom : room) === "shared" && (
-        <p
-          className="mx-3 mb-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 text-[11px] leading-snug text-amber-100"
-          data-testid="seat-shared-floor"
-        >
-          <span className="font-semibold">Shared.</span> {SHARED_FLOOR_REASON}
-        </p>
-      )}
     </div>
   );
 

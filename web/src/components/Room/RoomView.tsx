@@ -24,8 +24,8 @@ import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { RoomHeader } from "./RoomHeader";
 import { SeatSettings } from "./SeatSettings";
 import { useCrew } from "@/hooks/useCrew";
-import { findSeatMembers, seatChipLabel, shouldShowModelSwitcher } from "@/lib/seatSettings";
-import { isHubRoom, readRoomSeat, roomClassFloor, SHARED_FLOOR_REASON } from "@/lib/crew";
+import { findSeatMembers, seatMenuEntries, shouldShowModelSwitcher } from "@/lib/seatSettings";
+import { isHubRoom, roomClassFloor, SHARED_FLOOR_REASON } from "@/lib/crew";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
@@ -333,21 +333,12 @@ export function RoomView({ roomId }: RoomViewProps) {
     setSeatRequested(false);
     setSeatOpenFor(first.member.agent_id);
   }, [seatRequested, seatMatches]);
-  // Phones: one More entry per seat of yours, named when there are several.
-  const seatMenus = seatMatches
-    .filter((match) => match.editable)
-    .map((match) => {
-      const label =
-        seatChipLabel(
-          readRoomSeat(roomDetail, match.member.agent_id),
-          match.member.seat_capabilities,
-        ) ?? "seat default";
-      return {
-        key: match.member.agent_id,
-        label: seatMatches.length > 1 ? `${match.member.display_name} · ${label}` : label,
-        onOpen: () => setSeatOpenFor(match.member.agent_id),
-      };
-    });
+  // Phones: one More entry per seat in the room — yours open the sheet, a
+  // partner's is locked and says whose.
+  const seatMenus = seatMenuEntries(roomDetail, seatMatches).map((entry) => ({
+    ...entry,
+    onOpen: entry.locked ? undefined : () => setSeatOpenFor(entry.key),
+  }));
   // The hands chip: once a line from outside your seats was written here the
   // room's floor is "shared" for good, and the header says so with the reason.
   const sharedFloor = seatMatches.length > 0 && roomClassFloor(roomDetail) === "shared";
@@ -356,7 +347,7 @@ export function RoomView({ roomId }: RoomViewProps) {
       ? [
           <span
             key="class-floor"
-            className="hidden shrink-0 items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-100 sm:inline-flex"
+            className="hidden shrink-0 items-center rounded-full border border-stable-gold/30 bg-stable-gold/10 px-2 py-0.5 text-[11px] font-medium text-stable-gold sm:inline-flex"
             title={SHARED_FLOOR_REASON}
             data-testid="room-class-chip"
           >

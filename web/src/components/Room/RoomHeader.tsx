@@ -32,6 +32,7 @@ import {
   UserRound,
   Users,
   Video,
+  Lock,
 } from "lucide-react";
 import { RecordMenu } from "@/components/Call/RecordMenu";
 import { useDirectCall } from "@/hooks/useDirectCall";
@@ -127,7 +128,13 @@ export interface RoomHeaderProps {
    * "Brain · Fable 5.1 · high" entry per seat of yours that opens the same
    * popover.
    */
-  seatMenus?: Array<{ key: string; label: string; onOpen: () => void }>;
+  seatMenus?: Array<{
+    key: string;
+    label: string;
+    /** A partner's seat: a lock and whose it is; it opens nothing. */
+    locked?: boolean;
+    onOpen?: () => void;
+  }>;
 }
 
 export function RoomHeader({
@@ -512,17 +519,36 @@ export function RoomHeader({
                 <ListTreeIcon className="h-4 w-4" />
                 {threadsOpen ? "Hide threads" : "Threads"}
               </MenuItem>
-              {seatMenus.map((entry) => (
-                <MenuItem
-                  key={entry.key}
-                  onClick={() => run(entry.onOpen)}
-                  className="sm:hidden"
-                  data-testid="seat-menu-entry"
-                >
-                  <Cpu className="h-4 w-4 shrink-0" />
-                  <span className="min-w-0 truncate">Brain · {entry.label}</span>
-                </MenuItem>
-              ))}
+              {seatMenus.map((entry) =>
+                entry.locked || !entry.onOpen ? (
+                  // Read, not changed: focusable so the arrow keys and a
+                  // screen reader reach it, and it does nothing.
+                  <div
+                    key={entry.key}
+                    role="menuitem"
+                    aria-disabled="true"
+                    tabIndex={-1}
+                    title="Only the seat's owner can change its brain"
+                    className="focus-ring flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-400 max-md:min-h-11 sm:hidden"
+                    data-testid="seat-menu-entry"
+                    data-editable="false"
+                  >
+                    <Lock className="h-4 w-4 shrink-0" aria-hidden="true" data-testid="seat-menu-lock" />
+                    {/* Wraps: whose seat and what it runs are both the point. */}
+                    <span className="min-w-0 break-words">Brain · {entry.label}</span>
+                  </div>
+                ) : (
+                  <MenuItem
+                    key={entry.key}
+                    onClick={() => run(entry.onOpen!)}
+                    className="sm:hidden"
+                    data-testid="seat-menu-entry"
+                  >
+                    <Cpu className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 break-words">Brain · {entry.label}</span>
+                  </MenuItem>
+                ),
+              )}
               {onNewConversation && (
                 <MenuItem
                   onClick={() => run(onNewConversation)}

@@ -7,6 +7,7 @@ import {
   effectiveModel,
   findSeatMember,
   findSeatMembers,
+  seatMenuEntries,
   isDefaultSeat,
   pickEffort,
   pickModel,
@@ -89,6 +90,35 @@ describe("seat member match", () => {
     ]);
     expect(matches[0]!.participantId).toBe("p-persephone");
     expect(matches[2]!.agentMode).toBe("when_named");
+  });
+
+  it("lists the phone's menu lines: yours named and open, a partner's locked with its owner", () => {
+    const shared = room({
+      type: "channel",
+      counterpart: null,
+      agent_members: [
+        { participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow", agent_mode: "when_named" },
+      ],
+      brigade_agent_ids: ["persephone", "shafen-claude-code"],
+      metadata_: { seats: { persephone: { model: "claude-opus-5-5", effort: "medium" } } },
+    });
+    const matches = findSeatMembers(shared, [PERSEPHONE_MEMBER, PARTNER_SEAT_MEMBER], CREW_FIXTURE);
+    expect(seatMenuEntries(shared, matches)).toEqual([
+      { key: "persephone", label: "Persephone · Opus 5.5 · medium", locked: false },
+      { key: "shafen-claude-code", label: "Shafen’s Flow · Fable 5.1 · high", locked: true },
+    ]);
+    // One seat of yours: the line needs no name.
+    const hub = room();
+    const alone = findSeatMembers(hub, [PERSEPHONE_MEMBER], CREW_FIXTURE);
+    expect(seatMenuEntries(hub, alone)).toEqual([
+      { key: "persephone", label: "Fable 5.1 · high", locked: false },
+    ]);
+    // A partner's seat nothing is known about: no line, as no chip.
+    const silent = matches.map((match) =>
+      match.editable ? match : { ...match, member: { ...match.member, seat_capabilities: null } },
+    );
+    expect(seatMenuEntries(shared, silent).map((entry) => entry.key)).toEqual(["persephone"]);
+    expect(seatMenuEntries(null, [])).toEqual([]);
   });
 
   it("marks a partner's seat read-only and ignores house agents", () => {

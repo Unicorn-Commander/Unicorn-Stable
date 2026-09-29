@@ -1,4 +1,4 @@
-import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
+import { test, expect, type Locator, type Page, type WebSocketRoute } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import {
   CREW_FIXTURE,
@@ -331,6 +331,53 @@ async function clickTestId(page: Page, testId: string) {
     if (await me.count()) await me.first().click();
   }
   await visible().first().click();
+}
+
+/**
+ * WCAG contrast of an element's text against what is painted behind it: its
+ * own background and its ancestors', blended over white. Any CSS colour
+ * syntax is read by painting it (the computed value may be oklab or
+ * color-mix). Background images are not read — this is for chips and notes
+ * on the shell's flat surfaces.
+ */
+async function textContrast(locator: Locator): Promise<number> {
+  return locator.evaluate((el) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+    const paint = (color: string, over: [number, number, number]) => {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgb(${over[0]}, ${over[1]}, ${over[2]})`;
+      ctx.fillRect(0, 0, 1, 1);
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 1, 1);
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+      return [r ?? 0, g ?? 0, b ?? 0] as [number, number, number];
+    };
+    const chain: Element[] = [];
+    for (let node: Element | null = el; node; node = node.parentElement) chain.unshift(node);
+    let behind: [number, number, number] = [255, 255, 255];
+    for (const node of chain) behind = paint(getComputedStyle(node).backgroundColor, behind);
+    const text = paint(getComputedStyle(el).color, behind);
+    const luminance = (rgb: [number, number, number]) => {
+      const [r, g, b] = rgb.map((value) => {
+        const channel = value / 255;
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      }) as [number, number, number];
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const [hi, lo] = [luminance(text), luminance(behind)].sort((a, b) => b - a) as [number, number];
+    return (hi + 0.05) / (lo + 0.05);
+  });
+}
+
+/** The whole of `inner` is inside the seat panel's box — not cut by its scroll. */
+async function expectInsidePanel(page: Page, inner: Locator) {
+  const panel = (await page.getByTestId("seat-settings").boundingBox())!;
+  const box = (await inner.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(panel.y);
+  expect(box.y + box.height).toBeLessThanOrEqual(panel.y + panel.height + 1);
 }
 
 async function assertPageHealth(page: Page, viewportName: string) {
@@ -1765,19 +1812,59 @@ test.describe("Crew-first nav (v3)", () => {
       if (viewport === "desktop") {
         const mine = page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]');
         const theirs = page.locator('[data-testid="seat-chip"][data-agent-id="shafen-claude-code"]');
-        // The floor: a foreign line was written here, and the header says so.
+        // The floor: a foreign line was written here, and the header says so
+        // — in a colour that reads on this theme (it was cream on white).
         await expect(page.getByTestId("room-class-chip")).toHaveText("shared");
         await expect(page.getByTestId("room-class-chip")).toHaveAttribute("title", /outside your seats/);
+        expect(await textContrast(page.getByTestId("room-class-chip"))).toBeGreaterThanOrEqual(4.5);
         await expect(mine).toContainText("Persephone · Fable 5.1 · high");
         await expect(mine).toHaveAttribute("data-editable", "true");
         await expect(theirs).toContainText("Shafen’s Flow · Fable 5.1 · high");
         await expect(theirs).toHaveAttribute("data-editable", "false");
         await expect(theirs.getByTestId("seat-chip-lock")).toBeVisible();
         await page.screenshot({ path: `test-results/NavV3-MixedRoom-${tag}.png`, fullPage: false });
+        // The popover says why the floor is shared, and it reads too.
+        await mine.click();
+        const note = page.getByTestId("seat-shared-floor");
+        await expect(note).toBeVisible();
+        expect(await textContrast(note)).toBeGreaterThanOrEqual(4.5);
+        await expectInsidePanel(page, note);
+        await page.screenshot({
+          path: `test-results/NavV3-SharedFloor-${tag}.png`,
+          fullPage: false,
+          animations: "disabled",
+        });
+        await page.keyboard.press("Escape");
+        await expect(note).toHaveCount(0);
         await page.getByTestId("room-header").getByRole("button", { name: "Members" }).click();
       } else {
+        // The phone's header has no room for chips: More lists both seats,
+        // yours to open, the partner's locked and saying whose.
         await page.getByRole("button", { name: "More room actions" }).click();
-        await expect(page.getByTestId("seat-menu-entry")).toHaveCount(1);
+        const entries = page.getByTestId("seat-menu-entry");
+        await expect(entries).toHaveCount(2);
+        await expect(entries.nth(0)).toHaveText("Brain · Persephone · Fable 5.1 · high");
+        await expect(entries.nth(1)).toHaveText("Brain · Shafen’s Flow · Fable 5.1 · high");
+        await expect(entries.nth(1)).toHaveAttribute("data-editable", "false");
+        await expect(entries.nth(1).getByTestId("seat-menu-lock")).toBeVisible();
+        await page.screenshot({ path: `test-results/NavV3-MixedRoom-${tag}.png`, fullPage: false });
+        // A locked line opens nothing (forced: it is aria-disabled).
+        await entries.nth(1).click({ force: true });
+        await expect(page.getByTestId("seat-shared-floor")).toHaveCount(0);
+        await expect(entries.nth(0)).toBeVisible();
+        await entries.nth(0).click();
+        const note = page.getByTestId("seat-shared-floor");
+        await expect(note).toBeVisible();
+        expect(await textContrast(note)).toBeGreaterThanOrEqual(4.5);
+        await expectInsidePanel(page, note);
+        await page.screenshot({
+          path: `test-results/NavV3-SharedFloor-${tag}.png`,
+          fullPage: false,
+          animations: "disabled",
+        });
+        await page.keyboard.press("Escape");
+        await expect(note).toHaveCount(0);
+        await page.getByRole("button", { name: "More room actions" }).click();
         await page.getByTestId("phone-members").click();
       }
       await expect(page.getByText("Guest", { exact: true }).first()).toBeVisible();

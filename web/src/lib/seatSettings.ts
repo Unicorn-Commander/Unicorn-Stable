@@ -23,6 +23,7 @@ import {
   brainLabel,
   canEditSeat,
   defaultBrainLabel,
+  ownerSeatLabel,
   readRoomSeat,
   readRoomSeats,
   seatIndex,
@@ -184,6 +185,56 @@ export function isDefaultSeat(seat: RoomSeat): boolean {
 /** "Fable 5.1 · high": the override where set, else the seat's default. */
 export function seatChipLabel(seat: RoomSeat, caps: SeatCapabilities | null | undefined): string | null {
   return brainLabel(seat, caps);
+}
+
+/** "Shafen’s" from the seat's owner, or null when nobody is named. */
+export function seatOwnerPossessive(member: Pick<CrewMember, "owner">): string | null {
+  return member.owner ? ownerSeatLabel(member.owner).replace(/ seat$/, "") : null;
+}
+
+export interface SeatMenuEntry {
+  /** The seat's agent id. */
+  key: string;
+  label: string;
+  /** A partner's seat: shown with a lock, opens nothing. */
+  locked: boolean;
+}
+
+/**
+ * The phone's More menu, one line per seat in the room — the header has no
+ * room for chips there. Yours open the sheet and are named once there are
+ * several; a partner's is locked and says whose ("Shafen’s Flow · Fable 5.1
+ * · high"). A partner's seat nothing is known about gets no line, as it
+ * gets no chip.
+ */
+export function seatMenuEntries(
+  room: Room | null | undefined,
+  matches: readonly SeatMemberMatch[],
+): SeatMenuEntry[] {
+  const several = matches.length > 1;
+  return matches.flatMap((match): SeatMenuEntry[] => {
+    const { member } = match;
+    const brain = seatChipLabel(readRoomSeat(room, member.agent_id), member.seat_capabilities);
+    if (match.editable) {
+      const label = brain ?? "seat default";
+      return [
+        {
+          key: member.agent_id,
+          label: several ? `${member.display_name} · ${label}` : label,
+          locked: false,
+        },
+      ];
+    }
+    if (!brain) return [];
+    const owner = seatOwnerPossessive(member);
+    return [
+      {
+        key: member.agent_id,
+        label: `${owner ? `${owner} ` : ""}${member.display_name} · ${brain}`,
+        locked: true,
+      },
+    ];
+  });
 }
 
 /** "Default (Fable 5.1 · high)" — the null state, named. */
