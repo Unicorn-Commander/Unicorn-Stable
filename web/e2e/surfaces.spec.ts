@@ -1004,7 +1004,9 @@ test.describe("Home v4", () => {
   test("the post gets no answer: you are in the conversation with the draft, and sending again reuses its id", async ({ page }) => {
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await stubHomeSummary(page);
-    const world = await stubNavV3World(page, { failPost: true });
+    // Only Home's post goes unanswered: the room's own send would otherwise
+    // spend its automatic retry, and the count below would race it.
+    const world = await stubNavV3World(page, { failPost: true, failPostTimes: 1 });
     await page.goto("/");
     await waitForAppReady(page);
     await sendFromHome(page, "/council is the cap right?");
@@ -1916,6 +1918,8 @@ interface NavV3Options {
   failPost?: boolean;
   /** The status a failing post answers with (a 4xx is a refusal). */
   failPostStatus?: number;
+  /** Only the first N posts fail; the ones after are stored. All fail when unset. */
+  failPostTimes?: number;
   /** Hold every post this long before answering. */
   postDelayMs?: number;
   /** PATCH /rooms/{id} with seats answers 403 "ask the seat's owner". */
@@ -2121,7 +2125,7 @@ async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<N
       world.calls.push(`post:${roomId}`);
       world.posts.push({ roomId, body });
       if (options.postDelayMs) await new Promise((resolve) => setTimeout(resolve, options.postDelayMs));
-      if (options.failPost) {
+      if (options.failPost && (options.failPostTimes === undefined || world.posts.length <= options.failPostTimes)) {
         const status = options.failPostStatus ?? 503;
         return route.fulfill(
           json({ detail: status < 500 ? "You can't post here" : "The room is not taking messages" }, status),
