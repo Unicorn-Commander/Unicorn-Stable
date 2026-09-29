@@ -388,7 +388,9 @@ class MintOwnerAndIdCap(IsolatedAsyncioTestCase):
     def test_body_accepts_owner_and_caps_the_id(self) -> None:
         body = G.MintKeyBody(agent_id="persephone", owner="Aaron")
         self.assertEqual(body.owner, "aaron")
-        self.assertEqual(G.MintKeyBody(agent_id="flow", owner=["shafen", "ShafenKhan", "shafen"]).owner, ["shafen", "shafenkhan"])
+        # REVIEW-4 P2-4: one name. A list is written by migration only.
+        with self.assertRaises(ValidationError):
+            G.MintKeyBody(agent_id="flow", owner=["shafen", "ShafenKhan", "shafen"])
         with self.assertRaises(ValidationError):
             G.MintKeyBody(agent_id="x" * 95)
         with self.assertRaises(ValidationError):

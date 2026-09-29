@@ -9,6 +9,11 @@ answers with the owner that was STORED, and a failed stamp never costs the
 caller the key, which is shown once.
 
 Every test here FAILED on 5ee32e9 unless its docstring says it is a pin.
+
+Amended in fix lane 4 (REVIEW-4.md P2-3, P2-4): the API takes ONE owner name,
+which must belong to an existing human, so each call below first answers
+that lookup (``HUMAN``). ``test_nav_v3_fix4_owner.py`` holds the tests that
+fail on e20c618.
 """
 
 from __future__ import annotations
@@ -61,6 +66,11 @@ def _sql(stmt) -> str:
     return str(stmt.compile(dialect=postgresql.dialect())).lower()
 
 
+def _human_found():
+    """The answer to "is this owner an existing human?": one row."""
+    return _Result(scalars=[uuid.uuid4()])
+
+
 # ---------------------------------------------------------------------------
 # P1-2 — PATCH /gateway/keys/{id} accepts owner
 # ---------------------------------------------------------------------------
@@ -73,27 +83,27 @@ class P1_2_PatchKeyAcceptsOwner(IsolatedAsyncioTestCase):
 
     def test_the_body_accepts_owner(self) -> None:
         self.assertEqual(G.PatchKeyBody(owner="Aaron").owner, "aaron")
-        self.assertEqual(G.PatchKeyBody(owner=["shafen", "ShafenKhan"]).owner, ["shafen", "shafenkhan"])
+        self.assertEqual(G.PatchKeyBody(owner="  ShafenKhan ").owner, "shafenkhan")
         self.assertIsNone(G.PatchKeyBody(label="x").owner)
 
     async def test_owner_is_merged_onto_the_seat_row_and_replaces_a_wrong_one(self) -> None:
         key, seat = self._key(), _seat("persephone", owner="mallory", avatar_emoji="🌸")
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[_Result(scalar=key), _Result(scalar=seat), _Result()])
+        db.execute = AsyncMock(side_effect=[_Result(scalar=key), _human_found(), _Result(scalar=seat), _Result()])
         db.commit = AsyncMock()
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
             out = await G.patch_gateway_key(key.id, G.PatchKeyBody(owner="aaron"), SimpleNamespace(headers={}), db)
         self.assertEqual(out["owner"], "aaron")
         self.assertEqual(seat.metadata_["owner"], "aaron")
         self.assertEqual(seat.metadata_["avatar_emoji"], "🌸")          # a merge, not a rewrite
-        sql = _sql(db.execute.await_args_list[2].args[0])
+        sql = _sql(db.execute.await_args_list[3].args[0])
         self.assertIn("update participants", sql)
         self.assertIn("||", sql)
 
     async def test_owner_creates_the_row_for_a_seat_that_never_posted(self) -> None:
         key = self._key("house-voice")
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[_Result(scalar=key), _Result(scalar=None)])
+        db.execute = AsyncMock(side_effect=[_Result(scalar=key), _human_found(), _Result(scalar=None)])
         db.add = MagicMock()
         db.commit = AsyncMock()
         db.refresh = AsyncMock()
@@ -150,7 +160,7 @@ class P2_8_MintTellsTheTruthAndNeverLosesTheKey(IsolatedAsyncioTestCase):
 
     async def test_the_response_carries_the_owner_that_was_stored(self) -> None:
         owned = _seat("persephone", owner="shafen")           # already owned: mint keeps it
-        db = self._db([_Result(scalar=owned)])
+        db = self._db([_human_found(), _Result(scalar=owned)])
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
             out = await G.mint_gateway_key(G.MintKeyBody(agent_id="persephone", owner="aaron"), SimpleNamespace(headers={}), db)
         self.assertEqual(out["owner"], "shafen")               # not an echo of the request
@@ -158,7 +168,7 @@ class P2_8_MintTellsTheTruthAndNeverLosesTheKey(IsolatedAsyncioTestCase):
         self.assertTrue(out["key"])
 
     async def test_a_failed_owner_stamp_never_costs_the_caller_the_key(self) -> None:
-        db = self._db([RuntimeError("participants is locked")])
+        db = self._db([_human_found(), RuntimeError("participants is locked")])
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
             out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron"), SimpleNamespace(headers={}), db)
         self.assertTrue(out["key"])                            # shown once: it must arrive

@@ -424,23 +424,77 @@ def validate_allowed_rooms(rooms: list[str]) -> list[str]:
 MAX_SEAT_AGENT_ID_LEN = 94
 
 
-def validate_owner(value: Any) -> str | list[str] | None:
-    """``owner`` on mint: a username or a list of usernames (normalised)."""
+#: Why the API takes one name. A list-form owner means "one person with two
+#: accounts" and must never name two people: a seat owned by two people
+#: reads ``private`` in either one's room and bridges their private worlds.
+#: Nothing in ``participants`` can prove two rows are one person, so a list
+#: is written only by a migration an operator has reviewed.
+LIST_OWNER_DETAIL = (
+    "owner must be ONE username: list-form owners are set by migration only"
+)
+
+
+def validate_owner(value: Any) -> str | None:
+    """``owner`` on mint and PATCH: ONE username, trimmed and lower-cased.
+    A list (or anything else that is not a string) is refused. That the
+    name belongs to a HUMAN is checked against the database by the handler
+    (:func:`require_human_owner`)."""
     if value is None:
         return None
-    values = value if isinstance(value, list) else [value]
-    cleaned: list[str] = []
-    for item in values:
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError("owner must be a username or a list of usernames")
-        name = item.strip().lower()
-        if len(name) > 100:
-            raise ValueError("owner username is too long")
-        if name not in cleaned:
-            cleaned.append(name)
-    if not cleaned:
-        raise ValueError("owner must name at least one username")
-    return cleaned[0] if len(cleaned) == 1 else cleaned
+    if isinstance(value, (list, tuple, set, dict)):
+        raise ValueError(LIST_OWNER_DETAIL)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("owner must be a username")
+    name = value.strip().lower()
+    if len(name) > 100:
+        raise ValueError("owner username is too long")
+    return name
+
+
+async def require_human_owner(db: AsyncSession, owner: str) -> str:
+    """422 unless ``owner`` names exactly one existing HUMAN participant,
+    compared the way every reader compares it: ``lower(btrim(username))``.
+
+    An owner string with no human row behind it is a standing offer: on a
+    realm that allows registration, the first account to take that name
+    owns the seat. Two human rows that normalise to the same name make
+    "the owner" ambiguous. Both are refused here rather than discovered
+    later by the room class."""
+    matches = (
+        (
+            await db.execute(
+                select(Participant.id)
+                .where(
+                    Participant.participant_type == ParticipantType.HUMAN,
+                    func.lower(func.btrim(Participant.username)) == owner,
+                )
+                .limit(2)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not matches:
+        raise HTTPException(
+            status_code=422,
+            detail=f"owner {owner!r} is not the username of an existing human participant",
+        )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"more than one human participant is named {owner!r} once trimmed and "
+                "lower-cased; resolve the duplicate before owning a seat with that name"
+            ),
+        )
+    return owner
+
+
+def _operator_of(request: Request) -> str | None:
+    """Who the caller says they are (``X-Operator``), for the audit line.
+    Self-declared by the holder of the key-admin secret; capped."""
+    value = (request.headers.get("X-Operator") or "").strip()
+    return value[:120] or None
 
 
 class MintKeyBody(BaseModel):
@@ -454,20 +508,21 @@ class MintKeyBody(BaseModel):
     #: /rooms/{id}/voice-settings) in its allowed rooms. ``talk-controls-app``
     #: keys have this by identity; set it for any other key on purpose.
     can_manage_voice_settings: bool = False
-    #: The human (username, or a list of usernames) this seat belongs to.
+    #: The human this seat belongs to: ONE username, which must be an
+    #: existing HUMAN participant (422 otherwise; a list is refused).
     #: Stamped on the seat's participant row at mint — created there and
     #: then if the seat has never posted — so the seat is owned from its
     #: first contact (R1 / P2-9). Ownership decides room privacy.
-    owner: str | list[str] | None = None
+    owner: str | None = None
 
     @field_validator("allowed_rooms")
     @classmethod
     def _rooms(cls, value: list[str]) -> list[str]:
         return validate_allowed_rooms(value)
 
-    @field_validator("owner")
+    @field_validator("owner", mode="before")
     @classmethod
-    def _owner(cls, value: Any) -> str | list[str] | None:
+    def _owner(cls, value: Any) -> str | None:
         return validate_owner(value)
 
 
@@ -478,19 +533,21 @@ class PatchKeyBody(BaseModel):
     allowed_rooms: list[str] | None = None
     rate_limit_rpm: int | None = Field(default=None, ge=1, le=600)
     can_manage_voice_settings: bool | None = None
-    #: Set (or change) the human who owns this key's seat. Stamped on the
-    #: seat's participant row by merge; the row is created if the seat has
-    #: never posted. The only way to own a seat minted before owners existed.
-    owner: str | list[str] | None = None
+    #: Set (or change) the human who owns this key's seat: ONE username,
+    #: which must be an existing HUMAN participant (422 otherwise; a list is
+    #: refused). Stamped on the seat's participant row by merge; the row is
+    #: created if the seat has never posted. The only way to own a seat
+    #: minted before owners existed.
+    owner: str | None = None
 
     @field_validator("allowed_rooms")
     @classmethod
     def _rooms(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else validate_allowed_rooms(value)
 
-    @field_validator("owner")
+    @field_validator("owner", mode="before")
     @classmethod
-    def _owner(cls, value: Any) -> str | list[str] | None:
+    def _owner(cls, value: Any) -> str | None:
         return validate_owner(value)
 
 
@@ -1552,6 +1609,9 @@ async def mint_gateway_key(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"agent_id longer than {MAX_SEAT_AGENT_ID_LEN} characters",
         )
+    if body.owner is not None:
+        # Before the key exists: a refused owner must not leave a key behind.
+        await require_human_owner(db, body.owner)
     raw = f"{_KEY_PREFIXES[0]}{secrets.token_urlsafe(32)}"
     row = AgentGatewayKey(
         key_hash=hash_key(raw),
@@ -1575,7 +1635,9 @@ async def mint_gateway_key(
         # The key is committed and its raw value exists only in this
         # response: a failed stamp must never cost the caller the key.
         try:
-            seat = await _stamp_seat_owner(db, agent_id, body.owner)
+            seat = await _stamp_seat_owner(
+                db, agent_id, body.owner, operator=_operator_of(request), source="mint"
+            )
             stored_owner = (seat.metadata_ or {}).get("owner")
             owner_stamped = True
         except Exception:
@@ -1601,7 +1663,13 @@ async def mint_gateway_key(
 
 
 async def _stamp_seat_owner(
-    db: AsyncSession, agent_id: str, owner: str | list[str], *, overwrite: bool = False
+    db: AsyncSession,
+    agent_id: str,
+    owner: str,
+    *,
+    overwrite: bool = False,
+    operator: str | None = None,
+    source: str = "mint",
 ) -> Participant:
     """Own the seat (P2-9): create its participant row (backend runner,
     owner) when it has never posted, else merge ``owner`` in by SQL ``||``.
@@ -1611,7 +1679,12 @@ async def _stamp_seat_owner(
     is exactly what a Brigade-served agent looks like, and an operator's
     owner stamp must not silence it (REVIEW-3 P2-6). The seat flips its own
     row to ``runner`` the first time it announces itself or posts through
-    the gateway — evidence that a runner really serves the id."""
+    the gateway — evidence that a runner really serves the id.
+
+    EVERY CHANGE IS LOGGED (``gateway_seat_owner_changed``) with the old
+    owner, the new owner and who the caller says they are. An owner stamp
+    re-attributes every line the seat ever wrote, so it has to be possible
+    to say afterwards who moved a seat, from whom, to whom."""
     seat = await _find_seat_participant(db, agent_id)
     if seat is None:
         seat = Participant(
@@ -1632,8 +1705,18 @@ async def _stamp_seat_owner(
                 raise
         else:
             await db.refresh(seat)
+            logger.info(
+                "gateway_seat_owner_changed",
+                agent_id=agent_id,
+                old_owner=None,
+                new_owner=owner,
+                operator=operator,
+                source=source,
+                row_created=True,
+            )
             return seat
-    if overwrite or not seat_owners(seat):
+    old_owner = (seat.metadata_ or {}).get("owner") if isinstance(seat.metadata_, dict) else None
+    if (overwrite or not seat_owners(seat)) and old_owner != owner:
         patch: dict[str, Any] = {"owner": owner}
         await db.execute(
             update(Participant)
@@ -1643,6 +1726,7 @@ async def _stamp_seat_owner(
                     cast(patch, JSONB)
                 )
             )
+            .execution_options(synchronize_session=False)
         )
         await db.commit()
         merged = {**(seat.metadata_ or {}), **patch}
@@ -1652,6 +1736,15 @@ async def _stamp_seat_owner(
             set_committed_value(seat, "metadata_", merged)
         else:
             seat.metadata_ = merged
+        logger.info(
+            "gateway_seat_owner_changed",
+            agent_id=agent_id,
+            old_owner=old_owner,
+            new_owner=owner,
+            operator=operator,
+            source=source,
+            row_created=False,
+        )
     return seat
 
 
@@ -1701,6 +1794,10 @@ async def patch_gateway_key(
         raise HTTPException(status_code=404, detail="Key not found")
     if row.revoked_at is not None:
         raise HTTPException(status_code=409, detail="Key is revoked")
+    if body.owner is not None:
+        # Before anything is changed: a refused owner must not leave the
+        # rest of the PATCH half applied.
+        await require_human_owner(db, body.owner)
     if body.label is not None:
         row.label = body.label
     if body.allowed_rooms is not None:
@@ -1724,7 +1821,14 @@ async def patch_gateway_key(
         # The operator's explicit choice: stamped on the seat's row by merge
         # (the row is created when the seat has never posted). The only way
         # to own a seat whose key was minted before owners existed.
-        seat = await _stamp_seat_owner(db, out["agent_id"], body.owner, overwrite=True)
+        seat = await _stamp_seat_owner(
+            db,
+            out["agent_id"],
+            body.owner,
+            overwrite=True,
+            operator=_operator_of(request),
+            source="patch",
+        )
         out["owner"] = (seat.metadata_ or {}).get("owner")
     logger.info("gateway_key_patched", key_id=str(key_id), agent_id=out["agent_id"], owner_set=body.owner is not None)
     return out
