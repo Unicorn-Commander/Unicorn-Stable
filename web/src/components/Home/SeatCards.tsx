@@ -269,7 +269,9 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
                   )}
                 </span>
               </button>
-              <span className="absolute right-1.5 top-1.5">
+              {/* Under a finger the ⋮ is 44px: it sits in the corner so its
+                  icon stays on the name's row, not over the line below. */}
+              <span className="absolute right-1.5 top-1.5 pointer-coarse:right-0 pointer-coarse:top-0">
                 <CrewRowMenu
                   name={member.display_name}
                   agentId={member.agent_id}
