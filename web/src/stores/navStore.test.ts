@@ -92,3 +92,28 @@ describe("nav v2 flag", () => {
     expect(shellDestinationForPath("/c/room-1", "home")).toBe("conversations");
   });
 });
+
+describe("nav v3 phone tabs", () => {
+  it("keeps the Crew and Calls tabs on a room path, and folds them on the desktop rail", async () => {
+    const { PHONE_TABS, phoneTabForDestination, railDestination } = await import("./navStore");
+    expect(shellDestinationForPath("/c/room-1", "crew")).toBe("crew");
+    expect(shellDestinationForPath("/c/room-1", "calls")).toBe("calls");
+    expect(shellDestinationForPath("/c/room-1", "home")).toBe("conversations");
+    expect(shellDestinationForPath("/", "crew")).toBe("crew");
+    expect(shellDestinationForPath("/agents", "crew")).toBe("directory");
+    expect(PHONE_TABS.map((tab) => tab.id)).toEqual(["home", "chats", "crew", "calls", "me"]);
+    expect(PHONE_TABS.map((tab) => tab.destination)).toEqual([
+      "home",
+      "conversations",
+      "crew",
+      "calls",
+      null,
+    ]);
+    expect(phoneTabForDestination("directory")).toBe("crew");
+    expect(phoneTabForDestination("conversations")).toBe("chats");
+    expect(phoneTabForDestination("calls")).toBe("calls");
+    expect(railDestination("crew")).toBe("conversations");
+    expect(railDestination("calls")).toBe("conversations");
+    expect(railDestination("directory")).toBe("directory");
+  });
+});

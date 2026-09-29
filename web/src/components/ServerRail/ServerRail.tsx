@@ -31,6 +31,7 @@ import {
   isDirectoryPath,
   isNavV1Enabled,
   isNavV2Enabled,
+  railDestination,
   shellDestinationForPath,
   useNavStore,
   type NavView,
@@ -136,7 +137,9 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
     is_self: !!currentUser,
   });
 
-  const destination = shellDestinationForPath(path, v2Destination);
+  // Crew and Calls are phone tabs; the desktop rail folds them into
+  // Conversations (the crew is a section above the list there).
+  const destination = railDestination(shellDestinationForPath(path, v2Destination));
 
   function select(id: string) {
     if (navV2) {
@@ -169,6 +172,39 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
       useAppStore.getState().clearUnread(last);
       navigate(`/c/${last}`);
     }
+  }
+
+  // Nav v3 (§2.6): the phone's destinations are the bottom tabs, so the
+  // drawer strip keeps only what the tabs do not carry — the quick switcher
+  // (rooms, servers, message search) and the server switcher when federated.
+  if (mobile && navV2) {
+    return (
+      <div
+        className="flex h-12 w-full shrink-0 items-center gap-1 border-b border-slate-700/50 px-2 md:hidden"
+        aria-label="Drawer tools"
+        data-testid="drawer-tools"
+      >
+        <button
+          type="button"
+          aria-label="Search"
+          onClick={() => useConversationUi.getState().requestQuickSwitcher()}
+          className="focus-ring flex h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
+        >
+          <Search className="h-4 w-4 shrink-0" />
+          <span className="truncate">Search</span>
+        </button>
+        {multi && (
+          <button
+            type="button"
+            aria-label="Switch server"
+            onClick={() => setSwitcherOpen(true)}
+            className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white/[0.06] hover:text-slate-100"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    );
   }
 
   return (

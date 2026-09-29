@@ -83,6 +83,7 @@ import {
   type SidebarView,
 } from "./sidebarModel";
 import { ViewSwitcher } from "./ViewSwitcher";
+import { CrewSection } from "./CrewSection";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
@@ -97,6 +98,7 @@ import type { PeopleDirectoryEntry } from "@/services/api";
 
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { HomeRail } from "@/components/Home/HomeRail";
+import { useIsDesktop } from "@/hooks/usePanelResize";
 
 /** Active workspace, pinned above the one Conversations list. */
 function WorkspaceTitle() {
@@ -110,7 +112,7 @@ function WorkspaceTitle() {
     ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
     : "Stable";
   return (
-    <div className="shrink-0 px-3 pt-2" data-testid="conversation-list-header">
+    <div className="shrink-0 px-1 pt-1" data-testid="conversation-list-header">
       <p
         data-testid="workspace-name"
         className="truncate text-sm font-semibold text-slate-50"
@@ -189,11 +191,18 @@ export function RoomList() {
   const navV1 = isNavV1Enabled();
   const activeView = useNavStore((s) => s.activeView);
   const storedV2Destination = useNavStore((s) => s.v2Destination);
+  const isDesktop = useIsDesktop();
   // Directory follows the URL. A stored "directory" on any other path is Home.
-  const v2Destination = shellDestinationForPath(
+  const routedV2Destination = shellDestinationForPath(
     location.pathname,
     storedV2Destination,
   );
+  // Crew and Calls are phone tabs (Nav v3 §2.6). On a desktop the crew is a
+  // section above the one list and standing rooms are channel rows in it.
+  const v2Destination =
+    isDesktop && (routedV2Destination === "crew" || routedV2Destination === "calls")
+      ? "conversations"
+      : routedV2Destination;
   const conversationFilter = useNavStore((s) => s.conversationFilter);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rememberRoom = useNavStore((s) => s.rememberRoom);
@@ -210,7 +219,14 @@ export function RoomList() {
   useDraftVersion();
   // Model view: classic mode always builds the full tree. The one list builds
   // its own rows (view "all") so a Meetings/Direct activeView cannot hide them.
-  const modelView: SidebarView = navV2 ? "all" : navV1 ? activeView : "all";
+  // The phone's Calls tab is the standing-room list (the v1 Meetings body).
+  const modelView: SidebarView = navV2
+    ? v2Destination === "calls"
+      ? "meetings"
+      : "all"
+    : navV1
+      ? activeView
+      : "all";
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
@@ -255,8 +271,12 @@ export function RoomList() {
       rememberRoom(scope, view, id);
       // Standing rooms stay channels in the one list. viewForRoom still
       // records the v1 slot so the five-view fallback can restore Meetings.
-      if (navV2) setV2Destination("conversations");
-      else if (navV1) setActiveView(view);
+      // A room opened from the phone's Crew or Calls tab keeps that tab.
+      if (navV2) {
+        if (v2Destination !== "crew" && v2Destination !== "calls") {
+          setV2Destination("conversations");
+        }
+      } else if (navV1) setActiveView(view);
     }
     navigate(`/c/${id}`);
     // On mobile the sidebar is an overlay drawer; close it after selecting a
@@ -629,7 +649,9 @@ export function RoomList() {
     queryKey: ["conference-catalog", scope],
     queryFn: () => api.getConferenceCatalog(),
     staleTime: 5 * 60_000,
-    enabled: !navV2 && navV1 && activeView === "meetings",
+    enabled:
+      (!navV2 && navV1 && activeView === "meetings") ||
+      (navV2 && v2Destination === "calls"),
   });
   // Hide catalog entries the user already joined (matched by display label).
   const unjoinedConferenceCatalog = useMemo(() => {
@@ -1135,12 +1157,19 @@ export function RoomList() {
     );
   }
 
-  function agentDisplayName(agentId: string, threads: Room[]): string {
+  function agentDisplayName(agentId: string, hub: Room | null, threads: Room[]): string {
     const rosterAgent = agents.find((a) => a.id === agentId);
     if (rosterAgent) return rosterAgent.display_name || rosterAgent.name;
-    // Roster not loaded (or agent retired): fall back to the room label
-    // without its "Chat with " prefix.
-    const label = threads[0]?.display_name || threads[0]?.name || agentId;
+    // A runner seat is never in the Brigade roster: its hub names it. Only
+    // a legacy DM with no hub falls back to the newest room's label (minus
+    // its "Chat with " prefix) — never a thread's title.
+    const label =
+      hub?.counterpart?.display_name ||
+      hub?.display_name ||
+      hub?.name ||
+      threads[0]?.display_name ||
+      threads[0]?.name ||
+      agentId;
     return label.replace(/^chat with /i, "");
   }
 
@@ -1226,7 +1255,7 @@ export function RoomList() {
     const isAgent = entry.kind === "agent";
     const threads = entry.threads;
     const name = isAgent
-      ? agentDisplayName(entry.agentId, threads)
+      ? agentDisplayName(entry.agentId, entry.hub, threads)
       : entry.name;
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
@@ -1377,13 +1406,15 @@ export function RoomList() {
               <div className="flex items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className="truncate text-sm font-medium"
+                    className="min-w-[3.5rem] truncate text-sm font-medium"
                     style={isAgent ? { color: ident.text } : undefined}
                   >
                     {name}
                   </span>
+                  {/* The chip gives way before the name does: a seat's
+                      "Answers everyone" used to leave "P" of Persephone. */}
                   {isAgent && entry.kind === "agent" && entry.mode && (
-                    <AgentModeChip mode={entry.mode} compact />
+                    <AgentModeChip mode={entry.mode} compact className="min-w-0 shrink-[3]" />
                   )}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -2356,6 +2387,13 @@ export function RoomList() {
       ? rooms.find((room) => room.id === activeRoomId)
       : undefined;
     return (
+      <>
+        {/* Desktop: the crew pinned above the list (Nav v3 §2.1). The phone
+            has a Crew tab instead, and the section renders nothing there. */}
+        <CrewSection variant="section" onOpenRoom={openRoom} />
+        <div>
+          <WorkspaceTitle />
+          <ViewSwitcher />
       <section data-testid="conversations-card" aria-label="Conversations">
         {conversationFilter === "channels" && (
           <div className="flex items-center justify-between px-2.5 pb-1">
@@ -2399,7 +2437,14 @@ export function RoomList() {
           standing={activeRoom?.is_conference === true}
         />
       </section>
+        </div>
+      </>
     );
+  }
+
+  /** The phone's Crew tab: everyone, grouped, no cap (Nav v3 §2.6). */
+  function renderCrewBody() {
+    return <CrewSection variant="page" onOpenRoom={openRoom} />;
   }
 
   /** Directory is the Agents page in the main pane, not a second conversation list. */
@@ -2452,6 +2497,8 @@ export function RoomList() {
     if (navV2) {
       if (v2Destination === "home") return renderHomeBody();
       if (v2Destination === "directory") return renderDirectoryBody();
+      if (v2Destination === "crew") return renderCrewBody();
+      if (v2Destination === "calls") return renderMeetingsBody();
       return renderConversationBody();
     }
     if (!navV1) {
@@ -2521,12 +2568,15 @@ export function RoomList() {
     }
   }
 
-  // Search + New chat: hide on Home. The one list shows them; Directory does not.
+  // Search + New chat: hide on Home. The one list and the Crew tab show them;
+  // Directory and Calls do not.
   const showToolbar = navV2
-    ? v2Destination === "conversations"
+    ? v2Destination === "conversations" || v2Destination === "crew"
     : !navV1 || activeView !== "home";
   const searchPlaceholder = navV2
-    ? "Search conversations…"
+    ? v2Destination === "crew"
+      ? "Search crew…"
+      : "Search conversations…"
     : activeView === "agents"
       ? "Search agents…"
       : activeView === "channels"
@@ -2609,6 +2659,7 @@ export function RoomList() {
               </button>
             </div>
             )}
+            {!(navV2 && v2Destination === "crew") && (
             <button
               type="button"
               onClick={markVisibleSectionRead}
@@ -2626,15 +2677,9 @@ export function RoomList() {
                 <span className="hidden sm:inline">Mark read</span>
               </span>
             </button>
+            )}
           </div>
         </div>
-      )}
-
-      {navV2 && v2Destination === "conversations" && (
-        <>
-          <WorkspaceTitle />
-          <ViewSwitcher />
-        </>
       )}
 
       <nav

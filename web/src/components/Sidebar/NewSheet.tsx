@@ -12,9 +12,12 @@ import {
   X,
 } from "lucide-react";
 import clsx from "clsx";
-import { api, type Agent, type PeopleDirectoryEntry, type Room } from "@/services/api";
+import { api, type CrewMember, type PeopleDirectoryEntry, type Room } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
+import { CREW_GROUP_LABEL, brainLabel, ownerSeatLabel, readRoomSeat, hubRoomFor } from "@/lib/crew";
+import { buildToPicks } from "@/lib/newSheetPicker";
+import { useCrew } from "@/hooks/useCrew";
 import {
   NEW_SHEET_ITEMS,
   channelConsequence,
@@ -32,7 +35,10 @@ import { ChannelBrowser } from "./ChannelBrowser";
 
 /**
  * ⌘N / + New / the phone FAB outside a room.
- * Message a person, talk to an agent (hub), thread, channel, project channel, call.
+ *
+ * The first step is one "To:" box (Nav v3 §2.1): Crew → People → Channels.
+ * A crew member opens their hub, a person their one DM, a channel joins or
+ * opens. The six older starts stay under the box as secondary actions.
  */
 export function NewSheet() {
   const open = useConversationUi((s) => s.newSheetOpen);
@@ -78,7 +84,8 @@ export function NewSheet() {
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {step === "menu" && (
-            <Menu
+            <ToStep
+              onDone={close}
               onPick={setStep}
               onBrowse={
                 isNavV2Enabled()
@@ -115,23 +122,224 @@ export function NewSheet() {
   );
 }
 
-function Menu({
+/** Open a crew member's hub — straight to it when the list already knows the room. */
+async function openCrewMember(
+  member: CrewMember,
+  navigate: (to: string) => void,
+): Promise<boolean> {
+  const known = hubRoomFor(member, useAppStore.getState().rooms);
+  if (known) {
+    navigate(`/c/${known.id}`);
+    return true;
+  }
+  const hub = await openAgentHub(member.agent_id, navigate);
+  return !!hub;
+}
+
+function crewSubtitle(member: CrewMember, rooms: readonly Room[]): string {
+  const parts: string[] = [];
+  if (member.group === "partner" && member.owner) parts.push(ownerSeatLabel(member.owner));
+  else if (member.role_line) parts.push(member.role_line);
+  else parts.push(CREW_GROUP_LABEL[member.group]);
+  if (member.seat_capabilities) {
+    const brain = brainLabel(readRoomSeat(hubRoomFor(member, rooms)), member.seat_capabilities);
+    if (brain) parts.push(brain);
+  }
+  return parts.join(" · ");
+}
+
+function ToStep({
+  onDone,
   onPick,
   onBrowse,
 }: {
+  onDone: () => void;
   onPick: (id: NewSheetItemId) => void;
   onBrowse?: () => void;
 }) {
+  const [q, setQ] = useState("");
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const { crew } = useCrew();
+  const rooms = useAppStore((s) => s.rooms);
+  const active = q.trim().length > 0;
+  const { data: people = [], isFetching: peopleFetching } = useQuery({
+    queryKey: ["people-directory", "new-sheet-to", q.trim()],
+    queryFn: () => api.getPeopleDirectory(q.trim()),
+    enabled: active,
+  });
+  const { data: browsable = [] } = useQuery({
+    queryKey: ["rooms-browse", "new-sheet-to", q.trim()],
+    queryFn: () => api.browseChannels(q.trim()),
+    enabled: active,
+    retry: false,
+  });
+  const picks = useMemo(
+    () => buildToPicks({ crew, people, rooms, browsable, query: q }),
+    [crew, people, rooms, browsable, q],
+  );
+
+  function fail(title: string, err: unknown) {
+    useAppStore.getState().pushToast({
+      title,
+      body:
+        (err as { detail?: string; message?: string }).detail ||
+        (err as Error).message ||
+        "Request failed",
+      kind: "error",
+    });
+  }
+
+  async function pickPerson(person: PeopleDirectoryEntry) {
+    try {
+      const room = await ensureHumanDm(person);
+      await qc.invalidateQueries({ queryKey: ["rooms"] });
+      const state = useAppStore.getState();
+      if (!state.rooms.some((r) => r.id === room.id)) state.upsertRoom(room);
+      navigate(`/c/${room.id}`);
+      onDone();
+    } catch (err) {
+      fail("Couldn't open that conversation", err);
+    }
+  }
+
+  async function pickChannel(room: Room, joined: boolean) {
+    try {
+      if (!joined) {
+        await api.joinRoom(room.id);
+        useAppStore.getState().upsertRoom(room);
+        await qc.invalidateQueries({ queryKey: ["rooms"] });
+      }
+      navigate(`/c/${room.id}`);
+      onDone();
+    } catch (err) {
+      fail("Couldn't open that channel", err);
+    }
+  }
+
   return (
-    <ul className="flex flex-col gap-1">
+    <div className="flex flex-col gap-3">
+      <label className="flex items-center gap-2 rounded-xl border border-line bg-slate-950/60 px-3 py-2 focus-within:border-stable-purple/60">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">To:</span>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="To"
+          placeholder="An agent, a person, or a channel"
+          autoFocus
+          data-testid="new-sheet-to"
+          className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+        />
+      </label>
+      {picks.crew.length > 0 && (
+        <PickGroup label="Crew" testId="new-sheet-picks-crew">
+          {picks.crew.map((member) => (
+            <PickRow
+              key={member.agent_id}
+              title={member.display_name}
+              subtitle={crewSubtitle(member, rooms)}
+              face={resolveIdentity({
+                id: member.agent_id,
+                participant_id: member.participant_id || undefined,
+                participant_type: "agent",
+                display_name: member.display_name,
+                avatar_url: member.avatar_url,
+                username: member.agent_id,
+              })}
+              onClick={() => void openCrewMember(member, navigate).then((ok) => ok && onDone())}
+            />
+          ))}
+        </PickGroup>
+      )}
+      {picks.people.length > 0 && (
+        <PickGroup label="People" testId="new-sheet-picks-people">
+          {picks.people.map((person) => (
+            <PickRow
+              key={person.id}
+              title={person.display_name}
+              subtitle={person.username}
+              face={resolveIdentity(person)}
+              onClick={() => void pickPerson(person)}
+            />
+          ))}
+        </PickGroup>
+      )}
+      {picks.channels.length > 0 && (
+        <PickGroup label="Channels" testId="new-sheet-picks-channels">
+          {picks.channels.map(({ room, joined }) => (
+            <PickRow
+              key={room.id}
+              title={roomLabel(room)}
+              subtitle={joined ? (room.visibility === "private" ? "Private channel" : "Channel") : "Join channel"}
+              onClick={() => void pickChannel(room, joined)}
+            />
+          ))}
+        </PickGroup>
+      )}
+      {active && peopleFetching && picks.empty && (
+        <p className="px-1 text-xs text-slate-500">Searching…</p>
+      )}
+      {active && !peopleFetching && picks.empty && (
+        <p className="px-1 text-xs text-slate-500" data-testid="new-sheet-no-match">
+          No agent, person, or channel matches “{q.trim()}”.
+        </p>
+      )}
+      <p className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+        Or start
+      </p>
+      <Menu onPick={onPick} onBrowse={onBrowse} compact />
+    </div>
+  );
+}
+
+function PickGroup({
+  label,
+  testId,
+  children,
+}: {
+  label: string;
+  testId: string;
+  children: ReactNode;
+}) {
+  return (
+    <div data-testid={testId}>
+      <p className="px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+        {label}
+      </p>
+      <ul className="flex flex-col gap-0.5">{children}</ul>
+    </div>
+  );
+}
+
+function Menu({
+  onPick,
+  onBrowse,
+  compact = false,
+}: {
+  onPick: (id: NewSheetItemId) => void;
+  onBrowse?: () => void;
+  /** Under the To box: tighter rows, the detail line stays. */
+  compact?: boolean;
+}) {
+  return (
+    <ul className={clsx("flex flex-col", compact ? "gap-0" : "gap-1")}>
       {NEW_SHEET_ITEMS.map((item) => (
         <li key={item.id}>
           <button
             type="button"
             onClick={() => onPick(item.id)}
-            className="focus-ring flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-white/[0.05]"
+            data-testid={`new-sheet-action-${item.id}`}
+            className={clsx(
+              "focus-ring flex w-full items-center gap-3 rounded-xl px-3 text-left hover:bg-white/[0.05]",
+              compact ? "py-2" : "py-3",
+            )}
           >
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-300">
+            <span
+              className={clsx(
+                "grid shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-300",
+                compact ? "h-8 w-8" : "h-9 w-9",
+              )}
+            >
               {item.id === "person" && <MessageSquare className="h-4 w-4" />}
               {item.id === "agent" && <Bot className="h-4 w-4" />}
               {item.id === "thread" && <Plus className="h-4 w-4" />}
@@ -152,9 +360,17 @@ function Menu({
             type="button"
             onClick={onBrowse}
             data-testid="new-sheet-browse-channels"
-            className="focus-ring flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-white/[0.05]"
+            className={clsx(
+              "focus-ring flex w-full items-center gap-3 rounded-xl px-3 text-left hover:bg-white/[0.05]",
+              compact ? "py-2" : "py-3",
+            )}
           >
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-300">
+            <span
+              className={clsx(
+                "grid shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-300",
+                compact ? "h-8 w-8" : "h-9 w-9",
+              )}
+            >
               <Search className="h-4 w-4" />
             </span>
             <span className="min-w-0">
@@ -214,31 +430,44 @@ function PersonStep({ onDone }: { onDone: () => void }) {
   );
 }
 
+/**
+ * Talk to an agent: the crew list (own seats, house, partners), not the old
+ * two-entry allowlist. A stale server without /crew shows the roster.
+ */
 function AgentStep({ onDone }: { onDone: () => void }) {
-  const agents = useAppStore((s) => s.agents);
+  const { crew, loaded, fromRoster } = useCrew();
+  const rooms = useAppStore((s) => s.rooms);
   const [q, setQ] = useState("");
   const navigate = useNavigate();
-  const rows = agents.filter((agent) => {
-    const hay = `${agent.display_name} ${agent.name} ${agent.id}`.toLowerCase();
+  const rows = crew.filter((member) => {
+    const hay = `${member.display_name} ${member.agent_id} ${member.role_line ?? ""} ${member.owner ?? ""}`.toLowerCase();
     return hay.includes(q.trim().toLowerCase());
   });
   return (
-    <Picker label="Search agents" query={q} onQuery={setQ} empty="No agents match.">
-      {rows.map((agent) => (
-        <AgentPick key={agent.id} agent={agent} onPick={() => void openAgentHub(agent.id, navigate).then((hub) => hub && onDone())} />
+    <Picker
+      label="Search agents"
+      query={q}
+      onQuery={setQ}
+      loading={!loaded}
+      empty={fromRoster ? "No agents in the roster match." : "No one in the crew matches."}
+    >
+      {rows.map((member) => (
+        <PickRow
+          key={member.agent_id}
+          title={member.display_name}
+          subtitle={crewSubtitle(member, rooms)}
+          face={resolveIdentity({
+            id: member.agent_id,
+            participant_id: member.participant_id || undefined,
+            participant_type: "agent",
+            display_name: member.display_name,
+            avatar_url: member.avatar_url,
+            username: member.agent_id,
+          })}
+          onClick={() => void openCrewMember(member, navigate).then((ok) => ok && onDone())}
+        />
       ))}
     </Picker>
-  );
-}
-
-function AgentPick({ agent, onPick }: { agent: Agent; onPick: () => void }) {
-  return (
-    <PickRow
-      title={agent.display_name || agent.name}
-      subtitle={agent.title || agent.id}
-      face={resolveIdentity(agent)}
-      onClick={onPick}
-    />
   );
 }
 

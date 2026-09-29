@@ -1,5 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import {
+  CREW_FIXTURE,
+  PERSEPHONE_HUB_ID,
+  hubRoomRaw,
+  membersFixture,
+  threadRoomRaw,
+} from "../src/mocks/crewFixture";
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
@@ -231,6 +238,17 @@ async function stubHomeSummary(page: Page) {
   await fulfillSummary(page, emptyHomeSummary());
 }
 
+/** Nav v3: the crew list every shell now asks for (C3). */
+async function stubCrew(page: Page) {
+  await page.route("**/api/v1/crew**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(CREW_FIXTURE),
+    });
+  });
+}
+
 /**
  * The Vite dev mock serves rooms but no message history, so a room renders
  * "Couldn't load messages". Fulfil the history call with a deterministic
@@ -370,6 +388,7 @@ for (const surface of SURFACES) {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
+      await stubCrew(page);
 
       await page.goto(surface.path);
       await waitForAppReady(page);
@@ -1131,3 +1150,262 @@ test.describe("One conversation list", () => {
     });
   }
 });
+
+// ---- Nav v3: crew-first (design/nav-v3-crew-first-20260928) -----------------
+
+interface NavV3World {
+  /** Hub ids that received POST /threads, in order. */
+  threadPosts: string[];
+  /** Bodies of every PATCH /rooms/{id}. */
+  roomPatches: Array<{ roomId: string; body: Record<string, unknown> }>;
+  /** Bodies of every PATCH /rooms/{id}/members/{pid}. */
+  memberPatches: Array<{ roomId: string; participantId: string; body: Record<string, unknown> }>;
+}
+
+/**
+ * The rooms, crew, hub, threads, members and seat writes the crew-first
+ * shell talks to (C2 + C3). Persephone's hub carries one existing thread so
+ * the sidebar has something to nest; a new one is created live by the test.
+ */
+async function stubNavV3World(page: Page): Promise<NavV3World> {
+  const world: NavV3World = { threadPosts: [], roomPatches: [], memberPatches: [] };
+  const seatByRoom = new Map<string, { model: string | null; effort: string | null }>();
+  const existingThread = {
+    ...threadRoomRaw(PERSEPHONE_HUB_ID, 0, "Kitchen panel plan"),
+    updated_at: "2026-09-28T19:00:00Z",
+    last_message: {
+      id: "msg-thread-0",
+      room_id: `${PERSEPHONE_HUB_ID}-t-00000000`,
+      sender_id: "p-persephone",
+      sender_name: "Persephone",
+      sender_type: "agent",
+      sender_avatar: null,
+      content: "Panel v2 is on the wall.",
+      content_type: "text",
+      thread_id: null,
+      reply_count: 0,
+      edited: false,
+      created_at: "2026-09-28T19:00:00Z",
+      updated_at: "2026-09-28T19:00:00Z",
+      metadata: {},
+    },
+  };
+  const created: Array<Record<string, unknown>> = [];
+  let threadCounter = 0;
+  const hub = () => ({
+    ...hubRoomRaw("persephone"),
+    unread_count: 1,
+    metadata_: seatByRoom.has(PERSEPHONE_HUB_ID)
+      ? { seat: seatByRoom.get(PERSEPHONE_HUB_ID) }
+      : {},
+    last_message: {
+      id: "msg-hub",
+      room_id: PERSEPHONE_HUB_ID,
+      sender_id: "p-persephone",
+      sender_name: "Persephone",
+      sender_type: "agent",
+      sender_avatar: null,
+      content: "Board is clear; two PRs waiting on you.",
+      content_type: "text",
+      thread_id: null,
+      reply_count: 0,
+      edited: false,
+      created_at: "2026-09-28T20:12:00Z",
+      updated_at: "2026-09-28T20:12:00Z",
+      metadata: {},
+    },
+  });
+  const general = {
+    ...hubRoomRaw("persephone", { id: "room-general", name: "general", display_name: "general" }),
+    room_type: "channel",
+    visibility: "public",
+    counterpart: null,
+    agents: [],
+    updated_at: "2026-09-28T12:00:00Z",
+    last_message: null,
+  };
+  const rooms = () => [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general];
+  const detailFor = (id: string) => {
+    if (id === PERSEPHONE_HUB_ID) return hub();
+    const own = created.find((room) => room.id === id);
+    if (own) return own;
+    if (id === existingThread.id) return existingThread;
+    if (id === "room-general") return general;
+    return hubRoomRaw("claude-code", { id, name: id });
+  };
+  const json = (body: unknown, status = 200) => ({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+
+  await stubCrew(page);
+  await page.route("**/api/v1/rooms**", async (route) => {
+    const url = route.request().url();
+    if (!/\/api\/v1\/rooms(\?|$)/.test(url)) {
+      await route.fallback();
+      return;
+    }
+    const archived = url.includes("is_archived=true");
+    await route.fulfill(json({ rooms: archived ? [] : rooms(), cursor: null }));
+  });
+  await page.route("**/api/v1/rooms/*/recordings**", (route) => route.fulfill(json([])));
+  await page.route("**/api/v1/rooms/browse**", (route) => route.fulfill(json([])));
+  await page.route("**/api/v1/rooms/*/messages**", (route) =>
+    route.fulfill(json({ messages: [], cursor: null, has_more: false })),
+  );
+  await page.route("**/api/v1/rooms/*/members", (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    return route.fulfill(json(membersFixture(parts[3]!)));
+  });
+  await page.route("**/api/v1/rooms/*/members/*", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+    world.memberPatches.push({ roomId: parts[3]!, participantId: parts[5]!, body });
+    const row = membersFixture(parts[3]!).find((m) => m.participant_id === parts[5]);
+    await route.fulfill(json({ ...(row ?? { participant_id: parts[5] }), ...body }));
+  });
+  await page.route("**/api/v1/rooms/*/threads**", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    const parentId = parts[3]!;
+    if (route.request().method() === "POST") {
+      threadCounter += 1;
+      world.threadPosts.push(parentId);
+      const thread = threadRoomRaw(parentId, threadCounter);
+      created.push(thread);
+      await route.fulfill(json(thread, 201));
+      return;
+    }
+    await route.fulfill(json(created.filter((room) => room.parent_room_id === parentId)));
+  });
+  await page.route("**/api/v1/agents/*/hub", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    await route.fulfill(json(detailFor(parts[3] === "persephone" ? PERSEPHONE_HUB_ID : `hub-${parts[3]}`)));
+  });
+  await page.route("**/api/v1/rooms/*", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    if (parts.length !== 4 || parts[3] === "browse") {
+      await route.fallback();
+      return;
+    }
+    const id = parts[3]!;
+    if (route.request().method() === "PATCH") {
+      const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+      world.roomPatches.push({ roomId: id, body });
+      const seat = (body.metadata as { seat?: { model?: string | null; effort?: string | null } } | undefined)?.seat;
+      if (seat) seatByRoom.set(id, { model: seat.model ?? null, effort: seat.effort ?? null });
+      await route.fulfill(json(detailFor(id)));
+      return;
+    }
+    await route.fulfill(json(detailFor(id)));
+  });
+  return world;
+}
+
+test.describe("Crew-first nav (v3)", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`crew, hub, new conversation @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      const world = await stubNavV3World(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      await expect(page.getByTestId("home-dashboard")).toBeVisible();
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/NavV3-Home-${tag}.png`, fullPage: true });
+
+      if (viewport === "desktop") {
+        // Crew sits above Conversations: Your seats, House, then More.
+        await clickTestId(page, "nav-conversations");
+        const section = page.getByTestId("crew-section");
+        await expect(section).toBeVisible();
+        await expect(section.getByTestId("crew-group-own_seat")).toBeVisible();
+        await expect(section.getByTestId("crew-group-house")).toBeVisible();
+        await expect(section.getByTestId("crew-group-partner")).toHaveCount(0);
+        const rows = section.getByTestId("crew-row");
+        await expect(rows).toHaveCount(8);
+        await expect(rows.nth(0)).toContainText("Persephone");
+        await expect(rows.nth(0).getByTestId("crew-brain-chip")).toHaveText("Fable 5.1 · high");
+        await expect(rows.nth(1)).toContainText("Rook");
+        await expect(rows.nth(1).getByTestId("crew-brain-chip")).toHaveText("Opus 5.5 · medium");
+        await expect(section.getByTestId("crew-more")).toContainText("More (4)");
+        await section.getByTestId("crew-more").click();
+        await expect(section.getByTestId("crew-group-partner")).toBeVisible();
+        await expect(section.getByTestId("crew-row")).toHaveCount(12);
+        await expect(section.getByTestId("crew-row").filter({ hasText: "Flow" })).toContainText("Shafen");
+        // Acceptance 3: zero rows named "Claude Code"; the directory is a row, not a tab.
+        await expect(page.getByText("Claude Code", { exact: true })).toHaveCount(0);
+        await expect(section.getByTestId("crew-all-agents")).toBeVisible();
+        await expect(page.getByTestId("phone-tab-bar")).not.toBeVisible();
+        // The one list is still there, under the crew.
+        await expect(page.getByTestId("conversations-card")).toBeVisible();
+        await expect(page.getByTestId("workspace-name")).toBeVisible();
+        await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-${tag}.png`, fullPage: true });
+      } else {
+        // Phone: Home · Chats · Crew · Calls · Me, and no Agents tab.
+        const bar = page.getByTestId("phone-tab-bar");
+        await expect(bar).toBeVisible();
+        for (const id of ["nav-home", "nav-conversations", "nav-crew", "nav-calls", "nav-me"]) {
+          await expect(bar.getByTestId(id)).toBeVisible();
+        }
+        await expect(bar.getByTestId("nav-agents")).toHaveCount(0);
+        await expect(bar.getByTestId("nav-directory")).toHaveCount(0);
+        await bar.getByTestId("nav-crew").click();
+        const crewPage = page.getByTestId("crew-page");
+        await expect(crewPage).toBeVisible();
+        await expect(crewPage.getByTestId("crew-row")).toHaveCount(12);
+        await expect(crewPage.getByTestId("crew-group-own_seat")).toBeVisible();
+        await expect(crewPage.getByTestId("crew-group-house")).toBeVisible();
+        await expect(crewPage.getByTestId("crew-group-partner")).toBeVisible();
+        await expect(crewPage.getByTestId("crew-all-agents")).toBeVisible();
+        await expect(page.getByText("Claude Code", { exact: true })).toHaveCount(0);
+        await expect(bar.getByTestId("nav-crew")).toHaveAttribute("aria-current", "page");
+        await page.screenshot({ path: `test-results/NavV3-Crew-${tag}.png`, fullPage: true });
+      }
+
+      // Tap → the hub (already known to the list, so no POST /hub).
+      await page.getByTestId("crew-open-persephone").locator("visible=true").first().click();
+      await expect(page).toHaveURL(new RegExp(`/c/${PERSEPHONE_HUB_ID}$`));
+      const header = page.getByTestId("room-header");
+      await expect(header).toContainText("Persephone");
+      if (viewport === "desktop") {
+        await expect(header.getByTestId("hub-new-conversation")).toBeVisible();
+      } else {
+        // The phone keeps the 44px row; New conversation sits in More there.
+        await expect(header.getByTestId("hub-new-conversation")).not.toBeVisible();
+      }
+      await page.screenshot({ path: `test-results/NavV3-Hub-${tag}.png`, fullPage: false });
+
+      // New conversation → POST /rooms/{hub}/threads → the thread opens…
+      if (viewport === "desktop") {
+        await header.getByTestId("hub-new-conversation").click();
+      } else {
+        await header.getByRole("button", { name: "More room actions" }).click();
+        await page.getByTestId("hub-new-conversation-menu").click();
+      }
+      await expect(page).toHaveURL(new RegExp(`/c/${PERSEPHONE_HUB_ID}-t-00000001`));
+      expect(world.threadPosts).toEqual([PERSEPHONE_HUB_ID]);
+      await expect(page.getByTestId("room-header")).toContainText("Persephone ›");
+
+      // …and nests under Persephone in Conversations.
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+        await page.getByTestId("phone-tab-bar").getByTestId("nav-conversations").click();
+      }
+      const persephoneRow = page
+        .getByTestId("conversation-row")
+        .filter({ hasText: "Persephone" })
+        .first();
+      await expect(persephoneRow).toBeVisible();
+      await persephoneRow
+        .getByRole("button", { name: /conversation history with Persephone/ })
+        .click();
+      await expect(persephoneRow.getByText("New conversation")).toBeVisible();
+      await expect(persephoneRow.getByText("Panel v2 is on the wall.")).toBeVisible();
+      await page.screenshot({ path: `test-results/NavV3-Hub-Thread-${tag}.png`, fullPage: true });
+      await assertPageHealth(page, viewport);
+    });
+  }
+});
+

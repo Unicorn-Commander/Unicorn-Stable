@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
@@ -29,8 +29,10 @@ import {
 } from "@/stores/navStore";
 import {
   buildConversationRows,
+  buildCrewSection,
   buildSidebarModel,
-  flattenConversationRows,
+  flattenConversationPane,
+  flattenCrewRows,
   flattenSidebarOrder,
   type SidebarView,
 } from "@/components/Sidebar/sidebarModel";
@@ -58,6 +60,8 @@ import { CheatsheetModal } from "./CheatsheetModal";
 import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
 import { PeopleDrawer } from "./PeopleDrawer";
+import { PhoneTabBar } from "./PhoneTabBar";
+import { readCrewCache } from "@/hooks/useCrew";
 import { ActivityCenter, type ActivityTab } from "./ActivityCenter";
 import { QuickSwitcher } from "./QuickSwitcher";
 import { GlobalSearchModal } from "./GlobalSearchModal";
@@ -127,12 +131,13 @@ function SurfaceLoading() {
  * walking an order that matched none of it. A copy that has to be kept in sync
  * by hand is the bug, so there is no copy.
  */
-function sidebarRoomOrder(): string[][] {
-  const { rooms, activeRoomId, unreadCounts, mentionUnreads } =
+function sidebarRoomOrder(queryClient: QueryClient): string[][] {
+  const { rooms, activeRoomId, unreadCounts, mentionUnreads, agents } =
     useAppStore.getState();
   const { categories, people, folders, collapsed } =
     useChannelCategories.getState();
-  const { searchQuery, expandedPeople, focusMode } = useSidebarUi.getState();
+  const { searchQuery, expandedPeople, focusMode, crewShowAll } =
+    useSidebarUi.getState();
   const scope = useFederationStore.getState().activeInstanceId;
   const isUnread = (room: { id: string; unread_count?: number }) => {
     const raw = unreadCounts[room.id] ?? room.unread_count ?? 0;
@@ -141,12 +146,43 @@ function sidebarRoomOrder(): string[][] {
   // One list: same filter and order RoomList renders. Focused mode is a
   // five-view control and must not hide rows the Unread filter would show.
   if (isNavV2Enabled()) {
-    const destination = shellDestinationForPath(
+    const routed = shellDestinationForPath(
       window.location.pathname,
       useNavStore.getState().v2Destination,
     );
+    // Same fold RoomList applies: Crew and Calls are phone tabs; a desktop
+    // shows the crew above the one list and standing rooms inside it.
+    const isDesktop = window.matchMedia("(min-width: 768px)").matches;
+    const destination =
+      isDesktop && (routed === "crew" || routed === "calls") ? "conversations" : routed;
+    const crewSection = (page: boolean) =>
+      buildCrewSection({
+        crew: readCrewCache(queryClient, scope),
+        rooms,
+        agents,
+        searchQuery,
+        showAll: page ? true : crewShowAll,
+        collapsed: page ? {} : collapsed,
+      });
+    if (destination === "crew") return flattenCrewRows(crewSection(true));
+    if (destination === "calls") {
+      return flattenSidebarOrder(
+        buildSidebarModel({
+          rooms,
+          searchQuery,
+          scope,
+          categories,
+          people,
+          folders,
+          collapsed,
+          expandedPeople,
+          view: "meetings",
+        }),
+      );
+    }
     if (destination !== "conversations") return [];
-    return flattenConversationRows(
+    return flattenConversationPane(
+      isDesktop ? crewSection(false) : null,
       buildConversationRows({
         rooms,
         searchQuery,
@@ -227,6 +263,11 @@ export function AppShell() {
   const location = useLocation();
   const isAgentsView = location.pathname === "/agents";
   const isBridgeView = location.pathname === "/bridge";
+  // The phone bottom tabs (Nav v3 §2.6) show outside a room, and inside one
+  // while the drawer is open. The padding keeps the drawer footer, the main
+  // pane and the FAB above them.
+  const phoneTabs = isNavV2Enabled() && !activeRoomId;
+  const phoneTabsInDrawer = isNavV2Enabled() && (!activeRoomId || sidebarOpen);
   const navigate = useNavigate();
   const setRooms = useAppStore((s) => s.setRooms);
   const setAgents = useAppStore((s) => s.setAgents);
@@ -491,7 +532,7 @@ export function AppShell() {
       ) {
         // Not while typing — Alt+arrows are word/line motions in editors.
         if (isEditableTarget(e.target)) return;
-        const entries = sidebarRoomOrder();
+        const entries = sidebarRoomOrder(queryClient);
         if (entries.length === 0) return;
         e.preventDefault();
         const current = useAppStore.getState().activeRoomId;
@@ -515,7 +556,7 @@ export function AppShell() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   useEffect(() => {
     if (quickSwitcherNonce > 0) setSwitcherOpen(true);
@@ -612,7 +653,11 @@ export function AppShell() {
         if (nav.v2Destination === "directory") nav.setV2Destination("home");
         return;
       }
-      nav.setV2Destination("conversations");
+      // A room opened from the phone's Crew or Calls tab keeps that tab so
+      // the drawer reopens where the user came from.
+      if (nav.v2Destination !== "crew" && nav.v2Destination !== "calls") {
+        nav.setV2Destination("conversations");
+      }
       if (activeInstanceId) {
         nav.rememberRoom(activeInstanceId, viewForRoom(room), routeRoomId);
       }
@@ -721,7 +766,13 @@ export function AppShell() {
              * whole aside once the exit finishes, so the collapsed steady state
              * renders no sidebar content at all. The defect was only ever the
              * transition. */}
-            <div className="flex min-h-0 flex-1 flex-col" style={{ width: sidebarWidth }}>
+            <div
+              className={clsx(
+                "flex min-h-0 flex-1 flex-col",
+                phoneTabsInDrawer && "max-md:pb-14",
+              )}
+              style={{ width: sidebarWidth }}
+            >
               {/* Mobile server switcher — horizontal strip atop the drawer. */}
               <ServerRail mobile />
               <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
@@ -865,7 +916,12 @@ export function AppShell() {
         />
       )}
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main
+        className={clsx(
+          "flex min-w-0 flex-1 flex-col overflow-hidden",
+          phoneTabs && "max-md:pb-14",
+        )}
+      >
         <Header
           hideOnMobile={!!activeRoomId}
           onOpenActivity={() => setActivityOpen(true)}
@@ -893,6 +949,10 @@ export function AppShell() {
         </div>
       </main>
 
+      {/* Phone tabs sit under the drawer and the backdrop (z-40 > z-30)
+          and under every modal (z-50), so a tap reaches them with the
+          drawer open and a sheet still paints over them. */}
+      <PhoneTabBar />
       <AnimatePresence>
         {createRoomModalOpen && <CreateRoomModal />}
       </AnimatePresence>
@@ -901,7 +961,12 @@ export function AppShell() {
         <button
           type="button"
           onClick={() => useConversationUi.getState().openNewSheet()}
-          className="focus-ring fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
+          className={clsx(
+            "focus-ring fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden",
+            phoneTabs
+              ? "bottom-[calc(4.5rem+env(safe-area-inset-bottom))]"
+              : "bottom-[max(1rem,env(safe-area-inset-bottom))]",
+          )}
           aria-label="New"
         >
           <Plus className="h-6 w-6" />

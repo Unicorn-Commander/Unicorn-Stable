@@ -325,8 +325,14 @@ export function RoomView({ roomId }: RoomViewProps) {
   const dmAgent = dmAgentId
     ? rosterAgents.find((a) => a.id === dmAgentId)
     : undefined;
+  // A runner seat is not in the Brigade roster; the room's counterpart
+  // carries its name, so the header never falls back to the raw agent id.
   const dmAgentName =
-    dmAgent?.display_name || dmAgent?.name || dmAgentId || "";
+    dmAgent?.display_name ||
+    dmAgent?.name ||
+    roomDetail?.counterpart?.display_name ||
+    dmAgentId ||
+    "";
   const roomAgentIdent = dmAgentId ? identityFor(dmAgentId, dmAgentName) : null;
   // Minting a guest link is OWNER-only on the server (membership is
   // deliberately not enough). Read the caller's own membership row — server-set
@@ -510,6 +516,17 @@ export function RoomView({ roomId }: RoomViewProps) {
         }
         onStartGroupWithAgent={(agent) =>
           openStartGroup([{ kind: "agent", id: agent.id, name: agent.name }])
+        }
+        // A hub, or a thread under one: a fresh conversation with this agent
+        // is a thread under the hub, nested in the sidebar (Nav v3 §2.2).
+        onNewConversation={
+          roomDetail?.type === "agent_hub"
+            ? () =>
+                void beginThread({
+                  roomId: roomDetail.parent_room_id || roomId,
+                  navigate,
+                })
+            : undefined
         }
       >
           {isDm ? (

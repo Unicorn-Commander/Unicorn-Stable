@@ -31,6 +31,12 @@ interface SidebarUiState {
    */
   focusMode: FocusMode;
   setFocusMode: (mode: FocusMode) => void;
+  /**
+   * Crew section past its first eight rows ("More"). Changes what is on
+   * screen, so the keyboard order reads it here too.
+   */
+  crewShowAll: boolean;
+  setCrewShowAll: (showAll: boolean) => void;
   /** Wipe on a server switch. Person keys are NAMES, not server-unique ids, so
    *  an expanded "person:Dana" would otherwise arrive pre-expanded on the next
    *  backend's unrelated Dana; a search for the old server's rooms is just as
@@ -54,5 +60,7 @@ export const useSidebarUi = create<SidebarUiState>((set) => ({
     saveFocusMode(mode);
     set({ focusMode: mode });
   },
-  resetForServer: () => set({ searchQuery: "", expandedPeople: {} }),
+  crewShowAll: false,
+  setCrewShowAll: (showAll) => set({ crewShowAll: showAll }),
+  resetForServer: () => set({ searchQuery: "", expandedPeople: {}, crewShowAll: false }),
 }));

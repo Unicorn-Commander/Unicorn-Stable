@@ -15,6 +15,7 @@ import {
   ListChecks,
   ListTree,
   LogOut,
+  MessageSquarePlus,
   Mic,
   MoreVertical,
   PanelLeftClose,
@@ -103,6 +104,17 @@ export interface RoomHeaderProps {
   leaving: boolean;
   roomAgent: RoomHeaderAgent | null;
   onStartGroupWithAgent: (agent: { id: string; name: string }) => void;
+  /**
+   * Agent hubs (Nav v3 §2.2): "New conversation" starts a thread under the
+   * hub — ChatGPT's "New chat", with the contact staying one contact.
+   */
+  onNewConversation?: () => void;
+  /**
+   * The Brigade model switcher in More. Off on rooms with a runner-backed
+   * seat, where the seat chip's popover is the brain (C2) and this menu
+   * would do nothing.
+   */
+  showModelSwitcher?: boolean;
 }
 
 export function RoomHeader({
@@ -138,6 +150,8 @@ export function RoomHeader({
   leaving,
   roomAgent,
   onStartGroupWithAgent,
+  onNewConversation,
+  showModelSwitcher = true,
 }: RoomHeaderProps) {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
@@ -278,6 +292,21 @@ export function RoomHeader({
         data-testid="room-header-actions"
         className="relative flex shrink-0 items-center gap-0.5"
       >
+        {/* Desktop only: on a phone the 44px row is full and the FAB inside
+            a hub already starts a thread, so the entry sits in More there. */}
+        {onNewConversation && (
+          <button
+            type="button"
+            onClick={onNewConversation}
+            className="focus-ring hidden h-10 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-slate-200 hover:bg-white/[0.06] sm:inline-flex"
+            aria-label="New conversation"
+            title="New conversation — a fresh thread with this agent"
+            data-testid="hub-new-conversation"
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" />
+            <span>New conversation</span>
+          </button>
+        )}
         <div className="relative" ref={callRef}>
           <button
             ref={callBtnRef}
@@ -424,13 +453,17 @@ export function RoomHeader({
               role="menu"
               className="glass-heavy absolute right-0 top-full z-50 mt-1 max-h-[min(70vh,32rem)] w-72 overflow-y-auto rounded-xl py-1 shadow-pop"
             >
-              <div className="px-3 py-1.5">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                  Model
-                </div>
-                <ModelSwitcher roomId={roomId} embedded className="max-w-full" />
-              </div>
-              <div className="my-1 h-px bg-white/[0.06]" />
+              {showModelSwitcher && (
+                <>
+                  <div className="px-3 py-1.5">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                      Model
+                    </div>
+                    <ModelSwitcher roomId={roomId} embedded className="max-w-full" />
+                  </div>
+                  <div className="my-1 h-px bg-white/[0.06]" />
+                </>
+              )}
               <MenuItem onClick={() => run(onOpenSearch)}>
                 <Search className="h-4 w-4" /> Search
               </MenuItem>
@@ -455,6 +488,15 @@ export function RoomHeader({
                 {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                 {muted ? "Unmute room" : "Mute room"}
               </MenuItem>
+              {onNewConversation && (
+                <MenuItem
+                  onClick={() => run(onNewConversation)}
+                  className="sm:hidden"
+                  data-testid="hub-new-conversation-menu"
+                >
+                  <MessageSquarePlus className="h-4 w-4" /> New conversation
+                </MenuItem>
+              )}
               <MenuItem onClick={() => run(onNewThread)}>
                 <Plus className="h-4 w-4" /> New thread
               </MenuItem>
@@ -589,11 +631,13 @@ function MenuItem({
   children,
   className,
   disabled,
+  "data-testid": testId,
 }: {
   onClick: () => void;
   children: ReactNode;
   className?: string;
   disabled?: boolean;
+  "data-testid"?: string;
 }) {
   return (
     <button
@@ -601,6 +645,7 @@ function MenuItem({
       role="menuitem"
       disabled={disabled}
       onClick={onClick}
+      data-testid={testId}
       className={clsx(
         "focus-ring flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50 max-md:min-h-11",
         className,

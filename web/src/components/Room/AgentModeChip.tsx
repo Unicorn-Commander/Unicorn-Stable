@@ -16,11 +16,14 @@ export function AgentModeChip({
   canEdit = false,
   onChange,
   compact = false,
+  className,
 }: {
   mode: string | null | undefined;
   canEdit?: boolean;
   onChange?: (mode: AgentMode) => void;
   compact?: boolean;
+  /** Wrapper classes — a row can let the chip shrink before its name does. */
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const label = agentModeLabel(mode);
@@ -28,7 +31,7 @@ export function AgentModeChip({
   const current = (mode ?? "when_named") as AgentMode;
 
   return (
-    <span className="relative inline-flex">
+    <span className={clsx("relative inline-flex", className)}>
       <button
         type="button"
         disabled={!canEdit}
@@ -44,6 +47,7 @@ export function AgentModeChip({
             ? "focus-ring border-amber-400/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/20"
             : "border-line bg-white/[0.03] text-slate-400",
           compact && "max-w-[9rem] truncate",
+          className && "max-w-full",
         )}
         title={label ?? "Set how this agent answers"}
       >
