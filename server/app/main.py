@@ -20,6 +20,7 @@ from app.api.agent_events import router as agent_events_router
 from app.api.artifacts import router as artifacts_router
 from app.api.internal_artifacts import router as internal_artifacts_router
 from app.api.brigade import router as brigade_router
+from app.api.crew import router as crew_router
 from app.api.health import router as health_router
 from app.api.home import router as home_router
 from app.api.instance_meta import router as instance_meta_router
@@ -458,6 +459,7 @@ def create_app() -> FastAPI:
     # Mount API routers under /api/v1
     app.include_router(health_router, tags=["Health"])
     app.include_router(home_router, prefix="/api/v1", tags=["Home"])
+    app.include_router(crew_router, prefix="/api/v1", tags=["Crew"])  # Nav v3 C3
     app.include_router(rooms_router, prefix="/api/v1", tags=["Rooms"])
     # Conversation model (hubs, threads, member modes, invite links, context)
     # and recording policy — design docs/design/stable-ux-north-star-2026-09-21.md.
