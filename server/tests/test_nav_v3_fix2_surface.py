@@ -7,6 +7,13 @@ forge agent metadata; the rooms list applies the owner-present rule to every
 key kind; R5 matches the caller's DB username and covers agent principals
 and the facilitator; mint takes an owner and caps the id. Every test here
 FAILED on 45bfb7f.
+
+Amended in fix lane 3 (REVIEW-3.md P1-1, P2-3, P2-5): ``via`` is NOT a
+forgeable identity key (spoken lines carry ``via: "voice"`` and must keep it);
+client metadata is an allowlist applied at the public HTTP boundary, not
+inside the shared ``send_message``; ``last_message_at`` rides the rooms select
+as a per-room top-1. ``test_nav_v3_fix3.py`` holds the tests that fail on
+5ee32e9.
 """
 
 from __future__ import annotations
@@ -196,15 +203,13 @@ class GatewayRowsLastMessageAndOwnerRule(IsolatedAsyncioTestCase):
         self.assertEqual(row["last_message_at"], NOW.isoformat().replace("+00:00", "Z"))
         self.assertIsNone(G.seat_room_row(room, persephone.id, facts, "persephone").last_message_at)
 
-    async def test_last_message_at_is_one_grouped_max(self) -> None:
-        db = AsyncMock()
-        rid = uuid.uuid4()
-        db.execute = AsyncMock(return_value=_Result(rows=[(rid, NOW)]))
-        out = await G._last_message_at(db, [rid])
-        self.assertEqual(out, {str(rid): NOW})
-        sql = str(db.execute.await_args.args[0]).lower()
-        self.assertIn("max(messages.created_at)", sql)
-        self.assertIn("group by messages.room_id", sql)
+    def test_last_message_at_rides_the_rooms_select(self) -> None:
+        from sqlalchemy.dialects import postgresql
+
+        sql = str(G.seat_rooms_statement(uuid.uuid4()).compile(dialect=postgresql.dialect())).lower()
+        self.assertIn("order by messages.created_at desc", sql)   # per-room top-1 (REVIEW-3 P2-3)
+        self.assertNotIn("max(messages.created_at)", sql)
+        self.assertNotIn("group by", sql)
 
     async def test_star_and_name_scoped_keys_also_need_the_owner_present(self) -> None:
         seat = _seat()

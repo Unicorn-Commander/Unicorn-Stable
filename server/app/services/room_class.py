@@ -20,17 +20,24 @@ fact full shell hands depend on, so it is computed the paranoid way:
   over the union of the current members, every distinct historical sender
   in the room (deleted lines included) and the true author of a thread's
   seed. A NULL sender is foreign unless it is one of Stable's own SYSTEM
-  notices (``metadata.kind = "recording"``). A thread is judged on its own
-  lines only — its context and its poll never hold a parent line.
-* **Floors are a cache of the history verdict** — monotone and
-  viewer-independent. ``rooms.metadata.class_floor = "shared"`` is written
-  only when the class judged WITHOUT the asking seat is shared (members +
-  history + seed), or at insert time when a line's author is foreign to
-  the room; never on a membership removal; never cleared. A floored room
-  skips the history aggregate.
+  notices — ``content_type = system`` AND ``metadata.kind = "recording"``,
+  judged NULL-safe: a missing kind is "not a notice". A thread is judged on
+  its own lines only — its context and its poll never hold a parent line.
+* **Floors are written ONLY from what was written** — a monotone,
+  viewer-independent cache of "this history cannot be one party's".
+  ``rooms.metadata.class_floor = "shared"`` is written when the historical
+  authors plus a thread's seed author are foreign to each other (two
+  humans wrote, seats of different owners wrote, a guest / integration /
+  unattributed line exists), or at insert time when a line's AUTHOR is
+  foreign by nature. Never from current membership, never from the asking
+  row, never by or because of a seat nobody has claimed yet (no ``owner``:
+  unprovisioned, which reads ``shared`` live and writes nothing); never on
+  a membership removal; never cleared. A member who never writes leaves no
+  trace: the class is ``shared`` while they are in the room and ``private``
+  again when they leave. A floored room skips the history read.
 * **The asking seat reads a room as private only when the single human IS
-  its owner** (R3); its own ownership is applied only to the class returned
-  to that caller (``room_class``), never to the cached floor (``base_class``).
+  its owner** (R3); its own ownership, like current membership, shapes only
+  the class returned to that caller (``room_class``).
 
   ``private``  one human, no guest, every runner seat owned by that human,
                every other agent house, every historical sender one of
@@ -40,7 +47,8 @@ fact full shell hands depend on, so it is computed the paranoid way:
 
 The pure layer (``room_class_facts``) takes plain actors so the rules have
 unit tests; ``compute_room_classes`` runs the queries for a batch of rooms
-(one grouped history query, skipped for channels and floored rooms) and is
+(one history statement of two index-friendly subplans per room, skipped —
+together with the key-id lookup — for channels and floored rooms) and is
 what the gateway uses.
 
 ``metadata.seats = {"<agent_id>": {model, effort}}`` is the per-seat brain
@@ -54,7 +62,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from sqlalchemy import and_, cast, distinct, func, not_, select, update
+from sqlalchemy import and_, cast, distinct, func, literal, not_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -125,9 +133,12 @@ class RoomClassFacts:
     floor: str | None = None
     #: Why the verdict is ``shared`` (short tags, for logs / the runner).
     reasons: tuple[str, ...] = ()
-    #: The viewer-INDEPENDENT class (asking seat left out): what the floor
-    #: caches. Never more private than ``room_class`` is for the owner.
-    base_class: str = ""
+    #: True when what was WRITTEN (historical authors + the seed's author)
+    #: cannot be one party's. The ONLY thing a floor caches — never derived
+    #: from current membership or from the asking seat.
+    history_shared: bool = False
+    #: Why the history is shared (``parties``, ``guest_human``, …).
+    history_reasons: tuple[str, ...] = ()
 
 
 @dataclass
@@ -337,8 +348,100 @@ def _judge(
         runner_seats=len(seats),
         floor=floor,
         reasons=tuple(dict.fromkeys(reasons)) if room_class == ROOM_CLASS_SHARED else (),
-        base_class=room_class,
     )
+
+
+#: Authors that are foreign by nature — whoever else wrote, whoever is in the room.
+_INTRINSIC_FOREIGN = frozenset(
+    {"unattributed_actor", "guest_human", "guest_agent", "integration", "foreign_agent", "unknown_participant_type"}
+)
+
+
+def is_seat_shaped(participant: Any, key_agent_ids: Iterable[str] = ()) -> bool:
+    """Somebody's seat — or nobody's YET. For the FLOOR verdict only (the
+    live class keeps R1's stricter reading): a row that is runner-backed, or
+    carries an ``owner``, or is a ``brigade:`` id that holds a gateway key or
+    lives in the ``dev-`` namespace. Guest agents and integrations never are.
+
+    Such a row is judged by its OWNER. With no owner it is unprovisioned:
+    the operator has not yet said whose it is, which is a gap in the
+    paperwork and not a foreign author."""
+    if not _is_agent(participant) or not _meta_is_sane(participant):
+        return False
+    if participant_kind(participant) in EXCLUDED_KINDS:
+        return False
+    if participant_backend(participant) == "runner" or seat_owners(participant):
+        return True
+    agent_id = agent_id_of_sub(getattr(participant, "keycloak_sub", None))
+    if agent_id is None:
+        return False
+    return agent_id.startswith(JWT_AGENT_ID_PREFIX) or agent_id in set(key_agent_ids)
+
+
+def author_tag(actor: Any, key_agent_ids: Iterable[str] = ()) -> str:
+    """What kind of AUTHOR this is, for the floor verdict: ``human``,
+    ``seat`` (:func:`is_seat_shaped`), ``house`` or one of the intrinsically
+    foreign tags."""
+    if actor is None:
+        return "unattributed_actor"
+    ptype = _value(getattr(actor, "participant_type", None))
+    if ptype == ParticipantType.HUMAN.value:
+        return "human"
+    if ptype == ParticipantType.GUEST.value:
+        return "guest_human"
+    if ptype == ParticipantType.AGENT.value:
+        kind = participant_kind(actor)
+        if kind == GUEST_AGENT_KIND:
+            return "guest_agent"
+        if is_seat_shaped(actor, key_agent_ids):
+            return "seat"
+        if is_house_agent(actor, key_agent_ids):
+            return "house"
+        return "integration" if kind == INTEGRATION_KIND else "foreign_agent"
+    return "unknown_participant_type"
+
+
+def author_floors_room(author: Any, *, key_agent_ids: Iterable[str] = ()) -> bool:
+    """Insert-time floor rule: only an AUTHOR that is foreign by nature
+    floors a room the moment its line lands — a guest, an integration, an
+    agent that is neither house nor anybody's seat, an unattributed line. A
+    human's or a seat's line is never judged here: whether it makes the
+    history two parties' is decided by the history verdict on the next read,
+    never by who happens to be a member."""
+    return author_tag(author, key_agent_ids) in _INTRINSIC_FOREIGN
+
+
+def history_verdict(
+    authors: Iterable[Any], *, key_agent_ids: Iterable[str] = ()
+) -> tuple[bool, tuple[str, ...]]:
+    """P1-2 — is what was WRITTEN more than one party's? Pure over the
+    authors (historical senders plus a thread's seed author; None = an
+    unattributed line). Membership and the asking seat are not inputs.
+
+    One party means: there is a username every human author IS and every
+    owned seat author belongs to. House agents belong to everyone. An
+    UNOWNED seat is unprovisioned, not foreign: its lines never floor a room
+    (they become the owner's the moment the row is stamped) — the LIVE class
+    still reads ``shared`` while such a line is in the history."""
+    key_ids = set(key_agent_ids)
+    parties: list[frozenset[str]] = []
+    reasons: list[str] = []
+    for actor in _dedupe_actors(authors):
+        tag = author_tag(actor, key_ids)
+        if tag == "human":
+            name = norm_username(getattr(actor, "username", None))
+            parties.append(frozenset({name}) if name else frozenset())
+        elif tag == "seat":
+            owners = seat_owners(actor)
+            if owners:
+                parties.append(owners)
+        elif tag == "house":
+            continue
+        else:
+            reasons.append(tag)
+    if parties and not frozenset.intersection(*parties):
+        reasons.append("parties")
+    return bool(reasons), tuple(dict.fromkeys(reasons))
 
 
 def _dedupe_actors(actors: Iterable[Any]) -> list[Any]:
@@ -371,42 +474,48 @@ def room_class_facts(
     foreign NULL sender), the thread seed's true author (``has_seed`` with a
     None ``seed_sender`` is foreign) and the asking seat's own participant.
 
-    ``base_class`` is judged WITHOUT the asking seat (what a floor may
-    cache); ``room_class`` adds the asking seat's own ownership (R3) and is
-    what that caller is told."""
+    ``room_class`` is the LIVE class: members, authors, seed and asker
+    together (R3). ``history_shared`` is the floor verdict: authors and seed
+    only (:func:`history_verdict`)."""
     key_ids = set(key_agent_ids)
-    base_actors: list[Any] = [getattr(member, "participant", None) for member in members]
-    base_actors.extend(historical)
+    authors: list[Any] = list(historical)
     if has_seed:
-        base_actors.append(seed_sender)
-    base_unique = _dedupe_actors(base_actors)
-    base = _judge(room_type, base_unique, key_ids=key_ids, asking_seat=None, floor=floor)
-    if asking_seat is None:
-        return base
-
-    asking_present = any(
-        actor is asking_seat
-        or (
-            getattr(asking_seat, "id", None) is not None
-            and actor is not None
-            and getattr(actor, "id", None) is not None
-            and str(actor.id) == str(asking_seat.id)
+        authors.append(seed_sender)
+    actors: list[Any] = [getattr(member, "participant", None) for member in members]
+    actors.extend(authors)
+    unique = _dedupe_actors(actors)
+    if asking_seat is not None:
+        present = any(
+            actor is asking_seat
+            or (
+                getattr(asking_seat, "id", None) is not None
+                and actor is not None
+                and getattr(actor, "id", None) is not None
+                and str(actor.id) == str(asking_seat.id)
+            )
+            for actor in unique
         )
-        for actor in base_unique
-    )
-    view_actors = list(base_unique) if asking_present else list(base_unique) + [asking_seat]
-    view = _judge(room_type, view_actors, key_ids=key_ids, asking_seat=asking_seat, floor=floor)
+        if not present:
+            unique = unique + [asking_seat]
+    live = _judge(room_type, unique, key_ids=key_ids, asking_seat=asking_seat, floor=floor)
+    history_shared, history_reasons = history_verdict(authors, key_agent_ids=key_ids)
+    room_class, reasons = live.room_class, live.reasons
+    if history_shared and room_class == ROOM_CLASS_PRIVATE:
+        # Cannot happen (every author is in the live union) — kept as a
+        # fail-closed invariant rather than an assumption.
+        room_class, reasons = ROOM_CLASS_SHARED, tuple(dict.fromkeys(reasons + history_reasons))
     return RoomClassFacts(
-        room_class=view.room_class,
-        humans=view.humans,
-        own_seats=view.own_seats,
-        foreign_seats=view.foreign_seats,
-        guests=view.guests,
-        foreign_actors=view.foreign_actors,
-        runner_seats=view.runner_seats,
+        room_class=room_class,
+        humans=live.humans,
+        own_seats=live.own_seats,
+        foreign_seats=live.foreign_seats,
+        guests=live.guests,
+        foreign_actors=live.foreign_actors,
+        runner_seats=live.runner_seats,
         floor=floor,
-        reasons=view.reasons,
-        base_class=base.room_class,
+        reasons=reasons,
+        history_shared=history_shared,
+        history_reasons=history_reasons,
     )
 
 
@@ -453,24 +562,19 @@ def room_class_for(
     )
 
 
-def insert_makes_room_shared(
+def insert_floors_room(
     room_type: Any,
-    member_participants: Iterable[Any],
     author: Any,
     *,
     floor: str | None = None,
     key_agent_ids: Iterable[str] = (),
 ) -> bool:
-    """Insert-time floor rule (P2-2): is the room ``shared`` once ``author``'s
-    line is in it, judged viewer-independently over the current members plus
-    the author (no history read)? Channels and already-floored rooms never
-    need a floor. Without ``key_agent_ids`` a key-holder wearing a brigade
-    sub is not caught here — the read path's history aggregate still is."""
+    """Should this insert stamp the floor? Only when the room can still be
+    floored (not a channel, not floored yet) and the AUTHOR is foreign by
+    nature (:func:`author_floors_room`). Current membership is not an input."""
     if _value(room_type) == "channel" or floor == ROOM_CLASS_SHARED:
         return False
-    actors = _dedupe_actors(list(member_participants) + [author])
-    verdict = _judge(room_type, actors, key_ids=set(key_agent_ids), asking_seat=None, floor=None)
-    return verdict.room_class == ROOM_CLASS_SHARED
+    return author_floors_room(author, key_agent_ids=key_agent_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -497,30 +601,67 @@ class RoomHistory:
     foreign_null: bool = False
 
 
-def history_statement(room_ids: list[Any]):
-    """The one grouped history query (P2-2): every distinct sender per room
-    (``array_agg(DISTINCT sender_id)``, deleted lines INCLUDED — a deleted
-    line was still read) and whether any NULL-sender line is not a Stable
-    system notice."""
-    from app.models.message import ContentType, Message
+def foreign_null_line(
+    sender_id: Any,
+    content_type: Any,
+    kind_text: Any,
+    *,
+    system_value: Any,
+    notice_kinds: Iterable[str] = SYSTEM_NOTICE_KINDS,
+) -> Any:
+    """SQL predicate: a NULL-sender line that is NOT one of Stable's own
+    SYSTEM notices — i.e. unattributed text, foreign. NULL-SAFE (P2-1): a
+    NULL-sender SYSTEM line with no ``kind``, a null ``kind`` or NULL
+    metadata makes ``kind = 'recording'`` NULL, and ``COALESCE(…, false)``
+    turns that into "not a notice" instead of letting three-valued logic
+    hide the row. House ONLY when content_type is system AND kind is a
+    notice kind; anything else is foreign.
 
-    system_notice = and_(
-        Message.content_type == ContentType.SYSTEM,
-        Message.metadata_[KIND_KEY].astext.in_(list(SYSTEM_NOTICE_KINDS)),
+    Takes column expressions so the same predicate runs against
+    ``messages`` in production and against a plain table in the tests."""
+    is_notice = and_(content_type == system_value, kind_text.in_(list(notice_kinds)))
+    return and_(sender_id.is_(None), not_(func.coalesce(is_notice, False)))
+
+
+def history_statement(room_ids: list[Any]):
+    """One statement for a batch of rooms (P2-2), two index-friendly
+    subplans per room:
+
+    * the distinct non-NULL sender ids — ``array_agg(DISTINCT sender_id)``
+      over ``room_id`` + ``sender_id`` only, so it is an index-only scan of
+      ``ix_messages_room_id_sender_id``. Deleted lines are INCLUDED on
+      purpose: a deleted line was still read.
+    * a bounded ``EXISTS`` for a foreign NULL-sender line
+      (:func:`foreign_null_line`): it visits NULL-sender rows only and stops
+      at the first hit."""
+    from app.models.message import ContentType, Message
+    from app.models.room import Room
+
+    senders = (
+        select(func.array_agg(distinct(Message.sender_id)))
+        .where(Message.room_id == Room.id, Message.sender_id.isnot(None))
+        .correlate(Room)
+        .scalar_subquery()
     )
-    return (
-        select(
-            Message.room_id,
-            func.array_agg(distinct(Message.sender_id)).filter(Message.sender_id.isnot(None)),
-            func.bool_or(and_(Message.sender_id.is_(None), not_(system_notice))),
+    foreign_null = (
+        select(literal(1))
+        .where(
+            Message.room_id == Room.id,
+            foreign_null_line(
+                Message.sender_id,
+                Message.content_type,
+                Message.metadata_[KIND_KEY].astext,
+                system_value=ContentType.SYSTEM,
+            ),
         )
-        .where(Message.room_id.in_(room_ids))
-        .group_by(Message.room_id)
+        .correlate(Room)
+        .exists()
     )
+    return select(Room.id, senders, foreign_null).where(Room.id.in_(room_ids))
 
 
 async def load_room_history(db: Any, room_ids: Iterable[Any]) -> dict[str, RoomHistory]:
-    """``{room_id: RoomHistory}`` — one grouped query."""
+    """``{room_id: RoomHistory}`` — one statement (:func:`history_statement`)."""
     ids = list(room_ids)
     if not ids:
         return {}
@@ -581,6 +722,8 @@ class RoomLite:
     updated_at: Any = None
     is_archived: bool = False
     members: list[Any] = field(default_factory=list)
+    #: Newest line in the room (per-room top-1), filled by the rooms list.
+    last_message_at: Any = None
 
 
 @dataclass
@@ -688,13 +831,23 @@ async def compute_room_classes(
     ``metadata_`` and ``members`` — ORM rooms or :class:`RoomLite`) the R2
     way: members, history, seed, floor. Key agent ids are loaded once per
     call unless given. Returns ``{room_id: facts}``; the caller decides
-    whether to write floors (:func:`apply_class_floors`, from ``base_class``)."""
+    whether to write floors (:func:`apply_class_floors`, from
+    ``history_shared`` — what was written, never who is a member)."""
     room_list = list(rooms)
     if not room_list:
         return {}
-    keys = set(key_agent_ids) if key_agent_ids is not None else await load_key_agent_ids(db)
+    needing = [room for room in room_list if _needs_history(room)]
+    if key_agent_ids is not None:
+        keys = set(key_agent_ids)
+    elif needing:
+        keys = await load_key_agent_ids(db)
+    else:
+        # Every room is a channel or already floored: the class is decided
+        # without telling house from key-holder, so the lookup is skipped
+        # (the counts on those rows treat brigade-shaped rows as house).
+        keys = set()
 
-    history = await load_room_history(db, [room.id for room in room_list if _needs_history(room)])
+    history = await load_room_history(db, [room.id for room in needing])
     loaded_by_id: dict[str, Any] = {}
     for room in room_list:
         for member in getattr(room, "members", None) or []:
@@ -772,14 +925,15 @@ def _mirror_floor(room: Any) -> None:
 
 
 async def apply_class_floors(db: Any, rooms: Iterable[Any], facts: dict[str, RoomClassFacts]) -> list[Any]:
-    """Write the sticky floor on every room whose VIEWER-INDEPENDENT class
-    (``base_class``) is shared and that has no floor yet; mirrors it onto the
-    in-memory room so the response already shows it. Returns the ids
-    stamped. The caller commits."""
+    """Write the sticky floor on every room whose HISTORY is shared
+    (``history_shared``: authors and seed author only) and that has no floor
+    yet; mirrors it onto the in-memory room so the response already shows
+    it. A room that is shared only because of who is a member, or who is
+    asking, is left untouched. Returns the ids stamped. The caller commits."""
     to_stamp: list[Any] = []
     for room in rooms:
         fact = facts.get(str(room.id))
-        if fact is None or fact.base_class != ROOM_CLASS_SHARED:
+        if fact is None or not fact.history_shared:
             continue
         if _value(getattr(room, "room_type", None)) == "channel":
             continue
@@ -885,14 +1039,19 @@ __all__ = [
     "SeatSettingError",
     "agent_id_of_sub",
     "apply_class_floors",
+    "author_floors_room",
+    "author_tag",
     "class_floor_of",
     "classify_room",
     "compute_room_classes",
+    "foreign_null_line",
     "history_statement",
-    "insert_makes_room_shared",
+    "history_verdict",
+    "insert_floors_room",
     "is_excluded_kind_participant",
     "is_house_agent",
     "is_runner_seat",
+    "is_seat_shaped",
     "load_actors",
     "load_key_agent_ids",
     "load_members",

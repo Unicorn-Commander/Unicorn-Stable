@@ -73,7 +73,6 @@ from app.services.room_class import (
     load_members,
     seat_owners,
     seat_setting_from_metadata,
-    stamp_class_floor_shared,
 )
 from app.config import Settings, get_settings
 from app.services.agent_status import (
@@ -316,9 +315,9 @@ async def _classify_for_seat(
     db: AsyncSession, room: Room, seat: Participant | None, agent_id: str
 ) -> RoomClassFacts:
     """The R2 class of one room as the asking seat sees it (``room_class``).
-    The sticky floor is written only from the viewer-INDEPENDENT verdict
-    (``base_class``, P1-A): a foreign asker gets ``shared`` and leaves the
-    room untouched."""
+    The sticky floor is written only from what was WRITTEN in the room
+    (``history_shared``, REVIEW-3 P1-2): never from who is a member now and
+    never from who is asking, so reading a room cannot change it."""
     facts = (await compute_room_classes(db, [room], asking_seat=_asking_seat(seat, agent_id)))[
         str(room.id)
     ]
@@ -597,8 +596,8 @@ class GatewayRoomRow(BaseModel):
     agent_mode: str | None = None
     seat: SeatSetting
     updated_at: datetime | None = None
-    #: ``max(messages.created_at)`` in the room (null when empty) — the
-    #: runner's poll cadence / cap keys off it.
+    #: The newest line in the room (null when empty; deleted lines and the
+    #: seat's own posts count) — the runner's poll cadence / cap keys off it.
     last_message_at: datetime | None = None
 
 
@@ -880,22 +879,6 @@ def seat_room_row(
     )
 
 
-async def _last_message_at(db: AsyncSession, room_ids: list[Any]) -> dict[str, datetime]:
-    """``{room_id: max(created_at)}`` — one grouped query."""
-    from app.models.message import Message
-
-    if not room_ids:
-        return {}
-    rows = (
-        await db.execute(
-            select(Message.room_id, func.max(Message.created_at))
-            .where(Message.room_id.in_(room_ids))
-            .group_by(Message.room_id)
-        )
-    ).all()
-    return {str(room_id): stamp for room_id, stamp in rows if stamp is not None}
-
-
 async def _find_seat_participant(db: AsyncSession, agent_id: str) -> Participant | None:
     return (
         await db.execute(
@@ -904,27 +887,43 @@ async def _find_seat_participant(db: AsyncSession, agent_id: str) -> Participant
     ).scalar_one_or_none()
 
 
-async def _seat_rooms_lite(db: AsyncSession, seat_id: Any) -> list[RoomLite]:
-    """Non-archived rooms the seat is a member of, as column rows (no
-    eager creator / membership loads), newest activity first."""
-    rows = (
-        await db.execute(
-            select(
-                Room.id,
-                Room.name,
-                Room.livekit_room_name,
-                Room.display_name,
-                Room.room_type,
-                Room.parent_room_id,
-                Room.metadata_,
-                Room.updated_at,
-                Room.is_archived,
-            )
-            .join(RoomMember, RoomMember.room_id == Room.id)
-            .where(RoomMember.participant_id == seat_id, Room.is_archived.is_(False))
-            .order_by(Room.updated_at.desc())
+def seat_rooms_statement(seat_id: Any):
+    """Non-archived rooms the seat is a member of, as columns (no eager
+    creator / membership loads), newest activity first — with each room's
+    newest line as a per-room TOP-1 on ``ix_messages_room_id_created_at``
+    (P2-3): one index probe per room instead of a grouped max over every
+    entry of every listed room."""
+    from app.models.message import Message
+
+    last_message_at = (
+        select(Message.created_at)
+        .where(Message.room_id == Room.id)
+        .order_by(Message.created_at.desc())
+        .limit(1)
+        .correlate(Room)
+        .scalar_subquery()
+    )
+    return (
+        select(
+            Room.id,
+            Room.name,
+            Room.livekit_room_name,
+            Room.display_name,
+            Room.room_type,
+            Room.parent_room_id,
+            Room.metadata_,
+            Room.updated_at,
+            Room.is_archived,
+            last_message_at,
         )
-    ).all()
+        .join(RoomMember, RoomMember.room_id == Room.id)
+        .where(RoomMember.participant_id == seat_id, Room.is_archived.is_(False))
+        .order_by(Room.updated_at.desc())
+    )
+
+
+async def _seat_rooms_lite(db: AsyncSession, seat_id: Any) -> list[RoomLite]:
+    rows = (await db.execute(seat_rooms_statement(seat_id))).all()
     return [
         RoomLite(
             id=row[0],
@@ -936,6 +935,7 @@ async def _seat_rooms_lite(db: AsyncSession, seat_id: Any) -> list[RoomLite]:
             metadata_=row[6] if isinstance(row[6], dict) else None,
             updated_at=row[7],
             is_archived=bool(row[8]),
+            last_message_at=row[9] if len(row) > 9 else None,
         )
         for row in rows
     ]
@@ -1034,9 +1034,10 @@ async def gateway_list_rooms(
     facts = await compute_room_classes(db, rooms, asking_seat=seat)
     if await apply_class_floors(db, rooms, facts):
         await db.commit()
-    last_at = await _last_message_at(db, ids)
     return [
-        seat_room_row(room, seat.id, facts[str(room.id)], principal.agent_id, last_at.get(str(room.id)))
+        seat_room_row(
+            room, seat.id, facts[str(room.id)], principal.agent_id, getattr(room, "last_message_at", None)
+        )
         for room in rooms
     ]
 

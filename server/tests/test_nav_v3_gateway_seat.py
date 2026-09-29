@@ -113,8 +113,8 @@ class ListRooms(IsolatedAsyncioTestCase):
         aaron, shafen, persephone = _human(), _human("shafenkhan"), _seat()
         hub_id, shared_id = uuid.uuid4(), uuid.uuid4()
 
-        def room_row(rid, name, rtype):
-            return (rid, name, f"stable-{name}", name.title(), rtype, None, {}, NOW, False)
+        def room_row(rid, name, rtype, last_at=None):
+            return (rid, name, f"stable-{name}", name.title(), rtype, None, {}, NOW, False, last_at)
 
         def member_row(rid, p, mode=None):
             return (rid, p.id, mode, p.id, p.participant_type, p.username, getattr(p, "keycloak_sub", None), p.display_name, p.metadata_)
@@ -122,14 +122,13 @@ class ListRooms(IsolatedAsyncioTestCase):
         db = AsyncMock()
         db.execute = AsyncMock(side_effect=[
             _res(scalar=persephone),                                            # seat
-            _res(rows=[room_row(hub_id, "hub-fa65c5631810", RoomType.AGENT_HUB), room_row(shared_id, "crew", RoomType.GROUP_DM)]),
+            _res(rows=[room_row(hub_id, "hub-fa65c5631810", RoomType.AGENT_HUB, NOW), room_row(shared_id, "crew", RoomType.GROUP_DM)]),
             _res(scalars=[hub_id, shared_id]),                                  # owner present in both
             _res(rows=[member_row(hub_id, aaron), member_row(hub_id, persephone, "answers_all"),
                        member_row(shared_id, aaron), member_row(shared_id, shafen), member_row(shared_id, persephone)]),
             _res(scalars=["persephone"]),                                       # key agent ids
             _res(rows=[(hub_id, [aaron.id, persephone.id], False), (shared_id, [aaron.id, shafen.id], False)]),  # history
-            _res(),                                                             # floor stamp (shared room)
-            _res(rows=[(hub_id, NOW)]),                                         # last_message_at
+            _res(),                                                             # floor stamp (two humans WROTE in it)
         ])
         db.commit = AsyncMock()
         principal = SimpleNamespace(agent_id="persephone", allowed_rooms=["@member"], auth_kind="key", human_sub=None)

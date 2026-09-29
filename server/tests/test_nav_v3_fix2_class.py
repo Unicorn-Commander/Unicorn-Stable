@@ -52,6 +52,11 @@ def _brigade(agent_id="majik", metadata=None):
                            display_name=agent_id.title(), participant_type=ParticipantType.AGENT, metadata_=metadata, avatar_url=None)
 
 
+def _webhook(room_name="hub-fa65c5631810"):
+    return SimpleNamespace(id=uuid.uuid4(), username=f"webhook-{room_name}", keycloak_sub=f"webhook:{room_name}",
+                           display_name="Forgejo CI", participant_type=ParticipantType.AGENT, metadata_=None, avatar_url=None)
+
+
 def _members(*participants):
     return [SimpleNamespace(participant=p, participant_id=getattr(p, "id", None), agent_mode=None) for p in participants]
 
@@ -98,17 +103,17 @@ def _floor_updates(db) -> list:
 
 
 class P1_A_FloorIsViewerIndependent(IsolatedAsyncioTestCase):
-    def test_base_class_leaves_the_asker_out(self) -> None:
+    def test_the_floor_verdict_leaves_the_asker_out(self) -> None:
         facts = RC.room_class_facts(HUB, _members(AARON, PERSEPHONE), asking_seat=FLOW)
         self.assertEqual(facts.room_class, "shared")      # Flow reads it shared (R3)
-        self.assertEqual(facts.base_class, "private")     # the room itself is private
+        self.assertFalse(facts.history_shared)            # nothing written says so
         stand_in = G._asking_seat(None, "ghost")
         facts = RC.room_class_facts(HUB, _members(AARON, PERSEPHONE), asking_seat=stand_in)
-        self.assertEqual((facts.room_class, facts.base_class), ("shared", "private"))
+        self.assertEqual((facts.room_class, facts.history_shared), ("shared", False))
         # P2-17: the stand-in is not counted as an OTHER foreign seat.
         self.assertEqual((facts.own_seats, facts.foreign_seats), (1, 0))
         owner_view = RC.room_class_facts(HUB, _members(AARON, PERSEPHONE), asking_seat=PERSEPHONE)
-        self.assertEqual((owner_view.room_class, owner_view.base_class), ("private", "private"))
+        self.assertEqual((owner_view.room_class, owner_view.history_shared), ("private", False))
 
     async def test_a_foreign_asker_writes_no_floor(self) -> None:
         room = RC.RoomLite(id=uuid.uuid4(), room_type=HUB, metadata_={}, members=_members(AARON, PERSEPHONE))
@@ -130,7 +135,7 @@ class P1_A_FloorIsViewerIndependent(IsolatedAsyncioTestCase):
         db.commit = AsyncMock()
         facts = await G._classify_for_seat(db, room, FLOW, "flow")
         self.assertEqual(facts.room_class, "shared")
-        self.assertEqual(facts.base_class, "private")
+        self.assertFalse(facts.history_shared)
         db.commit.assert_not_awaited()
         self.assertEqual(_floor_updates(db), [])
         self.assertNotIn("class_floor", room.metadata_)
@@ -145,7 +150,8 @@ class P1_A_FloorIsViewerIndependent(IsolatedAsyncioTestCase):
             _Result(rows=[(mallory.id, mallory.participant_type, mallory.username, None, "Mallory", {}, None)]),
         ])
         facts = (await RC.compute_room_classes(db, [room], asking_seat=PERSEPHONE))[str(room.id)]
-        self.assertEqual((facts.room_class, facts.base_class), ("shared", "shared"))
+        self.assertEqual((facts.room_class, facts.history_shared), ("shared", True))
+        self.assertEqual(facts.history_reasons, ("parties",))
         db.execute = AsyncMock(return_value=_Result())
         self.assertEqual(await RC.apply_class_floors(db, [room], {str(room.id): facts}), [room.id])
         self.assertEqual(room.metadata_["class_floor"], "shared")
@@ -228,7 +234,8 @@ class P1_B_RemovalsNeverFloorAndThreadsStandAlone(IsolatedAsyncioTestCase):
         # The history query separates Stable's own SYSTEM notices from any
         # other NULL sender: only the latter is reported as foreign.
         sql = _sql(RC.history_statement([uuid.uuid4()]))
-        self.assertIn("bool_or(", sql)
+        self.assertIn("exists (select", sql)
+        self.assertIn("not coalesce(", sql)               # NULL-safe (REVIEW-3 P2-1)
         self.assertIn("messages.sender_id is null", sql)
         self.assertIn("messages.content_type", sql)
         self.assertIn("messages.metadata ->>", sql)
@@ -335,7 +342,7 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
 
         async def classify(*_a, **_kw):
             order.append("class")
-            return RC.RoomClassFacts(room_class="private", humans=1, own_seats=0, foreign_seats=0, guests=0, base_class="private")
+            return RC.RoomClassFacts(room_class="private", humans=1, own_seats=0, foreign_seats=0, guests=0)
 
         svc = SimpleNamespace(get_messages=get_messages)
         with patch.object(G, "_gateway_rate_limit", new=AsyncMock()), \
@@ -355,9 +362,9 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         channel = RC.RoomLite(id=uuid.uuid4(), room_type=RoomType.CHANNEL, metadata_={}, members=_members(AARON, SHAFEN, PERSEPHONE))
         floored = RC.RoomLite(id=uuid.uuid4(), room_type=HUB, metadata_={"class_floor": "shared"}, members=_members(AARON, PERSEPHONE))
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[_Result(scalars=["persephone"])])  # key ids only
+        db.execute = AsyncMock(side_effect=[])  # nothing to read: not even the key ids (REVIEW-3 P2-2)
         facts = await RC.compute_room_classes(db, [channel, floored], asking_seat=PERSEPHONE)
-        self.assertEqual(db.execute.await_count, 1)
+        self.assertEqual(db.execute.await_count, 0)
         self.assertEqual(facts[str(channel.id)].room_class, "channel")
         self.assertEqual(facts[str(floored.id)].room_class, "shared")
         self.assertIn("floor", facts[str(floored.id)].reasons)
@@ -375,21 +382,23 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         self.assertEqual({f.room_class for f in facts.values()}, {"private"})
 
     def test_insert_time_rule(self) -> None:
-        members = [AARON, PERSEPHONE]
-        self.assertFalse(RC.insert_makes_room_shared(HUB, members, AARON))
-        self.assertFalse(RC.insert_makes_room_shared(HUB, members, PERSEPHONE))
-        self.assertFalse(RC.insert_makes_room_shared(HUB, members, MAJIK))
-        self.assertTrue(RC.insert_makes_room_shared(HUB, members, SHAFEN))
-        self.assertTrue(RC.insert_makes_room_shared(HUB, members, FLOW))
-        self.assertTrue(RC.insert_makes_room_shared(HUB, members, None))
-        self.assertFalse(RC.insert_makes_room_shared(RoomType.CHANNEL, members, SHAFEN))
-        self.assertFalse(RC.insert_makes_room_shared(HUB, members, SHAFEN, floor="shared"))
+        # The author alone decides, and only an author that is foreign BY
+        # NATURE floors at insert. Two parties writing is the history
+        # verdict's business, on the next read (REVIEW-3 P1-2).
+        hook = _webhook()
+        for author in (AARON, PERSEPHONE, MAJIK, SHAFEN, FLOW, _seat("new", owner=None)):
+            self.assertFalse(RC.insert_floors_room(HUB, author), author.username)
+        for author in (None, hook, _seat("relay", owner=None, kind="integration"), _seat("visitor", owner=None, kind="guest_agent")):
+            self.assertTrue(RC.insert_floors_room(HUB, author), getattr(author, "username", None))
+        self.assertFalse(RC.insert_floors_room(RoomType.CHANNEL, hook))
+        self.assertFalse(RC.insert_floors_room(HUB, hook, floor="shared"))
+        self.assertFalse(hasattr(RC, "insert_makes_room_shared"))
 
     async def test_a_foreign_line_floors_the_room_at_insert(self) -> None:
         from app.services.message_service import MessageService
 
         room_id = uuid.uuid4()
-        mallory = _human("mallory")
+        mallory = _webhook()   # foreign by nature: an integration's line
         member_rows = [
             (SimpleNamespace(participant_id=AARON.id, mention_count=0, has_unread_mention=False), AARON),
             (SimpleNamespace(participant_id=PERSEPHONE.id, mention_count=0, has_unread_mention=False), PERSEPHONE),
@@ -435,7 +444,7 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         self.assertEqual(_floor_updates(db), [])
         self.assertEqual(db.execute.await_count, 4)  # no fifth statement: nothing was stamped
 
-    async def test_a_thread_seeded_from_a_strangers_line_is_floored_at_birth(self) -> None:
+    async def test_a_thread_seed_keeps_its_author_and_floors_only_for_a_foreign_nature(self) -> None:
         from app.services.room_service import RoomService
 
         parent = SimpleNamespace(id=uuid.uuid4(), name="crew", room_type=RoomType.GROUP_DM, parent_room_id=None,
@@ -455,8 +464,25 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         svc.create_room = AsyncMock(return_value=thread)
         await svc.create_thread(parent_id=parent.id, creator_id=AARON.id, seed_message_id=seed.id)
         meta = svc.create_room.await_args.kwargs["metadata"]
-        self.assertEqual(meta.get("class_floor"), "shared")
+        # Another human's line: the author is kept, the class is judged on
+        # read, and nothing is cached at birth (REVIEW-3 P1-2).
+        self.assertNotIn("class_floor", meta)
         self.assertEqual(meta["thread"]["seed_sender_id"], str(SHAFEN.id))
+        live = RC.room_class_facts(HUB, _members(AARON, PERSEPHONE), asking_seat=PERSEPHONE, has_seed=True, seed_sender=SHAFEN)
+        self.assertEqual((live.room_class, live.history_shared), ("shared", False))
+        written = RC.room_class_facts(HUB, _members(AARON, PERSEPHONE), asking_seat=PERSEPHONE, historical=[AARON],
+                                      has_seed=True, seed_sender=SHAFEN)
+        self.assertEqual((written.room_class, written.history_shared), ("shared", True))
+        # An integration's line as the seed: floored at birth.
+        hook = _webhook()
+        seed_hook = SimpleNamespace(id=uuid.uuid4(), sender_id=hook.id, sender=hook, content="build failed", created_at=NOW)
+        db.execute = AsyncMock(side_effect=[
+            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed_hook), _Result(scalar=AARON),
+            _Result(rows=[(SimpleNamespace(agent_mode="answers_all"), PERSEPHONE)]),
+        ])
+        svc.create_room = AsyncMock(return_value=thread)
+        await svc.create_thread(parent_id=parent.id, creator_id=AARON.id, seed_message_id=seed_hook.id)
+        self.assertEqual(svc.create_room.await_args.kwargs["metadata"].get("class_floor"), "shared")
         # The owner's own line as the seed: no floor at birth.
         seed_mine = SimpleNamespace(id=uuid.uuid4(), sender_id=AARON.id, sender=AARON, content="mine", created_at=NOW)
         db.execute = AsyncMock(side_effect=[
@@ -479,7 +505,7 @@ class P2_11_FloorMirrorIsCommittedValue(IsolatedAsyncioTestCase):
 
         room = Room(name="hub-x", display_name="x", room_type=HUB, livekit_room_name="stable-hub-x", metadata_={"seats": {"persephone": {"model": None, "effort": "max"}}})
         room.id = uuid.uuid4()
-        facts = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0, base_class="shared")
+        facts = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0, history_shared=True)
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_Result())
         from sqlalchemy import inspect as sa_inspect
@@ -502,9 +528,10 @@ class QueryTextIsPinned(IsolatedAsyncioTestCase):
     def test_history_includes_deleted_lines_and_null_senders(self) -> None:
         sql = _sql(RC.history_statement([uuid.uuid4()]))
         self.assertNotIn("is_deleted", sql)
-        self.assertIn("array_agg(distinct messages.sender_id) filter (where messages.sender_id is not null)", sql)
-        self.assertIn("bool_or(messages.sender_id is null and not", sql)
-        self.assertIn("group by messages.room_id", sql)
+        self.assertIn("array_agg(distinct messages.sender_id)", sql)
+        self.assertIn("messages.sender_id is not null", sql)
+        self.assertIn("messages.sender_id is null and not coalesce(", sql)
+        self.assertNotIn("group by", sql)                 # per-room subplans, not one big aggregate
 
     async def test_key_ids_include_revoked_keys(self) -> None:
         db = AsyncMock()

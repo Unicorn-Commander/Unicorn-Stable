@@ -384,8 +384,8 @@ class P0_2_FloorIsAnSqlMerge(IsolatedAsyncioTestCase):
         hub = RC.RoomLite(id=uuid.uuid4(), room_type=AGENT_HUB, metadata_={})
         chan = RC.RoomLite(id=uuid.uuid4(), room_type=RoomType.CHANNEL, metadata_={})
         floored = RC.RoomLite(id=uuid.uuid4(), room_type=AGENT_HUB, metadata_={"class_floor": "shared"})
-        shared = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0, base_class="shared")
-        facts = {str(hub.id): shared, str(chan.id): RC.RoomClassFacts("channel", 2, 0, 0, 0, base_class="channel"), str(floored.id): shared}
+        shared = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=0, history_shared=True)
+        facts = {str(hub.id): shared, str(chan.id): RC.RoomClassFacts("channel", 2, 0, 0, 0, history_shared=True), str(floored.id): shared}
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_Result())
         stamped = await RC.apply_class_floors(db, [hub, chan, floored], facts)
@@ -398,7 +398,7 @@ class P0_2_GatewayListJudgesTheHistory(IsolatedAsyncioTestCase):
     the room reads shared and the floor is written."""
 
     def _room_row(self, room_id, name="hub-fa65c5631810", room_type=AGENT_HUB, parent=None, metadata=None):
-        return (room_id, name, f"stable-{name}", "Persephone", room_type, parent, metadata or {}, NOW, False)
+        return (room_id, name, f"stable-{name}", "Persephone", room_type, parent, metadata or {}, NOW, False, NOW)  # …, last_message_at
 
     def _member_row(self, room_id, p, mode=None):
         return (room_id, p.id, mode, p.id, p.participant_type, p.username, getattr(p, "keycloak_sub", None), getattr(p, "display_name", None), p.metadata_)
@@ -420,7 +420,6 @@ class P0_2_GatewayListJudgesTheHistory(IsolatedAsyncioTestCase):
         if MALLORY.id in history:
             results.append(_Result(rows=[self._actor_row(MALLORY)]))          # the unknown sender
             results.append(_Result(rowcount=1))                               # floor stamp
-        results.append(_Result(rows=[(room_id, NOW)]))                        # last_message_at
         db.execute = AsyncMock(side_effect=results)
         db.commit = AsyncMock()
         principal = SimpleNamespace(agent_id="persephone", allowed_rooms=list(principal_rooms), auth_kind="key", human_sub=None)

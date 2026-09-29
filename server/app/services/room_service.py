@@ -37,7 +37,7 @@ from app.services.room_class import (
     SEATS_METADATA_KEY,
     SeatSettingError,
     agent_id_of_sub,
-    insert_makes_room_shared,
+    insert_floors_room,
     is_runner_seat,
     norm_username,
     participant_kind,
@@ -1504,9 +1504,7 @@ class RoomService:
         slug = f"{parent.name[:80]}-t-{uuid.uuid4().hex[:8]}"
 
         # Seed members from the parent's roster in one query: agents keep
-        # their mode; humans come along only when @-mentioned. Read here so
-        # the seed line's author can be judged against the thread's members
-        # before the room exists (insert-time floor, P2-2).
+        # their mode; humans come along only when @-mentioned.
         handles: set[str] = set(parse_mentions(display).handles)
         if seed is not None:
             handles |= set(parse_mentions(seed.content).handles)
@@ -1516,18 +1514,14 @@ class RoomService:
             .where(RoomMember.room_id == parent.id)
         )
         parent_members = list(member_rows.all())
-        seeded_participants: list[Any] = [creator] if creator is not None else []
-        for _membership, participant in parent_members:
-            if participant.id == creator_id:
-                continue
-            if participant.participant_type == ParticipantType.AGENT or (
-                handles and (participant.username or "").casefold() in handles
-            ):
-                seeded_participants.append(participant)
-        if seed is not None and insert_makes_room_shared(
-            parent.room_type, seeded_participants, getattr(seed, "sender", None)
+        if seed is not None and insert_floors_room(
+            parent.room_type, getattr(seed, "sender", None)
         ):
-            # A stranger's line as the seed: the thread is shared from birth.
+            # The seed's AUTHOR is foreign by nature (a guest, an
+            # integration, an unattributed line): the thread is shared from
+            # birth. A human's or a seat's line as the seed never floors
+            # here — the thread's members are not an input (REVIEW-3 P1-2);
+            # the read path judges the history.
             meta[CLASS_FLOOR_KEY] = "shared"
 
         room = await self.create_room(
