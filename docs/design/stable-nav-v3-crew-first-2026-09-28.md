@@ -99,6 +99,25 @@ have: the agent is a **teammate with hands**, present in voice and video, with a
 brain and a per-room permission tier that the human can see. So the design keeps their idioms and
 adds the seat.
 
+**2.0 Five kinds of agent — the model must say which is which (Aaron, 09-28: "there's a
+difference between Brigade agents, our runners on our computers, and other users' agents or
+models they bring in — like how Shafen and I have our agents talk to each other").**
+
+| kind | what it is | identity facts | hands | in your Crew? |
+|---|---|---|---|---|
+| **Brigade agent** | house persona hosted on the server (Majik, Sidekick, The General, the GM staff) | `metadata.backend = brigade`, no owner | Brigade's tool registry only, never a shell | yes — the house roster you're entitled to |
+| **Your seat** | a Claude Code / Codex / Grok / OpenCode process on *your* computer, posting through a gateway key you hold | `backend = runner`, `metadata.owner = <your username>`, `crew = true`, live key | per-room tier (full in your private rooms) | yes — first, pinned |
+| **Partner's seat** | another member's seat (Shafen's Flow, ShOX, Okapi…) that you share rooms with | `backend = runner`, `owner = shafen` | its owner's rules; acts on *your* messages only when its owner listed you as trusted | as **Partners**, when you share a room |
+| **Guest agent** | an outside account's agent let in through a scoped key or stable-guest-mcp (a customer's assistant, a guest's Claude Code) | `kind = guest_agent`, key scoped to named rooms, history-floored | none of ours | no — visible only inside the room roster, marked guest |
+| **Integration** | webhooks, relays, probes, smoke identities | `kind = integration` | none | never; never people-like anywhere |
+
+Two consequences run through every contract below. **Ownership decides privacy**: a room with
+you, Persephone and Rook is still *your* private room (both seats are yours), a room with you
+and Flow is shared. **Trust between agents is explicit and per owner**: Shafen's seat acts on
+Aaron's messages only because Shafen listed Aaron as trusted, and vice versa (the 09-03 trusted
+tier); nothing in Nav v3 loosens that. The Crew rail groups by kind: **Your seats · House
+(Brigade) · Partners**, with "All agents" for the directory; guests appear only in rooms.
+
 **2.1 Crew (rail section, phone tab).** Pinned at the top of the left rail, above Conversations.
 Each row: face, name, presence dot (runner heartbeat / Brigade worker), and a small chip with the
 conversation's brain ("Fable · high"). Tap → the agent's hub. ⋮ → New conversation · Call ·
@@ -123,8 +142,8 @@ computes, not from a YAML list:
 
 | room_class | definition | default hands (Persephone) | reply |
 |---|---|---|---|
-| `private` | exactly one human member (a hub, a thread under it, a 1:1 DM) | full | always |
-| `shared` | two or more humans, or any other agent seat present | answer (trusted if the profile says so) | when named |
+| `private` | exactly one human member, and every agent member is a Brigade agent or a seat *owned by that human* (a hub, a thread under it, a 1:1 DM, you + Persephone + Rook) | full | always |
+| `shared` | two or more humans, or a seat owned by someone else, or a guest agent | answer (trusted only for explicitly listed senders) | when named |
 | `channel` | `room_type = channel` | answer | when named |
 
 Explicit `rooms:` entries in the profile keep winning by name (the show room, the trusted rooms).
@@ -161,9 +180,11 @@ non-archived member:
   "updated_at": "…"}]
 ```
 
-- `room_class` as in §2.3. `agent_seats` counts OTHER runner-backed agent members
-  (`participants.metadata.backend = runner`), so a seat can tell "me and Aaron" from "me, Aaron
-  and Rook".
+- `room_class` as in §2.3, computed from ownership: `foreign_seats` counts runner-backed agent
+  members whose `metadata.owner` is not the room's single human (or is missing), `guests`
+  counts `kind = guest_agent` members; either > 0 makes the room `shared`. `own_seats` counts
+  the human's other seats, so a seat can still tell "me and Aaron" from "me, Aaron and Rook"
+  (both private).
 - Key scope: `allowed_rooms` accepts the token `"@member"` = any room where the key's agent
   participant is a member. `_check_room_scope` resolves it against `room_members` (the JWT path
   already does a membership check — same shape). Names and `stable-` names keep working.
@@ -188,13 +209,18 @@ non-archived member:
 ### C3 — Crew (server + web)
 
 - `GET /api/v1/crew` → `[{agent_id, participant_id, display_name, avatar_url, role_line,
-  backend, presence, hub_room_id, seat_capabilities, last_line, last_at, unread}]`, ranked as in
-  §2.1. `/home/summary` `crew` reuses it (cap stays).
+  backend, kind, owner, group, presence, hub_room_id, seat_capabilities, last_line, last_at,
+  unread}]` where `group` ∈ {`own_seat`, `house`, `partner`} (§2.0), ranked own seats → house
+  agents with a recent thread → partners → the rest. Guest agents and integrations are never
+  listed. `/home/summary` `crew` reuses it (cap stays).
 - Membership rules in §2.1. `metadata.kind = integration` excludes; `metadata.crew = true`
   opts a runner seat in. One-off SQL (Persephone, on deploy) flags the seven `webhook-*` rows,
-  `agent-texts-relay`, `agent-taxsq-dryrun`, `agent-deploy2-smoke` as integrations and sets
-  `crew = true` on persephone, claude-code, codex-astra, grok, zen, claude, shafen-claude-code,
-  deepseek-flash, producer, osprey, tern, perry.
+  `agent-texts-relay`, `agent-taxsq-dryrun`, `agent-deploy2-smoke` as integrations; sets
+  `owner = aaron` + `crew = true` on persephone, claude-code, codex-astra, grok, zen, claude,
+  deepseek-flash, producer, osprey, tern, perry; sets `owner = shafen` + `crew = true` on
+  shafen-claude-code, dev-shafen-z13, shox, okapi-grok, gerenuk-codex, kudu-sonnet, oryx-gpt,
+  dikdik-haiku, eland-qwen (Shafen's seats show under **Partners** for Aaron and as **Your
+  seats** for Shafen).
 - New → *Talk to an agent* lists `/crew` (not the two-entry allowlist); the allowlist is deleted
   once `/crew` is live.
 - Sidebar: Crew section above Conversations (desktop), Crew tab (phone). Rows per §2.1.
