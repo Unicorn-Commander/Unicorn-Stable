@@ -276,14 +276,28 @@ export function CrewSection({
       member.group === "partner"
         ? `${row.brain} — ${member.owner ? ownerSeatLabel(member.owner) : "a partner's seat"}; only its owner can change it`
         : `This conversation's brain: ${row.brain}`;
-    // Desktop: a pill in the hover overlay. Phone: plain text on a second
+    // On the rail the chip and ⋮ show on hover, on focus, on the active row,
+    // and always where there is no hover: an affordance that only exists on
+    // :hover does not exist on a touch screen.
+    const shownOnHover = (display: "block" | "flex") =>
+      active || menuOpen
+        ? display
+        : display === "block"
+          ? "hidden group-hover:block group-focus-within:block [@media(hover:none)]:block"
+          : "hidden group-hover:flex group-focus-within:flex [@media(hover:none)]:flex";
+    // Desktop: a pill after the name, in the row's flow — it takes the name's
+    // slack and gives way first, and never lies over the name (review 2, D7:
+    // it read "Persepho[Opus 5.5 · medium]"). Phone: plain text on a second
     // line — a pill squeezed beside the name collapsed to "F…".
     const chip = row.brain && (
       <span
         className={
           page
             ? "block truncate text-[11px] text-slate-500"
-            : "glass-heavy min-w-0 max-w-[10rem] truncate rounded-full border border-line px-1.5 py-0.5 text-[10px] font-medium text-slate-300"
+            : clsx(
+                "glass-heavy min-w-0 max-w-[10rem] shrink truncate rounded-full border border-line px-1.5 py-0.5 text-[10px] font-medium text-slate-300",
+                shownOnHover("block"),
+              )
         }
         title={chipTitle}
         data-testid="crew-brain-chip"
@@ -326,7 +340,11 @@ export function CrewSection({
         <div
           className={clsx(
             "group relative flex items-center rounded-lg transition-colors",
-            page ? "min-h-11 pr-1" : "h-8",
+            // Under a mouse the rail's rows are 28px, as a dense desktop
+            // sidebar's are: the seats shown because their runner is online
+            // (review 2, D11) fit without costing a conversation at 1440×900.
+            // A touch screen keeps 32px.
+            page ? "min-h-11 pr-1" : "h-8 pointer-fine:h-7",
             active ? "bg-white/[0.06]" : "hover:bg-white/[0.04] focus-within:bg-white/[0.04]",
           )}
         >
@@ -342,15 +360,17 @@ export function CrewSection({
             disabled={busy === row.id}
             aria-current={active ? "page" : undefined}
             className={clsx(
-              "focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-slate-300 transition-colors hover:text-slate-100 disabled:opacity-60",
-              page ? "min-h-11 py-1.5" : "h-8",
+              // No min-w-0: the button's floor is the face and the name's 14
+              // characters, so what is shown beside the name gives way first.
+              "focus-ring flex flex-1 items-center gap-2 rounded-lg px-2 text-left text-slate-300 transition-colors hover:text-slate-100 disabled:opacity-60",
+              page ? "min-h-11 min-w-0 py-1.5" : "h-8 pointer-fine:h-7",
             )}
             title={rowTitle(row)}
             data-testid={`crew-open-${member.agent_id}`}
           >
             {face}
             {/* The name keeps at least 14 characters; nothing else on the row
-                may push it below that. */}
+                may push it below that, or lie over it. */}
             <span className="min-w-[14ch] flex-1">
               <span className={clsx("block truncate font-medium", page ? "text-sm" : "text-[13px]")}>
                 {member.display_name}
@@ -360,34 +380,19 @@ export function CrewSection({
               </span>
               {page && chip}
             </span>
+            {!page && chip}
             {unread}
           </button>
-          {page ? (
-            menuButton
-          ) : (
-            (chip || items) && (
-              <span
-                className={clsx(
-                  // Centred by the box, not a transform: a transform would
-                  // pen the menu's layer and its click-away inside this span.
-                  "pointer-events-none absolute inset-y-0 items-center gap-1",
-                  // Clear of the unread badge, which keeps the row's far end.
-                  row.unread > 0 ? "right-9" : "right-1",
-                  // display, not opacity: an invisible overlay would still
-                  // cover the unread badge (and read as visible to a11y tools).
-                  // A touch device has no hover, so there it is always shown:
-                  // an affordance that only exists on :hover does not exist.
-                  active || menuOpen
-                    ? "flex"
-                    : "hidden group-hover:flex group-focus-within:flex [@media(hover:none)]:flex",
-                )}
-                data-testid="crew-row-overlay"
-              >
-                {chip}
-                <span className="pointer-events-auto">{menuButton}</span>
-              </span>
-            )
-          )}
+          {page
+            ? menuButton
+            : menuButton && (
+                <span
+                  className={clsx("shrink-0 items-center pr-1", shownOnHover("flex"))}
+                  data-testid="crew-row-overlay"
+                >
+                  {menuButton}
+                </span>
+              )}
         </div>
       </li>
     );
@@ -581,9 +586,10 @@ export function CrewRowMenu({
           onOpenChange(!open);
         }}
         className={clsx(
-          "focus-ring shrink-0 rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100",
-          // Always there means a finger may be what presses it.
-          alwaysVisible ? "p-2 max-md:p-3" : "p-1",
+          "focus-ring inline-flex shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100",
+          // Always there means a finger may be what presses it: 44px under
+          // one (review 2, P2-12).
+          alwaysVisible ? "p-2 max-md:p-3 pointer-coarse:min-h-11 pointer-coarse:min-w-11" : "p-1",
         )}
         aria-label={`Options for ${name}`}
         aria-haspopup="menu"

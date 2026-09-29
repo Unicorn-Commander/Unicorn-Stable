@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { MessageSquarePlus, Settings2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessageSquarePlus, Settings2 } from "lucide-react";
 import clsx from "clsx";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
@@ -28,6 +28,24 @@ export function compactSince(iso: string | null | undefined, now: number): strin
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.round(hours / 24)}d`;
+}
+
+/** How far the row fades at an edge that has more beyond it. */
+const EDGE_FADE_PX = 48;
+
+/**
+ * The seats row's edges (review 2, D2): which ends have cards beyond them.
+ * The row fades there — a mask, so it fades into whatever the page is —
+ * and a ‹ or › scrolls it.
+ */
+export function seatRowMask(edges: { left: boolean; right: boolean }): CSSProperties | undefined {
+  if (!edges.left && !edges.right) return undefined;
+  const stops = [
+    edges.left ? `transparent, black ${EDGE_FADE_PX}px` : "black",
+    edges.right ? `black calc(100% - ${EDGE_FADE_PX}px), transparent` : "black",
+  ].join(", ");
+  const image = `linear-gradient(to right, ${stops})`;
+  return { maskImage: image, WebkitMaskImage: image };
 }
 
 /** Your seats, as the rail counts them: every one, its hub and its badge. */
@@ -75,7 +93,38 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
   const scope = useFederationStore((s) => s.activeInstanceId);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
   const now = Date.now();
+
+  // Which ends of the row have seats beyond them: on scroll, and when the
+  // row or its cards change size.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const update = () => {
+      // A few pixels of slack: snapping and sub-pixel widths leave the row a
+      // hair off either end.
+      const beyond = el.scrollWidth - el.clientWidth;
+      const left = el.scrollLeft > 4;
+      const right = beyond > 4 && el.scrollLeft < beyond - 4;
+      setEdges((current) => (current.left === left && current.right === right ? current : { left, right }));
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      observer?.disconnect();
+    };
+  }, [rows.length]);
+
+  function page(direction: 1 | -1) {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * Math.max(160, el.clientWidth * 0.8), behavior: "smooth" });
+  }
 
   async function hubOf(row: CrewRow): Promise<string | null> {
     if (row.roomId) return row.roomId;
@@ -115,10 +164,21 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
         className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500"
       >
         Your seats
+        {rows.length > 1 && (
+          <span className="ml-1.5 tabular-nums text-slate-400" data-testid="home-seats-count">
+            {rows.length}
+          </span>
+        )}
       </h2>
+      <div className="relative">
       <ul
-        className="-mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]"
+        ref={listRef}
+        // scroll-px: a card snaps to the row's padding edge, not its border,
+        // so the first card sits where the row starts (scrollLeft 0).
+        className="-mx-1 flex snap-x scroll-px-1 gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]"
+        style={seatRowMask(edges)}
         role="list"
+        data-edges={[edges.left && "left", edges.right && "right"].filter(Boolean).join(" ") || undefined}
       >
         {rows.map((row) => {
           const { member } = row;
@@ -179,7 +239,7 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
                 </span>
                 <span className="min-w-0 flex-1">
                   {/* Only the name's row makes room for the menu. */}
-                  <span className="flex items-center gap-1.5 pr-7">
+                  <span className="flex items-center gap-1.5 pr-7 pointer-coarse:pr-10">
                     <span className="min-w-0 truncate text-sm font-medium text-slate-100">
                       {member.display_name}
                     </span>
@@ -242,6 +302,31 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
           );
         })}
       </ul>
+      {/* A cut card said nothing (review 2, D2): the row fades where it
+          goes on, and these say so and scroll it. */}
+      {edges.left && (
+        <button
+          type="button"
+          onClick={() => page(-1)}
+          className="focus-ring absolute left-0 top-1/2 inline-flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-line bg-surface-1 text-slate-300 shadow-soft transition-colors hover:text-slate-100 max-sm:translate-x-0 pointer-coarse:h-11 pointer-coarse:w-11"
+          aria-label="Earlier seats"
+          data-testid="home-seats-back"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+      )}
+      {edges.right && (
+        <button
+          type="button"
+          onClick={() => page(1)}
+          className="focus-ring absolute right-0 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface-1 text-slate-300 shadow-soft transition-colors hover:text-slate-100 max-sm:translate-x-0 pointer-coarse:h-11 pointer-coarse:w-11"
+          aria-label="More seats"
+          data-testid="home-seats-more"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      )}
+      </div>
     </section>
   );
 }

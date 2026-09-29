@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactSince } from "./SeatCards";
+import { compactSince, seatRowMask } from "./SeatCards";
 
 describe("how long a seat has been at it", () => {
   const now = Date.parse("2026-09-29T12:00:00Z");
@@ -18,5 +18,23 @@ describe("how long a seat has been at it", () => {
     expect(compactSince(null, now)).toBeNull();
     expect(compactSince("soon", now)).toBeNull();
     expect(compactSince(new Date(now + 5 * 60_000).toISOString(), now)).toBe("now");
+  });
+});
+
+describe("the seats row's edges (review 2, D2)", () => {
+  it("fades only where there are seats beyond the edge", () => {
+    expect(seatRowMask({ left: false, right: false })).toBeUndefined();
+    expect(seatRowMask({ left: false, right: true })?.maskImage).toBe(
+      "linear-gradient(to right, black, black calc(100% - 48px), transparent)",
+    );
+    expect(seatRowMask({ left: true, right: false })?.maskImage).toBe(
+      "linear-gradient(to right, transparent, black 48px, black)",
+    );
+    const both = seatRowMask({ left: true, right: true });
+    expect(both?.maskImage).toBe(
+      "linear-gradient(to right, transparent, black 48px, black calc(100% - 48px), transparent)",
+    );
+    // Safari still wants the prefixed property.
+    expect(both?.WebkitMaskImage).toBe(both?.maskImage);
   });
 });

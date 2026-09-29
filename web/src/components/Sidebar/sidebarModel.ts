@@ -835,16 +835,32 @@ function heardWithin(member: CrewMember, windowMs: number, now: number): boolean
   return Number.isFinite(at) && now - at <= windowMs;
 }
 
-/** The agent ids shown before "More", per the cap policy, in server order. */
+/**
+ * Your seats in the one order the rail and Home share (review 2, D11): the
+ * seats that follow you into new conversations first, then the rest, the
+ * server's order kept inside each part (the sort is stable).
+ */
+export function ownSeatOrder<T extends { member: CrewMember } | CrewMember>(rows: readonly T[]): T[] {
+  const of = (row: T): CrewMember => ("member" in row ? row.member : row);
+  return [...rows].sort((a, b) => Number(opensHub(of(b))) - Number(opensHub(of(a))));
+}
+
+/**
+ * The agent ids shown before "More", per the cap policy, in server order.
+ * A seat of yours whose runner is online is never behind "More": Home draws
+ * it on its card, and the rail hid it (review 2, D11).
+ */
 export function defaultCrewSet(
   members: readonly CrewMember[],
   policy: CrewCapPolicy,
   now: number,
 ): Set<string> {
   const shown = new Set<string>();
-  const own = members.filter((member) => member.group === "own_seat");
+  const own = ownSeatOrder(members.filter((member) => member.group === "own_seat"));
   for (const member of own) {
-    if (heardWithin(member, policy.ownSeatsWindowMs, now)) shown.add(member.agent_id);
+    if (heardWithin(member, policy.ownSeatsWindowMs, now) || member.presence === "online") {
+      shown.add(member.agent_id);
+    }
   }
   for (const member of own) {
     if (shown.size >= policy.ownSeatsFloor) break;
@@ -892,8 +908,8 @@ export function buildCrewSection(input: CrewSectionInput): CrewSectionModel {
   let shown = 0;
   for (const group of CREW_GROUP_ORDER) {
     const rows: CrewRow[] = [];
-    for (const member of matching) {
-      if (member.group !== group) continue;
+    const inGroup = matching.filter((member) => member.group === group);
+    for (const member of group === "own_seat" ? ownSeatOrder(inGroup) : inGroup) {
       if (!everything && !defaults.has(member.agent_id)) continue;
       const target = crewTargetRoom(member, rooms, selfIds, crewAnswered);
       const hub = target?.kind === "hub" ? target.room : null;

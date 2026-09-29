@@ -9,6 +9,7 @@ import {
   flattenConversationPane,
   flattenConversationRows,
   flattenCrewRows,
+  ownSeatOrder,
   SECTION_KEYS,
   stepKeyboardOrder,
 } from "./sidebarModel";
@@ -81,19 +82,20 @@ const ids = (section: ReturnType<typeof buildCrewSection>) =>
   section.groups.flatMap((group) => group.rows.map((row) => row.member.agent_id));
 
 describe("crew section model", () => {
-  it("shows the seats heard from lately, the top house agents and the top partners before More", () => {
-    // Fixture: Persephone and Rook have a last line this week; four other seats
-    // never spoke and fold. House and Partners each show three, so acceptance 3
-    // holds on the first view — eight rows, which keeps six conversations on a
-    // 1440×900 desktop.
+  it("shows the seats heard from lately or online, the top house agents and the top partners before More", () => {
+    // Fixture: Persephone and Rook have a last line this week; Astra never
+    // spoke but its runner is online, so it shows — Home draws it on a card,
+    // and the rail used to hide it under More (review 2, D11). The three
+    // other seats are quiet and offline, and fold. House and Partners each
+    // show three, so acceptance 3 holds on the first view.
     const section = buildCrewSection(base);
     expect(section.groups.map((group) => [group.group, group.rows.map((row) => row.member.agent_id)])).toEqual([
-      ["own_seat", ["persephone", "claude-code"]],
+      ["own_seat", ["persephone", "claude-code", "codex-astra"]],
       ["house", ["majik", "sidekick", "the-general"]],
       ["partner", ["shafen-claude-code", "shox", "okapi-grok"]],
     ]);
     expect(section.total).toBe(12);
-    expect(section.hiddenCount).toBe(4);
+    expect(section.hiddenCount).toBe(3);
     expect(section.expanded).toBe(false);
     expect(section.searching).toBe(false);
   });
@@ -112,13 +114,29 @@ describe("crew section model", () => {
     expect([...shown].filter((id) => id.startsWith("seat-"))).toHaveLength(11);
     expect(shown.has("majik")).toBe(true);
     expect(shown.has("shafen-claude-code")).toBe(true);
-    const stale = eleven.map((m) => ({ ...m, last_at: "2026-08-01T00:00:00Z" }));
+    const stale = eleven.map((m) => ({ ...m, last_at: "2026-08-01T00:00:00Z", presence: "offline" as const }));
     const fewer = defaultCrewSet([...stale, ...CREW_FIXTURE.filter((m) => m.group !== "own_seat")], CREW_CAP_POLICY, NOW);
     // A fresh install (nothing heard from) still shows a couple of seats.
     expect([...fewer].filter((id) => id.startsWith("seat-"))).toEqual(["seat-0", "seat-1"]);
     // An unread hub counts as heard from.
     const unread = stale.map((m, i) => (i === 7 ? { ...m, unread: 2 } : m));
     expect(defaultCrewSet(unread, CREW_CAP_POLICY, NOW).has("seat-7")).toBe(true);
+    // So does a runner that is online now (D11).
+    const online = stale.map((m, i) => (i === 9 ? { ...m, presence: "online" as const } : m));
+    expect(defaultCrewSet(online, CREW_CAP_POLICY, NOW).has("seat-9")).toBe(true);
+  });
+
+  it("orders your seats as Home does: the ones that follow you into new conversations first (D11)", () => {
+    const silent = { ...CREW_FIXTURE[0]!, agent_id: "silent", display_name: "Silent", seat_capabilities: null, presence: "online" as const };
+    const crew = [silent, ...CREW_FIXTURE];
+    const section = buildCrewSection({ ...base, crew, showAll: true });
+    const own = section.groups.find((group) => group.group === "own_seat")!.rows.map((row) => row.member.agent_id);
+    // Silent is first in the server's order, and after every seat that
+    // follows you here, as on Home's cards — with Claude, the other such
+    // seat, in the server's order.
+    expect(own.slice(-2)).toEqual(["silent", "claude"]);
+    expect(own.slice(0, 3)).toEqual(["persephone", "claude-code", "codex-astra"]);
+    expect(ownSeatOrder(crew.filter((member) => member.group === "own_seat")).map((m) => m.agent_id)).toEqual(own);
   });
 
   it("More lifts the cap and marks the section expanded", () => {
