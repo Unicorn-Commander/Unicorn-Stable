@@ -10,6 +10,12 @@ it fails a test. The history read touches ``room_id`` and ``sender_id`` only;
 ``last_message_at`` is a per-room top-1.
 
 Every test here FAILED on 5ee32e9 unless its docstring says it is a pin.
+
+Amended in fix lane 4 (REVIEW-4.md P2-1): the test that asserted a
+``rollback`` after a failed insert-time floor is gone. It ran on an
+``AsyncMock`` session, which expires nothing, and so pinned behaviour that
+raised on a real one. ``test_nav_v3_fix4_send.py`` replaces it with a real
+session. The stamp itself now runs in a SAVEPOINT.
 """
 
 from __future__ import annotations
@@ -89,6 +95,16 @@ class _Result:
 
     def one_or_none(self):
         return self._rows[0] if self._rows else None
+
+
+class _Savepoint:
+    """What ``session.begin_nested()`` hands back: an async context manager."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
 
 
 def _sql(stmt) -> str:
@@ -248,9 +264,11 @@ class P1_2_FloorsComeOnlyFromWhatWasWritten(IsolatedAsyncioTestCase):
         db.flush = AsyncMock()
         db.commit = AsyncMock()
         db.rollback = AsyncMock()
+        db.begin_nested = MagicMock(return_value=_Savepoint())
         db.refresh = AsyncMock(side_effect=stamp)
         await MessageService(db=db, livekit=AsyncMock()).send_message(
             room_id=uuid.uuid4(), sender_id=author.id, content="hello", content_type="text")
+        db.rollback.assert_not_awaited()                   # a send never rolls the session back
         return db
 
     async def test_the_insert_rule_judges_the_author_never_the_membership(self) -> None:
@@ -271,29 +289,6 @@ class P1_2_FloorsComeOnlyFromWhatWasWritten(IsolatedAsyncioTestCase):
         # …but never a channel, and never twice.
         self.assertEqual(_floor_updates(await self._send(hook, [AARON, hook], room_type=RoomType.CHANNEL)), [])
         self.assertEqual(_floor_updates(await self._send(hook, [AARON, hook], metadata={"class_floor": "shared"})), [])
-
-    async def test_a_failed_insert_floor_rolls_the_session_back(self) -> None:
-        from app.services.message_service import MessageService
-
-        hook = _webhook()
-        rows = [(SimpleNamespace(participant_id=p.id, mention_count=0, has_unread_mention=False), p) for p in (AARON, hook)]
-
-        async def stamp(obj):
-            obj.created_at = NOW
-
-        db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[
-            _Result(scalar=SimpleNamespace(is_muted=False)), _Result(rows=rows), _Result(scalar=hook),
-            _Result(rows=[("stable-hub", HUB, False, None, {})]), RuntimeError("stamp failed"),
-        ])
-        db.add = MagicMock()
-        db.flush = AsyncMock()
-        db.commit = AsyncMock()
-        db.rollback = AsyncMock()
-        db.refresh = AsyncMock(side_effect=stamp)
-        await MessageService(db=db, livekit=AsyncMock()).send_message(
-            room_id=uuid.uuid4(), sender_id=hook.id, content="hello", content_type="text")
-        db.rollback.assert_awaited_once()
 
     async def test_a_thread_seed_floors_at_birth_only_when_its_author_is_foreign_by_nature(self) -> None:
         from app.services.room_service import RoomService

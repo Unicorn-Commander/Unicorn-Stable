@@ -85,6 +85,16 @@ class _Result:
         return list(self._rows)
 
 
+class _Savepoint:
+    """What ``session.begin_nested()`` hands back: an async context manager."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
 def _sql(stmt) -> str:
     return str(stmt.compile(dialect=postgresql.dialect())).lower()
 
@@ -425,6 +435,7 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         db.add = MagicMock()
         db.flush = AsyncMock()
         db.commit = AsyncMock()
+        db.begin_nested = MagicMock(return_value=_Savepoint())        # the stamp runs in a SAVEPOINT
         db.refresh = AsyncMock(side_effect=_stamp_created)
         svc = MessageService(db=db, livekit=AsyncMock())
         await svc.send_message(room_id=room_id, sender_id=mallory.id, content="hello", content_type="text")

@@ -972,7 +972,19 @@ async def compute_room_classes(
 async def stamp_class_floor_shared(db: Any, room_ids: Iterable[Any]) -> int:
     """``rooms.metadata.class_floor = "shared"`` for ``room_ids`` — an SQL
     ``||`` merge, so nothing else in the JSONB is touched and a concurrent
-    write is not lost. Never cleared. The caller commits."""
+    write is not lost. Never cleared. The caller commits.
+
+    ``synchronize_session=False``: the session is not asked to reconcile its
+    loaded rooms with the UPDATE. Left to itself it expires ``metadata_``
+    and ``updated_at`` on every Room it holds (a message's ``room`` among
+    them), and the next plain attribute read raises ``MissingGreenlet``
+    under an async driver — on the SUCCESS path (measured on PostgreSQL 17,
+    REVIEW-4 P2-1's failure class). Callers that want the floor in memory
+    mirror it themselves (:func:`apply_class_floors`).
+
+    Known side effect, not avoidable from here: ``rooms`` has a BEFORE
+    UPDATE trigger that sets ``updated_at = now()`` on every UPDATE, so the
+    one stamp a room ever gets moves its ``updated_at`` once."""
     from app.models.room import Room
 
     ids = [rid for rid in room_ids if rid is not None]
@@ -986,6 +998,7 @@ async def stamp_class_floor_shared(db: Any, room_ids: Iterable[Any]) -> int:
                 cast({CLASS_FLOOR_KEY: ROOM_CLASS_SHARED}, JSONB)
             )
         )
+        .execution_options(synchronize_session=False)
     )
     return int(getattr(result, "rowcount", 0) or 0)
 

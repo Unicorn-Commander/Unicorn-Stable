@@ -258,13 +258,46 @@ class MessageService:
         lk_room_name = room_row[0] if room_row else None
         room_type_str = room_row[1].value if room_row and room_row[1] else "channel"
 
+        # SNAPSHOT FIRST. Everything the broadcast below reads is copied out
+        # of the ORM rows here, before any further statement runs — so
+        # nothing that happens to the session afterwards (the floor stamp,
+        # the thread unarchive) can stand between a committed message and
+        # its delivery (REVIEW-4 P2-1).
+        message_id_text = str(message.id)
+        message_payload: dict[str, Any] | None = None
+        if lk_room_name:
+            message_payload = {
+                "id": message_id_text,
+                "room_id": str(message.room_id),
+                "sender_id": str(message.sender_id) if message.sender_id else None,
+                "content": message.content,
+                "content_type": message.content_type.value,
+                "metadata": message.metadata_,
+                "parent_id": str(message.parent_id) if message.parent_id else None,
+                "is_edited": message.is_edited,
+                "is_deleted": message.is_deleted,
+                "created_at": message.created_at.isoformat(),
+                "sender": {
+                    "id": str(sender.id),
+                    "username": sender.username,
+                    "display_name": sender.display_name,
+                    "avatar_url": sender.avatar_url,
+                    "participant_type": sender.participant_type.value,
+                } if sender else None,
+            }
+
         # Nav v3 (REVIEW-3 P1-2): floor the room the moment a line lands
         # whose AUTHOR is foreign by nature — a guest, an integration, an
         # unknown agent. Judged on the author alone: who else is a member is
         # not an input, and a human's or a seat's line never floors here
         # (whether the history is two parties' is the read path's verdict).
-        # Best-effort and after the commit; a failed stamp rolls back so the
-        # session stays usable for the mention / push work that follows.
+        #
+        # A FAILED STAMP NEVER FAILS THE SEND. The message is committed; the
+        # read path re-derives the floor on the next poll. The stamp runs in
+        # a SAVEPOINT, so a failure rolls back that one statement and leaves
+        # the session — and every row loaded in it — exactly as it was. A
+        # full rollback here would expire the message and turn the send into
+        # a 500 for a message that exists (what e20c618 did).
         try:
             room_meta = room_row[4] if room_row is not None and len(room_row) >= 5 else None
             author = sender if sender is not None else next(
@@ -275,14 +308,11 @@ class MessageService:
                 author,
                 floor=class_floor_of(room_meta),
             ):
-                await stamp_class_floor_shared(self._db, [room_id])
+                async with self._db.begin_nested():
+                    await stamp_class_floor_shared(self._db, [room_id])
                 await self._db.commit()
         except Exception:
             logger.warning("class_floor_on_insert_failed", room_id=str(room_id), exc_info=True)
-            try:
-                await self._db.rollback()
-            except Exception:
-                pass
 
         # Design §3: any new message unarchives a thread. Decided off the row
         # already fetched above (no extra query on the common path); the one
@@ -305,40 +335,22 @@ class MessageService:
             except Exception:
                 logger.warning("thread_unarchive_on_message_failed", room_id=str(room_id), exc_info=True)
 
-        if lk_room_name:
+        if lk_room_name and message_payload is not None:
             broad_mention = parsed_mentions.broad_kind
             broadcast_data = {
                 "type": "new_message",
                 "room_type": room_type_str,
                 "broad_mention": broad_mention,
-                "message": {
-                    "id": str(message.id),
-                    "room_id": str(message.room_id),
-                    "sender_id": str(message.sender_id) if message.sender_id else None,
-                    "content": message.content,
-                    "content_type": message.content_type.value,
-                    "metadata": message.metadata_,
-                    "parent_id": str(message.parent_id) if message.parent_id else None,
-                    "is_edited": message.is_edited,
-                    "is_deleted": message.is_deleted,
-                    "created_at": message.created_at.isoformat(),
-                    "sender": {
-                        "id": str(sender.id),
-                        "username": sender.username,
-                        "display_name": sender.display_name,
-                        "avatar_url": sender.avatar_url,
-                        "participant_type": sender.participant_type.value,
-                    } if sender else None,
-                },
+                "message": message_payload,
             }
             try:
                 await self._livekit.send_data(lk_room_name, broadcast_data)
             except Exception:
-                logger.exception("failed_to_broadcast_message", message_id=str(message.id))
+                logger.exception("failed_to_broadcast_message", message_id=message_id_text)
 
         logger.info(
             "message_sent",
-            message_id=str(message.id),
+            message_id=message_id_text,
             room_id=str(room_id),
             sender_id=str(sender_id),
         )
