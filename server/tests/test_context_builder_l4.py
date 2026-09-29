@@ -87,7 +87,11 @@ class EntryShape(unittest.TestCase):
         self.assertEqual(entry["kind"], "reply")
         self.assertEqual(entry["text"], "↳ reply to Aaron: three segments")
         self.assertEqual(entry["parent_id"], parent.id)
-        self.assertEqual(entry["sender"], {"id": rook.id, "name": "Rook", "kind": "agent"})
+        # Nav v3 fix lane 4: the author's server identity rides along as data.
+        self.assertEqual(
+            entry["sender"],
+            {"id": rook.id, "name": "Rook", "username": "rook", "participant_type": "agent", "kind": "agent"},
+        )
 
     def test_reply_without_loaded_parent_still_marks_the_thread(self) -> None:
         reply = _msg("ok", sender=_participant("Aaron"))

@@ -81,6 +81,38 @@ def gateway_fresh_key(agent_id: str) -> str:
     return f"stable:gwfresh:{agent_id}"
 
 
+#: How long the "last touch" timestamp outlives the freshness marker.
+GATEWAY_LAST_SEEN_TTL_SECONDS = 30 * 24 * 3600
+
+
+def gateway_last_seen_key(agent_id: str) -> str:
+    return f"stable:gwlast:{agent_id}"
+
+
+async def get_gateway_last_seen(redis: Any, agent_ids: list[str]) -> dict[str, "datetime"]:
+    """``{agent_id: last authenticated gateway call}`` for the ids that have
+    one on record (30-day memory). Unreadable → empty, never a guess."""
+    from datetime import datetime, timezone
+
+    if not agent_ids:
+        return {}
+    try:
+        values = await redis.mget([gateway_last_seen_key(a) for a in agent_ids])
+    except Exception:
+        logger.debug("gateway_last_seen_read_failed", exc_info=True)
+        return {}
+    out: dict[str, datetime] = {}
+    for agent_id, value in zip(agent_ids, values):
+        if value is None:
+            continue
+        try:
+            raw = value.decode("utf-8") if isinstance(value, bytes) else str(value)
+            out[agent_id] = datetime.fromtimestamp(int(raw), tz=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 async def touch_gateway_agent(redis: Any, agent_id: str) -> None:
     """Record that a bridge for ``agent_id`` just made an authenticated
     gateway call — i.e. a process for it is running right now.
@@ -99,11 +131,15 @@ async def touch_gateway_agent(redis: Any, agent_id: str) -> None:
     be wrong.
     """
     try:
+        now = int(time.time())
         await redis.set(
             gateway_fresh_key(agent_id),
-            str(int(time.time())),
+            str(now),
             ex=GATEWAY_FRESH_TTL_SECONDS,
         )
+        # The freshness marker expires with its TTL; the crew's "last seen"
+        # wants the last touch long after that. Kept beside it, 30 days.
+        await redis.set(gateway_last_seen_key(agent_id), str(now), ex=GATEWAY_LAST_SEEN_TTL_SECONDS)
     except Exception:
         logger.debug("gateway_fresh_touch_failed", agent_id=agent_id, exc_info=True)
 

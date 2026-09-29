@@ -7,10 +7,24 @@ lines. It is never filtered by when the agent joined or was last mentioned —
 that is the whole point: an agent named mid-conversation answers with the
 conversation in hand.
 
-Every entry is ``{id, ts, sender{id, name, kind}, kind, text, parent_id}``
-with ``kind`` one of ``message | reply | voice | system``. A reply's text is
-prefixed ``↳ reply to <author>: `` so a consumer that only reads ``text``
-still sees the thread shape.
+Every entry is ``{id, ts, sender{id, name, username, participant_type,
+kind}, kind, text, parent_id}`` with ``kind`` one of ``message | reply |
+voice | system``.
+
+WHO WROTE A LINE IS DATA, NOT TEXT. ``sender.username`` and
+``sender.participant_type`` are the author's server identity, so a consumer
+never has to keep its own id → username map, and never has to trust a
+display name (which its owner chooses). ``sender.kind`` is the same fact as
+it always was (``human | agent | guest``, ``system`` for a line with no
+sender).
+
+A REPLY carries the same for the line it answers: ``reply_to{id, username,
+participant_type}`` is the parent line's author, and ``raw_text`` is the
+reply as it was written. ``text`` still carries the rendered prefix
+``↳ reply to <author display name>: `` for consumers that only read
+``text`` (the in-process responder, the rolling summary, a runner that
+predates this); a consumer that reads ``reply_to`` should read ``raw_text``
+and word the prefix itself.
 
 The rolling room summary (``room.metadata.context_summary``, written by
 ``context_summary.py``) is PREPENDED only when it adds something the window
@@ -112,27 +126,66 @@ def reply_prefix(msg: Any) -> str:
     return f"{REPLY_PREFIX}{_sender_name(author) if author is not None else 'thread'}: "
 
 
+def _participant_type_of(participant: Any) -> str | None:
+    ptype = getattr(participant, "participant_type", None)
+    value = ptype.value if hasattr(ptype, "value") else ptype
+    return str(value) if value else None
+
+
+def identity_of(participant: Any) -> dict[str, Any]:
+    """``{id, username, participant_type}`` — a participant as the SERVER
+    knows them. All three are None for a line with no author (or an author
+    that did not load): the consumer is told the server cannot say."""
+    if participant is None:
+        return {"id": None, "username": None, "participant_type": None}
+    username = getattr(participant, "username", None)
+    return {
+        "id": getattr(participant, "id", None),
+        "username": username if isinstance(username, str) and username else None,
+        "participant_type": _participant_type_of(participant),
+    }
+
+
+def reply_target(msg: Any) -> dict[str, Any]:
+    """The author of the line a reply answers, as data. Never triggers a
+    lazy load: an unloaded parent gives the all-None identity."""
+    try:
+        parent = getattr(msg, "parent", None)
+        author = getattr(parent, "sender", None) if parent is not None else None
+    except Exception:  # a detached/expired relationship — degrade, don't fail
+        author = None
+    return identity_of(author)
+
+
 def entry_from_message(msg: Any) -> dict[str, Any]:
     sender = getattr(msg, "sender", None)
+    identity = identity_of(sender)
     if sender is not None:
-        kind = getattr(sender, "participant_type", None)
-        kind_value = kind.value if hasattr(kind, "value") else (kind or "human")
+        kind_value = identity["participant_type"] or "human"
         name = _sender_name(sender)
-        sender_id = getattr(sender, "id", None)
     else:
-        kind_value, name, sender_id = "system", "system", None
+        kind_value, name = "system", "system"
     kind = entry_kind(msg)
-    text = msg.content or ""
-    if kind == "reply":
-        text = reply_prefix(msg) + text
-    return {
+    raw = msg.content or ""
+    entry: dict[str, Any] = {
         "id": msg.id,
         "ts": msg.created_at,
-        "sender": {"id": sender_id, "name": name, "kind": kind_value},
+        "sender": {
+            "id": identity["id"],
+            "name": name,
+            "username": identity["username"],
+            "participant_type": identity["participant_type"],
+            "kind": kind_value,
+        },
         "kind": kind,
-        "text": text,
+        "text": raw,
         "parent_id": getattr(msg, "parent_id", None),
     }
+    if kind == "reply":
+        entry["text"] = reply_prefix(msg) + raw
+        entry["raw_text"] = raw
+        entry["reply_to"] = reply_target(msg)
+    return entry
 
 
 def format_entry_line(entry: dict[str, Any]) -> str:
@@ -331,8 +384,10 @@ __all__ = [
     "estimate_tokens",
     "fit_to_budget",
     "format_entry_line",
+    "identity_of",
     "is_abandoned",
     "reply_prefix",
+    "reply_target",
     "summary_applies",
     "summary_text_of",
 ]

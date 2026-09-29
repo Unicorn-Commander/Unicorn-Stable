@@ -40,6 +40,7 @@ from app.schemas.message import (
     SenderInfo,
 )
 from app.services.agent_chat_responder import schedule_response as schedule_agent_chat_response
+from app.services.guest_view import guest_view_of_message
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 from app.models.activity import ActivityEvent, ActivityEventType
@@ -89,6 +90,148 @@ async def list_activity_events(
         room_name=room_name, message_id=e.message_id, actor_name=actor_name,
         content=m.content, created_at=e.created_at, metadata=e.metadata_,
     ) for e, m, room_name, actor_name in rows]
+
+
+#: The metadata keys the WEB client sends when it creates a message (measured
+#: in web/src, 2026-09-29): ``attachments`` (hooks/useChat.ts), the composer's
+#: slash commands ``research`` / ``facilitate`` / ``council`` / ``poll``
+#: (components/Room/MessageInput.tsx), and ``client_msg_id`` (also a body
+#: field; the server stamps it). The guest client sends none. A human or
+#: guest post keeps EXACTLY these — an allowlist, because every other key is
+#: either identity (``agent_id``, ``on_behalf_of``, ``gateway``,
+#: ``brigade_agent_id``), provenance the server stamps itself (``via``,
+#: ``kind``, ``voice``, ``source``, ``seed_sender_id``) or unknown.
+CLIENT_MESSAGE_METADATA_KEYS: frozenset[str] = frozenset(
+    {"attachments", "client_msg_id", "research", "facilitate", "council", "poll"}
+)
+
+#: Identity keys a NON-AGENT line never shows on the gateway read — covers
+#: rows stored before the allowlist existed. ``via`` is provenance, not
+#: identity: a spoken line keeps ``via: "voice"`` all the way to the seat.
+AGENT_IDENTITY_METADATA_KEYS: frozenset[str] = frozenset(
+    {"agent_id", "on_behalf_of", "gateway", "brigade_agent_id"}
+)
+
+#: content_type values no caller of the public route may claim: a
+#: client-made "system" line would reach a seat as ``[system] text``.
+RESERVED_CONTENT_TYPES: frozenset[str] = frozenset({"system"})
+
+#: What an AGENT sender may not put on its own line through the public
+#: route (REVIEW-4 P2-6). ``brigade_agent_id`` picks the read-aloud voice,
+#: ``on_behalf_of`` and ``gateway`` are the gateway's own stamps, ``kind``
+#: feeds the room class's notice rule and ``source`` decides whether a line
+#: can be regenerated. ``agent_id`` is BOUND to the sender's row instead of
+#: dropped.
+AGENT_BODY_DROPPED_KEYS: frozenset[str] = frozenset(
+    {"brigade_agent_id", "on_behalf_of", "gateway", "kind", "source"}
+)
+
+
+def agent_id_of_identity(sub: Any, username: Any) -> str | None:
+    """The one agent id an agent identity may speak as: the ``brigade:<id>``
+    sub, else the ``agent-<id>`` username, else the username itself. Used on
+    write (the sender's row) and on the seat's read (the stored sender), so
+    the two always agree."""
+    sub = str(sub or "")
+    if sub.startswith("brigade:"):
+        return sub[len("brigade:") :] or None
+    username = str(username or "")
+    if username.startswith("agent-"):
+        return username[len("agent-") :] or None
+    return username or None
+
+
+def sender_is_agent(sender: Any) -> bool:
+    """Agent-ness is a fact about the SENDER'S ROW
+    (``participants.participant_type``), never about the token that carried
+    the request: a human's row signed in through a ``*-agent`` client is
+    still a human's row, and its lines are a human's lines."""
+    if sender is None:
+        return False
+    ptype = getattr(sender, "participant_type", None)
+    return str(getattr(ptype, "value", ptype) or "") == "agent"
+
+
+def sanitize_client_message(
+    body: MessageCreate, user: dict[str, Any] | None, sender: Any = None
+) -> MessageCreate:
+    """THE public client boundary for message create (Nav v3, REVIEW-3 P1-1,
+    REVIEW-4 P2-6). ``sender`` is the caller's participant ROW (anything
+    with ``participant_type``, ``keycloak_sub``, ``username``); without one
+    the caller is held to the strictest rule.
+
+    * Nobody may claim a reserved ``content_type`` (422).
+    * A HUMAN or GUEST row keeps only :data:`CLIENT_MESSAGE_METADATA_KEYS`.
+    * An AGENT row keeps its metadata minus
+      :data:`AGENT_BODY_DROPPED_KEYS`, and ``agent_id`` is bound to the row:
+      whatever the body says is replaced by the sender's own id.
+
+    Server paths never come through here — the internal voice route, the
+    relay, recording notices and the gateway stamp their own metadata and
+    call :func:`send_message` directly, so ``via: "voice"`` survives to
+    storage and to the seat's poll."""
+    if body.content_type in RESERVED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"content_type '{body.content_type}' is reserved for the server",
+        )
+    metadata = body.metadata
+    if not metadata:
+        return body
+    if sender_is_agent(sender):
+        cleaned = {k: v for k, v in metadata.items() if k not in AGENT_BODY_DROPPED_KEYS}
+        if "agent_id" in cleaned:
+            own = agent_id_of_identity(
+                getattr(sender, "keycloak_sub", None), getattr(sender, "username", None)
+            )
+            cleaned.pop("agent_id")
+            if own:
+                cleaned["agent_id"] = own
+    else:
+        cleaned = {k: v for k, v in metadata.items() if k in CLIENT_MESSAGE_METADATA_KEYS}
+    dropped = sorted(str(k) for k in set(metadata) - set(cleaned))
+    if dropped:
+        logger.info(
+            "message_metadata_dropped_at_boundary",
+            dropped=dropped,
+            participant_id=str((user or {}).get("participant_id")),
+        )
+    if cleaned == metadata:
+        return body
+    return body.model_copy(update={"metadata": cleaned})
+
+
+async def load_sender_row(db: AsyncSession, participant_id: Any) -> Any:
+    """The three columns the boundary judges a sender by, or None."""
+    if participant_id is None:
+        return None
+    return (
+        await db.execute(
+            select(
+                Participant.participant_type,
+                Participant.keycloak_sub,
+                Participant.username,
+            ).where(Participant.id == participant_id)
+        )
+    ).one_or_none()
+
+
+async def client_message_body(
+    body: MessageCreate,
+    user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> MessageCreate:
+    """FastAPI dependency: the request body of ``POST /rooms/{id}/messages``
+    after :func:`sanitize_client_message`. Only an HTTP request resolves it;
+    a direct call to :func:`send_message` (gateway, internal routes) does
+    not, which is the point.
+
+    The sender's row is read only when the body carries metadata — a plain
+    message costs no extra statement."""
+    sender = None
+    if body.metadata and body.content_type not in RESERVED_CONTENT_TYPES:
+        sender = await load_sender_row(db, (user or {}).get("participant_id"))
+    return sanitize_client_message(body, user, sender)
 
 
 def _build_message_service(
@@ -253,7 +396,7 @@ async def _find_recent_send_by_client_msg_id(
 )
 async def send_message(
     room_id: uuid.UUID,
-    body: MessageCreate,
+    body: Annotated[MessageCreate, Depends(client_message_body)],
     user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
@@ -322,6 +465,10 @@ async def send_message(
     # metadata so (a) this lookup can find it and (b) the ws echo carries it
     # back to the sender as a delivery acknowledgement.
     client_msg_id = (body.client_msg_id or "").strip() or None
+    # NOT sanitized here: this function is shared with the server's own
+    # paths (internal voice, relay, gateway), which stamp metadata
+    # themselves. Client input is sanitized at the HTTP boundary by the
+    # ``client_message_body`` dependency above.
     metadata = body.metadata
     if client_msg_id:
         existing = await _find_recent_send_by_client_msg_id(
@@ -338,7 +485,7 @@ async def send_message(
                 client_msg_id=client_msg_id,
             )
             return _msg_to_response(existing)
-        metadata = {**(body.metadata or {}), "client_msg_id": client_msg_id}
+        metadata = {**(metadata or {}), "client_msg_id": client_msg_id}
 
     # Normalize friendly aliases to the underlying ContentType enum values.
     ct_aliases = {"action": "agent_action", "image": "text", "file": "text"}
@@ -1490,6 +1637,10 @@ async def get_messages(
         _msg_to_response(item["message"], item["reply_count"])
         for item in result["messages"]
     ]
+    if is_guest(user):
+        # What a guest reads never says which agents are gateway seats, nor
+        # carries a Keycloak subject (REVIEW-4 P2-2). Storage is untouched.
+        messages = [guest_view_of_message(message) for message in messages]
     return MessageListResponse(
         messages=messages,
         cursor=result["cursor"],

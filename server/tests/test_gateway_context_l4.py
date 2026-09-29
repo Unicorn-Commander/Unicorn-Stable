@@ -12,6 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.api import gateway as G
+from app.services.room_class import RoomClassFacts
+
+# Nav v3: the mirror also computes the room's class (history-aware, with
+# its own queries); pinned in tests/test_nav_v3_fix_class.py. Patched here so
+# these L4 assertions stay about seat id / mode / depth.
+FACTS = RoomClassFacts(room_class="private", humans=1, own_seats=0, foreign_seats=0, guests=0)
 
 
 def _result(value):
@@ -48,9 +54,9 @@ async def test_mirror_carries_seat_id_mode_and_depth(mode):
     build = AsyncMock(return_value=_payload(room.id, seat.id))
     with patch.object(G, "_gateway_rate_limit", new=AsyncMock()), patch.object(
         G, "_resolve_room", new=AsyncMock(return_value=room)
-    ), patch.object(G, "_enforce_scope", new=AsyncMock()), patch(
-        "app.services.context_builder.build_context", new=build
-    ):
+    ), patch.object(G, "_enforce_scope", new=AsyncMock()), patch.object(
+        G, "_classify_for_seat", new=AsyncMock(return_value=FACTS)
+    ), patch("app.services.context_builder.build_context", new=build):
         out = await G.gateway_get_context(
             room="persephone", principal=principal, db=db, redis=AsyncMock(), budget_tokens=4000, since=None
         )
@@ -74,9 +80,9 @@ async def test_mirror_without_a_seat_participant_degrades_to_nulls():
     build = AsyncMock(return_value=_payload(room.id, None))
     with patch.object(G, "_gateway_rate_limit", new=AsyncMock()), patch.object(
         G, "_resolve_room", new=AsyncMock(return_value=room)
-    ), patch.object(G, "_enforce_scope", new=AsyncMock()), patch(
-        "app.services.context_builder.build_context", new=build
-    ):
+    ), patch.object(G, "_enforce_scope", new=AsyncMock()), patch.object(
+        G, "_classify_for_seat", new=AsyncMock(return_value=FACTS)
+    ), patch("app.services.context_builder.build_context", new=build):
         out = await G.gateway_get_context(
             room="x", principal=principal, db=db, redis=AsyncMock(), budget_tokens=6000, since=None
         )

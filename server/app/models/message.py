@@ -35,6 +35,11 @@ class Message(Base, UUIDPrimaryKeyMixin):
         # that check is a sequential scan of the whole table per candidate row.
         # Added in alembic/versions/016_guest_participant_gc.py.
         Index("ix_messages_sender_id", "sender_id"),
+        # "Who has ever written in this room?" — the room-class history
+        # aggregate (services/room_class.py, array_agg(DISTINCT sender_id)
+        # GROUP BY room_id) runs on every un-floored seat poll and rooms
+        # list. Added in alembic/versions/024_crew_seat_flags.py.
+        Index("ix_messages_room_id_sender_id", "room_id", "sender_id"),
     )
 
     room_id: Mapped[str] = mapped_column(

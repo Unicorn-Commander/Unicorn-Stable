@@ -31,11 +31,13 @@ from typing import Any
 
 import httpx
 import structlog
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.config import Settings
 from app.models.participant import Participant, ParticipantStatus, ParticipantType
 from app.models.room import MemberRole, Room, RoomMember
+from app.services.agent_routing import find_agent_participant, participant_backend
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 
@@ -106,6 +108,15 @@ async def _ensure_member(
     member of the room, mirroring _resolve_agent's bootstrap so send_message's
     membership check passes."""
     sub = f"brigade:{agent_id}"
+    # Nav v3 R5 / P2-8: a Brigade roster id that is ALSO someone's runner
+    # seat (perry, producer…) is never added by the facilitator — exactly
+    # the 409 invite-brigade-agent gives. Adding the seat would post Brigade
+    # text as that seat and hand it a watched line.
+    if participant_backend(await find_agent_participant(db, agent_id)) == "runner":
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{agent_id}' is a runner seat; the facilitator never adds seats",
+        )
     p = (
         await db.execute(select(Participant).where(Participant.keycloak_sub == sub))
     ).scalar_one_or_none()

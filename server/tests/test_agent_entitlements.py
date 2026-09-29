@@ -168,14 +168,22 @@ class EnsureAgentAccessTests(IsolatedAsyncioTestCase):
         log.warning.assert_not_called()
 
     async def test_worker_principal_is_never_gated(self) -> None:
-        """The agents worker (agent-typed service account) bypasses the gate
-        entirely — even in closed mode, and without touching the database."""
+        """The agents worker (agent-typed service account) bypasses the
+        ENTITLEMENT gate entirely — even in closed mode, without reading a
+        grant. Since Nav v3 (R5 / P2-8) it does pass the owned-seat check
+        like every other principal: one lookup, and only an owned runner
+        seat could refuse it (tests/test_nav_v3_fix2_surface.py)."""
         db = AsyncMock()
-        with patch.object(svc, "get_settings", return_value=_settings("closed")):
+        db.execute = AsyncMock(return_value=_scalar_result(None))  # not an owned seat
+        with (
+            patch.object(svc, "get_settings", return_value=_settings("closed")),
+            patch.object(svc, "resolve_agent_access", new=AsyncMock()) as resolve,
+        ):
             await svc.ensure_agent_access(
                 db, _worker(), "the-colonel", surface="agent_invite"
             )
-        db.execute.assert_not_awaited()
+        resolve.assert_not_awaited()
+        db.execute.assert_awaited_once()
 
 
 class EntitledAgentIdsTests(IsolatedAsyncioTestCase):
@@ -266,6 +274,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
             _scalar_result(room),
             _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
             _count_result(1),  # human-DM guard count
+            _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
             _scalar_result(grant),
         ]
         if grant is None:
@@ -316,6 +325,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
                 _scalar_result(room),
                 _scalar_result(SimpleNamespace(id=_uuid())),
                 _count_result(1),  # human-DM guard count (bare dm passes)
+                _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
                 _scalar_result(_grant("the-colonel", AgentAccessEffect.DENY)),
             ]
         )
@@ -359,6 +369,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
                 _scalar_result(room),  # room resolve
                 _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
                 _count_result(1),  # human-DM guard count (bare dm passes)
+                _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
                 _scalar_result(None),  # exact grant lookup (none)
                 _scalar_result(None),  # wildcard (*) lookup (none)
                 _scalar_result(room),  # metadata persist re-lookup
@@ -420,6 +431,7 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
             _scalar_result(target),  # target participant
         ]
         if target.participant_type == ParticipantType.AGENT:
+            execute_results.append(_scalar_result(None))  # owned-seat lookup (Nav v3 R5)
             execute_results.append(_scalar_result(grant))  # entitlement lookup
             # Closed-mode denial falls through to the wildcard (*) grant
             # lookup; extra side_effect entries are harmless when unused.
@@ -494,6 +506,7 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
                     SimpleNamespace(id=_uuid(), room_type=_RoomType.CHANNEL)
                 ),
                 _scalar_result(target),
+                _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
                 _scalar_result(_grant("the-colonel", AgentAccessEffect.DENY)),
             ]
         )

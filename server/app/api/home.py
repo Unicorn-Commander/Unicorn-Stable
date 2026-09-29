@@ -24,6 +24,13 @@ from app.models.participant import Participant, ParticipantStatus, ParticipantTy
 from app.models.room import MemberRole, Room, RoomMember, RoomType, TranscriptExport
 from app.services.livekit_service import LiveKitService
 from app.services.meeting_ops import meeting_ops_configured
+from app.services.crew import (
+    HEARTBEAT_FRESH,
+    TASK_FRESH,
+    CrewEntry,
+    build_crew,
+    event_matches,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -51,8 +58,7 @@ ACTION_FOR = {
     "invite": "join",
 }
 DONE_TASK_STATUSES = {"COMPLETED", "CANCELLED", "CANCELED", "DONE"}
-HEARTBEAT_FRESH = timedelta(seconds=90)
-TASK_FRESH = timedelta(minutes=15)
+# HEARTBEAT_FRESH / TASK_FRESH now come from services/crew (one rule for both surfaces).
 RECAP_WINDOW = timedelta(hours=24)
 
 
@@ -291,16 +297,21 @@ def pick_actor(
         }
 
     others = [m for m in members if str(m.get("participant_id")) != caller_id]
-    if kind in {"mention", "approval"} and sender:
+    if kind == "invite" and creator_id:
+        creator = next((m for m in members if str(m.get("participant_id")) == creator_id), None)
+        if creator:
+            return as_actor(creator)
+    # The face on a row is whoever wrote the line the row previews. Every kind
+    # that carries a sender uses it — not just mentions and approvals. Before
+    # this, an unread group DM fell through to "the first member who isn't
+    # you", so The Colonel's fleet reports wore Persephone's face because her
+    # membership row happened to sort first (Aaron, 2026-09-28).
+    if sender and str(sender.get("participant_id")) != caller_id:
         return as_actor(sender)
     if kind == "agent_waiting":
         agent = next((m for m in others if m.get("participant_type") == "agent"), None)
         if agent:
             return as_actor(agent)
-    if kind == "invite" and creator_id:
-        creator = next((m for m in members if str(m.get("participant_id")) == creator_id), None)
-        if creator:
-            return as_actor(creator)
     human = next((m for m in others if m.get("participant_type") != "agent"), None)
     if human:
         return as_actor(human)
@@ -938,156 +949,37 @@ async def _needs_you(
 
 
 def _event_matches(identity: str, agent_id: str, username: str, sub: str) -> bool:
-    ident = (identity or "").strip().lower()
-    keys = {
-        agent_id.lower(),
-        username.lower(),
-        sub.lower(),
-        f"brigade:{agent_id}".lower(),
-        f"agent-{agent_id}".lower(),
-    }
-    keys.discard("")
-    return ident in keys
+    """Kept for callers/tests; the rule lives in services/crew.event_matches."""
+    return event_matches(identity, agent_id, username, sub)
+
+
+def crew_card(entry: CrewEntry) -> CrewCard:
+    """The home-dashboard shape of one crew entry (CrewCard is unchanged)."""
+    return CrewCard(
+        agent_id=entry.agent_id,
+        participant_id=entry.participant_id,
+        display_name=entry.display_name,
+        avatar_url=entry.avatar_url,
+        status=entry.status,
+        agent_mode=entry.agent_mode,
+        current_task=entry.current_task,
+        last_line=entry.last_line,
+        since=entry.since,
+        hub_room_id=entry.hub_room_id,
+    )
 
 
 async def _crew(
-    db: AsyncSession, participant_id: uuid.UUID, now: datetime
+    db: AsyncSession, participant_id: uuid.UUID, now: datetime, *, redis: Any = None
 ) -> list[CrewCard]:
-    def caller_rooms():
-        return select(RoomMember.room_id).where(RoomMember.participant_id == participant_id)
-
-    rows = (
-        await db.execute(
-            select(Participant, RoomMember, Room)
-            .join(RoomMember, RoomMember.participant_id == Participant.id)
-            .join(Room, Room.id == RoomMember.room_id)
-            .where(
-                Participant.participant_type == ParticipantType.AGENT,
-                Room.is_archived.is_(False),
-                Room.id.in_(caller_rooms()),
-            )
-        )
-    ).all()
-    grouped: dict[str, dict[str, Any]] = {}
-    for participant, membership, room in rows:
-        key = str(participant.id)
-        slot = grouped.get(key)
-        if slot is None:
-            meta_agent = agent_id_from_sub(participant.keycloak_sub) or participant.username
-            slot = {
-                "participant": participant,
-                "agent_id": meta_agent,
-                "agent_mode": membership.agent_mode,
-                "hub_room_id": None,
-                "score": 0,
-            }
-            grouped[key] = slot
-        mode = membership.agent_mode
-        is_hub = room.room_type == RoomType.AGENT_HUB
-        score = (2 if is_hub else 0) + (1 if mode else 0)
-        if score >= slot["score"]:
-            slot["score"] = score
-            slot["agent_mode"] = mode if mode else slot["agent_mode"]
-            if is_hub:
-                slot["hub_room_id"] = str(room.id)
-            room_meta = room.metadata_ if isinstance(room.metadata_, dict) else {}
-            brigade = room_meta.get("brigade_agent_id")
-            if isinstance(brigade, str) and brigade:
-                slot["agent_id"] = brigade
-
-    if not grouped:
-        return []
-
-    agent_pids = [uuid.UUID(key) for key in grouped]
-    line_rows = (
-        await db.execute(
-            select(Message)
-            .where(
-                Message.sender_id.in_(agent_pids),
-                Message.is_deleted.is_(False),
-                Message.room_id.in_(caller_rooms()),
-            )
-            .distinct(Message.sender_id)
-            .order_by(Message.sender_id, Message.created_at.desc())
-        )
-    ).scalars().all()
-    last_line = {str(message.sender_id): clip(message.content, 140) for message in line_rows}
-
-    identities = []
-    for slot in grouped.values():
-        participant = slot["participant"]
-        identities.extend(
-            [
-                slot["agent_id"],
-                participant.username,
-                participant.keycloak_sub,
-                f"agent-{slot['agent_id']}",
-            ]
-        )
-    identities = [item for item in identities if item]
-    events: list[AgentEvent] = []
-    if identities:
-        events = (
-            await db.execute(
-                select(AgentEvent)
-                .where(
-                    AgentEvent.agent_identity.in_(identities),
-                    AgentEvent.received_at > now - timedelta(hours=6),
-                )
-                .order_by(AgentEvent.received_at.desc())
-                .limit(300)
-            )
-        ).scalars().all()
-
-    cards: list[CrewCard] = []
-    for key, slot in grouped.items():
-        participant = slot["participant"]
-        task: str | None = None
-        since: datetime | None = None
-        fresh_heartbeat = False
-        for event in events:
-            if not _event_matches(
-                event.agent_identity, slot["agent_id"], participant.username, participant.keycloak_sub
-            ):
-                continue
-            occurred = aware(event.occurred_at)
-            found = current_task_from_event(event.event_type, event.event_data)
-            if found and aware(now) - occurred <= TASK_FRESH and task is None:
-                task = found
-                since = occurred
-            if (
-                event.event_type == "worker_heartbeat"
-                and aware(now) - occurred <= HEARTBEAT_FRESH
-                and not fresh_heartbeat
-            ):
-                fresh_heartbeat = True
-                if since is None:
-                    since = occurred
-        status = participant.status.value if hasattr(participant.status, "value") else str(participant.status)
-        if fresh_heartbeat and status == ParticipantStatus.OFFLINE.value:
-            status = ParticipantStatus.ONLINE.value
-        cards.append(
-            CrewCard(
-                agent_id=slot["agent_id"],
-                participant_id=key,
-                display_name=participant.display_name or participant.username,
-                avatar_url=participant.avatar_url,
-                status=status,
-                agent_mode=slot["agent_mode"],
-                current_task=task,
-                last_line=last_line.get(key),
-                since=since,
-                hub_room_id=slot["hub_room_id"],
-            )
-        )
-
-    def crew_sort(card: CrewCard) -> tuple[int, float, str]:
-        hot = 0 if card.current_task or card.since else 1
-        stamp = -card.since.timestamp() if card.since else 0
-        return (hot, stamp, card.display_name.lower())
-
-    cards.sort(key=crew_sort)
-    return cards[:CREW_CAP]
+    """The dashboard's crew: the same roster and ranking as ``GET /crew``
+    (services/crew.build_crew — runner seats with ``crew = true`` and a live
+    key, Brigade agents the caller has a hub/DM with, integrations excluded),
+    capped at CREW_CAP. Before Nav v3 this was every agent sharing a room
+    with the caller, which is how seven webhook relays became "Claude Code"
+    rows on Aaron's home (design §1.4)."""
+    entries = await build_crew(db, participant_id, now, redis=redis)
+    return [crew_card(entry) for entry in entries[:CREW_CAP]]
 
 
 async def _standing_index(db: AsyncSession) -> list[TodayMeeting]:
@@ -1179,7 +1071,7 @@ async def get_home_summary(
         if v < 3:
             return summary.model_dump(mode="json")
         needs = await _needs_you(db, participant_id, now)
-        crew = await _crew(db, participant_id, now)
+        crew = await _crew(db, participant_id, now, redis=getattr(request.app.state, "redis", None))
         live_calls = await _enrich_live(db, occupancy)
         standing = await _standing_index(db)
     except Exception:

@@ -239,6 +239,13 @@ async def _get_or_create_sender(db: AsyncSession, room_name: str) -> Participant
             raise HTTPException(
                 status_code=409, detail="Webhook sender identity conflict"
             )
+        meta = getattr(existing, "metadata_", None)
+        meta = meta if isinstance(meta, dict) else {}
+        if meta.get("kind") != "integration":
+            # Nav v3 R1: an integration is foreign to every room class. Rows
+            # made before the stamp existed are repaired on their next use
+            # (reassigned, not mutated, for JSONB change detection).
+            existing.metadata_ = {**meta, "kind": "integration"}
         return existing
     sender = Participant(
         keycloak_sub=pseudo_sub,
@@ -246,6 +253,7 @@ async def _get_or_create_sender(db: AsyncSession, room_name: str) -> Participant
         display_name="Project-Ops",
         participant_type=ParticipantType.AGENT,
         status=ParticipantStatus.ONLINE,
+        metadata_={"kind": "integration"},
     )
     try:
         async with db.begin_nested():

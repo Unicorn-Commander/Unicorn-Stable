@@ -23,9 +23,11 @@ import hmac
 import os
 import re
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Iterable
 
 from jose import JWTError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.keycloak import validate_token
@@ -188,7 +190,9 @@ async def verify_gateway_key(raw_key: str, db: AsyncSession) -> GatewayPrincipal
     if row is None or not hmac.compare_digest(row.key_hash, key_hash):
         raise GatewayAuthError(401, "Invalid or revoked gateway key")
 
-    allowed = list(row.allowed_rooms or ["*"])
+    # A NULL allowlist is the legacy default ("*"); an EMPTY list is a key an
+    # operator scoped to nothing and stays that way (never a wildcard).
+    allowed = list(row.allowed_rooms) if row.allowed_rooms is not None else ["*"]
     return GatewayPrincipal(
         auth_kind="key",
         agent_id=row.agent_id,
@@ -203,9 +207,26 @@ async def verify_gateway_key(raw_key: str, db: AsyncSession) -> GatewayPrincipal
     )
 
 
+#: ``allowed_rooms`` token meaning "any room where this key's agent participant
+#: is a member" (Nav v3, C1). Resolved against ``room_members`` at check time,
+#: so a seat follows its human into every hub, thread and room it is added
+#: to without a key re-scope. Explicit names and ``"*"`` keep their meaning.
+MEMBER_SCOPE = "@member"
+
+
+def key_scope_wants_membership(allowed_rooms: list | None) -> bool:
+    """True when the allowlist carries the ``@member`` token."""
+    return bool(allowed_rooms) and MEMBER_SCOPE in allowed_rooms
+
+
 def room_in_key_scope(allowed_rooms: list | None, room) -> bool:
     """The gateway's allowlist rule, shared with the voice-settings path:
-    ``"*"`` = any room; otherwise either name form must be listed."""
+    ``"*"`` = any room; otherwise either name form must be listed.
+
+    Pure and name-based on purpose. The ``@member`` token needs a database
+    lookup — see :func:`resolve_key_room_scope`, which every scope check
+    should call so the two rules cannot drift.
+    """
     if allowed_rooms is None:
         return False
     return (
@@ -215,13 +236,109 @@ def room_in_key_scope(allowed_rooms: list | None, room) -> bool:
     )
 
 
+async def agent_is_room_member(db: AsyncSession, agent_id: str, room_id) -> bool:
+    """Is the agent participant for ``agent_id`` (``keycloak_sub =
+    brigade:<agent_id>``) a member of ``room_id``?"""
+    from app.models.participant import Participant
+    from app.models.room import RoomMember
+
+    row = (
+        await db.execute(
+            select(RoomMember.id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id == room_id,
+                Participant.keycloak_sub == f"brigade:{agent_id}",
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
+async def seat_owner_usernames(db: AsyncSession, agent_id: str) -> frozenset[str]:
+    """The usernames that own the seat ``agent_id`` (``participants.metadata
+    .owner``, a string or a list). Empty when the seat has no row or no
+    owner — and then ``@member`` matches nothing (fail closed)."""
+    from app.models.participant import Participant
+    from app.services.room_class import seat_owners
+
+    meta = (
+        await db.execute(
+            select(Participant.metadata_).where(Participant.keycloak_sub == f"brigade:{agent_id}")
+        )
+    ).scalar_one_or_none()
+    return seat_owners(SimpleNamespace(metadata_=meta))
+
+
+async def owner_is_room_member(db: AsyncSession, owners: Iterable[str], room_id) -> bool:
+    """Is one of ``owners`` (usernames) a current HUMAN member of ``room_id``?"""
+    from app.models.participant import Participant, ParticipantType
+    from app.models.room import RoomMember
+
+    names = [name for name in owners if name]
+    if not names:
+        return False
+    row = (
+        await db.execute(
+            select(RoomMember.id)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(
+                RoomMember.room_id == room_id,
+                Participant.participant_type == ParticipantType.HUMAN,
+                func.lower(Participant.username).in_(names),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
+async def seat_follows_human(db: AsyncSession, agent_id: str, room) -> bool:
+    """R4 — the ``@member`` rule proper: the room is live (not archived), the
+    seat is a member, AND the seat's owner human is a current member. The
+    seat follows ITS human; a membership someone else minted for it is not
+    authority on its own."""
+    room_id = getattr(room, "id", None)
+    if room_id is None or bool(getattr(room, "is_archived", False)):
+        return False
+    if not await agent_is_room_member(db, agent_id, room_id):
+        return False
+    owners = await seat_owner_usernames(db, agent_id)
+    if not owners:
+        return False
+    return await owner_is_room_member(db, owners, room_id)
+
+
+async def resolve_key_room_scope(
+    db: AsyncSession, allowed_rooms: list | None, agent_id: str, room
+) -> bool:
+    """The full key-scope rule: names / ``*`` as :func:`room_in_key_scope`,
+    then ``@member`` as :func:`seat_follows_human`. ``None`` (the JWT path)
+    is never a key scope; an empty list is scoped to nothing."""
+    if not allowed_rooms:
+        return False
+    if room_in_key_scope(allowed_rooms, room):
+        return True
+    if not key_scope_wants_membership(allowed_rooms):
+        return False
+    return await seat_follows_human(db, agent_id, room)
+
+
 __all__ = [
     "GatewayPrincipal",
     "GatewayAuthError",
     "KEY_PREFIXES",
+    "MEMBER_SCOPE",
     "TALK_CONTROLS_AGENT_ID",
+    "agent_is_room_member",
     "is_gateway_key",
+    "key_scope_wants_membership",
+    "owner_is_room_member",
+    "resolve_key_room_scope",
     "room_in_key_scope",
+    "seat_follows_human",
+    "seat_owner_usernames",
     "validate_gateway_jwt",
     "verify_gateway_key",
     "derive_agent_id",

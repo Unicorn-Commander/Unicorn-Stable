@@ -32,14 +32,34 @@ from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
 from app.services.mentions import parse_mentions
 from app.services.presence_service import PresenceService
+from app.services.room_class import (
+    CLASS_FLOOR_KEY,
+    SEATS_METADATA_KEY,
+    SeatSettingError,
+    agent_id_of_sub,
+    insert_floors_room,
+    is_runner_seat,
+    norm_username,
+    participant_kind,
+    seat_owner,
+    seat_owners,
+    validate_seats_setting,
+)
 
 logger = structlog.get_logger(__name__)
 
 # Room-metadata keys a client PATCH may write. Everything else in metadata_
 # is server-owned wiring (brigade_agent_id, conference, dm_pair, …) that a
 # room admin's browser must not be able to rewrite through the generic
-# update endpoint.
-CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled"})
+# update endpoint. ``seats`` (Nav v3 C2 / R6: per-seat {model, effort},
+# keyed by agent id) is validated and separately authorised in
+# ``update_room`` — see ``_authorize_seats_setting``.
+CLIENT_MUTABLE_METADATA_KEYS: frozenset[str] = frozenset({"auto_titled", SEATS_METADATA_KEY})
+
+#: Room slugs may not wear the LiveKit prefix: LiveKit names are
+#: ``stable-<slug>``, so a room NAMED ``stable-persephone`` would collide with
+#: #persephone's LiveKit name in every by-name lookup and key scope.
+RESERVED_ROOM_NAME_PREFIX = "stable-"
 
 #: Threads nested under a parent row in GET /rooms are capped per parent; the
 #: rest come from GET /rooms/{id}/threads (which pages by include_archived).
@@ -49,12 +69,31 @@ NESTED_THREADS_PER_PARENT = 25
 ROOM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
+#: The parent's type in Stable's own words. The parent's "thread started"
+#: SYSTEM line is built from this closed vocabulary, so a line a seat reads
+#: as ``[system] …`` never carries a name or a title somebody chose.
+THREAD_KIND_WORDS: dict[str, str] = {
+    "agent_hub": "Hub",
+    "channel": "Channel",
+    "group_dm": "Group",
+    "dm": "DM",
+}
+
+
+def thread_started_text(parent_room_type: Any) -> str:
+    """``"<kind> thread started"`` — the title and the creator are in the
+    line's metadata (``thread_title``, ``created_by``)."""
+    word = THREAD_KIND_WORDS.get(str(getattr(parent_room_type, "value", parent_room_type) or ""))
+    return f"{word} thread started" if word else "Thread started"
+
+
 @dataclass
 class ThreadCreation:
     """What ``create_thread`` made: the thread room, the parent's system
-    line ("<name> started a thread: <title>"), the quoted seed (when a
-    ``seed_message_id`` was given) and every member it seeded — so the API
-    layer can fan the two messages out and push the room to each member."""
+    line ("<kind> thread started"; the title and the creator are in its
+    metadata), the quoted seed (when a ``seed_message_id`` was given) and
+    every member it seeded — so the API layer can fan the two messages out
+    and push the room to each member."""
 
     room: Room
     system_message: Message | None = None
@@ -1417,8 +1456,9 @@ class RoomService:
         ``seed_message_id`` quotes that message as the thread's first entry —
         a SYSTEM-styled message whose ``metadata.seed_message_id`` /
         ``seed_room_id`` link back to the original, which is not moved. The
-        parent gets a SYSTEM line "<name> started a thread: <title>" carrying
-        ``metadata.thread_room_id``. ``thread_count`` on the parent is derived
+        parent gets a SYSTEM line "<kind> thread started" carrying
+        ``metadata.thread_room_id``, ``thread_title`` and ``created_by`` (the
+        creator's participant id). ``thread_count`` on the parent is derived
         (``_conversation_extras``), so nothing else needs maintaining.
         """
         parent = (await self._db.execute(select(Room).where(Room.id == parent_id))).scalar_one_or_none()
@@ -1451,15 +1491,6 @@ class RoomService:
                     detail="Seed message not found in this room",
                 )
 
-        creator = (
-            await self._db.execute(select(Participant).where(Participant.id == creator_id))
-        ).scalar_one_or_none()
-        creator_name = (
-            (getattr(creator, "display_name", None) or getattr(creator, "username", None) or "Someone")
-            if creator is not None
-            else "Someone"
-        )
-
         parent_meta = dict(parent.metadata_ or {})
         meta: dict[str, Any] = {
             k: v
@@ -1470,12 +1501,39 @@ class RoomService:
         meta["thread"] = {
             "parent_room_id": str(parent.id),
             "seed_message_id": str(seed.id) if seed is not None else None,
+            # R2: the seed's TRUE author, so the class of a thread started
+            # from a stranger's line counts that stranger. None when the
+            # seed's sender is gone (NULL) — foreign, fail closed.
+            "seed_sender_id": (
+                str(seed.sender_id) if seed is not None and seed.sender_id else None
+            ),
         }
         display = (title or "").strip()
         if not display and seed is not None:
             display = self.thread_title_from_seed(seed.content)
         display = display or "New thread"
         slug = f"{parent.name[:80]}-t-{uuid.uuid4().hex[:8]}"
+
+        # Seed members from the parent's roster in one query: agents keep
+        # their mode; humans come along only when @-mentioned.
+        handles: set[str] = set(parse_mentions(display).handles)
+        if seed is not None:
+            handles |= set(parse_mentions(seed.content).handles)
+        member_rows = await self._db.execute(
+            select(RoomMember, Participant)
+            .join(Participant, Participant.id == RoomMember.participant_id)
+            .where(RoomMember.room_id == parent.id)
+        )
+        parent_members = list(member_rows.all())
+        if seed is not None and insert_floors_room(
+            parent.room_type, getattr(seed, "sender", None)
+        ):
+            # The seed's AUTHOR is foreign by nature (a guest, an
+            # integration, an unattributed line): the thread is shared from
+            # birth. A human's or a seat's line as the seed never floors
+            # here — the thread's members are not an input (REVIEW-3 P1-2);
+            # the read path judges the history.
+            meta[CLASS_FLOOR_KEY] = "shared"
 
         room = await self.create_room(
             name=slug,
@@ -1494,18 +1552,8 @@ class RoomService:
         # the Tasks panel and promote-to-task pre-fill keep working inside it.
         room.project_number = getattr(parent, "project_number", None)
 
-        # Seed members from the parent's roster in one query: agents keep
-        # their mode; humans come along only when @-mentioned.
-        handles: set[str] = set(parse_mentions(display).handles)
-        if seed is not None:
-            handles |= set(parse_mentions(seed.content).handles)
-        member_rows = await self._db.execute(
-            select(RoomMember, Participant)
-            .join(Participant, Participant.id == RoomMember.participant_id)
-            .where(RoomMember.room_id == parent.id)
-        )
         member_ids: list[uuid.UUID] = [creator_id]
-        for membership, participant in member_rows.all():
+        for membership, participant in parent_members:
             if participant.id == creator_id:
                 continue
             if participant.participant_type == ParticipantType.AGENT:
@@ -1527,9 +1575,13 @@ class RoomService:
         seed_message: Message | None = None
         if seed is not None:
             seed_sender = getattr(seed, "sender", None)
+            # The quoted line keeps its TRUE author (R2): a stranger's words
+            # are never re-attributed to the creator, so the room's class —
+            # and anyone reading the history — sees who really wrote them.
+            # SYSTEM styling marks it as a quote, not a new line.
             seed_message = Message(
                 room_id=room.id,
-                sender_id=creator_id,
+                sender_id=seed.sender_id,
                 content=seed.content,
                 content_type=ContentType.SYSTEM,
                 metadata_={
@@ -1546,15 +1598,20 @@ class RoomService:
             )
             self._db.add(seed_message)
 
+        # Server-worded on purpose: the title and the creator's name are
+        # text somebody chose, so they ride in metadata (the web renders
+        # them) and never in a line a seat reads as "[system] …".
         system_message = Message(
             room_id=parent.id,
             sender_id=creator_id,
-            content=f"{creator_name} started a thread: {display}",
+            content=thread_started_text(parent.room_type),
             content_type=ContentType.SYSTEM,
             metadata_={
                 "kind": "thread_started",
                 "thread_room_id": str(room.id),
                 "thread_title": display,
+                "created_by": str(creator_id),
+                "seed_message_id": str(seed.id) if seed is not None else None,
             },
         )
         self._db.add(system_message)
@@ -1822,6 +1879,13 @@ class RoomService:
 
         new_display = " ".join((display_name or "").split()) or room.display_name
         new_name = (name or "").strip().lower() or group_slug_base(new_display)
+        if new_name.startswith(RESERVED_ROOM_NAME_PREFIX):
+            # Client-supplied names only (P2-5): thread slugs and server-made
+            # rooms are exempt, this one comes from the request.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Room names may not start with '{RESERVED_ROOM_NAME_PREFIX}'",
+            )
         if not ROOM_SLUG_RE.fullmatch(new_name) or len(new_name) > 100:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2031,8 +2095,47 @@ class RoomService:
         string clears it); ``recording_policy`` / ``recording_kind`` are the
         recording contract (design §8) — stored here, enforced by the
         recording service.
+
+        ``metadata.seats`` (Nav v3 C2 / R6: ``{"<agent_id>": {model,
+        effort}}``) is the exception to the owner/admin rule: validated
+        first (422), then each entry is allowed only for that seat's OWNER
+        (``participants.metadata.owner``) — in any room — and refused with
+        409 when that agent is not a runner seat in the room, or the room is
+        archived. A PATCH that ONLY carries ``seats`` takes that path (any
+        member); anything else in the body still needs owner/admin.
         """
-        await self._require_role(room_id, participant_id, ["owner", "admin"])
+        seats_patch = bool(metadata) and SEATS_METADATA_KEY in metadata
+        seats_value: dict[str, dict[str, str | None]] | None = None
+        if seats_patch:
+            try:
+                seats_value = validate_seats_setting(metadata[SEATS_METADATA_KEY])
+            except SeatSettingError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(exc),
+                ) from None
+        other_changes = any(
+            value is not None
+            for value in (
+                display_name,
+                description,
+                is_archived,
+                visibility,
+                project_number,
+                recording_policy,
+                recording_kind,
+            )
+        ) or bool(metadata and set(metadata) - {SEATS_METADATA_KEY})
+
+        if other_changes or not seats_patch:
+            membership = await self._require_role(room_id, participant_id, ["owner", "admin"])
+        else:
+            membership = await self._get_membership(room_id, participant_id)
+            if membership is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not a member of this room",
+                )
 
         result = await self._db.execute(select(Room).where(Room.id == room_id))
         room = result.scalar_one_or_none()
@@ -2041,6 +2144,9 @@ class RoomService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Room not found",
             )
+
+        if seats_patch:
+            await self._authorize_seats_setting(room, membership, seats_value or {})
 
         if display_name is not None:
             room.display_name = display_name
@@ -2095,6 +2201,12 @@ class RoomService:
                 for k, v in metadata.items()
                 if k in CLIENT_MUTABLE_METADATA_KEYS
             }
+            if seats_patch:
+                # Per-seat merge of the validated, normalised form — never the
+                # raw client value, and never another owner's entry.
+                existing = (room.metadata_ or {}).get(SEATS_METADATA_KEY)
+                existing = existing if isinstance(existing, dict) else {}
+                allowed[SEATS_METADATA_KEY] = {**existing, **(seats_value or {})}
             if allowed:
                 # Reassign (never mutate in place) so SQLAlchemy's JSONB
                 # change detection sees the update.
@@ -2107,6 +2219,56 @@ class RoomService:
 
         logger.info("room_updated", room_id=str(room_id))
         return room
+
+    async def _authorize_seats_setting(
+        self, room: Room, membership: RoomMember, seats: dict[str, Any]
+    ) -> None:
+        """R6's gate for ``metadata.seats``, in the design's ladder (422 →
+        403 → 409): the caller must be each seat's OWNER
+        (``participants.metadata.owner``) — 403 otherwise, whoever owns the
+        room — judged from the member row when the seat is in the room and
+        from the seat's own row when it is not; then the seat must be a
+        runner seat that is a member of a live room (409 otherwise)."""
+        from app.services.agent_access import owned_seat_owners
+
+        caller = getattr(membership, "participant", None)
+        me = norm_username(getattr(caller, "username", None))
+        seats_in_room: dict[str, Any] = {}
+        for member in getattr(room, "members", None) or []:
+            participant = getattr(member, "participant", None)
+            if participant is None or not is_runner_seat(participant):
+                continue
+            agent_id = agent_id_of_sub(getattr(participant, "keycloak_sub", None))
+            if agent_id:
+                seats_in_room[agent_id] = participant
+
+        def refuse_not_owner(agent_id: str) -> HTTPException:
+            return HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Only the owner of '{agent_id}' can set that seat's model "
+                    "and effort — ask the seat's owner"
+                ),
+            )
+
+        for agent_id in seats:
+            seat = seats_in_room.get(agent_id)
+            if seat is not None:
+                if me is None or me not in seat_owners(seat):
+                    raise refuse_not_owner(agent_id)
+                continue
+            owners = await owned_seat_owners(self._db, agent_id)
+            if owners and (me is None or me not in owners):
+                raise refuse_not_owner(agent_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"'{agent_id}' is not a runner seat in this room",
+            )
+        if bool(getattr(room, "is_archived", False)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This room is archived",
+            )
 
     async def archive_room(
         self,
@@ -2169,6 +2331,8 @@ class RoomService:
         self,
         room_id: uuid.UUID,
         caller_id: uuid.UUID | str | None = None,
+        *,
+        guest_view: bool = False,
     ) -> list[dict[str, Any]]:
         """Get all members of a room with their participant info.
 
@@ -2204,14 +2368,34 @@ class RoomService:
             sub = participant.keycloak_sub or ""
             if sub.startswith("brigade:"):
                 agent_ids_by_participant[str(participant.id)] = sub[len("brigade:"):]
-        availability = await get_agent_availability(
-            self._presence.redis, set(agent_ids_by_participant.values())
+        # A GUEST caller learns an agent's ``kind`` and nothing else: never
+        # who owns a seat (their username and display name, even when that
+        # owner is not in the room) nor which agents have shell hands
+        # (``backend``). Availability tells the same story another way —
+        # ``bridge_session_active`` marks a live gateway seat,
+        # ``brigade_registered`` a Brigade agent — so a guest gets neither,
+        # and the lookup is not run for them. Members get all of it.
+        availability = (
+            {}
+            if guest_view
+            else await get_agent_availability(
+                self._presence.redis, set(agent_ids_by_participant.values())
+            )
+        )
+        owner_names = (
+            {}
+            if guest_view
+            else await self._owner_display_names(
+                [participant for _m, participant in rows if participant.participant_type == ParticipantType.AGENT]
+            )
         )
 
         members: list[dict[str, Any]] = []
         for membership, participant in rows:
             brigade_id = agent_ids_by_participant.get(str(participant.id))
-            if participant.participant_type == ParticipantType.AGENT:
+            if guest_view:
+                avail, avail_reason = (None, None)
+            elif participant.participant_type == ParticipantType.AGENT:
                 # An agent with no `brigade:<id>` identity is one we have no way
                 # to reach or ask about, so it is unknown — not available.
                 avail, avail_reason = (
@@ -2260,9 +2444,62 @@ class RoomService:
                 # (in a call) without Brigade having it enabled.
                 "availability": avail,
                 "availability_reason": avail_reason,
+                # Nav v3: the seat's standing in this room (the Mode popover)
+                # and a GUEST-SAFE metadata subset for the roster marks —
+                # kind / backend / owner / owner_display_name and nothing
+                # else. Humans and guests carry none.
+                "agent_mode": getattr(membership, "agent_mode", None),
+                "context_depth": getattr(membership, "context_depth", None),
+                "metadata": (
+                    (
+                        {"kind": participant_kind(participant)}
+                        if guest_view
+                        else self._member_metadata_subset(participant, owner_names)
+                    )
+                    if participant.participant_type == ParticipantType.AGENT
+                    else None
+                ),
             })
 
         return members
+
+    @staticmethod
+    def _member_metadata_subset(
+        participant: Participant, owner_names: dict[str, str]
+    ) -> dict[str, Any]:
+        """``{kind, backend, owner, owner_display_name}`` of an agent member
+        — the four facts the web roster marks need, never the whole JSONB
+        (which carries seat capabilities, avatar overrides, …)."""
+        meta = participant.metadata_ if isinstance(participant.metadata_, dict) else {}
+        owner = seat_owner(participant)
+        return {
+            "kind": participant_kind(participant),
+            "backend": participant_backend(participant) if meta.get("backend") is not None else None,
+            "owner": owner,
+            "owner_display_name": owner_names.get(owner) if owner else None,
+        }
+
+    async def _owner_display_names(self, agents: list[Participant]) -> dict[str, str]:
+        """``{owner username: display_name}`` for every owner named by the
+        given agent rows — one query, none when no seat is owned."""
+        owners: set[str] = set()
+        for participant in agents:
+            owners |= set(seat_owners(participant))
+        if not owners:
+            return {}
+        rows = (
+            await self._db.execute(
+                select(Participant.username, Participant.display_name).where(
+                    Participant.participant_type == ParticipantType.HUMAN,
+                    func.lower(Participant.username).in_(sorted(owners)),
+                )
+            )
+        ).all()
+        return {
+            (norm_username(username) or ""): display_name
+            for username, display_name in rows
+            if username
+        }
 
     async def _require_role(
         self,

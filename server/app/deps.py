@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.gateway_auth import (
     GatewayAuthError,
     is_gateway_key,
-    room_in_key_scope,
+    resolve_key_room_scope,
     verify_gateway_key,
 )
 from app.auth.guest_auth import (
@@ -295,8 +295,10 @@ async def require_guest(
 #   (b) it is bound to agent_id ``talk-controls-app`` OR its row carries the
 #       explicit ``can_manage_voice_settings`` grant (an ordinary agent key,
 #       say grok's, is a 403 — posting messages is not reconfiguring the room),
-#   (c) the target room is in the key's allowed_rooms (either name form, or
-#       ``"*"`` — the gateway's own allowlist rule, shared, not re-derived).
+#   (c) the target room is in the key's allowed_rooms (either name form,
+#       ``"*"``, or ``"@member"`` = the key's seat AND its owner human are
+#       current members — the gateway's own resolver,
+#       gateway_auth.resolve_key_room_scope, shared, not re-derived).
 #
 # Everything else takes the ordinary get_current_user path unchanged, so a
 # human still needs owner/admin on the room. The dependency returns the same
@@ -391,7 +393,7 @@ async def get_room_controller(
     ).scalar_one_or_none()
     if room is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    if not room_in_key_scope(principal.allowed_rooms, room):
+    if not await resolve_key_room_scope(db, principal.allowed_rooms, principal.agent_id, room):
         logger.info(
             "room_control_denied",
             reason="room_out_of_key_scope",

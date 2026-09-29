@@ -26,8 +26,14 @@ TWO KINDS
 RECEIPTS
 --------
 Every start/stop transition fans a ``recording_state`` frame to the room's
-members (ws/events.py) and posts a system message ("Recording started by
-Aaron" / "Recording stopped") so people, guests and agents all see it.
+members (ws/events.py) and posts a system message ("Audio recording started"
+/ "Video recording stopped") so people, guests and agents all see it.
+
+The message has NO sender, so it may carry only Stable's own words
+(:func:`recording_notice_text`, a closed vocabulary): never a display name,
+an error string or anything else a person or another system chose. Who
+started it is ``metadata.started_by`` — a participant id the web renders a
+name from, and that the room class counts as an author of the room.
 
 AFTER THE EGRESS ENDS
 ---------------------
@@ -350,12 +356,26 @@ async def _post_system_message(
         logger.warning("recording_system_message_fanout_failed", exc_info=True)
 
 
+def recording_notice_text(kind: str | None, event: str) -> str:
+    """The text of a recording notice: Stable's own words and nothing else.
+
+    A notice is a NULL-sender SYSTEM line, which the room class counts as
+    house and a seat reads as ``[system] <text>`` — so the text is built
+    from a closed vocabulary. The starter's name, the reason and any error
+    string live in ``metadata`` (``started_by`` is a participant id)."""
+    if event == "failed":
+        return "Recording failed"
+    kind_word = "Video recording" if kind == KIND_COMPOSITE else "Audio recording"
+    return f"{kind_word} {'started' if event == 'started' else 'stopped'}"
+
+
 async def _announce_recording_failure(db: AsyncSession, row: CallEgress, reason: str) -> None:
-    """Make a failed/orphaned recording visible to people and agents."""
+    """Make a failed/orphaned recording visible to people and agents. The
+    reason (an error string from the egress) rides in metadata only."""
     if row.room_id is None:
         return
     await _post_system_message(
-        db, row.room_id, f"Recording failed: {reason[:500]}",
+        db, row.room_id, recording_notice_text(row.kind, "failed"),
         {"kind": "recording", "event": "failed", "recording_id": str(row.id),
          "egress_id": row.egress_id, "reason": reason[:2000]},
     )
@@ -408,20 +428,12 @@ async def announce_recording(
     }
     await _ws_room(room.id, {"type": RECORDING_STATE, "payload": payload})
 
-    if active:
-        kind_word = "Video recording" if row.kind == KIND_COMPOSITE else "Recording"
-        if started_by_name:
-            text = f"{kind_word} started by {started_by_name}"
-        else:
-            text = f"{kind_word} started (this room always records)"
-    else:
-        text = "Recording stopped"
-        if reason and reason not in ("stop_requested", "user"):
-            text = f"Recording stopped ({reason.replace('_', ' ')})"
+    # The persisted line names nobody: the starter is metadata.started_by
+    # (an id), the trigger / stop reason is metadata.reason.
     await _post_system_message(
         db,
         room.id,
-        text,
+        recording_notice_text(row.kind, "started" if active else "stopped"),
         {
             "kind": "recording",
             "event": "started" if active else "stopped",

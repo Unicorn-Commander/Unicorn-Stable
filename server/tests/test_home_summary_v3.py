@@ -359,3 +359,53 @@ def test_section_prefs_fill_missing_ids_and_drop_unknown() -> None:
     assert prefs["collapsed"]["crew"] is True
     assert prefs["collapsed"]["live_now"] is False
     assert "nope" not in prefs["collapsed"]
+
+
+def _m(pid: str, ptype: str, name: str, agent_id: str | None = None) -> dict:
+    return {
+        "participant_id": pid,
+        "participant_type": ptype,
+        "display_name": name,
+        "avatar_url": f"/puppets/{pid}.png",
+        "agent_id": agent_id,
+    }
+
+
+def test_pick_actor_dm_row_wears_the_senders_face_not_the_first_member() -> None:
+    # Fleet Watch (2026-09-28): a group DM whose member rows sort Persephone
+    # first; the unread line is The Colonel's. The row must show The Colonel.
+    members = [
+        _m("per", "agent", "Persephone", "persephone"),
+        _m("col", "agent", "The Colonel", "colonel"),
+        _m("me", "human", "Aaron"),
+    ]
+    actor = pick_actor(
+        members, caller_id="me", kind="dm", sender=_m("col", "agent", "The Colonel", "colonel"), creator_id=None
+    )
+    assert actor["agent_id"] == "colonel"
+    assert actor["display_name"] == "The Colonel"
+    assert actor["avatar_url"] == "/puppets/col.png"
+
+
+def test_pick_actor_waiting_row_prefers_the_agent_that_actually_spoke() -> None:
+    members = [
+        _m("per", "agent", "Persephone", "persephone"),
+        _m("col", "agent", "The Colonel", "colonel"),
+        _m("me", "human", "Aaron"),
+    ]
+    actor = pick_actor(
+        members, caller_id="me", kind="agent_waiting", sender=_m("col", "agent", "The Colonel", "colonel"), creator_id=None
+    )
+    assert actor["agent_id"] == "colonel"
+
+
+def test_pick_actor_never_returns_the_caller_as_sender() -> None:
+    members = [_m("me", "human", "Aaron"), _m("ada", "human", "Ada")]
+    actor = pick_actor(members, caller_id="me", kind="dm", sender=_m("me", "human", "Aaron"), creator_id=None)
+    assert actor["participant_id"] == "ada"
+
+
+def test_pick_actor_invite_row_keeps_the_inviter() -> None:
+    members = [_m("me", "human", "Aaron"), _m("ada", "human", "Ada"), _m("bob", "human", "Bob")]
+    actor = pick_actor(members, caller_id="me", kind="invite", sender=_m("bob", "human", "Bob"), creator_id="ada")
+    assert actor["participant_id"] == "ada"

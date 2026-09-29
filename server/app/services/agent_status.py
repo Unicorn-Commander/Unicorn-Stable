@@ -232,6 +232,7 @@ async def scoped_bridge_agents(
     """
     from sqlalchemy import select
 
+    from app.auth.gateway_auth import key_scope_wants_membership, resolve_key_room_scope
     from app.models.agent_gateway_key import AgentGatewayKey
 
     candidates = sorted({a for a in agent_ids if a})
@@ -249,7 +250,21 @@ async def scoped_bridge_agents(
     except Exception:
         logger.debug("bridge_key_lookup_failed", exc_info=True)
         return set()
-    return {agent_id for agent_id, allowed in rows if _room_in_allowed(allowed, room)}
+    scoped: set[str] = set()
+    for agent_id, allowed in rows:
+        if _room_in_allowed(allowed, room):
+            scoped.add(agent_id)
+            continue
+        # ``@member`` (Nav v3 C1): the seat follows its human — resolved with
+        # the gateway's own resolver so the marker and the scope check cannot
+        # disagree. A lookup failure is "not a bridge here", never a 500.
+        if key_scope_wants_membership(allowed if isinstance(allowed, list) else None):
+            try:
+                if await resolve_key_room_scope(db, allowed, agent_id, room):
+                    scoped.add(agent_id)
+            except Exception:
+                logger.debug("bridge_member_scope_failed", agent_id=agent_id, exc_info=True)
+    return scoped
 
 
 async def connected_bridge_agents(

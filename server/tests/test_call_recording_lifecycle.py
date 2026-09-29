@@ -279,24 +279,29 @@ class Receipts(IsolatedAsyncioTestCase):
         self.assertEqual(env["payload"]["started_by"], {"id": str(pid), "display_name": "Aaron"})
         self.assertIsNotNone(env["payload"]["started_at"])
         content, meta = posted[0]
-        self.assertEqual(content, "Recording started by Aaron")
+        # Nav v3 fix lane 4 (REVIEW-4 P1-1): the stored line names nobody;
+        # the starter is an id in metadata.
+        self.assertEqual(content, "Audio recording started")
+        self.assertEqual(meta["started_by"], str(pid))
         self.assertEqual(meta["event"], "started")
         self.assertEqual(meta["kind"], "recording")
 
     async def test_policy_start_and_composite_wording(self) -> None:
         r = room()
         _, posted = await self._announce(r, self._row(), True, reason="policy always")
-        self.assertEqual(posted[0][0], "Recording started (this room always records)")
+        self.assertEqual(posted[0][0], "Audio recording started")
+        self.assertEqual(posted[0][1]["reason"], "policy always")     # why, for the web to word
         _, posted = await self._announce(r, self._row(kind="composite", started_by=uuid.uuid4()), True, started_by_name="Shafen")
-        self.assertEqual(posted[0][0], "Video recording started by Shafen")
+        self.assertEqual(posted[0][0], "Video recording started")
 
     async def test_stopped(self) -> None:
         r = room()
         frames, posted = await self._announce(r, self._row(), False, reason="stop_requested")
         self.assertFalse(frames[0][1]["payload"]["active"])
-        self.assertEqual(posted[0][0], "Recording stopped")
+        self.assertEqual(posted[0][0], "Audio recording stopped")
         _, posted = await self._announce(r, self._row(), False, reason="room_idle")
-        self.assertEqual(posted[0][0], "Recording stopped (room idle)")
+        self.assertEqual(posted[0][0], "Audio recording stopped")
+        self.assertEqual(posted[0][1]["reason"], "room_idle")
 
     async def test_system_message_row_and_envelope(self) -> None:
         r = room()

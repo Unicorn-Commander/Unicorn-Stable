@@ -27,6 +27,7 @@ from app.auth.keycloak import extract_user_identity, validate_token
 from app.config import get_settings
 from app.models.participant import Participant, ParticipantType
 from app.models.room import RoomMember
+from app.services.guest_view import guest_view_of_envelope
 from app.services.presence_service import (
     INSTANCE_PRESENCE_CHANNEL,
     PresenceService,
@@ -587,6 +588,12 @@ async def _subscribe_to_rooms(
                     and data.get("participant_id") == participant_id
                 ):
                     continue
+                if is_guest_socket:
+                    # The echo is published once for the whole room, so what
+                    # a GUEST may not see has to come off here, at the
+                    # guest's own socket (REVIEW-4 P2-2): a message's
+                    # `gateway`, `on_behalf_of` and `agent_id` metadata.
+                    data = guest_view_of_envelope(data)
                 await _safe_send(websocket, data)
             except (json.JSONDecodeError, WebSocketDisconnect):
                 break

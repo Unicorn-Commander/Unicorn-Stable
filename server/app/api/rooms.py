@@ -22,6 +22,7 @@ from app.deps import (
     get_room_controller,
     get_settings_dep,
     is_control_key,
+    is_guest,
     rate_limit,
     require_room_member,
     require_room_member_or_guest,
@@ -1088,6 +1089,9 @@ def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
         avatar_emoji=m.get("avatar_emoji"),
         availability=m.get("availability"),
         availability_reason=m.get("availability_reason"),
+        agent_mode=m.get("agent_mode"),
+        context_depth=m.get("context_depth"),
+        metadata=m.get("metadata"),
     )
 
 
@@ -1110,9 +1114,18 @@ async def list_members(
     client distinguishes a real member from an outsider whose display name they
     chose themselves. Clients MUST badge on that field rather than trusting the
     name string.
+
+    Agent rows carry a ``metadata`` subset. A MEMBER gets ``kind``,
+    ``backend``, ``owner`` and ``owner_display_name``; a GUEST gets ``kind``
+    and nothing else — never who owns a seat, nor which agents have shell
+    hands (Nav v3, REVIEW-3 P2-4). For a guest ``availability`` and
+    ``availability_reason`` are null on every row as well: the reason names
+    the agent's backend (REVIEW-4 P2-2).
     """
     svc = _build_room_service(db, livekit, presence)
-    members = await svc.get_members(room_id, caller_id=user["participant_id"])
+    members = await svc.get_members(
+        room_id, caller_id=user["participant_id"], guest_view=is_guest(user)
+    )
     return [_member_to_response(m) for m in members]
 
 
