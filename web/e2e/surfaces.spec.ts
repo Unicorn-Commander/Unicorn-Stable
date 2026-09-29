@@ -1139,6 +1139,65 @@ test.describe("Home v4", () => {
   });
 });
 
+/**
+ * The phone's keyboard (review 2, P1-4). Chromium's phone emulation draws
+ * no keyboard, so it is emulated the way iOS reports one: the visual
+ * viewport shrinks (336 px, an iPhone 12 in portrait) and the shell follows
+ * it (useAppHeight). The tab bar must leave, and the composer sit on the
+ * keyboard — not 56 px above it with the room kept for the bar.
+ */
+test.describe("The phone keyboard (emulated)", () => {
+  test("the tab bar leaves and Home's composer sits on the keyboard", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "a touch screen");
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("home-dashboard")).toHaveAttribute("data-state", "loaded");
+    const bar = page.getByTestId("phone-tab-bar");
+    await expect(bar).toBeVisible();
+    // A tap in the box: on a touch screen the keyboard comes up with the focus.
+    await homeComposer(page).input.tap();
+    await expect(bar).toHaveCount(0);
+    const main = page.getByTestId("app-main");
+    const keyboard = 336;
+    const visible = MOBILE_VIEWPORT.height - keyboard;
+    await page.evaluate((height) => {
+      const viewport = window.visualViewport!;
+      Object.defineProperty(viewport, "height", { configurable: true, get: () => height });
+      viewport.dispatchEvent(new Event("resize"));
+    }, visible);
+    await expect
+      .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--app-height").trim()))
+      .toBe(`${visible}px`);
+    // Nothing is kept for the bar, and the composer sits on the keyboard.
+    expect(await main.evaluate((el) => getComputedStyle(el).paddingBottom)).toBe("0px");
+    await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+    const composer = (await page.getByTestId("home-composer-pinned").boundingBox())!;
+    expect(Math.abs(composer.y + composer.height - visible)).toBeLessThanOrEqual(2);
+    // The capture shows where the keyboard is.
+    await page.evaluate((top) => {
+      const drawn = document.createElement("div");
+      drawn.setAttribute("data-testid", "emulated-keyboard");
+      drawn.style.cssText = `position:fixed;left:0;right:0;top:${top}px;bottom:0;z-index:9999;background:#d1d5db;display:flex;align-items:center;justify-content:center;font:600 13px system-ui;color:#4b5563`;
+      drawn.textContent = "keyboard (emulated, 336 px)";
+      document.body.appendChild(drawn);
+    }, visible);
+    await page.screenshot({ path: `test-results/Home-v4-keyboard-mobile-${testInfo.project.name}.png`, fullPage: false });
+    // Keyboard down: the bar, and the room kept for it, come back.
+    await page.evaluate(() => {
+      document.querySelector('[data-testid="emulated-keyboard"]')?.remove();
+      const viewport = window.visualViewport!;
+      Reflect.deleteProperty(viewport, "height");
+      viewport.dispatchEvent(new Event("resize"));
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+    await expect(bar).toBeVisible();
+    expect(await main.evaluate((el) => getComputedStyle(el).paddingBottom)).not.toBe("0px");
+  });
+});
+
 test.describe("Service worker", () => {
   test("is registered at a URL naming the build, and updates the old registration in place", async ({ page }) => {
     await page.setViewportSize(DESKTOP_VIEWPORT);

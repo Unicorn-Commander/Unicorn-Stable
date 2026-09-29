@@ -15,6 +15,7 @@ import {
 import { shellBadges } from "@/lib/shellBadges";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { getNotifyLevel } from "@/utils/mute";
+import { useSoftKeyboard } from "@/hooks/useSoftKeyboard";
 
 const ICON: Record<PhoneTab, LucideIcon> = {
   home: Home,
@@ -49,6 +50,7 @@ export function PhoneTabBar() {
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const stored = useNavStore((s) => s.v2Destination);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
+  const keyboardUp = useSoftKeyboard();
 
   // Threads count (a seat answers in a thread); Home carries the invites too.
   const badges = useMemo(
@@ -64,8 +66,9 @@ export function PhoneTabBar() {
   );
 
   // Inside a room the conversation has the whole phone; the tabs come back
-  // with the drawer, which is where the lists are.
-  if (!isNavV2Enabled() || (activeRoomId && !sidebarOpen)) return null;
+  // with the drawer, which is where the lists are. While the keyboard is
+  // up the bar leaves too, and whatever is being typed sits on the keyboard.
+  if (!isNavV2Enabled() || (activeRoomId && !sidebarOpen) || keyboardUp) return null;
 
   const destination = shellDestinationForPath(path, stored);
   const activeTab: PhoneTab =

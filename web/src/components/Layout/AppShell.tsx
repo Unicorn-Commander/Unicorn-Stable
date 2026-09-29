@@ -1,3 +1,4 @@
+import { useSoftKeyboard } from "@/hooks/useSoftKeyboard";
 import {
   continueWalk,
   isEditableTarget,
@@ -287,8 +288,13 @@ export function AppShell() {
   // The phone bottom tabs (Nav v3 §2.6) show outside a room, and inside one
   // while the drawer is open. The padding keeps the drawer footer, the main
   // pane and the FAB above them.
+  // The phone's keyboard hides the tab bar (PhoneTabBar); the room kept for
+  // the bar is given back with it, or the composer floats 56 px above the
+  // keyboard (review 2, P1-4).
+  const keyboardUp = useSoftKeyboard();
   const phoneTabs = isNavV2Enabled() && !activeRoomId;
   const phoneTabsInDrawer = isNavV2Enabled() && (!activeRoomId || sidebarOpen);
+  const barRoom = !keyboardUp;
   const navigate = useNavigate();
   const setRooms = useAppStore((s) => s.setRooms);
   const setAgents = useAppStore((s) => s.setAgents);
@@ -818,7 +824,7 @@ export function AppShell() {
             <div
               className={clsx(
                 "flex min-h-0 flex-1 flex-col",
-                phoneTabsInDrawer && "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
+                phoneTabsInDrawer && barRoom && "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
               )}
               style={{ width: sidebarWidth }}
             >
@@ -970,8 +976,10 @@ export function AppShell() {
       <main
         className={clsx(
           "flex min-w-0 flex-1 flex-col overflow-hidden",
-          phoneTabs && "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
+          phoneTabs && barRoom && "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
         )}
+        data-testid="app-main"
+        data-keyboard={keyboardUp ? "up" : undefined}
       >
         <Header
           hideOnMobile={!!activeRoomId}
@@ -1012,7 +1020,7 @@ export function AppShell() {
       {/* Not on Home itself: its composer is pinned where this button would
           float, and is the "new" of that screen. The lists in the drawer
           keep it. */}
-      {!activeRoomId && !(isHomeView && !sidebarOpen) && (
+      {!activeRoomId && !(isHomeView && !sidebarOpen) && !keyboardUp && (
         <button
           type="button"
           onClick={() => useConversationUi.getState().openNewSheet()}

@@ -117,6 +117,13 @@ describe("a room's composer", () => {
     expect(box().dataset.composer).toBe("message");
   });
 
+  it("keeps the cursor in the box when Send is pressed (the phone's keyboard stays up)", () => {
+    show({ onSend: vi.fn() });
+    type("hello");
+    // A default-prevented press: the box keeps the focus.
+    expect(fireEvent.mouseDown(screen.getByTestId("composer-send"))).toBe(false);
+  });
+
   it("takes what was handed to it with the draft", () => {
     saveDraft("room-1", "with the file");
     useConversationUi.getState().handAttachments("room-1", [

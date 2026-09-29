@@ -1460,6 +1460,10 @@ export function MessageInput({
 
           <button
             onClick={handleSend}
+            // Pressing Send leaves the cursor in the box, as a messenger does:
+            // on a phone the keyboard stays up for the next line, and nothing
+            // under the finger moves while it is still down.
+            onMouseDown={(e) => e.preventDefault()}
             aria-disabled={!canSend}
             className={clsx(
               "absolute bottom-1.5 right-1.5 rounded-xl p-2.5 transition md:bottom-2 md:right-2 md:p-1.5",
