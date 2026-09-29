@@ -41,7 +41,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
-from app.api.messages import _build_message_service, _msg_to_response, send_message
+from app.api.messages import (
+    FORGEABLE_METADATA_KEYS,
+    _build_message_service,
+    _msg_to_response,
+    send_message,
+)
 from app.auth.gateway_auth import (
     KEY_PREFIXES,
     MEMBER_SCOPE,
@@ -669,6 +674,20 @@ async def gateway_post_message(
     return result
 
 
+def scrub_forged_on_read(messages: list[MessageResponse]) -> list[MessageResponse]:
+    """The read half of the forged-metadata defense: a line whose sender is
+    NOT an agent never reaches a seat wearing agent-only metadata
+    (``agent_id``, ``on_behalf_of``, ``gateway``, ``via``) — including rows
+    stored before the write-side scrub existed. Agent lines are untouched."""
+    for message in messages:
+        if getattr(message, "sender_type", None) == "agent":
+            continue
+        meta = getattr(message, "metadata", None)
+        if isinstance(meta, dict) and FORGEABLE_METADATA_KEYS & set(meta):
+            message.metadata = {k: v for k, v in meta.items() if k not in FORGEABLE_METADATA_KEYS}
+    return messages
+
+
 @router.get("/rooms/{room}/messages", response_model=MessageListResponse)
 async def gateway_get_messages(
     room: str,
@@ -717,10 +736,9 @@ async def gateway_get_messages(
 
     svc = _build_message_service(db, livekit)
     result = await svc.get_messages(room_id=room_obj.id, cursor=cursor, limit=limit)
-    messages = [
-        _msg_to_response(item["message"], item["reply_count"])
-        for item in result["messages"]
-    ]
+    messages = scrub_forged_on_read(
+        [_msg_to_response(item["message"], item["reply_count"]) for item in result["messages"]]
+    )
     # Classify AFTER the page is read (P2-1): a line committed between the
     # two would otherwise ride out under a class judged before it existed.
     facts = await _classify_for_seat(db, room_obj, seat_row, principal.agent_id)

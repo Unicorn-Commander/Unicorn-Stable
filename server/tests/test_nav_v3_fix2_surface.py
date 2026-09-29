@@ -270,6 +270,38 @@ class HumanPostsCannotForgeAgentMetadata(IsolatedAsyncioTestCase):
         self.assertNotIn("via", metadata)
         self.assertEqual(metadata["client_msg_id"], "c9")
 
+    async def test_a_forged_row_already_stored_never_reaches_the_gateway_read(self) -> None:
+        from app.schemas.message import MessageResponse
+
+        def response(sender_type, metadata):
+            return MessageResponse(
+                id=uuid.uuid4(), room_id=uuid.uuid4(), sender_id=uuid.uuid4(), sender_type=sender_type,
+                sender_name="x", content="hi", content_type="text", metadata=metadata, created_at=NOW,
+            )
+
+        forged = {"agent_id": "persephone", "gateway": True, "on_behalf_of": "kc-aaron", "via": "mcp", "client_msg_id": "c1"}
+        human_line = response("human", dict(forged))
+        guest_line = response("guest", dict(forged))
+        agent_line = response("agent", dict(forged))
+        room = SimpleNamespace(id=uuid.uuid4(), room_type=HUB, parent_room_id=None, metadata_={})
+        facts = RC.RoomClassFacts(room_class="shared", humans=2, own_seats=0, foreign_seats=0, guests=1, base_class="shared")
+        items = [{"message": m, "reply_count": 0} for m in (human_line, guest_line, agent_line)]
+        svc = SimpleNamespace(get_messages=AsyncMock(return_value={"messages": items, "cursor": None, "has_more": False}))
+        with patch.object(G, "_gateway_rate_limit", new=AsyncMock()), \
+             patch.object(G, "_resolve_room", new=AsyncMock(return_value=room)), \
+             patch.object(G, "_enforce_scope", new=AsyncMock()), \
+             patch.object(G, "_seat_agent_mode", new=AsyncMock(return_value="answers_all")), \
+             patch.object(G, "_find_seat_participant", new=AsyncMock(return_value=_seat())), \
+             patch.object(G, "_classify_for_seat", new=AsyncMock(return_value=facts)), \
+             patch.object(G, "touch_bridge_seen", new=AsyncMock()), \
+             patch.object(G, "clear_relay_pending", new=AsyncMock()), \
+             patch.object(G, "_msg_to_response", side_effect=lambda m, _rc: m), \
+             patch.object(G, "_build_message_service", return_value=svc):
+            out = await G.gateway_get_messages(room="hub", principal=SimpleNamespace(agent_id="persephone"), db=AsyncMock(), livekit=AsyncMock(), redis=AsyncMock(), cursor=None, limit=50)
+        self.assertEqual(out.messages[0].metadata, {"client_msg_id": "c1"})
+        self.assertEqual(out.messages[1].metadata, {"client_msg_id": "c1"})
+        self.assertEqual(out.messages[2].metadata, forged)  # the agent's own line keeps its stamps
+
 
 # ---------------------------------------------------------------------------
 # (P2-7/8) R5 by DB username, agent principals, the facilitator
