@@ -40,6 +40,7 @@ from app.schemas.message import (
     SenderInfo,
 )
 from app.services.agent_chat_responder import schedule_response as schedule_agent_chat_response
+from app.services.guest_view import guest_view_of_message
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 from app.models.activity import ActivityEvent, ActivityEventType
@@ -1596,6 +1597,10 @@ async def get_messages(
         _msg_to_response(item["message"], item["reply_count"])
         for item in result["messages"]
     ]
+    if is_guest(user):
+        # What a guest reads never says which agents are gateway seats, nor
+        # carries a Keycloak subject (REVIEW-4 P2-2). Storage is untouched.
+        messages = [guest_view_of_message(message) for message in messages]
     return MessageListResponse(
         messages=messages,
         cursor=result["cursor"],

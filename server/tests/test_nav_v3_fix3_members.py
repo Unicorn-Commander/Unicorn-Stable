@@ -5,6 +5,11 @@
 ``metadata: {kind}`` and nothing else: never who owns a seat (their username
 or display name, even when that owner is not in the room) nor which agents
 have shell hands (``backend``). Members keep the full subset.
+
+Amended in fix lane 4 (REVIEW-4.md P2-2): the availability lookup is no
+longer stubbed to nothing here — that stub hid that ``availability_reason``
+told a guest the same story. ``test_nav_v3_fix4_guest.py`` holds the tests
+that fail on e20c618.
 """
 
 from __future__ import annotations
@@ -84,7 +89,8 @@ class P2_4_GuestsSeeKindOnly(IsolatedAsyncioTestCase):
         db = AsyncMock()
         db.execute = AsyncMock(side_effect=[_Result(rows=self._rows()), _Result(rows=[("aaron", "Aaron Stransky")])])
         presence = SimpleNamespace(get_online_in_room=AsyncMock(return_value=set()), redis=AsyncMock())
-        with patch("app.services.room_service.get_agent_availability", new=AsyncMock(return_value={})):
+        availability = {"persephone": ("available", "bridge_session_active"), "majik": ("available", "brigade_registered")}
+        with patch("app.services.room_service.get_agent_availability", new=AsyncMock(return_value=availability)):
             rows = await R.list_members(room_id=uuid.uuid4(), user=user, db=db, livekit=AsyncMock(), presence=presence)
         return {row.username: row for row in rows}, db
 
@@ -95,7 +101,7 @@ class P2_4_GuestsSeeKindOnly(IsolatedAsyncioTestCase):
         self.assertEqual(by_name["agent-texts-relay"].metadata, {"kind": "integration"})
         self.assertIsNone(by_name["aaron"].metadata)
         dumped = str([row.model_dump(mode="json") for row in by_name.values()])
-        for leaked in ("owner", "Aaron Stransky", "backend", "runner"):
+        for leaked in ("owner", "Aaron Stransky", "backend", "runner", "bridge_session_active", "brigade_registered"):
             self.assertNotIn(leaked, dumped)
         self.assertEqual(db.execute.await_count, 1)   # the owner lookup never runs for a guest
 

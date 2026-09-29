@@ -2368,13 +2368,20 @@ class RoomService:
             sub = participant.keycloak_sub or ""
             if sub.startswith("brigade:"):
                 agent_ids_by_participant[str(participant.id)] = sub[len("brigade:"):]
-        availability = await get_agent_availability(
-            self._presence.redis, set(agent_ids_by_participant.values())
-        )
         # A GUEST caller learns an agent's ``kind`` and nothing else: never
         # who owns a seat (their username and display name, even when that
         # owner is not in the room) nor which agents have shell hands
-        # (``backend``). Members get the full subset.
+        # (``backend``). Availability tells the same story another way —
+        # ``bridge_session_active`` marks a live gateway seat,
+        # ``brigade_registered`` a Brigade agent — so a guest gets neither,
+        # and the lookup is not run for them. Members get all of it.
+        availability = (
+            {}
+            if guest_view
+            else await get_agent_availability(
+                self._presence.redis, set(agent_ids_by_participant.values())
+            )
+        )
         owner_names = (
             {}
             if guest_view
@@ -2386,7 +2393,9 @@ class RoomService:
         members: list[dict[str, Any]] = []
         for membership, participant in rows:
             brigade_id = agent_ids_by_participant.get(str(participant.id))
-            if participant.participant_type == ParticipantType.AGENT:
+            if guest_view:
+                avail, avail_reason = (None, None)
+            elif participant.participant_type == ParticipantType.AGENT:
                 # An agent with no `brigade:<id>` identity is one we have no way
                 # to reach or ask about, so it is unknown — not available.
                 avail, avail_reason = (

@@ -1118,7 +1118,9 @@ async def list_members(
     Agent rows carry a ``metadata`` subset. A MEMBER gets ``kind``,
     ``backend``, ``owner`` and ``owner_display_name``; a GUEST gets ``kind``
     and nothing else — never who owns a seat, nor which agents have shell
-    hands (Nav v3, REVIEW-3 P2-4).
+    hands (Nav v3, REVIEW-3 P2-4). For a guest ``availability`` and
+    ``availability_reason`` are null on every row as well: the reason names
+    the agent's backend (REVIEW-4 P2-2).
     """
     svc = _build_room_service(db, livekit, presence)
     members = await svc.get_members(
