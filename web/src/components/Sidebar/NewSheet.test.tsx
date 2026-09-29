@@ -139,6 +139,20 @@ describe("New sheet To box", () => {
     expect(useConversationUi.getState().newSheetOpen).toBe(false);
   });
 
+  it("leaves Enter to an IME that is composing (review 2, P2-4)", async () => {
+    renderSheet();
+    const input = await screen.findByTestId("new-sheet-to");
+    fireEvent.change(input, { target: { value: "persephone" } });
+    await screen.findByTestId("new-sheet-picks-crew");
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+      fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    });
+    expect(screen.getByTestId("probe-path")).toHaveTextContent("/");
+    expect(screen.getByTestId("probe-path")).not.toHaveTextContent(PERSEPHONE_HUB_ID);
+    expect(useConversationUi.getState().newSheetOpen).toBe(true);
+  });
+
   it("Enter with nothing highlighted opens the first match", async () => {
     renderSheet();
     const input = await screen.findByTestId("new-sheet-to");

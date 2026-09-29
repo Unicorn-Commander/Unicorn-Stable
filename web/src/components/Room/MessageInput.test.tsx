@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { ComponentProps } from "react";
@@ -103,7 +103,26 @@ describe("a room's composer", () => {
     expect(begin).toHaveBeenCalledWith(expect.objectContaining({ roomId: "room-1", title: "Launch checklist" }));
     fireEvent.click(screen.getByTestId("composer-voice-call"));
     expect(startCall).toHaveBeenCalledWith("room-1", { kind: "voice" });
-    expect(screen.getByTestId("composer-box").className).not.toContain("flex-wrap");
+    // One row: no toolbar under the input, and Send after the calls (review 2, D8).
+    expect(screen.queryByTestId("composer-toolbar")).toBeNull();
+    expect(box().rows).toBe(1);
+    const buttons = within(screen.getByTestId("composer-box")).getAllByRole("button");
+    expect(buttons[buttons.length - 1]).toBe(screen.getByTestId("composer-send"));
+    expect(buttons.indexOf(screen.getByTestId("composer-voice-call"))).toBeLessThan(buttons.length - 1);
+  });
+
+  it("leaves Enter to an IME that is composing (review 2, P2-4)", () => {
+    const onSend = vi.fn();
+    show({ onSend });
+    type("にほんご");
+    // Confirming a candidate: the keydown says it is composing.
+    fireEvent.keyDown(box(), { key: "Enter", isComposing: true });
+    // Safari reports the confirming Enter as keyCode 229 instead.
+    fireEvent.keyDown(box(), { key: "Enter", keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(box().value).toBe("にほんご");
+    enter();
+    expect(onSend).toHaveBeenCalledWith("にほんご", undefined, undefined, undefined);
   });
 
   it("leaves Alt+↑ in an empty box to the sidebar walk, not to editing the last message", () => {
@@ -232,7 +251,28 @@ describe("a composer with no room yet", () => {
     const inBox = screen.getByTestId("composer-box");
     expect(inBox.contains(screen.getByTestId("who"))).toBe(true);
     expect(inBox.contains(screen.getByTestId("brain"))).toBe(true);
-    expect(inBox.className).toContain("max-sm:flex-wrap");
+    // Two rows at every width (review 2, D1): the input, then the toolbar —
+    // who · attach · emoji … brain · calls · send.
+    const toolbar = screen.getByTestId("composer-toolbar");
+    expect(inBox.firstElementChild?.contains(box())).toBe(true);
+    expect(toolbar.contains(box())).toBe(false);
+    const order = [
+      screen.getByTestId("who"),
+      screen.getByLabelText("Attach file"),
+      screen.getByLabelText("Insert emoji"),
+      screen.getByTestId("brain"),
+      screen.getByTestId("composer-video-call"),
+      screen.getByTestId("composer-voice-call"),
+      screen.getByTestId("composer-send"),
+    ];
+    for (let i = 1; i < order.length; i += 1) {
+      expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // Two lines to start with.
+    expect(box().rows).toBe(2);
+    // Send is the last control, calls or not (D8).
+    const buttons = within(toolbar).getAllByRole("button");
+    expect(buttons[buttons.length - 1]).toBe(screen.getByTestId("composer-send"));
     fireEvent.click(screen.getByTestId("composer-video-call"));
     expect(onCall).toHaveBeenCalledWith("video");
     expect(startCall).not.toHaveBeenCalled();

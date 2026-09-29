@@ -41,19 +41,15 @@ import { agentModeLabel } from "@/lib/conversation";
 import { focusWhenShown } from "@/lib/focusWhenShown";
 import { FormatToolbar, type FormatKind } from "./FormatToolbar";
 
-/** From `sm` up: the composer has room for what it carries in one row. */
-function useWide(): boolean {
-  const query = "(min-width: 640px)";
-  const [wide, setWide] = useState(() => window.matchMedia?.(query)?.matches ?? true);
-  useEffect(() => {
-    const mq = window.matchMedia?.(query);
-    if (!mq) return;
-    const onChange = (event: MediaQueryListEvent) => setWide(event.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return wide;
-}
+/**
+ * The box's icon buttons. On a coarse pointer the target is 44px whatever
+ * the icon (review 2, P2-12).
+ */
+const ICON_BUTTON =
+  "inline-flex shrink-0 items-center justify-center rounded-lg p-2.5 transition-colors focus-ring md:p-1.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11";
+
+/** A room's one-row box: each cluster sits on the input's first line. */
+const ON_THE_LINE = "flex shrink-0 items-center mb-1 md:mb-1.5 pointer-coarse:mb-0";
 
 /** Rough width of the format bar (6 icon buttons + padding) used to clamp its
  * left offset so it can't overflow the composer on long lines. */
@@ -319,6 +315,11 @@ interface MessageInputProps {
   blockedReason?: string | null;
   /** Bump to put the cursor in the box. */
   focusNonce?: number;
+  /**
+   * Put this text in the box (a starter prompt) and the cursor after it.
+   * Nothing is sent: a new nonce is a new fill.
+   */
+  fill?: { text: string; nonce: number } | null;
   /** The suggestion menus open above the box (a room) or below it. */
   menus?: "above" | "below";
   /** Replaces the root's own padding. */
@@ -356,6 +357,7 @@ export function MessageInput({
   call,
   blockedReason,
   focusNonce,
+  fill,
   menus = "above",
   className,
 }: MessageInputProps) {
@@ -364,7 +366,6 @@ export function MessageInput({
   const [content, setContent] = useState(() => getDraft(storeKey));
   // A send that returned a promise is running: the box is held until it settles.
   const [sending, setSending] = useState(false);
-  const wide = useWide();
   const [dragOver, setDragOver] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -415,6 +416,18 @@ export function MessageInput({
     if (!focusNonce) return;
     textareaRef.current?.focus();
   }, [focusNonce]);
+
+  // A starter picked from outside: its text, the cursor at its end, unsent.
+  const fillNonce = fill?.nonce ?? 0;
+  const fillText = fill?.text ?? "";
+  useEffect(() => {
+    if (!fillNonce) return;
+    setContent(fillText);
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    requestAnimationFrame(() => el.setSelectionRange(fillText.length, fillText.length));
+  }, [fillNonce, fillText]);
 
   // Close the emoji picker on click-outside (clicks on the toggle button are
   // its own concern — it flips the state itself).
@@ -807,6 +820,11 @@ export function MessageInput({
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // An IME is composing (Japanese, Chinese, Korean…): Enter confirms its
+    // candidate and the arrows move through them. None of it is ours — an
+    // Enter here used to send half a word (review 2, P2-4). Safari reports
+    // the confirming keydown as keyCode 229 rather than isComposing.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     // Markdown shortcuts (Discord/OpenWebUI): ⌘/Ctrl+B/I/E wrap the selection
     // (or drop empty markers with the caret between them). Meta/ctrl-gated, so
     // they never interfere with typing, Enter=send, or the menu nav keys below.
@@ -1126,17 +1144,147 @@ export function MessageInput({
     !uploadsInFlight &&
     !sending &&
     !blockedReason;
-  // Who the message is for and its brain share the box with the input. On a
-  // phone they take a row of their own above it; from `sm` up they sit at
-  // its two ends — the brain between the input and the send button, which
-  // keeps the far end.
+  // Who the message is for and its brain share the box with the input:
+  // Home's composer is two rows at every width (review 2, D1) — the input
+  // across, then a toolbar. A room's is one row. Either way Send is the last
+  // thing in the box, whatever else it carries (D8).
   const slotted = leading != null || trailing != null;
-  const trailingInline = trailing != null && wide;
   // A room's menus open upward, over the conversation. At the top of a page
   // there is nothing above the box to open into.
   const menuSide = menus === "below" ? "top-full mt-2" : "bottom-full mb-2";
   const showCallButtons =
     call === undefined ? roomId !== null && activeCallRoomId !== roomId && !isConnecting : call !== null;
+
+  const input = (
+    <textarea
+      ref={textareaRef}
+      value={content}
+      readOnly={sending}
+      aria-busy={sending || undefined}
+      onChange={handleChange}
+      onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
+      onSelect={syncFormatBar}
+      onScroll={syncFormatBar}
+      onBlur={() => setFormatBar(null)}
+      placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
+      data-composer="message"
+      // Home's box is a page's first thing to type into: two lines to start.
+      rows={slotted ? 2 : 1}
+      className={clsx(
+        "block w-full resize-none bg-transparent text-base text-slate-100 placeholder:text-slate-500 outline-none md:text-sm",
+        slotted ? "px-2 pb-1 pt-2 sm:px-2.5" : "px-1.5 py-2.5 sm:px-2.5",
+      )}
+      aria-label="Message input"
+    />
+  );
+
+  // Selection format bar — gated off whenever an autocomplete menu is open
+  // so the two popovers can never overlap.
+  const formatToolbar = formatBar &&
+    !showMentions &&
+    !showEmojiPicker &&
+    !showSlashMenu &&
+    !showEmojiPanel && <FormatToolbar position={formatBar} onFormat={applyFormat} />;
+
+  // A room's one row on a phone has no width for a fifth 44px button beside
+  // the calls and Send: the emoji button — which the phone's own keyboard
+  // already has — steps out there, and the input keeps one line.
+  const attachAndEmoji = (emojiOnPhone: boolean) => (
+    <div className="flex shrink-0 items-center sm:gap-0.5">
+      <button
+        onClick={handleFileSelect}
+        className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100")}
+        aria-label="Attach file"
+      >
+        <Paperclip className="h-4 w-4" />
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileChange}
+        aria-hidden="true"
+      />
+      <button
+        ref={emojiButtonRef}
+        onClick={() => setShowEmojiPanel((v) => !v)}
+        className={clsx(
+          ICON_BUTTON,
+          "hover:bg-white/[0.06]",
+          !emojiOnPhone && "max-sm:hidden",
+          showEmojiPanel ? "bg-stable-purple/15 text-stable-purple-light" : "text-slate-400 hover:text-slate-100",
+        )}
+        aria-label="Insert emoji"
+        aria-expanded={showEmojiPanel}
+        aria-haspopup="dialog"
+      >
+        <Smile className="h-4 w-4" />
+      </button>
+    </div>
+  );
+
+  // One tap per verb, on every screen size: Video call, Voice call — both
+  // connect immediately (lib/callEntry). Rooms whose call would ring people
+  // also get "join without ringing" as its own button instead of hiding all
+  // three behind a menu (desktop only — a phone composer has no room for a
+  // fourth icon, and a ring there is what the caller wants).
+  const callButtons = showCallButtons && (
+    <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+      {quietJoin && roomId && !call && (
+        <button
+          onClick={() => void startCall(roomId, { kind: "voice", ring: false })}
+          className={clsx(ICON_BUTTON, "max-sm:hidden text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+          aria-label="Join without ringing"
+          title="Join the call without ringing anyone"
+          data-testid="composer-quiet-join"
+        >
+          <BellOff className="h-4 w-4" />
+        </button>
+      )}
+      <button
+        onClick={() => handleStartCall("video")}
+        className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+        aria-label={isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video}
+        title={isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video}
+        data-testid="composer-video-call"
+      >
+        <Video className="h-4 w-4" />
+      </button>
+      <button
+        onClick={() => handleStartCall("voice")}
+        className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+        aria-label={isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice}
+        title={isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice}
+        data-testid="composer-voice-call"
+      >
+        <Phone className="h-4 w-4" />
+      </button>
+    </div>
+  );
+
+  const sendButton = (
+    <button
+      onClick={handleSend}
+      // Pressing Send leaves the cursor in the box, as a messenger does:
+      // on a phone the keyboard stays up for the next line, and nothing
+      // under the finger moves while it is still down.
+      onMouseDown={(e) => e.preventDefault()}
+      aria-disabled={!canSend}
+      className={clsx(
+        "inline-flex shrink-0 items-center justify-center rounded-xl p-2.5 transition focus-ring md:p-1.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11",
+        canSend
+          ? "gradient-bg glow-iris text-white hover:opacity-95 active:scale-[0.98]"
+          : "border border-line bg-surface-2 text-slate-500",
+      )}
+      aria-label={sending ? "Sending" : "Send message"}
+      title={blockedReason ?? undefined}
+      data-testid="composer-send"
+    >
+      {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+    </button>
+  );
 
   return (
     <div
@@ -1371,179 +1519,42 @@ export function MessageInput({
         </div>
       )}
 
-      <div
-        className={clsx(
-          "flex min-w-0 items-end gap-0.5 rounded-2xl border border-line bg-stable-glass px-1 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15 sm:gap-1 sm:px-1.5",
-          slotted && "max-sm:flex-wrap",
-        )}
-        data-testid="composer-box"
-      >
-        {leading != null && (
-          <div className="order-1 flex min-w-0 shrink items-center self-center max-sm:pl-1 sm:shrink-0 sm:pb-0.5">
-            {leading}
-          </div>
-        )}
-        {trailing != null && !trailingInline && (
-          <div className="order-2 ml-auto flex min-w-0 shrink items-center self-center pr-1">
-            {trailing}
-          </div>
-        )}
-        {/* The break after the phone's first row. */}
-        {slotted && <div className="order-3 h-0 basis-full sm:hidden" aria-hidden="true" />}
+      {slotted ? (
+        // Home (D1): the input across the box, then one toolbar row — who
+        // it is for, attach, emoji … the brain, calls, send — at every width.
         <div
-          className={clsx(
-            "flex shrink-0 items-center pb-0.5 sm:gap-0.5 sm:pb-1",
-            slotted && "order-4 sm:order-2",
-          )}
+          className="flex min-w-0 flex-col gap-0.5 rounded-2xl border border-line bg-stable-glass px-1 pb-1 pt-1 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15 sm:px-1.5"
+          data-testid="composer-box"
         >
-          <button
-            onClick={handleFileSelect}
-            className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5"
-            aria-label="Attach file"
-          >
-            <Paperclip className="h-4 w-4" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileChange}
-            aria-hidden="true"
-          />
-          <button
-            ref={emojiButtonRef}
-            onClick={() => setShowEmojiPanel((v) => !v)}
-            className={clsx(
-              "rounded-lg p-2.5 transition-colors hover:bg-white/[0.06] focus-ring md:p-1.5",
-              showEmojiPanel
-                ? "bg-stable-purple/15 text-stable-purple-light"
-                : "text-slate-400 hover:text-slate-100",
-            )}
-            aria-label="Insert emoji"
-            aria-expanded={showEmojiPanel}
-            aria-haspopup="dialog"
-          >
-            <Smile className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div
-          className={clsx(
-            "relative min-w-0 flex-1",
-            slotted && "order-5 sm:order-3",
-            trailingInline && "flex items-end",
-          )}
-        >
-          <textarea
-            ref={textareaRef}
-            value={content}
-            readOnly={sending}
-            aria-busy={sending || undefined}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onSelect={syncFormatBar}
-            onScroll={syncFormatBar}
-            onBlur={() => setFormatBar(null)}
-            placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
-            data-composer="message"
-            rows={1}
-            className={clsx(
-              "resize-none bg-transparent px-1.5 py-2.5 text-base text-slate-100 placeholder:text-slate-500 outline-none sm:px-2.5 md:text-sm",
-              // The send button floats over the input's right edge; with the
-              // brain in line it floats over the brain's margin instead.
-              trailingInline ? "min-w-0 flex-1" : "w-full pr-11 md:pr-10",
-            )}
-            aria-label="Message input"
-          />
-          {trailingInline && (
-            <div className="mb-1.5 mr-11 flex shrink-0 items-center md:mb-2 md:mr-10">{trailing}</div>
-          )}
-
-          <button
-            onClick={handleSend}
-            // Pressing Send leaves the cursor in the box, as a messenger does:
-            // on a phone the keyboard stays up for the next line, and nothing
-            // under the finger moves while it is still down.
-            onMouseDown={(e) => e.preventDefault()}
-            aria-disabled={!canSend}
-            className={clsx(
-              "absolute bottom-1.5 right-1.5 rounded-xl p-2.5 transition md:bottom-2 md:right-2 md:p-1.5",
-              canSend
-                ? "gradient-bg glow-iris text-white hover:opacity-95 active:scale-[0.98]"
-                : "border border-line bg-surface-2 text-slate-500",
-            )}
-            aria-label={sending ? "Sending" : "Send message"}
-            title={blockedReason ?? undefined}
-            data-testid="composer-send"
-          >
-            {sending ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Send className="h-3.5 w-3.5" />
-            )}
-          </button>
-
-          {/* Selection format bar — gated off whenever an autocomplete menu is
-              open so the two popovers can never overlap. */}
-          {formatBar &&
-            !showMentions &&
-            !showEmojiPicker &&
-            !showSlashMenu &&
-            !showEmojiPanel && (
-              <FormatToolbar position={formatBar} onFormat={applyFormat} />
-            )}
-        </div>
-
-        {/* One tap per verb, on every screen size: Video call, Voice call —
-            both connect immediately (lib/callEntry). Rooms whose call would
-            ring people also get "join without ringing" as its own button
-            instead of hiding all three behind a menu (desktop only — a phone
-            composer has no room for a fourth icon, and a ring there is
-            what the caller wants). */}
-        {showCallButtons && (
-          <div className={clsx("flex shrink-0 items-end gap-0.5 sm:gap-1", slotted && "order-6 sm:order-5")}>
-            {quietJoin && roomId && !call && (
-              <button
-                onClick={() => void startCall(roomId, { kind: "voice", ring: false })}
-                className="hidden shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring sm:inline-flex md:p-1.5 md:pb-2.5"
-                aria-label="Join without ringing"
-                title="Join the call without ringing anyone"
-                data-testid="composer-quiet-join"
-              >
-                <BellOff className="h-4 w-4" />
-              </button>
-            )}
-            <button
-              onClick={() => handleStartCall("video")}
-              className="shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring md:p-1.5 md:pb-2.5"
-              aria-label={
-                isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video
-              }
-              title={
-                isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video
-              }
-              data-testid="composer-video-call"
-            >
-              <Video className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => handleStartCall("voice")}
-              className="shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring md:p-1.5 md:pb-2.5"
-              aria-label={
-                isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice
-              }
-              title={
-                isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice
-              }
-              data-testid="composer-voice-call"
-            >
-              <Phone className="h-4 w-4" />
-            </button>
+          <div className="relative min-w-0">
+            {input}
+            {formatToolbar}
           </div>
-        )}
-      </div>
+          <div className="flex min-w-0 items-center gap-0.5 sm:gap-1" data-testid="composer-toolbar">
+            {/* Who it is for keeps its name; the brain gives way first. */}
+            {leading != null && <div className="flex min-w-0 shrink-0 items-center pl-0.5">{leading}</div>}
+            {attachAndEmoji(true)}
+            <div className="min-w-0 flex-1" aria-hidden="true" />
+            {trailing != null && <div className="flex min-w-0 shrink items-center">{trailing}</div>}
+            {callButtons}
+            {sendButton}
+          </div>
+        </div>
+      ) : (
+        // A room: one row, the input between attach · emoji and the calls.
+        <div
+          className="flex min-w-0 items-end gap-0.5 rounded-2xl border border-line bg-stable-glass px-1 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15 sm:gap-1 sm:px-1.5"
+          data-testid="composer-box"
+        >
+          <div className={ON_THE_LINE}>{attachAndEmoji(false)}</div>
+          <div className="relative min-w-0 flex-1">
+            {input}
+            {formatToolbar}
+          </div>
+          {callButtons && <div className={ON_THE_LINE}>{callButtons}</div>}
+          <div className={ON_THE_LINE}>{sendButton}</div>
+        </div>
+      )}
 
       </div>
 

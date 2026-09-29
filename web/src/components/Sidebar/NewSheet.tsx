@@ -274,6 +274,8 @@ function ToStep({
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    // An IME's Enter confirms its candidate, not a pick (review 2, P2-4).
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       setActiveIndex(stepPick(picks.flat.length, activeIndex, e.key === "ArrowDown" ? 1 : -1));
