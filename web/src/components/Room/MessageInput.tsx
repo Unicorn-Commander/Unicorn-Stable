@@ -38,6 +38,7 @@ import { beginThread } from "@/lib/beginThread";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { agentModeLabel } from "@/lib/conversation";
+import { focusWhenShown } from "@/lib/focusWhenShown";
 import { FormatToolbar, type FormatKind } from "./FormatToolbar";
 
 /** From `sm` up: the composer has room for what it carries in one row. */
@@ -401,10 +402,12 @@ export function MessageInput({
   useEffect(() => {
     // Same guard as ThreadPanel.tsx:31-37 — focus only on pointer devices so
     // touch doesn't pop the keyboard on room open. Remounts per room via
-    // AppShell's keyed boundary, so [] deps fire on every room switch.
-    if (window.matchMedia("(hover: hover)").matches) {
-      textareaRef.current?.focus();
-    }
+    // AppShell's keyed boundary, so [] deps fire on every room switch. The
+    // box may still be parked out of sight (PanelHost) when it mounts: it
+    // takes the cursor once it is on screen (review 2, P2-3).
+    const el = textareaRef.current;
+    if (!el || !window.matchMedia("(hover: hover)").matches) return;
+    return focusWhenShown(el);
   }, []);
 
   // Asked for from outside (a shortcut, a "Message …" button): on any device.

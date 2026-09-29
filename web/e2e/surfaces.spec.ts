@@ -963,6 +963,29 @@ test.describe("Home v4", () => {
     await expect(homeComposer(page).input).toHaveValue("");
   });
 
+  test("the cursor is in the box: after Enter on Home, and when a room opens", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    // A touch device keeps its keyboard down until the box is tapped.
+    const canHover = await page.evaluate(() => window.matchMedia("(hover: hover)").matches);
+    test.skip(!canHover, "the box takes the cursor on its own only where there is hover");
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await composer.input.fill("Where is the cursor?");
+    await composer.input.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`/c/${PERSEPHONE_HUB_ID}-t-00000001$`));
+    // The follow-up line needs no click (review 2, P2-3): the room's chat
+    // mounts out of sight and takes the cursor once it is on screen.
+    const roomInput = page.getByTestId("room-view").getByLabel("Message input");
+    await expect(roomInput).toBeFocused();
+    // A room opened by its address does the same.
+    await page.goto("/c/room-general");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("room-view").getByLabel("Message input")).toBeFocused();
+  });
+
   test("a picked brain is written to the new conversation before the message", async ({ page }, testInfo) => {
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await stubHomeSummary(page);
