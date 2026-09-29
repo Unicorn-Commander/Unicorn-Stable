@@ -815,8 +815,16 @@ test.describe("Home v4", () => {
         await expect(page.getByTestId("conversations-card")).toBeVisible();
         await expect(page.getByTestId("home-rail")).toHaveCount(0);
       }
+      // A quiet page offers somewhere to start (review 2, D4).
+      const starters = page.getByTestId("home-starter");
+      await expect(starters).toHaveCount(3);
       const tag = `${viewport}-${testInfo.project.name}`;
       await page.screenshot({ path: `test-results/Home-v4-quiet-${tag}.png`, fullPage: false });
+      // A pick fills the box, and nothing is sent.
+      await starters.first().click();
+      await expect(composer.input).toHaveValue("What's on my board today?");
+      await expect(composer.input).toBeFocused();
+      await composer.input.fill("");
 
       // A seat's menu: New conversation and Settings. No Call until voice ships.
       await cards.nth(0).getByTestId("seat-card-menu-persephone").click();
@@ -888,8 +896,33 @@ test.describe("Home v4", () => {
       const heights = await recent.evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
       expect(Math.max(...heights)).toBeLessThanOrEqual(viewport === "mobile" ? 46 : 34);
       await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
+      // Each count is the rows under it: Today holds the task and the
+      // standing room (review 2, P2-11 — it read "1" over two rows).
       const counts = await page.getByTestId("home-count").allTextContents();
-      expect(counts).toEqual(["3", "1", "1"]);
+      expect(counts).toEqual(["3", "1", "2"]);
+      // Recent is in time order, newest first, whoever it is with.
+      const stamps = await recent.evaluateAll((rows) => rows.map((row) => Date.parse(row.getAttribute("data-at") ?? "")));
+      expect(stamps).toEqual([...stamps].sort((a, b) => b - a));
+      // A status reads as a word, not a constant (D10).
+      await expect(page.getByTestId("home-task-row")).toContainText("Pending");
+      await expect(page.getByTestId("home-task-row")).not.toContainText("PENDING");
+      // A mention is about where it was said: the room comes first and is
+      // whole, and the line is what gives way (D10: "…portal cop…").
+      const mentionRoom = needs.nth(1).getByTestId("home-needs-room");
+      await expect(mentionRoom).toHaveText("taxsq-portal");
+      const roomEdge = await mentionRoom.evaluate((el) => {
+        const line = el.parentElement!.getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        return { right: box.right, lineRight: line.right };
+      });
+      expect(roomEdge.right).toBeLessThanOrEqual(roomEdge.lineRight + 1);
+      if (viewport === "mobile") {
+        // Home's tab does not repeat Chats' number for the same rooms: it
+        // counts only what Home alone holds (P2-11).
+        const tabs = page.getByTestId("phone-tab-bar");
+        await expect(tabs.getByTestId("nav-conversations")).toHaveAttribute("aria-label", /need you/);
+        await expect(tabs.getByTestId("nav-home")).toHaveAttribute("aria-label", "Home");
+      }
 
       const tag = `${viewport}-${testInfo.project.name}`;
       await page.screenshot({ path: `test-results/Home-v4-busy-${tag}.png`, fullPage: false });
@@ -905,7 +938,10 @@ test.describe("Home v4", () => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
-      const world = await stubNavV3World(page, { noRooms: true, crew: [] });
+      // This server's own Sidekick: the composer never makes one up (review
+      // 2, P2-8), so a first run is the house with Sidekick in it.
+      const sidekick = CREW_FIXTURE.find((row) => row.agent_id === "sidekick")!;
+      const world = await stubNavV3World(page, { noRooms: true, crew: [{ ...sidekick, hub_room_id: null }] });
       await page.goto("/");
       await waitForAppReady(page);
       const home = page.getByTestId("home-dashboard");
@@ -913,6 +949,9 @@ test.describe("Home v4", () => {
       const composer = homeComposer(page);
       await expect(composer.input).toHaveAttribute("placeholder", "Message Sidekick…");
       await expect(composer.picker).toContainText("Sidekick");
+      // One sentence on who that is, and what Enter (Send, under a finger) does (D4).
+      await expect(composer.line).toContainText("Sidekick is this server's assistant: ask it anything");
+      await expect(page.getByTestId("home-starter")).toHaveCount(3);
       // A house agent has no brain chip, and there is no seat to draw a card for.
       await expect(composer.chip).toHaveCount(0);
       await expect(page.getByTestId("home-seats")).toHaveCount(0);
@@ -1205,6 +1244,205 @@ test.describe("Home v4", () => {
     await expect(composer.chip).toHaveCount(0);
     await expect(composer.root.getByTestId("composer-voice-call")).toBeVisible();
     await expect(composer.root.getByTestId("composer-video-call")).toBeVisible();
+  });
+});
+
+/** The alpha of a computed colour: 1 for rgb(), the fourth value for rgba(). */
+function alphaOf(color: string): number {
+  const parts = color.match(/rgba?\(([^)]+)\)/)?.[1]?.split(",").map((part) => part.trim()) ?? [];
+  return parts.length === 4 ? Number(parts[3]) : 1;
+}
+
+/** The right-most visible control in an element: its test id, else its label. */
+async function rightMostControl(root: Locator): Promise<string | null> {
+  return root.evaluate((el) => {
+    const shown = Array.from(el.querySelectorAll("button")).filter((b) => b.getBoundingClientRect().width > 0);
+    const right = Math.max(...shown.map((b) => b.getBoundingClientRect().right));
+    const last = shown.find((b) => b.getBoundingClientRect().right === right);
+    return last?.getAttribute("data-testid") ?? last?.getAttribute("aria-label") ?? null;
+  });
+}
+
+/**
+ * Home's design bar, fix round 2 (review 2, D1 D2 D4 D5 D8, P2-12). The
+ * captures: the two-row composer at 1440 and 390, the phone's sheets, the
+ * seats row that goes on.
+ */
+test.describe("Home v4 design bar (fix round 2)", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`the composer is two rows, and Send is last whoever it is for @ ${viewport}`, async ({ page }, testInfo) => {
+      await page.setViewportSize(viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT);
+      await stubHomeSummary(page);
+      await stubNavV3World(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      const composer = homeComposer(page);
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Persephone…");
+      const box = (await composer.root.getByTestId("composer-box").boundingBox())!;
+      const input = (await composer.input.boundingBox())!;
+      const toolbar = composer.root.getByTestId("composer-toolbar");
+      const bar = (await toolbar.boundingBox())!;
+      // D1: the input across the box, two lines to start, then the toolbar.
+      expect(input.width).toBeGreaterThan(box.width - 40);
+      expect(input.y + input.height).toBeLessThanOrEqual(bar.y + 1);
+      await expect(composer.input).toHaveAttribute("rows", "2");
+      // picker · attach · emoji … brain · send, nothing over anything else.
+      const picker = (await composer.picker.boundingBox())!;
+      const attach = (await toolbar.getByLabel("Attach file").boundingBox())!;
+      const emoji = (await toolbar.getByLabel("Insert emoji").boundingBox())!;
+      const chip = (await composer.chip.boundingBox())!;
+      const send = (await composer.send.boundingBox())!;
+      expect(picker.x + picker.width).toBeLessThanOrEqual(attach.x + 1);
+      expect(attach.x + attach.width).toBeLessThanOrEqual(emoji.x + 1);
+      expect(emoji.x + emoji.width).toBeLessThanOrEqual(chip.x + 1);
+      expect(chip.x + chip.width).toBeLessThanOrEqual(send.x + 1);
+      expect(send.x + send.width).toBeLessThanOrEqual(box.x + box.width);
+      expect(await rightMostControl(toolbar)).toBe("composer-send");
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await composer.root.screenshot({ path: `test-results/Home-v4-composer-${tag}.png` });
+
+      // D8: a house agent brings its calls, and Send is still the last thing.
+      await composer.picker.click();
+      await page.getByTestId("seat-option-the-general").click();
+      await expect(composer.input).toHaveAttribute("placeholder", "Message The General…");
+      await expect(composer.root.getByTestId("composer-voice-call")).toBeVisible();
+      const voice = (await composer.root.getByTestId("composer-voice-call").boundingBox())!;
+      const sendAgain = (await composer.send.boundingBox())!;
+      expect(voice.x + voice.width).toBeLessThanOrEqual(sendAgain.x + 1);
+      expect(await rightMostControl(toolbar)).toBe("composer-send");
+      await composer.root.screenshot({ path: `test-results/Home-v4-composer-house-${tag}.png` });
+    });
+
+    test(`the seats row says it goes on, and goes @ ${viewport}`, async ({ page }, testInfo) => {
+      await page.setViewportSize(viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT);
+      await stubHomeSummary(page);
+      await stubNavV3World(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      const seats = page.getByTestId("home-seats");
+      const own = CREW_FIXTURE.filter((row) => row.group === "own_seat").length;
+      await expect(seats.getByTestId("home-seats-count")).toHaveText(String(own));
+      // D2: more seats than fit — the row fades at its end and has a ›.
+      const list = seats.locator("ul");
+      await expect(list).toHaveAttribute("data-edges", "right");
+      const mask = await list.evaluate((el) => getComputedStyle(el).maskImage || getComputedStyle(el).webkitMaskImage);
+      expect(mask).toContain("linear-gradient");
+      await expect(seats.getByTestId("home-seats-back")).toHaveCount(0);
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await seats.screenshot({ path: `test-results/Home-v4-seats-${tag}.png` });
+      await seats.getByTestId("home-seats-more").click();
+      await expect.poll(() => list.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+      await expect(seats.getByTestId("home-seats-back")).toBeVisible();
+      await expect(list).toHaveAttribute("data-edges", /left/);
+    });
+  }
+
+  test("the phone's picker and brain sheets are solid, over a scrim, and keep the focus", async ({ page }, testInfo) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    const tag = testInfo.project.name;
+
+    // D5 / P2-13: who the message is for.
+    await composer.picker.click();
+    const picker = page.getByRole("dialog", { name: "Who the message is for" });
+    await expect(picker).toBeVisible();
+    await expect(picker).toHaveAttribute("aria-modal", "true");
+    expect(alphaOf(await picker.evaluate((el) => getComputedStyle(el).backgroundColor))).toBe(1);
+    await expect(page.getByTestId("seat-picker-scrim")).toBeVisible();
+    // The tab bar does not read through: the scrim is over it.
+    const tabBar = (await page.getByTestId("phone-tab-bar").boundingBox())!;
+    const onTop = await page.evaluate(
+      ([x, y]) => document.elementFromPoint(x!, y!)?.closest('[data-testid="seat-picker-scrim"]') !== null,
+      [tabBar.x + tabBar.width / 2, tabBar.y + tabBar.height / 2],
+    );
+    expect(onTop).toBe(true);
+    await page.screenshot({ path: `test-results/Home-v4-picker-sheet-${tag}.png`, fullPage: false });
+    await page.keyboard.press("Escape");
+    await expect(picker).toHaveCount(0);
+    await expect(composer.picker).toBeFocused();
+
+    // The brain.
+    await composer.chip.click();
+    const brain = page.getByTestId("seat-settings");
+    await expect(brain).toBeVisible();
+    await expect(brain).toHaveAttribute("aria-modal", "true");
+    expect(alphaOf(await brain.evaluate((el) => getComputedStyle(el).backgroundColor))).toBe(1);
+    await expect(page.getByTestId("seat-settings-scrim")).toBeVisible();
+    // Tab goes round inside the sheet.
+    for (let i = 0; i < 12; i += 1) {
+      await page.keyboard.press("Tab");
+      expect(await brain.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+    }
+    await page.screenshot({ path: `test-results/Home-v4-brain-sheet-${tag}.png`, fullPage: false });
+    await page.keyboard.press("Escape");
+    await expect(brain).toHaveCount(0);
+  });
+
+  test("a room's composer is one row, keeps its input to a line on a phone, and ends with Send (D8, P2-12)", async ({ page }, testInfo) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto(`/c/${PERSEPHONE_HUB_ID}`);
+    await waitForAppReady(page);
+    const composer = page.getByTestId("room-view").getByTestId("composer");
+    const box = composer.getByTestId("composer-box");
+    await expect(box).toBeVisible();
+    await expect(box.getByTestId("composer-toolbar")).toHaveCount(0);
+    await expect(box.getByTestId("composer-voice-call")).toBeVisible();
+    expect(await rightMostControl(box)).toBe("composer-send");
+    // The placeholder is one line: the input was squeezed until it wrapped.
+    const input = (await composer.getByLabel("Message input").boundingBox())!;
+    expect(input.height).toBeLessThanOrEqual(48);
+    if (await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches)) {
+      const sizes = await box.evaluate((el) =>
+        Array.from(el.querySelectorAll("button"))
+          .map((b) => b.getBoundingClientRect())
+          .filter((r) => r.width > 0)
+          .map((r) => [Math.round(r.width), Math.round(r.height)]),
+      );
+      expect(sizes.filter(([w, h]) => w! < 44 || h! < 44)).toEqual([]);
+    }
+    await box.screenshot({ path: `test-results/Room-composer-mobile-${testInfo.project.name}.png` });
+  });
+
+  test("under a finger, Home's controls are 44px (review 2, P2-12)", async ({ page }) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    const coarse = await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches);
+    test.skip(!coarse, "a coarse pointer");
+    await fulfillSummary(page, busyHomeV4Summary());
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    const toolbar = composer.root.getByTestId("composer-toolbar");
+    const needs = page.getByTestId("home-needs-row");
+    const targets: Array<[string, Locator, "both" | "height"]> = [
+      ["picker", composer.picker, "height"],
+      ["brain chip", composer.chip, "height"],
+      ["attach", toolbar.getByLabel("Attach file"), "both"],
+      ["emoji", toolbar.getByLabel("Insert emoji"), "both"],
+      ["send", composer.send, "both"],
+      ["approve", needs.nth(0).getByRole("button", { name: "Approve" }), "height"],
+      ["decline", needs.nth(0).getByRole("button", { name: "Decline" }), "height"],
+      ["open", needs.nth(1).getByRole("button", { name: "Open" }), "height"],
+      ["join", page.getByTestId("home-live-row").getByRole("button", { name: "Join" }), "height"],
+      ["seat card menu", page.getByTestId("seat-card-menu-persephone"), "both"],
+      ["more seats", page.getByTestId("home-seats-more"), "both"],
+    ];
+    const small: string[] = [];
+    for (const [name, locator, sides] of targets) {
+      const b = await locator.boundingBox();
+      if (!b) {
+        small.push(`${name}: not drawn`);
+        continue;
+      }
+      if (b.height < 43.5 || (sides === "both" && b.width < 43.5)) small.push(`${name}: ${b.width}×${b.height}`);
+    }
+    expect(small).toEqual([]);
   });
 });
 
@@ -2338,30 +2576,40 @@ test.describe("Crew-first nav (v3)", () => {
           await expect(section.getByTestId(`crew-group-${group}`)).toBeVisible();
         }
         const rows = section.getByTestId("crew-row");
-        await expect(rows).toHaveCount(8);
+        // Astra's runner is online: it is not behind More, because Home draws
+        // it on a card (review 2, D11). Same seats, same order as Home.
+        await expect(rows).toHaveCount(9);
         await expect(rows.nth(0)).toContainText("Persephone");
         await expect(rows.nth(1)).toContainText("Rook");
-        await expect(rows.nth(2)).toContainText("Majik Mane");
-        await expect(rows.nth(5)).toContainText("Flow");
-        await expect(rows.nth(5)).toContainText("#taxsq-portal");
-        await expect(section.getByTestId("crew-more")).toContainText("More (4)");
+        await expect(rows.nth(2)).toContainText("Astra");
+        await expect(rows.nth(3)).toContainText("Majik Mane");
+        await expect(rows.nth(6)).toContainText("Flow");
+        await expect(rows.nth(6)).toContainText("#taxsq-portal");
+        await expect(section.getByTestId("crew-more")).toContainText("More (3)");
         // Names never give way: the headline name is fully drawn at 280px.
         const nameFits = await rows.nth(0).getByTestId("crew-open-persephone").locator("span.truncate").first()
           .evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
         expect(nameFits).toBe(true);
-        // The brain chip is a hover overlay where hover exists; a touch
-        // device (this suite's iPhone-emulation project) always shows it.
+        // The brain chip shows on hover where hover exists; a touch device
+        // (this suite's iPhone-emulation project) always shows it.
         const canHover = await page.evaluate(() => window.matchMedia("(hover: hover)").matches);
         if (canHover) {
-          await expect(rows.nth(3).getByTestId("crew-brain-chip")).toHaveCount(0);
+          await expect(rows.nth(4).getByTestId("crew-brain-chip")).toHaveCount(0);
           await expect(rows.nth(1).getByTestId("crew-brain-chip")).not.toBeVisible();
           await rows.nth(0).hover();
         }
         await expect(rows.nth(0).getByTestId("crew-brain-chip")).toBeVisible();
         await expect(rows.nth(0).getByTestId("crew-brain-chip")).toHaveText("Fable 5.1 · high");
+        // Shown, the chip sits after the name and never over it (review 2,
+        // D7: it read "Persepho[Opus 5.5 · medium]"); the name is whole.
+        const nameEl = rows.nth(0).getByTestId("crew-open-persephone").locator("span.truncate").first();
+        const nameBox = (await nameEl.boundingBox())!;
+        const chipBox = (await rows.nth(0).getByTestId("crew-brain-chip").boundingBox())!;
+        expect(chipBox.x).toBeGreaterThanOrEqual(nameBox.x + nameBox.width - 1);
+        expect(await nameEl.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
         // A partner's row has no ⋮ — nothing acts in the shared room from here.
-        await rows.nth(5).hover();
-        await expect(rows.nth(5).getByTestId("crew-menu-shafen-claude-code")).toHaveCount(0);
+        await rows.nth(6).hover();
+        await expect(rows.nth(6).getByTestId("crew-menu-shafen-claude-code")).toHaveCount(0);
         // Your own seat's menu: New conversation, Call (waits on C5), Settings.
         await rows.nth(0).hover();
         await rows.nth(0).getByTestId("crew-menu-persephone").click();
@@ -2399,7 +2647,9 @@ test.describe("Crew-first nav (v3)", () => {
         await expect(menu).toHaveCount(0);
         await expect(page.getByTestId("home-dashboard")).toBeVisible();
         // Density (P1-9): with 12 crew rows present the one list still shows
-        // at least six conversations on 1440×900, under sticky filters.
+        // at least six conversations on 1440×900, under sticky filters — with
+        // a mouse, whose rail rows are 28px. A touch screen keeps 32px rows,
+        // and with Astra no longer behind More (D11) it shows five.
         await expect(page.getByTestId("conversation-list-sticky")).toBeVisible();
         await expect(page.getByTestId("mark-visible-read")).toBeVisible();
         const visibleConversations = await page.getByTestId("conversation-row").evaluateAll((els) =>
@@ -2408,7 +2658,8 @@ test.describe("Crew-first nav (v3)", () => {
             return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
           }).length,
         );
-        expect(visibleConversations).toBeGreaterThanOrEqual(6);
+        const fine = await page.evaluate(() => window.matchMedia("(pointer: fine)").matches);
+        expect(visibleConversations).toBeGreaterThanOrEqual(fine ? 6 : 5);
         await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-${tag}.png`, fullPage: false });
         await section.getByTestId("crew-more").click();
         await expect(section.getByTestId("crew-row")).toHaveCount(12);
