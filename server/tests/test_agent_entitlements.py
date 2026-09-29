@@ -266,6 +266,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
             _scalar_result(room),
             _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
             _count_result(1),  # human-DM guard count
+            _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
             _scalar_result(grant),
         ]
         if grant is None:
@@ -316,6 +317,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
                 _scalar_result(room),
                 _scalar_result(SimpleNamespace(id=_uuid())),
                 _count_result(1),  # human-DM guard count (bare dm passes)
+                _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
                 _scalar_result(_grant("the-colonel", AgentAccessEffect.DENY)),
             ]
         )
@@ -359,6 +361,7 @@ class InviteBrigadeAgentGateTests(IsolatedAsyncioTestCase):
                 _scalar_result(room),  # room resolve
                 _scalar_result(SimpleNamespace(id=_uuid())),  # caller member
                 _count_result(1),  # human-DM guard count (bare dm passes)
+                _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
                 _scalar_result(None),  # exact grant lookup (none)
                 _scalar_result(None),  # wildcard (*) lookup (none)
                 _scalar_result(room),  # metadata persist re-lookup
@@ -420,6 +423,7 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
             _scalar_result(target),  # target participant
         ]
         if target.participant_type == ParticipantType.AGENT:
+            execute_results.append(_scalar_result(None))  # owned-seat lookup (Nav v3 R5)
             execute_results.append(_scalar_result(grant))  # entitlement lookup
             # Closed-mode denial falls through to the wildcard (*) grant
             # lookup; extra side_effect entries are harmless when unused.
@@ -494,6 +498,7 @@ class InviteMemberAgentGateTests(IsolatedAsyncioTestCase):
                     SimpleNamespace(id=_uuid(), room_type=_RoomType.CHANNEL)
                 ),
                 _scalar_result(target),
+                _scalar_result(None),  # owned-seat lookup (Nav v3 R5): not a seat
                 _scalar_result(_grant("the-colonel", AgentAccessEffect.DENY)),
             ]
         )

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from types import SimpleNamespace
 from typing import Any, Iterable
 
 import structlog
@@ -47,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.agent_access import AgentAccessEffect, AgentAccessGrant
+from app.services.room_class import norm_username
 
 logger = structlog.get_logger(__name__)
 
@@ -77,6 +79,60 @@ WILDCARD_AGENT_ID = "*"
 
 def _default_is_open() -> bool:
     return get_settings().agent_access_default != "closed"
+
+
+async def owned_seat_owners(db: AsyncSession, agent_id: str) -> frozenset[str]:
+    """The usernames that own runner seat ``agent_id`` (``metadata.owner`` on
+    its ``brigade:<id>`` participant), or an empty set when the agent is not
+    a runner seat, has no row, or carries no owner."""
+    from app.models.participant import Participant
+    from app.services.agent_routing import participant_backend
+    from app.services.room_class import seat_owners
+
+    meta = (
+        await db.execute(
+            select(Participant.metadata_).where(
+                Participant.keycloak_sub == f"{_BRIGADE_SUB_PREFIX}{agent_id}"
+            )
+        )
+    ).scalar_one_or_none()
+    holder = SimpleNamespace(metadata_=meta)
+    if participant_backend(holder) != "runner":
+        return frozenset()
+    return seat_owners(holder)
+
+
+async def owned_seats_closed_to(
+    db: AsyncSession, *, username: str | None, agent_ids: Iterable[str]
+) -> set[str]:
+    """Of ``agent_ids``, the owned runner seats ``username`` does not own —
+    the roster marks them un-entitled so the picker renders them locked."""
+    from app.models.participant import Participant
+    from app.services.agent_routing import participant_backend
+    from app.services.room_class import agent_id_of_sub, seat_owners
+
+    ids = [a for a in agent_ids if a]
+    if not ids:
+        return set()
+    rows = (
+        await db.execute(
+            select(Participant.keycloak_sub, Participant.metadata_).where(
+                Participant.keycloak_sub.in_([f"{_BRIGADE_SUB_PREFIX}{a}" for a in ids])
+            )
+        )
+    ).all()
+    me = norm_username(username)
+    closed: set[str] = set()
+    for sub, meta in rows:
+        holder = SimpleNamespace(metadata_=meta)
+        if participant_backend(holder) != "runner":
+            continue
+        owners = seat_owners(holder)
+        if owners and me not in owners:
+            agent_id = agent_id_of_sub(sub)
+            if agent_id:
+                closed.add(agent_id)
+    return closed
 
 
 async def resolve_agent_access(
@@ -141,6 +197,29 @@ async def ensure_agent_access(
     """
     if user.get("participant_type") == "agent":
         return
+    # Nav v3 R5: only a seat's OWNER may add that seat anywhere. An owned
+    # runner seat (participants.metadata.owner) is closed to everyone else
+    # whatever the grants or the instance default say — a membership someone
+    # else minted for Aaron's seat would otherwise become a watched line into
+    # his runner. Brigade agents and unowned seats are untouched.
+    owners = await owned_seat_owners(db, agent_id)
+    if owners and norm_username(user.get("username")) not in owners:
+        logger.warning(
+            "agent_access_denied",
+            participant_id=str(user.get("participant_id")),
+            username=user.get("username"),
+            agent_id=agent_id,
+            surface=surface,
+            reason="seat_owner_only",
+            mode=get_settings().agent_access_default,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"'{agent_id}' is someone's own seat — ask the seat's owner "
+                "to add it."
+            ),
+        )
     allowed, reason = await resolve_agent_access(
         db, participant_id=user["participant_id"], agent_id=agent_id
     )
@@ -169,13 +248,19 @@ async def entitled_agent_ids(
     *,
     participant_id: uuid.UUID | str,
     agent_ids: Iterable[str],
+    username: str | None = None,
 ) -> set[str]:
-    """The subset of ``agent_ids`` this participant may reach (one query).
+    """The subset of ``agent_ids`` this participant may reach (one query,
+    plus one for owned seats when ``username`` is given — R5).
 
     Used by the roster endpoints to annotate each agent ``entitled`` without a
     per-agent round trip.
     """
     ids = [a for a in agent_ids if a]
+    if not ids:
+        return set()
+    closed = await owned_seats_closed_to(db, username=username, agent_ids=ids) if username else set()
+    ids = [a for a in ids if a not in closed]
     if not ids:
         return set()
     grants = (
