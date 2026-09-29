@@ -17,14 +17,14 @@
 import clsx from "clsx";
 import { GUEST_BADGE_LABEL } from "@/lib/guest";
 
-export function GuestBadge({ className }: { className?: string }) {
+export function GuestBadge({ className, title }: { className?: string; title?: string }) {
   return (
     <span
       className={clsx(
         "inline-flex shrink-0 items-center rounded-md border border-stable-gold/30 bg-stable-gold/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stable-gold",
         className,
       )}
-      title="Joined with a guest link — not a member of this workspace"
+      title={title ?? "Joined with a guest link — not a member of this workspace"}
     >
       {GUEST_BADGE_LABEL}
     </span>

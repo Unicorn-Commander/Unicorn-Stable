@@ -141,7 +141,13 @@ export interface GuestMessage {
   content: string;
   content_type: string;
   created_at: string;
-  metadata?: Record<string, unknown>;
+  /**
+   * For a guest caller the server strips `gateway`, `on_behalf_of` and
+   * `agent_id`; nothing on the guest surface may read them. What stays is
+   * what a system line needs (`kind`, `started_by`, `reason`,
+   * `thread_title`, `created_by`).
+   */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface GuestMessagePage {
@@ -201,6 +207,11 @@ export interface GuestRoomMember {
   is_online?: boolean;
   is_self?: boolean;
   is_muted?: boolean;
+  /** Always null for a guest caller: reachability is a member's fact. */
+  availability?: string | null;
+  availability_reason?: string | null;
+  /** AGENT rows only, and for a guest caller `{kind}` alone. */
+  metadata?: { kind?: string | null } | null;
 }
 
 export async function getGuestMembers(

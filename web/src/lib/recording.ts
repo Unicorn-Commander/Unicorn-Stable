@@ -90,14 +90,37 @@ export function parseRecordingFrame(raw: unknown): RecordingFrame | null {
   const record = raw as Record<string, unknown>;
   if (typeof record.active !== "boolean") return null;
   const kind = isRecordingKind(record.kind) ? record.kind : null;
+  const starter = readStarter(record);
   const state: RecordingState = {
     active: record.active,
     kind,
-    startedBy: readString(record, "started_by"),
-    startedByName: readString(record, "started_by_name"),
+    startedBy: starter.id,
+    startedByName: readString(record, "started_by_name") ?? starter.name,
     startedAt: readString(record, "started_at"),
   };
   return { roomId: readString(record, "room_id"), state };
+}
+
+/**
+ * Who started it. The socket frame carries `started_by` as
+ * `{id, display_name}` (the server's `announce_recording`); the REST rows
+ * and older frames carry a participant id with `started_by_name` beside it.
+ * Both are read — a frame whose starter went unread drew "started by
+ * someone" on the pill.
+ */
+function readStarter(record: Record<string, unknown>): {
+  id: string | null;
+  name: string | null;
+} {
+  const value = record.started_by;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const starter = value as Record<string, unknown>;
+    return {
+      id: readString(starter, "id") ?? readString(starter, "participant_id"),
+      name: readString(starter, "display_name") ?? readString(starter, "name"),
+    };
+  }
+  return { id: readString(record, "started_by"), name: null };
 }
 
 function sameRecording(a: RecordingState, b: RecordingState): boolean {

@@ -190,6 +190,23 @@ export interface RoomMember {
   /** Agents only: how this agent behaves in this room. */
   agent_mode?: "answers_all" | "when_named" | "listening" | "muted" | null;
   context_depth?: number | null;
+  /**
+   * The guest-safe subset of an AGENT member's metadata (Nav v3 §2.0) —
+   * exactly `{kind, backend, owner, owner_display_name}`; null for humans
+   * and guests. `kind` is "guest_agent" / "integration" or null; `backend`
+   * is "runner" for a seat and null for a house agent that never set one;
+   * `owner` is a username (the server sends the first of a list; a list is
+   * tolerated). Older servers omit the field and every reader falls through
+   * to "nothing known".
+   */
+  metadata?: RoomMemberMetadata | null;
+}
+
+export interface RoomMemberMetadata {
+  kind?: string | null;
+  backend?: string | null;
+  owner?: string | string[] | null;
+  owner_display_name?: string | null;
 }
 
 /**
@@ -551,6 +568,75 @@ export interface Agent {
   };
 }
 
+/**
+ * Crew (Nav v3 C3): the agents the caller can talk to, as GET /api/v1/crew
+ * ranks them. Five kinds of agent exist (design §2.0); only three reach this
+ * list — the caller's own seats, house Brigade agents, and partners' seats
+ * that share a room with the caller. Guest agents and integrations are never
+ * listed, by the server and by the roster fallback alike.
+ */
+export type CrewGroup = "own_seat" | "house" | "partner";
+export type CrewKind = "brigade" | "seat";
+export type CrewBackend = "runner" | "brigade";
+/** The server says online/offline; the roster fallback can only say "unknown" (no dot). */
+export type CrewPresence = "online" | "offline" | "unknown";
+
+export interface SeatModel {
+  id: string;
+  label: string;
+}
+
+/**
+ * What a runner announced about itself (`PUT /gateway/me`, C1). Null on a
+ * Brigade agent and on a seat that has not announced yet — no chip then.
+ */
+export interface SeatCapabilities {
+  harness: string;
+  default_model: string | null;
+  default_effort: string | null;
+  models: SeatModel[];
+  efforts: string[];
+  /** When the runner last announced. */
+  updated_at?: string | null;
+}
+
+export interface CrewMember {
+  agent_id: string;
+  participant_id: string;
+  display_name: string;
+  avatar_url: string | null;
+  role_line: string | null;
+  backend: CrewBackend;
+  kind: CrewKind;
+  /** Username of the human who runs the seat; null for house agents. */
+  owner: string | null;
+  group: CrewGroup;
+  presence: CrewPresence;
+  /** The caller's own top-level hub with THIS agent, or null. */
+  hub_room_id: string | null;
+  seat_capabilities: SeatCapabilities | null;
+  last_line: string | null;
+  last_at: string | null;
+  /**
+   * Seats only: when the runner last called the gateway (30-day memory);
+   * null for a house agent and for a seat that never called.
+   */
+  last_seen_at: string | null;
+  unread: number;
+}
+
+/**
+ * One seat's brain in one room (`metadata.seats[agent_id]`, C2). Null on
+ * both = the seat's own default. Per seat, not per room: a room with two of
+ * your seats carries two entries and shows two chips.
+ */
+export interface RoomSeat {
+  model: string | null;
+  effort: string | null;
+}
+
+export type RoomSeats = Record<string, RoomSeat>;
+
 export interface BrigadeAgent {
   id: string;
   name: string;
@@ -859,6 +945,78 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
     thread_count: r.thread_count ?? 0,
     counterpart: r.counterpart ?? null,
     agent_members: r.agents ?? [],
+  };
+}
+
+/** Every username in `metadata.owner` (a string or a list — one person can have two). */
+export function ownerNames(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/** `metadata.owner` is a username, or a list of usernames — the first one names the seat. */
+export function coerceOwner(raw: unknown): string | null {
+  return ownerNames(raw)[0] ?? null;
+}
+
+/**
+ * Fill the fields a row may omit so every consumer reads one shape. A row
+ * whose `kind` is neither a seat nor a Brigade agent (a guest agent, an
+ * integration, anything new) is not crew and yields null: the server never
+ * lists those, and the client never renders them either way.
+ */
+/** A /crew row as the wire may carry it: any strings, any owner shape. */
+export type RawCrewMember = { agent_id: string } & Partial<
+  Omit<CrewMember, "agent_id" | "owner" | "kind" | "backend" | "presence" | "group">
+> & {
+  owner?: unknown;
+  kind?: string | null;
+  backend?: string | null;
+  presence?: string | null;
+  group?: string | null;
+};
+
+export function normalizeCrewMember(raw: RawCrewMember): CrewMember | null {
+  if (raw.kind != null && raw.kind !== "seat" && raw.kind !== "brigade") return null;
+  const backend: CrewBackend = raw.backend === "runner" ? "runner" : "brigade";
+  const kind: CrewKind = raw.kind === "seat" || (raw.kind == null && backend === "runner") ? "seat" : "brigade";
+  const group: CrewGroup =
+    raw.group === "own_seat" || raw.group === "partner" || raw.group === "house"
+      ? raw.group
+      : kind === "seat"
+        ? "partner"
+        : "house";
+  const caps = raw.seat_capabilities;
+  return {
+    agent_id: raw.agent_id,
+    participant_id: raw.participant_id ?? "",
+    display_name: (raw.display_name || raw.agent_id).trim(),
+    avatar_url: raw.avatar_url ?? null,
+    role_line: raw.role_line ?? null,
+    backend,
+    kind,
+    owner: coerceOwner(raw.owner),
+    group,
+    presence:
+      raw.presence === "online" ? "online" : raw.presence === "unknown" ? "unknown" : "offline",
+    hub_room_id: raw.hub_room_id ?? null,
+    seat_capabilities: caps
+      ? {
+          harness: caps.harness ?? "",
+          default_model: caps.default_model ?? null,
+          default_effort: caps.default_effort ?? null,
+          models: Array.isArray(caps.models) ? caps.models : [],
+          efforts: Array.isArray(caps.efforts) ? caps.efforts : [],
+          updated_at: caps.updated_at ?? null,
+        }
+      : null,
+    last_line: raw.last_line ?? null,
+    last_at: raw.last_at ?? null,
+    last_seen_at: kind === "seat" && typeof raw.last_seen_at === "string" ? raw.last_seen_at : null,
+    unread: typeof raw.unread === "number" ? raw.unread : 0,
   };
 }
 
@@ -1734,6 +1892,22 @@ class StableApiClient {
     // tools/emoji. Stable's own /api/v1/agents table is empty in practice, so
     // this is what populates the agents store, the home rail, and the org chart.
     return this.request<Agent[]>("GET", "/api/v1/brigade/roster");
+  }
+
+  /**
+   * The crew list (Nav v3 C3), ranked by the server: own seats, then house
+   * agents with a recent thread, then partners, then the rest. A server that
+   * predates the route answers 404; `useCrew` falls back to the roster then.
+   */
+  async getCrew(): Promise<CrewMember[]> {
+    const raw = await this.request<CrewMember[] | { items?: CrewMember[] }>(
+      "GET",
+      "/api/v1/crew",
+    );
+    const rows = Array.isArray(raw) ? raw : raw?.items ?? [];
+    return rows
+      .map((row) => normalizeCrewMember(row))
+      .filter((row): row is CrewMember => row !== null);
   }
 
   /** Backend health/build summary — powers the Settings → Instance pane and

@@ -1,5 +1,13 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page, type WebSocketRoute } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import {
+  CREW_FIXTURE,
+  PERSEPHONE_HUB_ID,
+  hubRoomRaw,
+  membersFixture,
+  threadRoomRaw,
+  threadSeedMessageRaw,
+} from "../src/mocks/crewFixture";
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
@@ -231,6 +239,17 @@ async function stubHomeSummary(page: Page) {
   await fulfillSummary(page, emptyHomeSummary());
 }
 
+/** Nav v3: the crew list every shell now asks for (C3). */
+async function stubCrew(page: Page) {
+  await page.route("**/api/v1/crew**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(CREW_FIXTURE),
+    });
+  });
+}
+
 /**
  * The Vite dev mock serves rooms but no message history, so a room renders
  * "Couldn't load messages". Fulfil the history call with a deterministic
@@ -298,14 +317,67 @@ async function waitForAppReady(page: Page) {
 /** Click a test id that is actually visible. On a phone the sidebar (and the
  *  controls inside it) is unmounted until the header opens it. */
 async function clickTestId(page: Page, testId: string) {
-  const visible = page.locator(`[data-testid="${testId}"]`).locator("visible=true");
-  if ((await visible.count()) === 0) {
+  const visible = () => page.locator(`[data-testid="${testId}"]`).locator("visible=true");
+  if ((await visible().count()) === 0) {
     const openSidebar = page.getByRole("button", { name: "Open sidebar" });
     if (await openSidebar.isVisible().catch(() => false)) {
       await openSidebar.click();
     }
   }
-  await page.locator(`[data-testid="${testId}"]`).locator("visible=true").first().click();
+  // Nav v3: on a phone the account entries (Settings, People, Saved…) live
+  // in the Me tab's sheet, not the drawer.
+  if ((await visible().count()) === 0) {
+    const me = page.getByTestId("nav-me").locator("visible=true");
+    if (await me.count()) await me.first().click();
+  }
+  await visible().first().click();
+}
+
+/**
+ * WCAG contrast of an element's text against what is painted behind it: its
+ * own background and its ancestors', blended over white. Any CSS colour
+ * syntax is read by painting it (the computed value may be oklab or
+ * color-mix). Background images are not read — this is for chips and notes
+ * on the shell's flat surfaces.
+ */
+async function textContrast(locator: Locator): Promise<number> {
+  return locator.evaluate((el) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+    const paint = (color: string, over: [number, number, number]) => {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgb(${over[0]}, ${over[1]}, ${over[2]})`;
+      ctx.fillRect(0, 0, 1, 1);
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 1, 1);
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+      return [r ?? 0, g ?? 0, b ?? 0] as [number, number, number];
+    };
+    const chain: Element[] = [];
+    for (let node: Element | null = el; node; node = node.parentElement) chain.unshift(node);
+    let behind: [number, number, number] = [255, 255, 255];
+    for (const node of chain) behind = paint(getComputedStyle(node).backgroundColor, behind);
+    const text = paint(getComputedStyle(el).color, behind);
+    const luminance = (rgb: [number, number, number]) => {
+      const [r, g, b] = rgb.map((value) => {
+        const channel = value / 255;
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      }) as [number, number, number];
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const [hi, lo] = [luminance(text), luminance(behind)].sort((a, b) => b - a) as [number, number];
+    return (hi + 0.05) / (lo + 0.05);
+  });
+}
+
+/** The whole of `inner` is inside the seat panel's box — not cut by its scroll. */
+async function expectInsidePanel(page: Page, inner: Locator) {
+  const panel = (await page.getByTestId("seat-settings").boundingBox())!;
+  const box = (await inner.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(panel.y);
+  expect(box.y + box.height).toBeLessThanOrEqual(panel.y + panel.height + 1);
 }
 
 async function assertPageHealth(page: Page, viewportName: string) {
@@ -370,6 +442,7 @@ for (const surface of SURFACES) {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
+      await stubCrew(page);
 
       await page.goto(surface.path);
       await waitForAppReady(page);
@@ -509,8 +582,136 @@ test.describe("Chat opens on the newest message", () => {
   }
 });
 
-test.describe("Home inbox", () => {
-  test("does not call the day clear before the summary resolves", async ({ page }) => {
+/** A busy day for Home v4: an approval, a mention, an unread DM (out of order
+ *  on purpose), a recorded call, a seat at work, a task due, a standing room. */
+function busyHomeV4Summary() {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+  const actor = (id: string, name: string, kind: "agent" | "human", agentId: string | null = null) => ({
+    participant_id: id,
+    kind,
+    display_name: name,
+    avatar_url: null,
+    agent_id: agentId,
+  });
+  const roomRef = (id: string, name: string, type: string) => ({
+    id,
+    display_name: name,
+    room_type: type,
+    parent_room_id: null,
+  });
+  return {
+    generated_at: new Date().toISOString(),
+    live_calls: [
+      {
+        room_id: "room-ops",
+        display_name: "ops",
+        room_type: "channel",
+        participant_count: 3,
+        has_agent: true,
+        recording: true,
+        floor_holder: actor("user-jason", "Nate Ellison", "human"),
+      },
+    ],
+    counts: {
+      unread_rooms: 2,
+      mention_rooms: 1,
+      approvals_pending: 1,
+      agents_available: 3,
+      people_online: 2,
+      worker_last_seen_at: null,
+    },
+    needs_you: [
+      {
+        kind: "dm",
+        actor: actor("user-jason", "Nate Ellison", "human"),
+        room: roomRef("room-dm-jason", "Nate Ellison", "dm"),
+        preview: "Thursday still works",
+        created_at: minutesAgo(4),
+        action: "reply",
+        stale: false,
+        message_id: "msg-dm-1",
+      },
+      {
+        kind: "mention",
+        actor: actor("user-shafen", "Shafen Khan", "human"),
+        room: roomRef("room-taxsq", "taxsq-portal", "channel"),
+        preview: "@aaron can you look at the portal copy?",
+        created_at: minutesAgo(12),
+        action: "open",
+        stale: false,
+        message_id: "msg-mention-1",
+      },
+      {
+        kind: "approval",
+        actor: actor("p-persephone", "Persephone", "agent", "persephone"),
+        room: roomRef(PERSEPHONE_HUB_ID, "Persephone", "agent_hub"),
+        preview: "Deploy Project-Ops e87eb20 to dogfood",
+        created_at: minutesAgo(20),
+        action: "approve",
+        stale: false,
+        message_id: "msg-approve-1",
+      },
+    ],
+    crew: [
+      {
+        agent_id: "persephone",
+        participant_id: "p-persephone",
+        display_name: "Persephone",
+        avatar_url: null,
+        status: "available",
+        agent_mode: "answers_all",
+        current_task: "Reviewing PR #42",
+        last_line: "Two PRs are waiting on you.",
+        since: minutesAgo(2),
+        hub_room_id: PERSEPHONE_HUB_ID,
+      },
+    ],
+    today: {
+      po_tasks: [
+        {
+          id: "task-1",
+          title: "Ship the north star",
+          due_date: "2026-09-29",
+          status: "PENDING",
+          project_number: "P-00115",
+          url: null,
+        },
+      ],
+      meetings: [
+        { kind: "standing", id: "standup", title: "Morning standup", at: null, room_id: "room-war", slug: "standup", summary: null },
+      ],
+    },
+  };
+}
+
+/** Home's composer, wherever this viewport draws it. */
+function homeComposer(page: Page) {
+  const composer = page.getByTestId("home-composer");
+  return {
+    root: composer,
+    input: composer.getByLabel("Message input"),
+    send: composer.getByTestId("composer-send"),
+    picker: composer.getByTestId("seat-picker"),
+    chip: composer.getByTestId("seat-chip"),
+    line: composer.getByTestId("home-composer-line"),
+  };
+}
+
+/** Type and send. The send button, not Enter: a touch keyboard's Enter is a new line. */
+async function sendFromHome(page: Page, text: string) {
+  const composer = homeComposer(page);
+  await composer.input.fill(text);
+  await expect(composer.send).toHaveAttribute("aria-disabled", "false");
+  await composer.send.click();
+}
+
+/**
+ * Home v4 (Nav v3 §2.7): a composer first, your seats under it, then only
+ * the zones that have rows. Captures: quiet day, busy day, first run with no
+ * seats — at 390 and 1440.
+ */
+test.describe("Home v4", () => {
+  test("the composer does not wait for the summary, and the board is not called clear before it", async ({ page }) => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -523,90 +724,432 @@ test.describe("Home inbox", () => {
         body: JSON.stringify(emptyHomeSummary()),
       });
     });
+    await stubNavV3World(page);
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await page.goto("/");
     await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.input).toBeVisible();
+    await expect(composer.picker).toContainText("Persephone");
+    await expect(page.getByTestId("home-seats")).toBeVisible();
     await expect(page.getByTestId("home-skeleton")).toBeVisible();
-    await expect(page.getByTestId("home-all-clear")).toHaveCount(0);
+    await expect(page.getByTestId("home-board-clear")).toHaveCount(0);
     release();
-    await expect(page.getByTestId("home-all-clear")).toBeVisible();
-    await expect(page.locator("#home-needs_you-heading")).toHaveCount(0);
+    await expect(page.getByTestId("home-board-clear")).toHaveText("The board is clear.");
+    await expect(page.getByTestId("home-skeleton")).toHaveCount(0);
+  });
+
+  test("a summary that fails costs the zones, not the composer", async ({ page }) => {
+    await page.route("**/api/v1/home/summary**", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
+    );
+    await stubNavV3World(page);
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("home-error")).toBeVisible({ timeout: 30_000 });
+    await expect(homeComposer(page).input).toBeVisible();
+    await expect(page.getByTestId("home-seats")).toBeVisible();
+    await expect(page.getByTestId("home-board-clear")).toHaveCount(0);
   });
 
   for (const viewport of ["mobile", "desktop"] as const) {
-    test(`clear day is one line @ ${viewport}`, async ({ page }, testInfo) => {
+    test(`quiet day: the composer, your seats, one line @ ${viewport}`, async ({ page }, testInfo) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
+      await stubNavV3World(page);
       await page.goto("/");
       await waitForAppReady(page);
-      await expect(page.getByTestId("home-all-clear")).toHaveText("You're all clear");
-      await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
-      await expect(page.locator("#home-needs_you-heading")).toHaveCount(0);
-      await expect(page.locator("#home-live_now-heading")).toHaveCount(0);
-      await expect(page.locator("#home-crew-heading")).toHaveCount(0);
-      await expect(page.locator("#home-today-heading")).toHaveCount(0);
-      await expect(page.locator("#home-recent-heading")).toBeVisible();
-      await expect(page.getByTestId("home-count")).toHaveText("4");
+      const home = page.getByTestId("home-dashboard");
+      await expect(home).toHaveAttribute("data-state", "loaded");
+      const composer = homeComposer(page);
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Persephone…");
+      await expect(composer.picker).toContainText("Persephone");
+      await expect(composer.chip).toContainText("Fable 5.1 · high");
+      await expect(composer.line).toHaveCount(0);
 
-      const capture = `HomeClear-${viewport}-${testInfo.project.name}`;
-      await page.screenshot({ path: `test-results/${capture}.png`, fullPage: true });
+      // Your seats: every seat of yours, a card each, no Call in its menu.
+      const cards = page.getByTestId("seat-card");
+      await expect(cards).toHaveCount(CREW_FIXTURE.filter((row) => row.group === "own_seat").length);
+      await expect(cards.nth(0)).toContainText("Persephone");
+      await expect(cards.nth(0).getByTestId("seat-card-presence")).toHaveAttribute("aria-label", "Runner online");
+      await expect(cards.nth(0).getByTestId("seat-card-unread")).toHaveText("1");
+
+      // One line, and nothing else: no zone, no header, no zero, no greeting.
+      await expect(page.getByTestId("home-board-clear")).toHaveText("The board is clear.");
+      await expect(page.locator('[data-testid^="home-zone-"]')).toHaveCount(0);
+      await expect(page.getByTestId("home-count")).toHaveCount(0);
+      await expect(home.getByRole("heading", { level: 1 })).toHaveText("Home");
+      await expect(home.getByText(/Good (morning|afternoon|evening)/)).toHaveCount(0);
+      await expect(home.getByText("Unicorn Stable")).toHaveCount(0);
 
       if (viewport === "mobile") {
-        await page.getByRole("button", { name: "Open sidebar" }).click();
+        // Pinned above the tab bar, and nothing floats over it.
+        const pinned = (await page.getByTestId("home-composer-pinned").boundingBox())!;
+        const tabs = (await page.getByTestId("phone-tab-bar").boundingBox())!;
+        expect(pinned.y + pinned.height).toBeLessThanOrEqual(tabs.y + 1);
+        expect(pinned.y + pinned.height).toBeGreaterThan(tabs.y - 4);
+        await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+        // The seats scroll sideways inside the page; the page does not.
+        const scroll = await page.evaluate(() => ({
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        }));
+        expect(scroll.page).toBeLessThanOrEqual(1);
+      } else {
+        // The composer is the first thing on the page.
+        const first = await home.evaluate(
+          (el) =>
+            Array.from(el.children)
+              .find((child) => !child.classList.contains("sr-only"))
+              ?.getAttribute("data-testid"),
+        );
+        expect(first).toBe("home-composer");
+        // The cursor is in it on arrival — where there is a pointer; a touch
+        // screen would answer a focus with its keyboard.
+        if (await page.evaluate(() => window.matchMedia("(hover: hover)").matches)) {
+          await expect(composer.input).toBeFocused();
+        }
+        // One rail, always: Crew and Conversations, not a rail of Home's own.
+        await expect(page.getByTestId("crew-section")).toBeVisible();
+        await expect(page.getByTestId("conversations-card")).toBeVisible();
+        await expect(page.getByTestId("home-rail")).toHaveCount(0);
       }
-      await expect(page.getByTestId("home-rail")).toBeVisible();
-      await expect(page.getByTestId("home-rail-recent")).toBeVisible();
-      await expect(page.getByTestId("home-rail-crew")).toHaveCount(0);
-      await expect(page.getByTestId("home-rail-pinned")).toHaveCount(0);
-      if (viewport === "mobile") {
-        await page.screenshot({
-          path: `test-results/HomeClear-rail-${viewport}-${testInfo.project.name}.png`,
-          fullPage: true,
-        });
-      }
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/Home-v4-quiet-${tag}.png`, fullPage: false });
+
+      // A seat's menu: New conversation and Settings. No Call until voice ships.
+      await cards.nth(0).getByTestId("seat-card-menu-persephone").click();
+      const menu = page.getByRole("menu", { name: "Options for Persephone" });
+      await expect(menu.getByRole("menuitem")).toHaveText(["New conversation", "Settings"]);
+      await page.keyboard.press("Escape");
+      await expect(menu).toHaveCount(0);
       await assertPageHealth(page, viewport);
     });
 
-    test(`busy day keeps the sections that have rows @ ${viewport}`, async ({ page }, testInfo) => {
+    test(`busy day: what needs you, what is live, what is due, where you were @ ${viewport}`, async ({ page }, testInfo) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
-      await fulfillSummary(page, busyHomeSummary());
+      await fulfillSummary(page, busyHomeV4Summary());
+      await stubNavV3World(page);
       await page.goto("/");
       await waitForAppReady(page);
-      await expect(page.getByTestId("home-all-clear")).toHaveCount(0);
-      await expect(page.getByTestId("home-section-needs_you")).toBeVisible();
-      await expect(page.getByTestId("home-section-live_now")).toBeVisible();
-      await expect(page.getByTestId("home-section-crew")).toBeVisible();
-      await expect(page.getByTestId("home-section-recent")).toBeVisible();
-      await expect(page.getByTestId("home-section-today")).toBeVisible();
-      await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Join" })).toBeVisible();
-      await expect(page.getByText("When named").first()).toBeVisible();
-      await expect(page.getByText("Ship the north star")).toBeVisible();
+      const home = page.getByTestId("home-dashboard");
+      await expect(home).toHaveAttribute("data-state", "loaded");
+      await expect(page.getByTestId("home-board-clear")).toHaveCount(0);
+
+      // The zones, in the design's order, after the seats.
+      const order = await home.locator('[data-testid="home-composer"], [data-testid="home-seats"], [data-testid^="home-zone-"]')
+        .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid")));
+      expect(order).toEqual(
+        viewport === "mobile"
+          ? ["home-seats", "home-zone-needs_you", "home-zone-live_now", "home-zone-today", "home-zone-recent"]
+          : ["home-composer", "home-seats", "home-zone-needs_you", "home-zone-live_now", "home-zone-today", "home-zone-recent"],
+      );
+
+      // The seat's card says what it is doing now.
+      const card = page.getByTestId("seat-card").first();
+      await expect(card.getByTestId("seat-card-task")).toContainText("Reviewing PR #42");
+      await expect(card.getByTestId("seat-card-task")).toHaveText("Reviewing PR #42· 2m");
+      // All of it: a task cut to "Reviewing P…" says nothing.
+      const cut = await card.getByTestId("seat-card-task").locator("span").first()
+        .evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+      expect(cut).toBe(false);
+      await expect(card.getByTestId("seat-card-line")).toHaveText("Two PRs are waiting on you.");
+
+      // Needs you: the approval first, then the mention, then the person —
+      // each with the face and the name of whoever wrote it.
+      const needs = page.getByTestId("home-needs-row");
+      await expect(needs).toHaveCount(3);
+      expect(await needs.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-kind")))).toEqual([
+        "approval",
+        "mention",
+        "dm",
+      ]);
+      await expect(needs.nth(0)).toContainText("Persephone");
+      await expect(needs.nth(0).getByRole("button", { name: "Approve" })).toBeVisible();
+      await expect(needs.nth(1)).toContainText("Shafen Khan");
+      await expect(needs.nth(2)).toContainText("Nate Ellison");
+      await expect(needs.nth(2).getByRole("button", { name: "Reply" })).toBeVisible();
+
+      const liveRow = page.getByTestId("home-live-row");
+      await expect(liveRow).toHaveCount(1);
+      await expect(liveRow).toContainText("LIVE");
+      await expect(liveRow).toContainText("REC");
+      await expect(liveRow).toContainText("Nate Ellison has the floor");
+      await expect(liveRow.getByRole("button", { name: "Join" })).toBeVisible();
+
+      await expect(page.getByTestId("home-task-row")).toContainText("Ship the north star");
+      await expect(page.getByTestId("home-zone-today")).toContainText("Morning standup");
+
+      // Recent: one line each, eight at most, and a way to the rest.
+      const recent = page.getByTestId("home-recent-row");
+      await expect(recent).toHaveCount(8);
+      const heights = await recent.evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+      expect(Math.max(...heights)).toBeLessThanOrEqual(viewport === "mobile" ? 46 : 34);
       await expect(page.locator('[data-testid="home-dashboard"] .border-dashed')).toHaveCount(0);
       const counts = await page.getByTestId("home-count").allTextContents();
-      expect(counts).not.toContain("0");
+      expect(counts).toEqual(["3", "1", "1"]);
 
-      await page.screenshot({
-        path: `test-results/HomeBusy-${viewport}-${testInfo.project.name}.png`,
-        fullPage: true,
-      });
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/Home-v4-busy-${tag}.png`, fullPage: false });
+      await page.screenshot({ path: `test-results/Home-v4-busy-full-${tag}.png`, fullPage: true });
 
-      if (viewport === "mobile") {
-        await page.getByRole("button", { name: "Open sidebar" }).click();
-      }
-      await expect(page.getByTestId("home-rail-crew-persephone")).toBeVisible();
-      await expect(page.getByTestId("home-rail-recent")).toBeVisible();
-      if (viewport === "mobile") {
-        await page.screenshot({
-          path: `test-results/HomeBusy-rail-${viewport}-${testInfo.project.name}.png`,
-          fullPage: true,
-        });
-      }
+      // "Show all" is the Chats list.
+      await page.getByTestId("home-recent-all").click();
+      await expect(page.getByTestId("conversations-card").locator("visible=true").first()).toBeVisible();
       await assertPageHealth(page, viewport);
     });
+
+    test(`first run, no seats: the composer speaks to Sidekick @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      const world = await stubNavV3World(page, { noRooms: true, crew: [] });
+      await page.goto("/");
+      await waitForAppReady(page);
+      const home = page.getByTestId("home-dashboard");
+      await expect(home).toHaveAttribute("data-state", "first-run");
+      const composer = homeComposer(page);
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Sidekick…");
+      await expect(composer.picker).toContainText("Sidekick");
+      // A house agent has no brain chip, and there is no seat to draw a card for.
+      await expect(composer.chip).toHaveCount(0);
+      await expect(page.getByTestId("home-seats")).toHaveCount(0);
+      await expect(page.locator('[data-testid^="home-zone-"]')).toHaveCount(0);
+      await expect(page.getByTestId("home-first-run")).toContainText("No conversations yet.");
+      await expect(page.getByRole("button", { name: "Seed channels" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Invite a teammate" })).toBeVisible();
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/Home-v4-first-run-${tag}.png`, fullPage: false });
+      await assertPageHealth(page, viewport);
+
+      // The first line makes the hub, the conversation and the message.
+      await sendFromHome(page, "What can you do here?");
+      await expect(page).toHaveURL(/\/c\/hub-sidekick-t-00000001$/);
+      expect(world.calls).toEqual(["hub:sidekick", "thread:hub-sidekick", "post:hub-sidekick-t-00000001"]);
+    });
   }
+
+  test("Enter starts a conversation: the thread, then the message, then you are in it", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.input).toHaveAttribute("placeholder", "Message Persephone…");
+    await composer.input.fill("Plan the kitchen panel rollout for Thursday, and list what is blocking it");
+    if (testInfo.project.name === "chromium-mobile") await composer.send.click();
+    else await composer.input.press("Enter");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    // Known hub: no hub request. Default brain: no seat write.
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `post:${threadId}`]);
+    // Titled from the first line, sixty characters.
+    expect(world.threadBodies[0]?.body).toEqual({
+      title: "Plan the kitchen panel rollout for Thursday, and list what…",
+    });
+    const post = world.posts[0]!.body;
+    expect(post.content).toBe("Plan the kitchen panel rollout for Thursday, and list what is blocking it");
+    expect(post.content_type).toBe("text");
+    expect(typeof post.client_msg_id).toBe("string");
+    expect(post.metadata).toBeUndefined();
+    // The message is in the room, and Home's box is empty again.
+    await expect(page.getByTestId("room-view")).toBeVisible();
+    await expect(page.getByText("Plan the kitchen panel rollout for Thursday", { exact: false }).first()).toBeVisible();
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(homeComposer(page).input).toHaveValue("");
+  });
+
+  test("a picked brain is written to the new conversation before the message", async ({ page }, testInfo) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await composer.chip.click();
+    const panel = page.getByTestId("seat-settings");
+    await expect(panel).toContainText("Persephone · new conversation");
+    await expect(panel.getByTestId("seat-mode-listening")).toHaveCount(0);
+    await panel.getByTestId("seat-model-claude-opus-5-5").click();
+    await panel.getByTestId("seat-effort-max").click();
+    await expect(composer.chip).toContainText("Opus 5.5 · max");
+    await page.screenshot({
+      path: `test-results/Home-v4-brain-desktop-${testInfo.project.name}.png`,
+      fullPage: false,
+      animations: "disabled",
+    });
+    await page.keyboard.press("Escape");
+    // Nothing was written by picking.
+    expect(world.calls).toEqual([]);
+    await sendFromHome(page, "Draft the Doe filing outline");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `seat:${threadId}`, `post:${threadId}`]);
+    expect(world.roomPatches[0]).toEqual({
+      roomId: threadId,
+      body: { metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: "max" } } } },
+    });
+    // The room's own chip says the same.
+    await expect(page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]')).toContainText("Opus 5.5 · max");
+  });
+
+  test("the post fails: you are in the conversation, with the draft", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failPost: true });
+    await page.goto("/");
+    await waitForAppReady(page);
+    await sendFromHome(page, "/council is the cap right?");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `post:${threadId}`]);
+    // Titled from what was asked; the command rides in the post's metadata.
+    expect(world.threadBodies[0]?.body).toEqual({ title: "is the cap right?" });
+    expect(world.posts[0]?.body).toMatchObject({ content: "is the cap right?", metadata: { council: true } });
+    await expect(page.getByText("Not sent", { exact: true })).toBeVisible();
+    // As typed: the command is still a command in the room's box.
+    const roomInput = page.getByTestId("room-view").getByLabel("Message input");
+    await expect(roomInput).toHaveValue("/council is the cap right?");
+    // And Home's box did not keep a second copy.
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(homeComposer(page).input).toHaveValue("");
+  });
+
+  test("the conversation cannot be made: you are still on Home, with the draft", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failThread: true });
+    await page.goto("/");
+    await waitForAppReady(page);
+    await sendFromHome(page, "Are the GPU lanes clear?");
+    await expect(page.getByText("Couldn't start a conversation with Persephone")).toBeVisible();
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`]);
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(homeComposer(page).input).toHaveValue("Are the GPU lanes clear?");
+    await expect(homeComposer(page).send).toHaveAttribute("aria-disabled", "false");
+  });
+
+  test("the brain cannot be set: the message is not posted", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    const world = await stubNavV3World(page, { failSeat: true });
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await composer.chip.click();
+    await page.getByTestId("seat-settings").getByTestId("seat-effort-max").click();
+    await page.keyboard.press("Escape");
+    await sendFromHome(page, "Think hard about the lease terms");
+    const threadId = `${PERSEPHONE_HUB_ID}-t-00000001`;
+    await expect(page).toHaveURL(new RegExp(`/c/${threadId}$`));
+    expect(world.calls).toEqual([`thread:${PERSEPHONE_HUB_ID}`, `seat:${threadId}`]);
+    expect(world.posts).toEqual([]);
+    await expect(page.getByText("The brain was not set — not sent")).toBeVisible();
+    await expect(page.getByTestId("room-view").getByLabel("Message input")).toHaveValue(
+      "Think hard about the lease terms",
+    );
+  });
+
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`a partner's seat: the shared room, named before sending @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      const world = await stubNavV3World(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      const composer = homeComposer(page);
+      await composer.picker.click();
+      const list = page.getByTestId("seat-picker-list");
+      const groups = await list.getByRole("group").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+      expect(groups).toEqual(["Your seats", "House", "Partners"]);
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({
+        path: `test-results/Home-v4-picker-${tag}.png`,
+        fullPage: false,
+        animations: "disabled",
+      });
+      await list.getByTestId("seat-option-shafen-claude-code").click();
+      await expect(composer.input).toHaveAttribute("placeholder", "Message Flow…");
+      await expect(composer.line).toHaveText("Posts in #taxsq-portal, the room you share with Flow");
+      // Its brain is its owner's: shown, locked.
+      await expect(composer.chip).toHaveAttribute("data-editable", "false");
+      await expect(composer.chip).toContainText("Shafen’s Flow");
+      // No call into a room with other people in it.
+      await expect(composer.root.getByTestId("composer-voice-call")).toHaveCount(0);
+      await page.screenshot({ path: `test-results/Home-v4-partner-${tag}.png`, fullPage: false });
+
+      // A partner you share no room with: nowhere to send, and it says so.
+      await composer.picker.click();
+      await list.getByTestId("seat-option-shox").click();
+      await expect(composer.line).toHaveText("No room shared with ShOX yet");
+      await composer.input.fill("hello");
+      await expect(composer.send).toHaveAttribute("aria-disabled", "true");
+      await composer.input.fill("");
+
+      await composer.picker.click();
+      await list.getByTestId("seat-option-shafen-claude-code").click();
+      await sendFromHome(page, "Flow, is the portal copy final?");
+      await expect(page).toHaveURL(/\/c\/room-taxsq$/);
+      expect(world.calls).toEqual(["post:room-taxsq"]);
+    });
+  }
+
+  test("⌘⇧K comes home to the composer; ⌘K is still the quick switcher", async ({ page, browserName }, testInfo) => {
+    test.skip(testInfo.project.name === "chromium-mobile", "a phone has no chords");
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/c/room-general");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("room-view")).toBeVisible();
+    expect(browserName).toBe("chromium");
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.getByTestId("home-dashboard")).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(homeComposer(page).input).toBeFocused();
+    await page.keyboard.type("from anywhere");
+    await expect(homeComposer(page).input).toHaveValue("from anywhere");
+    await homeComposer(page).input.fill("");
+
+    await page.keyboard.press("Control+K");
+    await expect(page.getByRole("dialog").filter({ hasText: /Jump to|Switch|Search/ }).first()).toBeVisible();
+  });
+
+  test("opens on your default agent when it is one of your seats", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    // Rook's seat is the agent `claude-code`.
+    await stubNavV3World(page, { defaultAgentId: "claude-code" });
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.picker).toContainText("Rook");
+    await expect(composer.input).toHaveAttribute("placeholder", "Message Rook…");
+    await expect(composer.chip).toContainText("Opus 5.5 · medium");
+  });
+
+  test("a house agent takes a call from the composer; a seat does not", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    const composer = homeComposer(page);
+    await expect(composer.picker).toContainText("Persephone");
+    await expect(composer.root.getByTestId("composer-voice-call")).toHaveCount(0);
+    await composer.picker.click();
+    await page.getByTestId("seat-option-majik").click();
+    await expect(composer.input).toHaveAttribute("placeholder", "Message Majik Mane…");
+    await expect(composer.chip).toHaveCount(0);
+    await expect(composer.root.getByTestId("composer-voice-call")).toBeVisible();
+    await expect(composer.root.getByTestId("composer-video-call")).toBeVisible();
+  });
 });
 
 test.describe("Accessibility sweep (report only)", () => {
@@ -694,9 +1237,17 @@ test.describe("Room header is one row", () => {
       await expect(
         header.getByRole("button", { name: "Call", exact: true }),
       ).toHaveCount(1);
-      await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
-      await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
-      await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
+      if (viewport === "desktop") {
+        await expect(header.getByRole("button", { name: "Members" })).toBeVisible();
+        await expect(header.getByRole("button", { name: "Threads" })).toBeVisible();
+        await expect(header.getByRole("button", { name: "Pop out" })).toBeVisible();
+      } else {
+        // Nav v3: the phone's row is Call and More so the room's name can be
+        // read; Members and Threads live in More, Pop out is a desktop tool.
+        await expect(header.getByRole("button", { name: "Members" })).not.toBeVisible();
+        await expect(header.getByRole("button", { name: "Threads" })).not.toBeVisible();
+        await expect(header.getByRole("button", { name: "Pop out" })).not.toBeVisible();
+      }
       await expect(
         header.getByRole("button", { name: "Switch model for this conversation" }),
       ).toHaveCount(0);
@@ -710,6 +1261,10 @@ test.describe("Room header is one row", () => {
       await expect(
         page.getByRole("button", { name: "Switch model for this conversation" }),
       ).toBeVisible();
+      if (viewport === "mobile") {
+        await expect(page.getByTestId("phone-members")).toBeVisible();
+        await expect(page.getByTestId("phone-threads")).toBeVisible();
+      }
       await expect(
         header.getByRole("button", { name: "Call", exact: true }),
       ).toHaveCount(1);
@@ -1030,9 +1585,17 @@ test.describe("One conversation list", () => {
         await expect(
           page.getByTestId("nav-home").locator("visible=true").first(),
         ).not.toHaveAttribute("aria-current", "page");
-        await expect(
-          page.getByTestId("nav-directory").locator("visible=true").first(),
-        ).not.toHaveAttribute("aria-current", "page");
+        // Nav v3: the phone has no Directory tab (it is "All agents" under
+        // Crew); the desktop rail keeps it.
+        if (viewport === "desktop") {
+          await expect(
+            page.getByTestId("nav-directory").locator("visible=true").first(),
+          ).not.toHaveAttribute("aria-current", "page");
+        } else {
+          await expect(
+            page.getByTestId("nav-crew").locator("visible=true").first(),
+          ).not.toHaveAttribute("aria-current", "page");
+        }
       }
 
       await page.getByTestId("conv-filter-unread").click();
@@ -1094,7 +1657,13 @@ test.describe("One conversation list", () => {
         fullPage: true,
       });
 
-      await clickTestId(page, "nav-directory");
+      if (viewport === "desktop") {
+        await clickTestId(page, "nav-directory");
+      } else {
+        // Phone: Crew tab → "All agents" is the directory's door.
+        await page.getByTestId("phone-tab-bar").getByTestId("nav-crew").click();
+        await page.getByTestId("crew-all-agents").locator("visible=true").first().click();
+      }
       await expect(page.getByTestId("agents-page")).toBeVisible();
       await assertPageHealth(page, viewport);
     });
@@ -1130,4 +1699,1058 @@ test.describe("One conversation list", () => {
       await assertPageHealth(page, viewport);
     });
   }
+});
+
+// ---- Nav v3: crew-first (design/nav-v3-crew-first-20260928) -----------------
+
+interface NavV3World {
+  /**
+   * Every write, in the order it arrived: `hub:<agent>`, `thread:<hub>`,
+   * `seat:<room>`, `post:<room>`.
+   */
+  calls: string[];
+  /** Bodies of every POST /rooms/{id}/messages. */
+  posts: Array<{ roomId: string; body: Record<string, unknown> }>;
+  /** Bodies of every POST /rooms/{id}/threads. */
+  threadBodies: Array<{ hubId: string; body: Record<string, unknown> }>;
+  /** Hub ids that received POST /threads, in order. */
+  threadPosts: string[];
+  /** Bodies of every PATCH /rooms/{id}. */
+  roomPatches: Array<{ roomId: string; body: Record<string, unknown> }>;
+  /** Bodies of every PATCH /rooms/{id}/members/{pid}. */
+  memberPatches: Array<{ roomId: string; participantId: string; body: Record<string, unknown> }>;
+}
+
+/**
+ * The rooms, crew, hub, threads, members and seat writes the crew-first
+ * shell talks to (C2 + C3). Persephone's hub carries one existing thread so
+ * the sidebar has something to nest; a new one is created live by the test.
+ */
+interface NavV3Options {
+  /** POST /rooms/{id}/messages answers 503. */
+  failPost?: boolean;
+  /** PATCH /rooms/{id} with seats answers 403 "ask the seat's owner". */
+  failSeat?: boolean;
+  /** POST /rooms/{id}/threads answers 403. */
+  failThread?: boolean;
+  /** A first run: no rooms at all. */
+  noRooms?: boolean;
+  /** The /crew answer; the twelve-row fixture by default. */
+  crew?: unknown[];
+  /** `default_agent_id` in the caller's preferences. */
+  defaultAgentId?: string | null;
+}
+
+async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<NavV3World> {
+  const world: NavV3World = {
+    calls: [],
+    posts: [],
+    threadBodies: [],
+    threadPosts: [],
+    roomPatches: [],
+    memberPatches: [],
+  };
+  // metadata.seats per room: { <agent_id>: {model, effort} } — per seat, not per room.
+  const seatsByRoom = new Map<string, Record<string, { model: string | null; effort: string | null }>>();
+  const existingThread = {
+    ...threadRoomRaw(PERSEPHONE_HUB_ID, 0, "Kitchen panel plan"),
+    updated_at: "2026-09-28T19:00:00Z",
+    last_message: {
+      id: "msg-thread-0",
+      room_id: `${PERSEPHONE_HUB_ID}-t-00000000`,
+      sender_id: "p-persephone",
+      sender_name: "Persephone",
+      sender_type: "agent",
+      sender_avatar: null,
+      content: "Panel v2 is on the wall.",
+      content_type: "text",
+      thread_id: null,
+      reply_count: 0,
+      edited: false,
+      created_at: "2026-09-28T19:00:00Z",
+      updated_at: "2026-09-28T19:00:00Z",
+      metadata: {},
+    },
+  };
+  const created: Array<Record<string, unknown>> = [];
+  // Like the server, the members payload reflects a mode write — otherwise
+  // the client's members refetch after the PATCH would undo the optimistic
+  // mode under load (it did, once in 138).
+  const modeByParticipant = new Map<string, string>();
+  let threadCounter = 0;
+  const hub = () => ({
+    ...hubRoomRaw("persephone", {
+      metadata_: seatsByRoom.has(PERSEPHONE_HUB_ID) ? { seats: seatsByRoom.get(PERSEPHONE_HUB_ID) } : {},
+    }),
+    unread_count: 1,
+    last_message: {
+      id: "msg-hub",
+      room_id: PERSEPHONE_HUB_ID,
+      sender_id: "p-persephone",
+      sender_name: "Persephone",
+      sender_type: "agent",
+      sender_avatar: null,
+      content: "Board is clear; two PRs waiting on you.",
+      content_type: "text",
+      thread_id: null,
+      reply_count: 0,
+      edited: false,
+      created_at: "2026-09-28T20:12:00Z",
+      updated_at: "2026-09-28T20:12:00Z",
+      metadata: {},
+    },
+  });
+  const general = {
+    ...hubRoomRaw("persephone", { id: "room-general", name: "general", display_name: "general" }),
+    room_type: "channel",
+    visibility: "public",
+    counterpart: null,
+    agents: [],
+    metadata_: {},
+    updated_at: "2026-09-28T12:00:00Z",
+    last_message: null,
+  };
+  // A shared room: Aaron, Persephone, Shafen's Flow and a customer's guest
+  // agent. A foreign line was written there, so its floor is "shared".
+  const taxsq = {
+    ...general,
+    id: "room-taxsq",
+    name: "taxsq-portal",
+    display_name: "taxsq-portal",
+    member_count: 4,
+    metadata_: { class_floor: "shared" },
+    agents: [
+      { participant_id: "p-persephone", agent_id: "persephone", display_name: "Persephone", agent_mode: "when_named" },
+      { participant_id: "p-shafen-claude-code", agent_id: "shafen-claude-code", display_name: "Flow", agent_mode: "when_named" },
+      { participant_id: "p-taxsq-assistant", agent_id: null, display_name: "Northbridge Tax assistant", agent_mode: "when_named" },
+    ],
+    updated_at: "2026-09-28T11:00:00Z",
+  };
+  const line = (roomId: string, at: string, who: { id: string; name: string; type: "human" | "agent" }, content: string) => ({
+    id: `msg-${roomId}`,
+    room_id: roomId,
+    sender_id: who.id,
+    sender_name: who.name,
+    sender_type: who.type,
+    sender_avatar: null,
+    content,
+    content_type: "text",
+    thread_id: null,
+    reply_count: 0,
+    edited: false,
+    created_at: at,
+    updated_at: at,
+    metadata: {},
+  });
+  const channel = (id: string, name: string, at: string, content: string) => ({
+    ...general,
+    id,
+    name,
+    display_name: name,
+    updated_at: at,
+    last_message: line(id, at, { id: "user-jason", name: "Nate Ellison", type: "human" }, content),
+  });
+  const extras = [
+    {
+      ...general,
+      id: "room-dm-jason",
+      name: "Nate Ellison",
+      display_name: "Nate Ellison",
+      room_type: "dm",
+      visibility: "private",
+      counterpart: { participant_id: "user-jason", kind: "human", display_name: "Nate Ellison" },
+      updated_at: "2026-09-28T10:30:00Z",
+      last_message: line("room-dm-jason", "2026-09-28T10:30:00Z", { id: "user-jason", name: "Nate Ellison", type: "human" }, "Thursday still works"),
+    },
+    channel("room-ops", "ops", "2026-09-28T10:00:00Z", "GPU temps nominal"),
+    channel("room-leadership", "leadership", "2026-09-28T09:00:00Z", "Quiet channel"),
+    channel("room-war", "war-room", "2026-09-28T08:00:00Z", "Room is open"),
+    channel("room-dev", "dev", "2026-09-28T07:00:00Z", "PR #42 ready"),
+  ];
+  const rooms = () =>
+    options.noRooms
+      ? [...created]
+      : [hub(), ...created, existingThread, hubRoomRaw("claude-code"), general, taxsq, ...extras];
+  const detailFor = (id: string) => {
+    if (id === PERSEPHONE_HUB_ID) return hub();
+    const own = created.find((room) => room.id === id);
+    if (own) return own;
+    if (id === existingThread.id) return existingThread;
+    if (id === "room-general") return general;
+    if (id === "room-taxsq") return taxsq;
+    const extra = extras.find((room) => room.id === id);
+    if (extra) return extra;
+    return hubRoomRaw("claude-code", { id, name: id });
+  };
+  const json = (body: unknown, status = 200) => ({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+
+  if (options.crew) {
+    await page.route("**/api/v1/crew**", (route) => route.fulfill(json(options.crew)));
+  } else {
+    await stubCrew(page);
+  }
+  await page.route("**/api/v1/users/me/preferences", (route) =>
+    route.fulfill(
+      json({
+        default_agent_id: options.defaultAgentId ?? null,
+        favorite_people_ids: [],
+        onboarding_checklist: {},
+      }),
+    ),
+  );
+  await page.route("**/api/v1/rooms**", async (route) => {
+    const url = route.request().url();
+    if (!/\/api\/v1\/rooms(\?|$)/.test(url)) {
+      await route.fallback();
+      return;
+    }
+    const archived = url.includes("is_archived=true");
+    await route.fulfill(json({ rooms: archived ? [] : rooms(), cursor: null }));
+  });
+  await page.route("**/api/v1/rooms/*/recordings**", (route) => route.fulfill(json([])));
+  await page.route("**/api/v1/rooms/browse**", (route) => route.fulfill(json([])));
+  const posted = new Map<string, Array<Record<string, unknown>>>();
+  await page.route("**/api/v1/rooms/*/messages**", (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    if (route.request().method() === "POST") {
+      const roomId = parts[3]!;
+      const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+      world.calls.push(`post:${roomId}`);
+      world.posts.push({ roomId, body });
+      if (options.failPost) return route.fulfill(json({ detail: "The room is not taking messages" }, 503));
+      const at = new Date().toISOString();
+      const message = {
+        id: `msg-posted-${world.posts.length}`,
+        room_id: roomId,
+        sender_id: "p-aaron",
+        sender_name: "Aaron Stransky",
+        sender_type: "human",
+        sender_avatar: null,
+        content: body.content,
+        content_type: body.content_type ?? "text",
+        thread_id: null,
+        reply_count: 0,
+        edited: false,
+        created_at: at,
+        updated_at: at,
+        metadata: { ...((body.metadata as Record<string, unknown>) ?? {}), client_msg_id: body.client_msg_id },
+      };
+      posted.set(roomId, [...(posted.get(roomId) ?? []), message]);
+      return route.fulfill(json(message, 201));
+    }
+    // The existing thread was started from one of Persephone's lines: its
+    // first entry is the seed, under its true author.
+    // #ops carries the server-worded system lines: the text names nobody,
+    // the starter / reason / title ride in metadata.
+    const systemLine = (
+      id: string,
+      at: string,
+      content: string,
+      metadata: Record<string, unknown>,
+      sender: { id: string | null; name: string | null; type: string } = { id: null, name: null, type: "system" },
+    ) => ({
+      id,
+      room_id: "room-ops",
+      sender_id: sender.id,
+      sender_name: sender.name,
+      sender_type: sender.type,
+      content,
+      content_type: "system",
+      created_at: at,
+      updated_at: at,
+      is_edited: false,
+      is_deleted: false,
+      reply_count: 0,
+      metadata,
+    });
+    const opsLines = [
+      systemLine(
+        "msg-ops-thread",
+        "2026-09-28T09:50:00Z",
+        "Channel thread started",
+        { kind: "thread_started", thread_room_id: "room-ops-t-1", thread_title: "Launch checklist", created_by: "p-aaron", seed_message_id: null },
+        { id: "p-aaron", name: "Aaron Stransky", type: "human" },
+      ),
+      systemLine("msg-ops-rec-1", "2026-09-28T09:52:00Z", "Audio recording started", {
+        kind: "recording", event: "started", recording_kind: "audio", recording_id: "rec-1", started_by: "p-aaron", reason: "user",
+      }),
+      systemLine("msg-ops-rec-2", "2026-09-28T09:58:00Z", "Audio recording stopped", {
+        kind: "recording", event: "stopped", recording_kind: "audio", recording_id: "rec-1", started_by: "p-aaron", reason: "room_idle",
+      }),
+      systemLine("msg-ops-rec-3", "2026-09-28T09:59:00Z", "Recording failed", {
+        kind: "recording", event: "failed", recording_id: "rec-2", egress_id: "EG_1", reason: "egress crashed: no track",
+      }),
+    ];
+    const messages =
+      parts[3] === existingThread.id
+        ? [threadSeedMessageRaw(existingThread.id as string, PERSEPHONE_HUB_ID)]
+        : parts[3] === "room-ops"
+          ? [...opsLines].reverse()
+          : [...(posted.get(parts[3]!) ?? [])].reverse();
+    return route.fulfill(json({ messages, cursor: null, has_more: false }));
+  });
+  const membersFor = (roomId: string) =>
+    membersFixture(roomId).map((m) =>
+      m.participant_id && modeByParticipant.has(m.participant_id)
+        ? { ...m, agent_mode: modeByParticipant.get(m.participant_id) }
+        : m,
+    );
+  await page.route("**/api/v1/rooms/*/members", (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    return route.fulfill(json(membersFor(parts[3]!)));
+  });
+  await page.route("**/api/v1/rooms/*/members/*", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+    world.memberPatches.push({ roomId: parts[3]!, participantId: parts[5]!, body });
+    if (typeof body.agent_mode === "string") modeByParticipant.set(parts[5]!, body.agent_mode);
+    const row = membersFor(parts[3]!).find((m) => m.participant_id === parts[5]);
+    await route.fulfill(json({ ...(row ?? { participant_id: parts[5] }), ...body }));
+  });
+  await page.route("**/api/v1/rooms/*/threads**", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    const parentId = parts[3]!;
+    if (route.request().method() === "POST") {
+      const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+      world.calls.push(`thread:${parentId}`);
+      world.threadBodies.push({ hubId: parentId, body });
+      if (options.failThread) {
+        await route.fulfill(json({ detail: "This room is archived" }, 403));
+        return;
+      }
+      threadCounter += 1;
+      world.threadPosts.push(parentId);
+      const thread = threadRoomRaw(
+        parentId,
+        threadCounter,
+        typeof body.title === "string" ? body.title : undefined,
+      );
+      created.push(thread);
+      await route.fulfill(json(thread, 201));
+      return;
+    }
+    await route.fulfill(json(created.filter((room) => room.parent_room_id === parentId)));
+  });
+  await page.route("**/api/v1/agents/*/hub", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    world.calls.push(`hub:${parts[3]}`);
+    const made = detailFor(parts[3] === "persephone" ? PERSEPHONE_HUB_ID : `hub-${parts[3]}`);
+    if (options.noRooms && !created.some((room) => room.id === made.id)) created.push(made);
+    await route.fulfill(json(made));
+  });
+  await page.route("**/api/v1/rooms/*", async (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    if (parts.length !== 4 || parts[3] === "browse") {
+      await route.fallback();
+      return;
+    }
+    const id = parts[3]!;
+    if (route.request().method() === "PATCH") {
+      const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+      world.roomPatches.push({ roomId: id, body });
+      const seats = (
+        body.metadata as
+          | { seats?: Record<string, { model?: string | null; effort?: string | null }> }
+          | undefined
+      )?.seats;
+      if (seats) world.calls.push(`seat:${id}`);
+      if (seats && options.failSeat) {
+        await route.fulfill(json({ detail: "ask the seat's owner" }, 403));
+        return;
+      }
+      if (seats) {
+        const current = { ...(seatsByRoom.get(id) ?? {}) };
+        for (const [agentId, seat] of Object.entries(seats)) {
+          current[agentId] = { model: seat.model ?? null, effort: seat.effort ?? null };
+        }
+        seatsByRoom.set(id, current);
+      }
+      await route.fulfill(json(detailFor(id)));
+      return;
+    }
+    await route.fulfill(json(detailFor(id)));
+  });
+  return world;
+}
+
+test.describe("Crew-first nav (v3)", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`crew, hub, new conversation @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      await stubHomeSummary(page);
+      const world = await stubNavV3World(page);
+      await page.goto("/");
+      await waitForAppReady(page);
+      await expect(page.getByTestId("home-dashboard")).toBeVisible();
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/NavV3-Home-${tag}.png`, fullPage: true });
+
+      if (viewport === "desktop") {
+        // Crew sits above Conversations: Your seats, House, then More.
+        await clickTestId(page, "nav-conversations");
+        const section = page.getByTestId("crew-section");
+        await expect(section).toBeVisible();
+        // Per-group cap: the seats heard from lately, three house, three
+        // partners — all three groups on the first view (acceptance 3).
+        for (const group of ["own_seat", "house", "partner"]) {
+          await expect(section.getByTestId(`crew-group-${group}`)).toBeVisible();
+        }
+        const rows = section.getByTestId("crew-row");
+        await expect(rows).toHaveCount(8);
+        await expect(rows.nth(0)).toContainText("Persephone");
+        await expect(rows.nth(1)).toContainText("Rook");
+        await expect(rows.nth(2)).toContainText("Majik Mane");
+        await expect(rows.nth(5)).toContainText("Flow");
+        await expect(rows.nth(5)).toContainText("#taxsq-portal");
+        await expect(section.getByTestId("crew-more")).toContainText("More (4)");
+        // Names never give way: the headline name is fully drawn at 280px.
+        const nameFits = await rows.nth(0).getByTestId("crew-open-persephone").locator("span.truncate").first()
+          .evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+        expect(nameFits).toBe(true);
+        // The brain chip is a hover overlay where hover exists; a touch
+        // device (this suite's iPhone-emulation project) always shows it.
+        const canHover = await page.evaluate(() => window.matchMedia("(hover: hover)").matches);
+        if (canHover) {
+          await expect(rows.nth(3).getByTestId("crew-brain-chip")).toHaveCount(0);
+          await expect(rows.nth(1).getByTestId("crew-brain-chip")).not.toBeVisible();
+          await rows.nth(0).hover();
+        }
+        await expect(rows.nth(0).getByTestId("crew-brain-chip")).toBeVisible();
+        await expect(rows.nth(0).getByTestId("crew-brain-chip")).toHaveText("Fable 5.1 · high");
+        // A partner's row has no ⋮ — nothing acts in the shared room from here.
+        await rows.nth(5).hover();
+        await expect(rows.nth(5).getByTestId("crew-menu-shafen-claude-code")).toHaveCount(0);
+        // Your own seat's menu: New conversation, Call (waits on C5), Settings.
+        await rows.nth(0).hover();
+        await rows.nth(0).getByTestId("crew-menu-persephone").click();
+        const menu = page.getByRole("menu", { name: "Options for Persephone" });
+        await expect(menu.getByTestId("crew-menu-new")).toBeVisible();
+        await expect(menu.getByTestId("crew-menu-call")).toBeDisabled();
+        await expect(menu.getByTestId("crew-menu-settings")).toBeVisible();
+        // The menu is on top: the rows under it are positioned too, and
+        // were painted over it.
+        const covered = await menu.getByRole("menuitem").evaluateAll((items) =>
+          items
+            .filter((item) => {
+              const box = item.getBoundingClientRect();
+              const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+              return !top || !(item === top || item.contains(top));
+            })
+            .map((item) => item.textContent),
+        );
+        expect(covered).toEqual([]);
+        // Past its fade-in: a frame caught mid-way reads as a see-through menu.
+        await page.screenshot({
+          path: `test-results/NavV3-Crew-menu-${tag}.png`,
+          fullPage: false,
+          animations: "disabled",
+        });
+        // Escape closes it at once, from wherever the focus is.
+        await page.keyboard.press("Escape");
+        await expect(menu).toHaveCount(0);
+        // So does a press anywhere else on the page — here the empty
+        // stretch of the top bar, outside the sidebar.
+        await rows.nth(0).hover();
+        await rows.nth(0).getByTestId("crew-menu-persephone").click();
+        await expect(menu).toBeVisible();
+        await page.mouse.click(760, 28);
+        await expect(menu).toHaveCount(0);
+        await expect(page.getByTestId("home-dashboard")).toBeVisible();
+        // Density (P1-9): with 12 crew rows present the one list still shows
+        // at least six conversations on 1440×900, under sticky filters.
+        await expect(page.getByTestId("conversation-list-sticky")).toBeVisible();
+        await expect(page.getByTestId("mark-visible-read")).toBeVisible();
+        const visibleConversations = await page.getByTestId("conversation-row").evaluateAll((els) =>
+          els.filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+          }).length,
+        );
+        expect(visibleConversations).toBeGreaterThanOrEqual(6);
+        await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-${tag}.png`, fullPage: false });
+        await section.getByTestId("crew-more").click();
+        await expect(section.getByTestId("crew-row")).toHaveCount(12);
+        await expect(section.getByTestId("crew-fewer")).toBeVisible();
+        // Acceptance 3: zero rows named "Claude Code"; the directory is a door, not a tab.
+        await expect(page.getByText("Claude Code", { exact: true })).toHaveCount(0);
+        await expect(section.getByTestId("crew-all-agents")).toBeVisible();
+        await expect(page.getByTestId("phone-tab-bar")).not.toBeVisible();
+        await expect(page.getByTestId("conversations-card")).toBeVisible();
+        await expect(page.getByTestId("workspace-name")).toBeVisible();
+        await page.screenshot({ path: `test-results/NavV3-Sidebar-Crew-all-${tag}.png`, fullPage: true });
+        await section.getByTestId("crew-fewer").click();
+        // The To box: crew, then people and channels as you type.
+        await clickTestId(page, "new-room-button");
+        const toBox = page.getByTestId("new-sheet-to");
+        await expect(toBox).toBeVisible();
+        await expect(page.getByTestId("new-sheet-picks-crew")).toBeVisible();
+        await toBox.fill("sha");
+        await expect(page.getByTestId("new-sheet-picks-crew").getByRole("option")).toHaveCount(3);
+        await page.screenshot({ path: `test-results/NavV3-ToBox-${tag}.png`, fullPage: false });
+        await page.keyboard.press("Escape");
+        await expect(page.getByTestId("create-room-modal")).toHaveCount(0);
+      } else {
+        // Phone: Home · Chats · Crew · Calls · Me, and no Agents tab.
+        const bar = page.getByTestId("phone-tab-bar");
+        await expect(bar).toBeVisible();
+        for (const id of ["nav-home", "nav-conversations", "nav-crew", "nav-calls", "nav-me"]) {
+          await expect(bar.getByTestId(id)).toBeVisible();
+        }
+        await expect(bar.getByTestId("nav-agents")).toHaveCount(0);
+        await expect(bar.getByTestId("nav-directory")).toHaveCount(0);
+        await bar.getByTestId("nav-crew").click();
+        const crewPage = page.getByTestId("crew-page");
+        await expect(crewPage).toBeVisible();
+        await expect(crewPage.getByTestId("crew-row")).toHaveCount(12);
+        await expect(crewPage.getByTestId("crew-group-own_seat")).toBeVisible();
+        await expect(crewPage.getByTestId("crew-group-house")).toBeVisible();
+        await expect(crewPage.getByTestId("crew-group-partner")).toBeVisible();
+        await expect(crewPage.getByTestId("crew-all-agents")).toBeVisible();
+        await expect(page.getByText("Claude Code", { exact: true })).toHaveCount(0);
+        await expect(bar.getByTestId("nav-crew")).toHaveAttribute("aria-current", "page");
+        // Full-height list (P1-7): the drawer footer and the second search box
+        // are gone, so at least eight of the twelve rows are on screen.
+        const visibleCrewRows = await crewPage.getByTestId("crew-row").evaluateAll((els) =>
+          els.filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+          }).length,
+        );
+        expect(visibleCrewRows).toBeGreaterThanOrEqual(8);
+        await expect(page.getByTestId("drawer-tools")).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+        await expect(page.locator('input[aria-label^="Search"]').locator("visible=true")).toHaveCount(1);
+        await page.screenshot({ path: `test-results/NavV3-Crew-${tag}.png`, fullPage: false });
+        // Me tab: profile, People, Activity, Saved, Settings, Sign out.
+        await bar.getByTestId("nav-me").click();
+        const me = page.getByTestId("me-sheet");
+        await expect(me).toBeVisible();
+        for (const id of ["me-people", "me-activity", "me-saved", "open-settings", "me-sign-out"]) {
+          await expect(me.getByTestId(id)).toBeVisible();
+        }
+        await expect(bar.getByTestId("nav-me")).toHaveAttribute("aria-current", "page");
+        await page.screenshot({ path: `test-results/NavV3-Me-${tag}.png`, fullPage: false });
+        await me.getByRole("button", { name: "Close" }).click();
+        await expect(me).toHaveCount(0);
+        // The To box on a phone.
+        await bar.getByTestId("nav-conversations").click();
+        await clickTestId(page, "new-room-button");
+        const toBox = page.getByTestId("new-sheet-to");
+        await expect(toBox).toBeVisible();
+        await toBox.fill("sha");
+        await expect(page.getByTestId("new-sheet-picks-crew").getByRole("option")).toHaveCount(3);
+        await page.screenshot({ path: `test-results/NavV3-ToBox-${tag}.png`, fullPage: false });
+        await page.keyboard.press("Escape");
+        await expect(page.getByTestId("create-room-modal")).toHaveCount(0);
+        await bar.getByTestId("nav-crew").click();
+        await expect(crewPage).toBeVisible();
+      }
+
+      // Tap → the hub (already known to the list, so no POST /hub).
+      await page.getByTestId("crew-open-persephone").locator("visible=true").first().click();
+      await expect(page).toHaveURL(new RegExp(`/c/${PERSEPHONE_HUB_ID}$`));
+      const header = page.getByTestId("room-header");
+      await expect(header).toContainText("Persephone");
+      // The name is drawn in full — on the phone too, where Members, Threads
+      // and Pop out left the row (P2-19).
+      const titleFits = await header.locator("span.truncate", { hasText: "Persephone" }).first()
+        .evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+      expect(titleFits).toBe(true);
+      // A private hub's empty state: the agent, "Say hi" — no channel copy.
+      await expect(page.getByTestId("private-hub-say-hi")).toBeVisible();
+      await expect(page.getByText("Invite an agent")).toHaveCount(0);
+      await expect(page.getByText("Pin a goal for this channel")).toHaveCount(0);
+      await expect(page.getByText("others see it the moment")).toHaveCount(0);
+      if (viewport === "desktop") {
+        await expect(header.getByTestId("hub-new-conversation")).toBeVisible();
+      } else {
+        // The phone keeps the 44px row; New conversation sits in More there.
+        await expect(header.getByTestId("hub-new-conversation")).not.toBeVisible();
+      }
+      await page.screenshot({ path: `test-results/NavV3-Hub-${tag}.png`, fullPage: false });
+
+      // New conversation → POST /rooms/{hub}/threads → the thread opens…
+      if (viewport === "desktop") {
+        await header.getByTestId("hub-new-conversation").click();
+      } else {
+        await header.getByRole("button", { name: "More room actions" }).click();
+        await page.getByTestId("hub-new-conversation-menu").click();
+      }
+      await expect(page).toHaveURL(new RegExp(`/c/${PERSEPHONE_HUB_ID}-t-00000001`));
+      expect(world.threadPosts).toEqual([PERSEPHONE_HUB_ID]);
+      await expect(page.getByTestId("room-header")).toContainText("Persephone ›");
+
+      // …and nests under Persephone in Conversations.
+      if (viewport === "mobile") {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+        await page.getByTestId("phone-tab-bar").getByTestId("nav-conversations").click();
+      }
+      const persephoneRow = page
+        .getByTestId("conversation-row")
+        .filter({ hasText: "Persephone" })
+        .first();
+      await expect(persephoneRow).toBeVisible();
+      await persephoneRow
+        .getByRole("button", { name: /conversation history with Persephone/ })
+        .click();
+      await expect(persephoneRow.getByText("New conversation")).toBeVisible();
+      await expect(persephoneRow.getByText("Panel v2 is on the wall.")).toBeVisible();
+      await page.screenshot({ path: `test-results/NavV3-Hub-Thread-${tag}.png`, fullPage: true });
+
+      // Seat settings (C2): the brain chip on the hub — desktop in the header,
+      // phone from More — with "Default (Fable 5.1 · high)" as the null state.
+      await page.goto(`/c/${PERSEPHONE_HUB_ID}`);
+      await waitForAppReady(page);
+      await expect(page.getByTestId("room-header")).toContainText("Persephone");
+      if (viewport === "desktop") {
+        const chip = page.getByTestId("seat-chip");
+        await expect(chip).toHaveText(/Fable 5\.1 · high/);
+        await chip.click();
+      } else {
+        await page.getByRole("button", { name: "More room actions" }).click();
+        const entry = page.getByTestId("seat-menu-entry");
+        await expect(entry).toContainText("Fable 5.1 · high");
+        await entry.click();
+      }
+      const popover = page.getByTestId("seat-settings");
+      await expect(popover).toBeVisible();
+      await expect(popover.getByTestId("seat-default")).toContainText("Default (Fable 5.1 · high)");
+      await expect(popover.getByTestId("seat-default")).toHaveAttribute("aria-checked", "true");
+      await page.screenshot({ path: `test-results/NavV3-SeatPopover-${tag}.png`, fullPage: false });
+
+      // Opus 5.5 · medium → two PATCH /rooms/{hub} writes, chip follows (acceptance 2).
+      await popover.getByTestId("seat-model-claude-opus-5-5").click();
+      await expect.poll(() => world.roomPatches.length).toBe(1);
+      expect(world.roomPatches[0]).toEqual({
+        roomId: PERSEPHONE_HUB_ID,
+        body: { metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: null } } } },
+      });
+      await popover.getByTestId("seat-effort-medium").click();
+      await expect.poll(() => world.roomPatches.length).toBe(2);
+      expect(world.roomPatches[1]!.body).toEqual({
+        metadata: { seats: { persephone: { model: "claude-opus-5-5", effort: "medium" } } },
+      });
+      if (viewport === "desktop") {
+        await expect(page.getByTestId("seat-chip")).toHaveText(/Opus 5\.5 · medium/);
+      }
+      if (viewport === "mobile") {
+        // The FAB leaves while the sheet is open (P1-8).
+        await expect(page.getByTestId("room-fab")).toHaveCount(0);
+      }
+      const membersRefetch = page.waitForResponse(
+        (r) => /\/api\/v1\/rooms\/[^/]+\/members$/.test(r.url()) && r.request().method() === "GET",
+      );
+      await popover.getByTestId("seat-mode-listening").click();
+      await expect.poll(() => world.memberPatches.length).toBe(1);
+      expect(world.memberPatches[0]).toEqual({
+        roomId: PERSEPHONE_HUB_ID,
+        participantId: "p-persephone",
+        body: { agent_mode: "listening" },
+      });
+      // Listening must still be checked AFTER the members refetch lands.
+      await membersRefetch;
+      await page.waitForTimeout(150);
+      await expect(popover.getByTestId("seat-mode-listening")).toHaveAttribute("aria-checked", "true");
+      await expect(popover.getByTestId("seat-mode-answers_all")).toHaveAttribute("aria-checked", "false");
+      await page.screenshot({ path: `test-results/NavV3-SeatPopover-set-${tag}.png`, fullPage: false });
+      await page.keyboard.press("Escape");
+      await expect(popover).toHaveCount(0);
+      if (viewport === "mobile") {
+        // Back, and clear of the composer's call buttons.
+        const fab = page.getByTestId("room-fab");
+        await expect(fab).toBeVisible();
+        const fabBox = (await fab.boundingBox())!;
+        for (const id of ["composer-voice-call", "composer-video-call"]) {
+          const box = await page.getByTestId(id).boundingBox();
+          if (!box) continue;
+          const overlaps =
+            fabBox.x < box.x + box.width && fabBox.x + fabBox.width > box.x &&
+            fabBox.y < box.y + box.height && fabBox.y + fabBox.height > box.y;
+          expect(overlaps).toBe(false);
+        }
+      }
+
+      // The Brigade model switcher stays out of a seat room's More menu.
+      await page.getByRole("button", { name: "More room actions" }).click();
+      await expect(
+        page.getByRole("button", { name: "Switch model for this conversation" }),
+      ).toHaveCount(0);
+      if (viewport === "mobile") {
+        await expect(page.getByTestId("seat-menu-entry")).toContainText("Opus 5.5 · medium");
+      }
+      await page.keyboard.press("Escape");
+
+      // A shared room: two seats, two chips that say whose (P1-6); the roster
+      // marks a guest agent and a partner's seat (§2.0, needs Lane A's
+      // members metadata subset — stubbed here).
+      await page.goto("/c/room-taxsq");
+      await waitForAppReady(page);
+      await expect(page.getByTestId("room-header")).toContainText("taxsq-portal");
+      if (viewport === "desktop") {
+        const mine = page.locator('[data-testid="seat-chip"][data-agent-id="persephone"]');
+        const theirs = page.locator('[data-testid="seat-chip"][data-agent-id="shafen-claude-code"]');
+        // The floor: a foreign line was written here, and the header says so
+        // — in a colour that reads on this theme (it was cream on white).
+        await expect(page.getByTestId("room-class-chip")).toHaveText("shared");
+        await expect(page.getByTestId("room-class-chip")).toHaveAttribute("title", /outside your seats/);
+        expect(await textContrast(page.getByTestId("room-class-chip"))).toBeGreaterThanOrEqual(4.5);
+        await expect(mine).toContainText("Persephone · Fable 5.1 · high");
+        await expect(mine).toHaveAttribute("data-editable", "true");
+        await expect(theirs).toContainText("Shafen’s Flow · Fable 5.1 · high");
+        await expect(theirs).toHaveAttribute("data-editable", "false");
+        await expect(theirs.getByTestId("seat-chip-lock")).toBeVisible();
+        await page.screenshot({ path: `test-results/NavV3-MixedRoom-${tag}.png`, fullPage: false });
+        // The popover says why the floor is shared, and it reads too.
+        await mine.click();
+        const note = page.getByTestId("seat-shared-floor");
+        await expect(note).toBeVisible();
+        expect(await textContrast(note)).toBeGreaterThanOrEqual(4.5);
+        await expectInsidePanel(page, note);
+        await page.screenshot({
+          path: `test-results/NavV3-SharedFloor-${tag}.png`,
+          fullPage: false,
+          animations: "disabled",
+        });
+        await page.keyboard.press("Escape");
+        await expect(note).toHaveCount(0);
+        await page.getByTestId("room-header").getByRole("button", { name: "Members" }).click();
+      } else {
+        // The phone's header has no room for chips: More lists both seats,
+        // yours to open, the partner's locked and saying whose.
+        await page.getByRole("button", { name: "More room actions" }).click();
+        const entries = page.getByTestId("seat-menu-entry");
+        await expect(entries).toHaveCount(2);
+        await expect(entries.nth(0)).toHaveText("Brain · Persephone · Fable 5.1 · high");
+        await expect(entries.nth(1)).toHaveText("Brain · Shafen’s Flow · Fable 5.1 · high");
+        await expect(entries.nth(1)).toHaveAttribute("data-editable", "false");
+        await expect(entries.nth(1).getByTestId("seat-menu-lock")).toBeVisible();
+        await page.screenshot({ path: `test-results/NavV3-MixedRoom-${tag}.png`, fullPage: false });
+        // A locked line opens nothing (forced: it is aria-disabled).
+        await entries.nth(1).click({ force: true });
+        await expect(page.getByTestId("seat-shared-floor")).toHaveCount(0);
+        await expect(entries.nth(0)).toBeVisible();
+        await entries.nth(0).click();
+        const note = page.getByTestId("seat-shared-floor");
+        await expect(note).toBeVisible();
+        expect(await textContrast(note)).toBeGreaterThanOrEqual(4.5);
+        await expectInsidePanel(page, note);
+        await page.screenshot({
+          path: `test-results/NavV3-SharedFloor-${tag}.png`,
+          fullPage: false,
+          animations: "disabled",
+        });
+        await page.keyboard.press("Escape");
+        await expect(note).toHaveCount(0);
+        await page.getByRole("button", { name: "More room actions" }).click();
+        await page.getByTestId("phone-members").click();
+      }
+      await expect(page.getByText("Guest", { exact: true }).first()).toBeVisible();
+      await expect(page.getByTestId("member-partner-seat").first()).toHaveText("Shafen’s seat");
+      await page.screenshot({ path: `test-results/NavV3-Roster-marks-${tag}.png`, fullPage: false });
+
+      // A thread's seed line says where it came from, under its true author.
+      await page.goto(`/c/${PERSEPHONE_HUB_ID}-t-00000000`);
+      await waitForAppReady(page);
+      // The list paints only once its pin settled; capture after that.
+      await page.locator('[data-testid="message-list"][data-pin-settled="true"]').waitFor({ timeout: 30_000 });
+      const seedLine = page.getByTestId("thread-seed");
+      await expect(seedLine).toBeVisible();
+      await expect(seedLine).toContainText("Started from Persephone’s message");
+      await expect(seedLine).toContainText("Panel v2 is on the wall");
+      await page.screenshot({ path: `test-results/NavV3-Thread-seed-${tag}.png`, fullPage: false });
+
+      // Server-worded system lines name nobody in their text; the web puts
+      // the starter, the reason and the thread's title back from metadata.
+      await page.goto("/c/room-ops");
+      await waitForAppReady(page);
+      await page.locator('[data-testid="message-list"][data-pin-settled="true"]').waitFor({ timeout: 30_000 });
+      const lines = page.getByTestId("system-line");
+      await expect(lines).toHaveCount(4);
+      await expect(lines.nth(0)).toHaveText("Aaron Stransky started a thread: Launch checklist");
+      await expect(lines.nth(1)).toHaveText("Audio recording started · by Aaron Stransky");
+      await expect(lines.nth(2)).toHaveText(
+        "Audio recording stopped · the room went idle · started by Aaron Stransky",
+      );
+      await expect(lines.nth(3)).toHaveText("Recording failed · egress crashed: no track");
+      await page.screenshot({ path: `test-results/NavV3-System-lines-${tag}.png`, fullPage: false });
+      await assertPageHealth(page, viewport);
+    });
+  }
+});
+
+/**
+ * The guest room with the rows a GUEST caller gets (server 345fbd1): null
+ * availability and reason on every members row, `{kind}` alone on an agent's
+ * metadata, no `gateway` / `on_behalf_of` / `agent_id` on a message — and
+ * the server-worded system lines, whose names come from the guest's own
+ * roster.
+ */
+const GUEST_ROOM_ID = "room-taxsq";
+
+function guestLine(
+  id: string,
+  at: string,
+  sender: { id: string | null; name: string; type: string },
+  content: string,
+  over: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    room_id: GUEST_ROOM_ID,
+    sender_id: sender.id,
+    sender_name: sender.name,
+    sender_type: sender.type,
+    sender_avatar: null,
+    content,
+    content_type: "text",
+    created_at: at,
+    updated_at: at,
+    ...over,
+  };
+}
+
+const GUEST_AARON = { id: "p-aaron", name: "Aaron Stransky", type: "human" };
+/** A notice is a NULL-sender line. */
+const GUEST_NOBODY = { id: null, name: "", type: "system" };
+const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+
+/** Stub the guest's whole world, redeem the invite, land in the room. */
+async function joinGuestRoom(page: Page, history: unknown[]) {
+  const json = (body: unknown, status = 200) => ({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+  const session = {
+    session_id: "gs-e2e",
+    participant_id: "p-guest",
+    display_name: "Morgan Ali",
+    room_id: GUEST_ROOM_ID,
+    room_display_name: "taxsq-portal",
+    can_publish: false,
+    expires_at: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+  };
+  // A stub credential for a stubbed server: it opens nothing anywhere.
+  await page.route("**/api/v1/guest/redeem", (route) =>
+    route.fulfill(json({ ...session, session_token: "sgs-e2e-stub" })),
+  );
+  await page.route("**/api/v1/guest/me", (route) => route.fulfill(json(session)));
+  await page.route("**/api/v1/guest/leave", (route) => route.fulfill({ status: 204 }));
+  await page.route("**/api/v1/tokens/livekit", (route) =>
+    route.fulfill(json({ detail: "no call in this test" }, 503)),
+  );
+
+  const row = (
+    id: string,
+    name: string,
+    type: "human" | "agent" | "guest",
+    over: Record<string, unknown> = {},
+  ) => ({
+    participant_id: id,
+    user_id: id,
+    username: name.toLowerCase().replace(/\s+/g, "-"),
+    display_name: name,
+    avatar_url: null,
+    role: "member",
+    participant_type: type,
+    is_online: type !== "agent",
+    is_muted: false,
+    is_self: false,
+    joined_at: "2026-09-22T15:00:00Z",
+    // For a guest caller, always.
+    availability: null,
+    availability_reason: null,
+    metadata: type === "agent" ? { kind: null } : null,
+    ...over,
+  });
+  await page.route(`**/api/v1/rooms/${GUEST_ROOM_ID}/members`, (route) =>
+    route.fulfill(
+      json([
+        row("p-aaron", "Aaron Stransky", "human", { role: "owner" }),
+        row("p-persephone", "Persephone", "agent"),
+        row("p-flow", "Flow", "agent", { metadata: { kind: "guest_agent" } }),
+        row("p-guest", "Morgan Ali", "guest", { is_self: true }),
+      ]),
+    ),
+  );
+  await page.route(`**/api/v1/rooms/${GUEST_ROOM_ID}/messages**`, (route) =>
+    route.fulfill(json({ messages: [...history].reverse(), cursor: null, has_more: false })),
+  );
+
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    sockets.push(ws);
+    ws.onMessage((data) => {
+      let frame: { type?: string } = {};
+      try {
+        frame = JSON.parse(String(data)) as { type?: string };
+      } catch {
+        return;
+      }
+      if (frame.type === "auth") ws.send(JSON.stringify({ type: "auth_ok" }));
+      if (frame.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
+    });
+  });
+
+  await page.goto("/guest/inv-e2e-0000000000");
+  await page.getByPlaceholder("Ada Lovelace").fill("Morgan Ali");
+  await page.getByRole("button", { name: "Join as guest" }).click();
+  const room = page.getByTestId("guest-room");
+  await expect(room).toBeVisible();
+  await expect(room.getByText("Connected")).toBeVisible();
+  return {
+    room,
+    /** A frame from the server, on the guest's live socket. */
+    push: (frame: unknown) => {
+      const socket = sockets[sockets.length - 1];
+      expect(socket, "the guest socket").toBeTruthy();
+      socket!.send(JSON.stringify(frame));
+    },
+  };
+}
+
+test.describe("Guest room (a guest's shapes)", () => {
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`roster, transcript, system lines @ ${viewport}`, async ({ page }, testInfo) => {
+      const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
+      await page.setViewportSize(vp);
+      const { room, push } = await joinGuestRoom(page, [
+        guestLine("g-1", minutesAgo(30), GUEST_AARON, "Welcome. The portal walk-through starts in a minute."),
+        guestLine("g-2", minutesAgo(29), GUEST_AARON, "Channel thread started", {
+          content_type: "system",
+          metadata: { kind: "thread_started", thread_room_id: "room-taxsq-t-1", thread_title: "Portal questions", created_by: "p-aaron", seed_message_id: null },
+        }),
+        guestLine("g-3", minutesAgo(28), GUEST_NOBODY, "Video recording started", {
+          content_type: "system",
+          metadata: { kind: "recording", event: "started", recording_kind: "composite", recording_id: "rec-9", started_by: "p-aaron", reason: "policy always" },
+        }),
+        // An agent's line as a guest gets it: no gateway, on_behalf_of, agent_id.
+        guestLine("g-4", minutesAgo(27), { id: "p-persephone", name: "Persephone", type: "agent" }, "The client portal is on screen.", { metadata: {} }),
+        guestLine("g-5", minutesAgo(26), { id: "p-flow", name: "Flow", type: "agent" }, "Noted for the Northbridge Tax side."),
+        guestLine("g-6", minutesAgo(20), GUEST_NOBODY, "Video recording stopped", {
+          content_type: "system",
+          metadata: { kind: "recording", event: "stopped", recording_kind: "composite", recording_id: "rec-9", started_by: "p-aaron", reason: "stop_requested" },
+        }),
+      ]);
+
+      // The transcript: agents' lines, and the system lines in words.
+      await expect(room.getByText("The client portal is on screen.")).toBeVisible();
+      await expect(room.getByText("Noted for the Northbridge Tax side.")).toBeVisible();
+      const lines = room.getByTestId("guest-system-line");
+      await expect(lines).toHaveCount(3);
+      await expect(lines.nth(0)).toHaveText("Aaron Stransky started a thread: Portal questions");
+      await expect(lines.nth(1)).toHaveText(
+        "Video recording started · by Aaron Stransky · this room always records",
+      );
+      await expect(lines.nth(2)).toHaveText(
+        "Video recording stopped · on request · started by Aaron Stransky",
+      );
+      await expect(room.getByText("Channel thread started")).toHaveCount(0);
+
+      // Live: the socket's frame draws a local receipt; the server's
+      // persisted notice then takes its place — one line, not two.
+      const startedAt = new Date().toISOString();
+      push({
+        type: "recording_state",
+        payload: {
+          room_id: GUEST_ROOM_ID,
+          active: true,
+          kind: "audio",
+          started_by: { id: "p-aaron", display_name: "Aaron Stransky" },
+          started_at: startedAt,
+          recording_id: "rec-10",
+          reason: "user",
+        },
+      });
+      await expect(lines).toHaveCount(4);
+      await expect(lines.nth(3)).toHaveText("Recording started · audio · started by Aaron Stransky");
+      push({
+        type: "message",
+        payload: {
+          room_id: GUEST_ROOM_ID,
+          message: guestLine("g-7", startedAt, GUEST_NOBODY, "Audio recording started", {
+            content_type: "system",
+            metadata: { kind: "recording", event: "started", recording_kind: "audio", recording_id: "rec-10", started_by: "p-aaron", reason: "user" },
+          }),
+        },
+      });
+      await expect(lines.nth(3)).toHaveText("Audio recording started · by Aaron Stransky");
+      await expect(lines).toHaveCount(4);
+
+      // While it records, the header still says which room this is, and
+      // the pill stays clear of the buttons beside it.
+      const box = async (testId: string) => {
+        const rect = await room.getByTestId(testId).first().boundingBox();
+        expect(rect, testId).not.toBeNull();
+        return rect!;
+      };
+      await expect(room.getByTestId("rec-pill")).toBeVisible();
+      expect((await box("guest-room-name")).width).toBeGreaterThan(60);
+      const pill = await box("rec-pill");
+      const beside =
+        viewport === "mobile"
+          ? await box("guest-roster-toggle")
+          : (await room.getByRole("button", { name: "Leave" }).boundingBox())!;
+      expect(pill.x + pill.width).toBeLessThanOrEqual(beside.x + 1);
+
+      const tag = `${viewport}-${testInfo.project.name}`;
+      await page.screenshot({ path: `test-results/NavV3-Guest-room-${tag}.png`, fullPage: false });
+
+      // The roster draws every row: availability is not there to read.
+      if (viewport === "mobile") await page.getByTestId("guest-roster-toggle").click();
+      const roster = room.getByTestId("guest-roster");
+      await expect(roster).toBeVisible();
+      await expect(roster.getByRole("listitem")).toHaveCount(4);
+      for (const name of ["Aaron Stransky", "Persephone", "Flow", "Morgan Ali"]) {
+        await expect(roster.getByRole("listitem").filter({ hasText: name })).toBeVisible();
+      }
+      await expect(roster.getByText("AI", { exact: true })).toHaveCount(2);
+      if (viewport === "mobile") {
+        await page.screenshot({ path: `test-results/NavV3-Guest-roster-${tag}.png`, fullPage: false });
+      }
+      await assertPageHealth(page, viewport);
+    });
+  }
+
+  test("a phone keeps the stage and the composer under a long transcript", async ({ page }, testInfo) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    const { room } = await joinGuestRoom(
+      page,
+      Array.from({ length: 40 }, (_, i) =>
+        guestLine(
+          `long-${i}`,
+          minutesAgo(60 - i),
+          GUEST_AARON,
+          `Line ${i} of a long transcript, long enough to wrap on a phone.`,
+        ),
+      ),
+    );
+    await expect(room.getByText("Line 39 of a long transcript")).toBeVisible();
+    const tag = `mobile-${testInfo.project.name}`;
+    for (const roster of ["closed", "open"] as const) {
+      if (roster === "open") await page.getByTestId("guest-roster-toggle").click();
+      const stage = (await room.getByTestId("guest-stage").boundingBox())!;
+      const chat = (await room.getByTestId("guest-chat").boundingBox())!;
+      const composer = (await room.getByLabel("Message the room").boundingBox())!;
+      // The video keeps its share of the screen …
+      expect(stage.height, `stage, roster ${roster}`).toBeGreaterThanOrEqual(220);
+      // … nothing is drawn over it …
+      const below = roster === "open" ? (await room.getByTestId("guest-roster").boundingBox())! : chat;
+      expect(below.y, `under the stage, roster ${roster}`).toBeGreaterThanOrEqual(stage.y + stage.height);
+      // … and with the roster closed the message box is on the screen.
+      if (roster === "closed") {
+        expect(composer.y + composer.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height);
+      }
+      await page.screenshot({
+        path: `test-results/NavV3-Guest-long-${roster}-${tag}.png`,
+        fullPage: false,
+      });
+    }
+    await assertPageHealth(page, "mobile");
+  });
 });

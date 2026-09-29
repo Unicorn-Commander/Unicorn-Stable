@@ -1,3 +1,4 @@
+import { dropSupersededReceipts } from "@/lib/systemLines";
 import { create } from "zustand";
 import type { Room, Message, Agent, RoomMember } from "@/services/api";
 import {
@@ -361,9 +362,13 @@ export const useAppStore = create<AppState>((set) => ({
   addMessage: (roomId, message) =>
     set((state) => {
       const existing = state.messages[roomId];
-      const items = existing?.items ?? [];
-      const alreadyExists = items.some((m) => m.id === message.id);
+      const current = existing?.items ?? [];
+      const alreadyExists = current.some((m) => m.id === message.id);
       if (alreadyExists) return state;
+      // The server's persisted recording notice is the record. The local
+      // receipt drawn from the socket's frame is the same fact, and yields
+      // to it — or the room says "recording started" twice.
+      const items = dropSupersededReceipts(current, message);
 
       return {
         messages: {

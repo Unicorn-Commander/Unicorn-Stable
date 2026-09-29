@@ -1,4 +1,11 @@
-import type { Room } from "@/services/api";
+import type { Agent, CrewGroup, CrewMember, Room } from "@/services/api";
+import {
+  CREW_GROUP_LABEL,
+  CREW_GROUP_ORDER,
+  crewBrainChip,
+  crewTargetRoom,
+  type CrewTargetKind,
+} from "@/lib/crew";
 import {
   isAgentConversation,
   isDirectRoom,
@@ -91,6 +98,7 @@ export const SECTION_KEYS = {
   channels: "section:channels",
   people: "section:people",
   groups: "section:groups",
+  crew: "section:crew",
 } as const;
 
 export type SectionId = keyof typeof SECTION_KEYS;
@@ -727,4 +735,277 @@ export function flattenConversationRows(rows: readonly SidebarRow[]): string[][]
     }
   }
   return entries;
+}
+
+// ---- Crew (Nav v3 §2.1) -----------------------------------------------------
+
+/**
+ * One crew row: an agent you can talk to. `roomId` is where a tap lands —
+ * your hub for your seats and house agents, the newest shared room for a
+ * partner's seat — when the room list has it. Null means the tap has to
+ * ensure the hub first and the keyboard skips the row.
+ */
+export interface CrewRow {
+  kind: "crew";
+  /** `crew:<agent_id>` — the menu key and the React key. */
+  id: string;
+  member: CrewMember;
+  roomId: string | null;
+  hub: Room | null;
+  /** How the tap resolves: the hub, a shared room, or nothing loaded yet. */
+  target: CrewTargetKind | null;
+  /** "#taxsq-portal" for a shared room; null for a hub. */
+  targetLabel: string | null;
+  /** "Fable 5.1 · high" for a seat, a model family for a house agent, or null. */
+  brain: string | null;
+  /**
+   * The badge: the hub plus its live threads, counted the way the
+   * Conversations row counts them (muted rooms are 0), when the hub is
+   * loaded; the server's hub-only count otherwise.
+   */
+  unread: number;
+}
+
+export interface CrewGroupRows {
+  group: CrewGroup;
+  label: string;
+  rows: CrewRow[];
+}
+
+export interface CrewSectionModel {
+  collapseKey: string;
+  collapsed: boolean;
+  /** Visible rows, in the fixed group order; a group with nothing visible is absent. */
+  groups: CrewGroupRows[];
+  /** Rows folded under "More". Zero while searching or once expanded. */
+  hiddenCount: number;
+  /** Rows that match the search, before the cap. */
+  total: number;
+  searching: boolean;
+  /** "More" is open: rows beyond the default set are showing. */
+  expanded: boolean;
+}
+
+/**
+ * Which rows show before "More" (§2.1: "your own seats, then agents with a
+ * thread in the last 14 days, then the rest under a collapsed More"). A flat
+ * count buried House and Partners under Aaron's eleven seats, so the cap is
+ * per group: the seats heard from lately (a floor keeps a fresh install from
+ * showing nothing), the top house agents, the top partners.
+ */
+export interface CrewCapPolicy {
+  ownSeatsWindowMs: number;
+  ownSeatsFloor: number;
+  house: number;
+  partner: number;
+}
+
+export const CREW_CAP_POLICY: CrewCapPolicy = {
+  ownSeatsWindowMs: 14 * 24 * 60 * 60 * 1000,
+  ownSeatsFloor: 2,
+  house: 3,
+  partner: 3,
+};
+
+export interface CrewSectionInput {
+  crew: readonly CrewMember[];
+  rooms: readonly Room[];
+  /** Brigade roster, for a house agent's model family chip. */
+  agents?: readonly Agent[];
+  searchQuery: string;
+  showAll: boolean;
+  collapsed: Record<string, boolean>;
+  /** The caller's participant / user ids — a hub is only yours if it names one of them. */
+  selfIds?: readonly (string | null | undefined)[];
+  /** /crew answered: `hub_room_id` is the truth and the room list is not searched. */
+  crewAnswered?: boolean;
+  /** Badge count for one room after mute (the Conversations row's rule). */
+  roomUnread?: (room: Room) => number;
+  now?: number;
+  policy?: CrewCapPolicy;
+}
+
+/** The sidebar search box narrows the crew too: name, id, role line, owner. */
+export function crewRowMatches(member: CrewMember, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [member.display_name, member.agent_id, member.role_line ?? "", member.owner ?? ""]
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+function heardWithin(member: CrewMember, windowMs: number, now: number): boolean {
+  if (member.unread > 0) return true;
+  const at = member.last_at ? Date.parse(member.last_at) : Number.NaN;
+  return Number.isFinite(at) && now - at <= windowMs;
+}
+
+/** The agent ids shown before "More", per the cap policy, in server order. */
+export function defaultCrewSet(
+  members: readonly CrewMember[],
+  policy: CrewCapPolicy,
+  now: number,
+): Set<string> {
+  const shown = new Set<string>();
+  const own = members.filter((member) => member.group === "own_seat");
+  for (const member of own) {
+    if (heardWithin(member, policy.ownSeatsWindowMs, now)) shown.add(member.agent_id);
+  }
+  for (const member of own) {
+    if (shown.size >= policy.ownSeatsFloor) break;
+    shown.add(member.agent_id);
+  }
+  let house = 0;
+  let partner = 0;
+  for (const member of members) {
+    if (member.group === "house" && house < policy.house) {
+      shown.add(member.agent_id);
+      house += 1;
+    } else if (member.group === "partner" && partner < policy.partner) {
+      shown.add(member.agent_id);
+      partner += 1;
+    }
+  }
+  return shown;
+}
+
+/**
+ * The Crew section, grouped Your seats → House → Partners in the server's
+ * ranking, capped per group (never while searching — a search that hid a
+ * hit under "More" would look like no hit). The same model draws the
+ * desktop section, the phone Crew tab and the keyboard order.
+ */
+export function buildCrewSection(input: CrewSectionInput): CrewSectionModel {
+  const {
+    crew,
+    rooms,
+    agents = [],
+    searchQuery,
+    showAll,
+    collapsed,
+    selfIds = [],
+    crewAnswered = true,
+    roomUnread,
+    now = Date.now(),
+    policy = CREW_CAP_POLICY,
+  } = input;
+  const searching = searchQuery.trim().length > 0;
+  const matching = crew.filter((member) => crewRowMatches(member, searchQuery));
+  const defaults = defaultCrewSet(matching, policy, now);
+  const everything = searching || showAll;
+  const groups: CrewGroupRows[] = [];
+  let shown = 0;
+  for (const group of CREW_GROUP_ORDER) {
+    const rows: CrewRow[] = [];
+    for (const member of matching) {
+      if (member.group !== group) continue;
+      if (!everything && !defaults.has(member.agent_id)) continue;
+      const target = crewTargetRoom(member, rooms, selfIds, crewAnswered);
+      const hub = target?.kind === "hub" ? target.room : null;
+      const roster = agents.find((agent) => agent.id === member.agent_id) ?? null;
+      let unread = member.unread;
+      if (hub && roomUnread) {
+        unread = roomUnread(hub);
+        for (const room of rooms) {
+          if (room.parent_room_id === hub.id && !room.is_archived) unread += roomUnread(room);
+        }
+      }
+      rows.push({
+        kind: "crew",
+        id: `crew:${member.agent_id}`,
+        member,
+        roomId: target?.room.id ?? (target === null && member.group !== "partner" ? member.hub_room_id : null),
+        hub,
+        target: target?.kind ?? null,
+        targetLabel: target?.kind === "shared" ? target.label : null,
+        brain: crewBrainChip(member, hub, roster),
+        unread,
+      });
+      shown += 1;
+    }
+    if (rows.length > 0) groups.push({ group, label: CREW_GROUP_LABEL[group], rows });
+  }
+  return {
+    collapseKey: SECTION_KEYS.crew,
+    collapsed: collapsed[SECTION_KEYS.crew] === true,
+    groups,
+    hiddenCount: Math.max(0, matching.length - shown),
+    total: matching.length,
+    searching,
+    expanded: showAll && !searching && matching.length > defaults.size,
+  };
+}
+
+/**
+ * Alt+↑/↓ entries for the crew rows, in the visible order. A collapsed
+ * section contributes nothing; a row with no room to land on (a hub not
+ * created yet, a partner you share nothing with) is skipped rather than
+ * pointed at a room that does not exist.
+ */
+export function flattenCrewRows(section: CrewSectionModel): string[][] {
+  if (section.collapsed) return [];
+  const entries: string[][] = [];
+  for (const group of section.groups) {
+    for (const row of group.rows) {
+      if (row.roomId) entries.push([row.roomId]);
+    }
+  }
+  return entries;
+}
+
+/**
+ * The one Conversations pane on a desktop: crew rows first, then the list.
+ * Both halves come from the same builders RoomList renders, so the keyboard
+ * walks exactly what is on screen (see the note at the top of this file).
+ * A hub can appear twice — as a crew row and as its Conversations row — so
+ * the walker below steps from the last index it visited, not from the first
+ * copy of the active room.
+ */
+export function flattenConversationPane(
+  crew: CrewSectionModel | null,
+  rows: readonly SidebarRow[],
+): string[][] {
+  return [...(crew ? flattenCrewRows(crew) : []), ...flattenConversationRows(rows)];
+}
+
+export interface KeyboardStep {
+  /** The row the walk is now on. */
+  index: number;
+  /** The room to open, or null when the row has none. */
+  target: string | null;
+}
+
+/**
+ * One Alt+↑/↓ step. The position is the last visited index when that row
+ * still holds the active room (so a room listed twice does not trap the
+ * walk between its copies), else the first row holding the active room,
+ * else the end the walk enters from. Clamped at the ends.
+ */
+export function stepKeyboardOrder(
+  entries: readonly (readonly string[])[],
+  current: string | null,
+  delta: -1 | 1,
+  last: number | null,
+): KeyboardStep | null {
+  if (entries.length === 0) return null;
+  let index = -1;
+  if (
+    current &&
+    last !== null &&
+    last >= 0 &&
+    last < entries.length &&
+    entries[last]!.includes(current)
+  ) {
+    index = last;
+  } else if (current) {
+    index = entries.findIndex((ids) => ids.includes(current));
+  }
+  const next =
+    index === -1
+      ? delta === 1
+        ? 0
+        : entries.length - 1
+      : Math.min(Math.max(index + delta, 0), entries.length - 1);
+  return { index: next, target: entries[next]?.[0] ?? null };
 }

@@ -7,14 +7,17 @@ import {
   Bookmark,
   ChevronDown,
   Circle,
+  Cpu,
   Database,
   ExternalLink,
   Keyboard,
   LayoutTemplate,
+  ListTree as ListTreeIcon,
   Link2,
   ListChecks,
   ListTree,
   LogOut,
+  MessageSquarePlus,
   Mic,
   MoreVertical,
   PanelLeftClose,
@@ -29,6 +32,7 @@ import {
   UserRound,
   Users,
   Video,
+  Lock,
 } from "lucide-react";
 import { RecordMenu } from "@/components/Call/RecordMenu";
 import { useDirectCall } from "@/hooks/useDirectCall";
@@ -60,8 +64,13 @@ const POP_TARGETS: { id: RoomPanelId; label: string }[] = [
   { id: "transcript", label: "Transcript" },
 ];
 
-const ICON_BTN =
-  "focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100";
+// The display utility is kept apart: a button that hides below `sm` says
+// `hidden sm:inline-flex` itself — `inline-flex` in the shared string would
+// win over `hidden` and the button would still be drawn on a phone.
+const ICON_BTN_BASE =
+  "focus-ring h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100";
+const ICON_BTN = `inline-flex ${ICON_BTN_BASE}`;
+const ICON_BTN_DESKTOP = `hidden sm:inline-flex ${ICON_BTN_BASE}`;
 
 export interface RoomHeaderAgent {
   id: string;
@@ -103,6 +112,29 @@ export interface RoomHeaderProps {
   leaving: boolean;
   roomAgent: RoomHeaderAgent | null;
   onStartGroupWithAgent: (agent: { id: string; name: string }) => void;
+  /**
+   * Agent hubs (Nav v3 §2.2): "New conversation" starts a thread under the
+   * hub — ChatGPT's "New chat", with the contact staying one contact.
+   */
+  onNewConversation?: () => void;
+  /**
+   * The Brigade model switcher in More. Off on rooms with a runner-backed
+   * seat, where the seat chip's popover is the brain (C2) and this menu
+   * would do nothing.
+   */
+  showModelSwitcher?: boolean;
+  /**
+   * Phones: the seat chip does not fit the 44px row, so More carries a
+   * "Brain · Fable 5.1 · high" entry per seat of yours that opens the same
+   * popover.
+   */
+  seatMenus?: Array<{
+    key: string;
+    label: string;
+    /** A partner's seat: a lock and whose it is; it opens nothing. */
+    locked?: boolean;
+    onOpen?: () => void;
+  }>;
 }
 
 export function RoomHeader({
@@ -138,6 +170,9 @@ export function RoomHeader({
   leaving,
   roomAgent,
   onStartGroupWithAgent,
+  onNewConversation,
+  showModelSwitcher = true,
+  seatMenus = [],
 }: RoomHeaderProps) {
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
@@ -278,6 +313,21 @@ export function RoomHeader({
         data-testid="room-header-actions"
         className="relative flex shrink-0 items-center gap-0.5"
       >
+        {/* Desktop only: on a phone the 44px row is full and the FAB inside
+            a hub already starts a thread, so the entry sits in More there. */}
+        {onNewConversation && (
+          <button
+            type="button"
+            onClick={onNewConversation}
+            className="focus-ring hidden h-10 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-slate-200 hover:bg-white/[0.06] sm:inline-flex"
+            aria-label="New conversation"
+            title="New conversation — a fresh thread with this agent"
+            data-testid="hub-new-conversation"
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" />
+            <span>New conversation</span>
+          </button>
+        )}
         <div className="relative" ref={callRef}>
           <button
             ref={callBtnRef}
@@ -339,10 +389,12 @@ export function RoomHeader({
           testId="room-header-record"
         />
 
+        {/* Phones keep the row to Call and More so the name can be read;
+            Members and Threads move into More there, Pop out is desktop. */}
         <button
           type="button"
           onClick={onToggleMembers}
-          className={clsx(ICON_BTN, membersOpen && "bg-white/[0.08] text-slate-100")}
+          className={clsx(ICON_BTN_DESKTOP, membersOpen && "bg-white/[0.08] text-slate-100")}
           aria-label="Members"
           aria-pressed={membersOpen}
           title="Members"
@@ -352,14 +404,14 @@ export function RoomHeader({
         <button
           type="button"
           onClick={toggleThreads}
-          className={clsx(ICON_BTN, threadsOpen && "bg-white/[0.08] text-slate-100")}
+          className={clsx(ICON_BTN_DESKTOP, threadsOpen && "bg-white/[0.08] text-slate-100")}
           aria-label="Threads"
           aria-pressed={threadsOpen}
           title="Threads"
         >
           <ListTree className="h-4 w-4" />
         </button>
-        <div className="relative" ref={popRef}>
+        <div className="relative hidden sm:block" ref={popRef}>
           <button
             ref={popBtnRef}
             type="button"
@@ -424,13 +476,17 @@ export function RoomHeader({
               role="menu"
               className="glass-heavy absolute right-0 top-full z-50 mt-1 max-h-[min(70vh,32rem)] w-72 overflow-y-auto rounded-xl py-1 shadow-pop"
             >
-              <div className="px-3 py-1.5">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                  Model
-                </div>
-                <ModelSwitcher roomId={roomId} embedded className="max-w-full" />
-              </div>
-              <div className="my-1 h-px bg-white/[0.06]" />
+              {showModelSwitcher && (
+                <>
+                  <div className="px-3 py-1.5">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                      Model
+                    </div>
+                    <ModelSwitcher roomId={roomId} embedded className="max-w-full" />
+                  </div>
+                  <div className="my-1 h-px bg-white/[0.06]" />
+                </>
+              )}
               <MenuItem onClick={() => run(onOpenSearch)}>
                 <Search className="h-4 w-4" /> Search
               </MenuItem>
@@ -455,6 +511,53 @@ export function RoomHeader({
                 {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                 {muted ? "Unmute room" : "Mute room"}
               </MenuItem>
+              <MenuItem onClick={() => run(onToggleMembers)} className="sm:hidden" data-testid="phone-members">
+                <Users className="h-4 w-4" />
+                {membersOpen ? "Hide members" : "Members"}
+              </MenuItem>
+              <MenuItem onClick={() => run(toggleThreads)} className="sm:hidden" data-testid="phone-threads">
+                <ListTreeIcon className="h-4 w-4" />
+                {threadsOpen ? "Hide threads" : "Threads"}
+              </MenuItem>
+              {seatMenus.map((entry) =>
+                entry.locked || !entry.onOpen ? (
+                  // Read, not changed: focusable so the arrow keys and a
+                  // screen reader reach it, and it does nothing.
+                  <div
+                    key={entry.key}
+                    role="menuitem"
+                    aria-disabled="true"
+                    tabIndex={-1}
+                    title="Only the seat's owner can change its brain"
+                    className="focus-ring flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-400 max-md:min-h-11 sm:hidden"
+                    data-testid="seat-menu-entry"
+                    data-editable="false"
+                  >
+                    <Lock className="h-4 w-4 shrink-0" aria-hidden="true" data-testid="seat-menu-lock" />
+                    {/* Wraps: whose seat and what it runs are both the point. */}
+                    <span className="min-w-0 break-words">Brain · {entry.label}</span>
+                  </div>
+                ) : (
+                  <MenuItem
+                    key={entry.key}
+                    onClick={() => run(entry.onOpen!)}
+                    className="sm:hidden"
+                    data-testid="seat-menu-entry"
+                  >
+                    <Cpu className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 break-words">Brain · {entry.label}</span>
+                  </MenuItem>
+                ),
+              )}
+              {onNewConversation && (
+                <MenuItem
+                  onClick={() => run(onNewConversation)}
+                  className="sm:hidden"
+                  data-testid="hub-new-conversation-menu"
+                >
+                  <MessageSquarePlus className="h-4 w-4" /> New conversation
+                </MenuItem>
+              )}
               <MenuItem onClick={() => run(onNewThread)}>
                 <Plus className="h-4 w-4" /> New thread
               </MenuItem>
@@ -589,11 +692,13 @@ function MenuItem({
   children,
   className,
   disabled,
+  "data-testid": testId,
 }: {
   onClick: () => void;
   children: ReactNode;
   className?: string;
   disabled?: boolean;
+  "data-testid"?: string;
 }) {
   return (
     <button
@@ -601,6 +706,7 @@ function MenuItem({
       role="menuitem"
       disabled={disabled}
       onClick={onClick}
+      data-testid={testId}
       className={clsx(
         "focus-ring flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50 max-md:min-h-11",
         className,

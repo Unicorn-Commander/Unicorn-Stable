@@ -1,3 +1,4 @@
+import { hasPersistedRecordingNotice, recordingIdOf } from "@/lib/systemLines";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ws } from "@/services/websocket";
@@ -37,7 +38,9 @@ export function useRecordingReceipts(): void {
         subject,
         starterDisplayName(subject, members),
       );
-      if (line) appendSystemLine(result.roomId, result.transition, subject, line);
+      if (line) {
+        appendSystemLine(result.roomId, result.transition, subject, line, recordingIdOf(data));
+      }
       void qc.invalidateQueries({ queryKey: ["recordings", result.roomId] });
     });
   }, [qc]);
@@ -48,12 +51,16 @@ function appendSystemLine(
   transition: "start" | "stop",
   state: RecordingState,
   content: string,
+  recordingId: string | null,
 ): void {
   const store = useAppStore.getState();
   const recent = store.messages[roomId]?.items.slice(-20) ?? [];
   if (recent.some((message) => message.content === content && message.sender_type === "system")) {
     return;
   }
+  // The server persists its own notice now ("Audio recording started", the
+  // starter and the reason in metadata); the receipt is the same fact.
+  if (hasPersistedRecordingNotice(recent, transition, Date.now(), recordingId)) return;
   const stamp = state.startedAt ?? "none";
   const now = new Date().toISOString();
   const message: Message = {
@@ -70,7 +77,8 @@ function appendSystemLine(
     edited: false,
     created_at: now,
     updated_at: now,
-    metadata: { recording_receipt: true },
+    // The recording's id is how the persisted notice finds this receipt.
+    metadata: { recording_receipt: true, ...(recordingId ? { recording_id: recordingId } : {}) },
   };
   store.addMessage(roomId, message);
 }

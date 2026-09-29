@@ -13,8 +13,57 @@ import type { Room } from "@/services/api";
  */
 export type NavView = "home" | "direct" | "channels" | "meetings" | "agents";
 
-/** Rail destinations when the one-list shell is on. Not a filter. */
-export type ShellDestination = "home" | "conversations" | "directory";
+/**
+ * Rail destinations when the one-list shell is on. Not a filter.
+ *
+ * `crew` and `calls` are the phone's Crew and Calls tabs (Nav v3 §2.6): on a
+ * desktop the crew is a section above Conversations and calls are channel
+ * rows, so the rail treats both as Conversations there.
+ */
+export type ShellDestination =
+  | "home"
+  | "conversations"
+  | "directory"
+  | "crew"
+  | "calls";
+
+/** Phone bottom tabs (Nav v3 §2.6): Home · Chats · Crew · Calls · Me. */
+export type PhoneTab = "home" | "chats" | "crew" | "calls" | "me";
+
+export const PHONE_TABS: readonly {
+  id: PhoneTab;
+  label: string;
+  /** Rail destination the tab selects; Me opens settings instead. */
+  destination: ShellDestination | null;
+  testId: string;
+}[] = [
+  { id: "home", label: "Home", destination: "home", testId: "nav-home" },
+  { id: "chats", label: "Chats", destination: "conversations", testId: "nav-conversations" },
+  { id: "crew", label: "Crew", destination: "crew", testId: "nav-crew" },
+  { id: "calls", label: "Calls", destination: "calls", testId: "nav-calls" },
+  { id: "me", label: "Me", destination: null, testId: "nav-me" },
+] as const;
+
+/** The phone tab that owns a rail destination. Directory lives under Crew. */
+export function phoneTabForDestination(destination: ShellDestination): PhoneTab {
+  switch (destination) {
+    case "home":
+      return "home";
+    case "crew":
+    case "directory":
+      return "crew";
+    case "calls":
+      return "calls";
+    default:
+      return "chats";
+  }
+}
+
+/** Phone-only destinations read as Conversations on a desktop rail. */
+export function railDestination(destination: ShellDestination): "home" | "conversations" | "directory" {
+  if (destination === "crew" || destination === "calls") return "conversations";
+  return destination;
+}
 
 /**
  * Narrows the one Conversations list. A filter is not a destination: it
@@ -115,7 +164,11 @@ export function shellDestinationForPath(
   stored: ShellDestination,
 ): ShellDestination {
   if (isDirectoryPath(pathname)) return "directory";
-  if (pathname.startsWith("/c/")) return "conversations";
+  if (pathname.startsWith("/c/")) {
+    // A room opened from the phone's Crew or Calls tab keeps that tab, so
+    // the drawer reopens where the user came from. Anything else is the list.
+    return stored === "crew" || stored === "calls" ? stored : "conversations";
+  }
   if (stored === "directory") return "home";
   return stored;
 }

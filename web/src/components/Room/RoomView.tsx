@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { lazy, Suspense, useEffect, useState, useMemo } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
@@ -22,6 +22,10 @@ import { LiveCallBanner } from "./LiveCallBanner";
 import { ParticipantStrip } from "./ParticipantStrip";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { RoomHeader } from "./RoomHeader";
+import { SeatSettings } from "./SeatSettings";
+import { useCrew } from "@/hooks/useCrew";
+import { findSeatMembers, seatMenuEntries, shouldShowModelSwitcher } from "@/lib/seatSettings";
+import { isHubRoom, roomClassFloor, SHARED_FLOOR_REASON } from "@/lib/crew";
 import { InviteMembersModal } from "./InviteMembersModal";
 import { GuestAccessModal } from "./GuestAccessModal";
 import { VoiceSettingsModal } from "./VoiceSettingsModal";
@@ -131,6 +135,31 @@ export function RoomView({ roomId }: RoomViewProps) {
   // it (last-invited wins; @mention any member agent to address it directly).
   const rosterAgents = useAppStore((s) => s.agents);
   const [searchOpen, setSearchOpen] = useState(false);
+  // The runner seat in this room (Nav v3 C2), matched against the crew list:
+  // RoomResponse.agents[] carries no backend. A 409 on the seat write means
+  // the server disagrees — the chip goes and the Brigade switcher returns.
+  const { crew } = useCrew();
+  const currentParticipantId = useAppStore((s) => s.currentParticipantId);
+  const currentUserId = useAppStore((s) => s.currentUser?.id);
+  const [seatRefused, setSeatRefused] = useState(false);
+  const [seatOpenFor, setSeatOpenFor] = useState<string | null>(null);
+  const [seatRequested, setSeatRequested] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // RoomView is not keyed by room: every per-room seat flag resets here, or a
+  // `?seat=1` that found no seat would open the popover in the next room.
+  useEffect(() => {
+    setSeatRefused(false);
+    setSeatOpenFor(null);
+    setSeatRequested(false);
+  }, [roomId]);
+  // `/c/<id>?seat=1` (the crew row's Settings) opens the popover once.
+  useEffect(() => {
+    if (searchParams.get("seat") !== "1") return;
+    setSeatRequested(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("seat");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [pinsOpen, setPinsOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -286,6 +315,61 @@ export function RoomView({ roomId }: RoomViewProps) {
     };
   }, [roomId]);
 
+  // Every runner seat in the room, yours first: one chip each (metadata.seats).
+  const seatMatches = useMemo(
+    () => (seatRefused ? [] : findSeatMembers(roomDetail, members, crew)),
+    [seatRefused, roomDetail, members, crew],
+  );
+  // Mode writes need room owner/admin (the server's ladder); read the caller's
+  // own row, the only reliable "this is me".
+  const myRole = members?.find((m) => m.is_self)?.role ?? null;
+  const canEditMode = myRole === "owner" || myRole === "admin";
+  // The Brigade switcher stays while any agent member is not a seat.
+  const showModelSwitcher = seatRefused || shouldShowModelSwitcher(roomDetail, members, crew);
+  useEffect(() => {
+    if (!seatRequested) return;
+    const first = seatMatches.find((match) => match.editable);
+    if (!first) return;
+    setSeatRequested(false);
+    setSeatOpenFor(first.member.agent_id);
+  }, [seatRequested, seatMatches]);
+  // Phones: one More entry per seat in the room — yours open the sheet, a
+  // partner's is locked and says whose.
+  const seatMenus = seatMenuEntries(roomDetail, seatMatches).map((entry) => ({
+    ...entry,
+    onOpen: entry.locked ? undefined : () => setSeatOpenFor(entry.key),
+  }));
+  // The hands chip: once a line from outside your seats was written here the
+  // room's floor is "shared" for good, and the header says so with the reason.
+  const sharedFloor = seatMatches.length > 0 && roomClassFloor(roomDetail) === "shared";
+  const renderSeatChips = () => [
+    ...(sharedFloor
+      ? [
+          <span
+            key="class-floor"
+            className="hidden shrink-0 items-center rounded-full border border-stable-gold/30 bg-stable-gold/10 px-2 py-0.5 text-[11px] font-medium text-stable-gold sm:inline-flex"
+            title={SHARED_FLOOR_REASON}
+            data-testid="room-class-chip"
+          >
+            shared
+          </span>,
+        ]
+      : []),
+    ...seatMatches.map((match) => (
+      <SeatSettings
+        key={match.member.agent_id}
+        roomId={roomId}
+        room={roomDetail}
+        match={match}
+        open={seatOpenFor === match.member.agent_id}
+        onOpenChange={(next) => setSeatOpenFor(next ? match.member.agent_id : null)}
+        onNoSeat={() => setSeatRefused(true)}
+        canEditMode={canEditMode}
+        labelled={seatMatches.length > 1}
+      />
+    )),
+  ];
+
   // If the members fetch comes back 403, my membership is gone (I was removed
   // or the room was archived) — eject to home rather than sit on a dead room.
   useEffect(() => {
@@ -321,12 +405,36 @@ export function RoomView({ roomId }: RoomViewProps) {
       ? s.rooms.find((r) => r.id === roomDetail.parent_room_id) ?? null
       : null,
   );
+  // "New conversation" only on YOUR hub (or a thread under it): the server's
+  // hub test, not the room type alone. "You" is the participant id the socket
+  // acknowledged, or — the one marker that needs no socket — the members
+  // payload's own `is_self` row.
+  const selfMember = members?.find((m) => m.is_self);
+  const selfIds = [
+    currentParticipantId,
+    currentUserId,
+    selfMember?.participant_id,
+    selfMember?.id,
+    selfMember?.user_id,
+  ];
+  const hubForNewConversation =
+    roomDetail && isHubRoom(roomDetail, selfIds)
+      ? roomDetail
+      : parentRoom && isHubRoom(parentRoom, selfIds)
+        ? parentRoom
+        : null;
   const dmAgentId = roomDetail?.brigade_agent_id ?? null;
   const dmAgent = dmAgentId
     ? rosterAgents.find((a) => a.id === dmAgentId)
     : undefined;
+  // A runner seat is not in the Brigade roster; the room's counterpart
+  // carries its name, so the header never falls back to the raw agent id.
   const dmAgentName =
-    dmAgent?.display_name || dmAgent?.name || dmAgentId || "";
+    dmAgent?.display_name ||
+    dmAgent?.name ||
+    roomDetail?.counterpart?.display_name ||
+    dmAgentId ||
+    "";
   const roomAgentIdent = dmAgentId ? identityFor(dmAgentId, dmAgentName) : null;
   // Minting a guest link is OWNER-only on the server (membership is
   // deliberately not enough). Read the caller's own membership row — server-set
@@ -511,6 +619,17 @@ export function RoomView({ roomId }: RoomViewProps) {
         onStartGroupWithAgent={(agent) =>
           openStartGroup([{ kind: "agent", id: agent.id, name: agent.name }])
         }
+        // Your hub, or a thread under it: a fresh conversation with this agent
+        // is a thread under the hub, nested in the sidebar (Nav v3 §2.2).
+        onNewConversation={
+          hubForNewConversation
+            ? () => void beginThread({ roomId: hubForNewConversation.id, navigate })
+            : undefined
+        }
+        // A seat room's brain is the chip's popover; the Brigade switcher
+        // stays while a house agent is in the room too.
+        showModelSwitcher={showModelSwitcher}
+        seatMenus={seatMenus}
       >
           {isDm ? (
             /* 1:1 DM: the person IS the header. Avatar + presence + name,
@@ -569,6 +688,7 @@ export function RoomView({ roomId }: RoomViewProps) {
                     ? dmAgentName
                     : dmPeerName}
               </span>
+              {renderSeatChips()}
             </div>
           ) : (
             <>
@@ -612,6 +732,8 @@ export function RoomView({ roomId }: RoomViewProps) {
           {roomDetail?.project_number && (
             <ProjectNumber number={roomDetail.project_number} />
           )}
+          {/* Seats in a channel or group: the same chips beside the name. */}
+          {renderSeatChips()}
           {/* Topic + its separator are secondary — hide on phones so a long
               topic can't squeeze the room name down to a couple letters. The
               name then takes the full width. md:contents keeps desktop identical. */}
@@ -682,9 +804,12 @@ export function RoomView({ roomId }: RoomViewProps) {
             : undefined
         }
       />
+      {/* Sits above the composer's call buttons, and leaves while the seat
+          sheet is open — it painted over the sheet's last rows. */}
       {(roomDetail?.type === "agent_hub" ||
         roomDetail?.type === "channel" ||
-        !!roomDetail?.parent_room_id) && (
+        !!roomDetail?.parent_room_id) &&
+        !seatOpenFor && (
         <button
           type="button"
           onClick={() =>
@@ -693,8 +818,9 @@ export function RoomView({ roomId }: RoomViewProps) {
               navigate,
             })
           }
-          className="focus-ring fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
+          className="focus-ring fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-stable-purple text-white shadow-pop md:hidden"
           aria-label="New thread"
+          data-testid="room-fab"
         >
           <Plus className="h-6 w-6" />
         </button>

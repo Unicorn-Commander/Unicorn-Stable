@@ -54,7 +54,7 @@ function ConversationFilters() {
       role="group"
       aria-label="Filter conversations"
       data-testid="conversation-filters"
-      className="grid grid-cols-4 gap-0.5 px-2 pb-2"
+      className="grid grid-cols-4 gap-0.5 pb-2"
     >
       {CONVERSATION_FILTERS.map((id) => {
         const on = filter === id;
@@ -195,7 +195,12 @@ function LegacyViewSwitcher() {
   );
 }
 
-/** Filters on the one list; the five destination pills when that shell is restored. */
+/**
+ * Filters on the one list; the five destination pills when that shell is
+ * restored. The phone's Home · Chats · Crew · Calls · Me tabs live in
+ * `Layout/PhoneTabBar` and read `PHONE_TABS` from navStore, the same way
+ * the five-view pills read `DESTINATIONS` here.
+ */
 export function ViewSwitcher() {
   if (isNavV2Enabled()) return <ConversationFilters />;
   return <LegacyViewSwitcher />;

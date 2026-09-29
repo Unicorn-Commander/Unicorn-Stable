@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
   type DragEvent,
+  type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -18,6 +19,7 @@ import {
   Smile,
   Video,
   BellOff,
+  Loader2,
 } from "lucide-react";
 import clsx from "clsx";
 import { EmojiPicker } from "@/components/EmojiPicker";
@@ -27,6 +29,7 @@ import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
 import { useCallUiStore } from "@/stores/callUiStore";
+import { useConversationUi } from "@/stores/conversationUiStore";
 import { useDirectCall } from "@/hooks/useDirectCall";
 import { emojiSuggestions, ensureEmojiIndex, replaceEmojiShortcodes } from "@/utils/emoji";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
@@ -36,6 +39,20 @@ import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { agentModeLabel } from "@/lib/conversation";
 import { FormatToolbar, type FormatKind } from "./FormatToolbar";
+
+/** From `sm` up: the composer has room for what it carries in one row. */
+function useWide(): boolean {
+  const query = "(min-width: 640px)";
+  const [wide, setWide] = useState(() => window.matchMedia?.(query)?.matches ?? true);
+  useEffect(() => {
+    const mq = window.matchMedia?.(query);
+    if (!mq) return;
+    const onChange = (event: MediaQueryListEvent) => setWide(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return wide;
+}
 
 /** Rough width of the format bar (6 icon buttons + padding) used to clamp its
  * left offset so it can't overflow the composer on long lines. */
@@ -140,7 +157,8 @@ interface SlashResult {
 }
 
 /** Returns text+metadata to send, or text=null to consume input silently. */
-function applySlashCommand(input: string): SlashResult {
+/** Exported for the test that pins the metadata keys a composed message carries. */
+export function applySlashCommand(input: string): SlashResult {
   if (!input.startsWith("/")) return { text: input };
   const space = input.indexOf(" ");
   const cmd = (space === -1 ? input.slice(1) : input.slice(1, space)).toLowerCase();
@@ -263,20 +281,47 @@ interface PendingAttachment {
 }
 
 interface MessageInputProps {
-  roomId: string;
+  /** The room this composer writes in — null when there is none yet (Home's
+   * composer, whose room is made by the send). Without a room there is no
+   * roster to mention from, no /thread, no quote insert and no room call. */
+  roomId: string | null;
+  /**
+   * A room's send is optimistic and returns nothing: the box clears at once.
+   * A send that returns a promise is awaited — the box is held while it
+   * runs and keeps its text and its attachments unless it resolves true.
+   */
   onSend: (
     content: string,
     threadId?: string,
     attachments?: PendingAttachment[],
     extraMetadata?: Record<string, unknown>,
-  ) => void;
-  onTyping: () => void;
+  ) => void | boolean | Promise<boolean | void>;
+  onTyping?: () => void;
   onEditLast?: () => void;
   /** When set, the composer is replaced by this notice (e.g. the user is
    * muted in this room). Posting is also blocked server-side. */
   disabledReason?: string;
   /** Room-aware placeholder, e.g. "Message #general" / "Message Majik". */
   placeholder?: string;
+  /** Where the draft is kept: the room's id unless there is no room. */
+  draftKey?: string;
+  /** Inside the box, left of the input (Home: who the message is for). */
+  leading?: ReactNode;
+  /** Inside the box, right of the input (Home: the conversation's brain). */
+  trailing?: ReactNode;
+  /**
+   * What the call buttons do from here. Omitted: they call this room.
+   * Null: there are no call buttons.
+   */
+  call?: { onCall: (kind: CallKind) => void } | null;
+  /** Enter does nothing and the send button says why. The box stays usable. */
+  blockedReason?: string | null;
+  /** Bump to put the cursor in the box. */
+  focusNonce?: number;
+  /** The suggestion menus open above the box (a room) or below it. */
+  menus?: "above" | "below";
+  /** Replaces the root's own padding. */
+  className?: string;
 }
 
 interface MentionSuggestion {
@@ -297,9 +342,28 @@ interface UploadTask {
   status: "uploading" | "error";
 }
 
-export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledReason, placeholder }: MessageInputProps) {
+export function MessageInput({
+  roomId,
+  onSend,
+  onTyping,
+  onEditLast,
+  disabledReason,
+  placeholder,
+  draftKey,
+  leading,
+  trailing,
+  call,
+  blockedReason,
+  focusNonce,
+  menus = "above",
+  className,
+}: MessageInputProps) {
   const navigate = useNavigate();
-  const [content, setContent] = useState(() => getDraft(roomId));
+  const storeKey = draftKey ?? roomId ?? "composer";
+  const [content, setContent] = useState(() => getDraft(storeKey));
+  // A send that returned a promise is running: the box is held until it settles.
+  const [sending, setSending] = useState(false);
+  const wide = useWide();
   const [dragOver, setDragOver] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -317,8 +381,11 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
-  const slashMatches = SLASH_COMMANDS.filter((c) =>
-    c.name.startsWith(slashQuery.toLowerCase()),
+  const slashMatches = SLASH_COMMANDS.filter(
+    (c) =>
+      c.name.startsWith(slashQuery.toLowerCase()) &&
+      // A thread hangs under a room; with no room there is nothing to hang it under.
+      (roomId !== null || c.name !== "thread"),
   );
   // Full emoji picker popover (Smile button) — distinct from the
   // :shortcode: suggestion menu above (showEmojiPicker).
@@ -339,6 +406,12 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       textareaRef.current?.focus();
     }
   }, []);
+
+  // Asked for from outside (a shortcut, a "Message …" button): on any device.
+  useEffect(() => {
+    if (!focusNonce) return;
+    textareaRef.current?.focus();
+  }, [focusNonce]);
 
   // Close the emoji picker on click-outside (clicks on the toggle button are
   // its own concern — it flips the state itself).
@@ -379,7 +452,8 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     };
   }, []);
 
-  const participants = useAppStore((s) => s.participants[roomId]) ?? EMPTY_MEMBERS;
+  const participants =
+    useAppStore((s) => (roomId ? s.participants[roomId] : undefined)) ?? EMPTY_MEMBERS;
   // The active call's room (persists across navigation). Start-call keys off
   // THIS rather than the global "in a call" flag, so the button correctly shows
   // in every room except the one that already owns the live call.
@@ -389,7 +463,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   const { isConnected, isConnecting } = useStableRoom();
   // The START-a-call seam: a DM rings the person, a channel just joins.
   const { startCall } = useDirectCall();
-  const callRoom = useAppStore((s) => s.rooms.find((room) => room.id === roomId));
+  const callRoom = useAppStore((s) =>
+    roomId ? s.rooms.find((room) => room.id === roomId) : undefined,
+  );
   const quietJoin = callRoom?.type === "group_dm" || (callRoom?.type === "dm" && residentAgentIds(callRoom).length > 0);
 
   // Brigade roster — all 22 personas. Fetched once, cached in react-query.
@@ -470,12 +546,19 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   // when roomId changes the parent ChatPanel keys MessageInput by roomId,
   // so this component remounts and useState's lazy init reads the new draft.
   useEffect(() => {
-    saveDraft(roomId, content);
-  }, [roomId, content]);
+    saveDraft(storeKey, content);
+  }, [storeKey, content]);
 
   // Re-load draft when the room changes (covers same-component reuse).
   useEffect(() => {
-    setContent(getDraft(roomId));
+    setContent(getDraft(storeKey));
+  }, [storeKey]);
+
+  // What was attached to a message Home could not post arrives with its draft.
+  useEffect(() => {
+    if (!roomId) return;
+    const handed = useConversationUi.getState().takeAttachments(roomId);
+    if (handed.length > 0) setPending((current) => [...current, ...handed]);
   }, [roomId]);
 
   // Quote-reply: another component can request text be inserted into this
@@ -483,7 +566,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   // tangles — and consume the slot when we see something for our roomId.
   const pendingInsert = useAppStore((s) => s.pendingInsert);
   useEffect(() => {
-    if (!pendingInsert || pendingInsert.roomId !== roomId) return;
+    if (!roomId || !pendingInsert || pendingInsert.roomId !== roomId) return;
     const text = useAppStore.getState().consumeInsert(roomId);
     if (!text) return;
     setContent((prev) => (prev ? prev + "\n" + text : text));
@@ -508,7 +591,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   function handleChange(e: ChangeEvent<HTMLTextAreaElement>) {
     const value = e.target.value;
     setContent(value);
-    onTyping();
+    onTyping?.();
 
     const cursorPos = e.target.selectionStart;
     const textBeforeCursor = value.slice(0, cursorPos);
@@ -581,7 +664,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     const end = el.selectionEnd ?? start;
     const next = content.slice(0, start) + emoji + content.slice(end);
     setContent(next);
-    onTyping();
+    onTyping?.();
     requestAnimationFrame(() => {
       const pos = start + emoji.length;
       el.focus();
@@ -681,7 +764,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     }
 
     setContent(next);
-    onTyping();
+    onTyping?.();
     requestAnimationFrame(() => {
       el.focus();
       el.setSelectionRange(selStart, selEnd);
@@ -833,22 +916,41 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     }
   }
 
+  /** The box after a send that went out: empty, its draft gone. */
+  function clearAfterSend() {
+    setContent("");
+    clearDraft(storeKey);
+    setPending([]);
+    setShowMentions(false);
+    setShowEmojiPicker(false);
+    setShowEmojiPanel(false);
+    setShowSlashMenu(false);
+    setFormatBar(null);
+    requestAnimationFrame(() => adjustHeight());
+  }
+
   function handleSend() {
     const trimmed = content.trim();
     if (!trimmed && pending.length === 0) return;
+    if (sending || blockedReason) return;
     // Attachments upload on attach; hold the send until they've all landed so
     // a message never goes out silently missing an in-flight file.
     if (uploads.some((t) => t.status === "uploading")) return;
 
-    const threadCmd = parseThreadSlash(trimmed);
-    if (threadCmd) {
+    const threadCmd = roomId ? parseThreadSlash(trimmed) : null;
+    if (threadCmd && roomId) {
       setContent("");
       void beginThread({ roomId, title: threadCmd.title, navigate });
       requestAnimationFrame(() => adjustHeight());
       return;
     }
     // Slash command preprocessing — see SLASH_COMMANDS for the catalog.
-    const cmd = applySlashCommand(trimmed);
+    // With no room, /thread is not a command (there is nothing to hang a
+    // thread under), and what was typed is not swallowed: it is sent as it is.
+    const cmd =
+      roomId === null && /^\/thread(\s|$)/i.test(trimmed)
+        ? { text: trimmed }
+        : applySlashCommand(trimmed);
     if (cmd.text === null) {
       setContent("");
       requestAnimationFrame(() => adjustHeight());
@@ -858,21 +960,27 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
     // glyph (and other clients display correctly without our dictionary).
     const transformed = replaceEmojiShortcodes(cmd.text);
 
-    onSend(
+    const outcome = onSend(
       transformed,
       undefined,
       pending.length ? pending : undefined,
       cmd.metadata,
     );
-    setContent("");
-    clearDraft(roomId);
-    setPending([]);
-    setShowMentions(false);
-    setShowEmojiPicker(false);
-    setShowEmojiPanel(false);
-    setShowSlashMenu(false);
-    setFormatBar(null);
-    requestAnimationFrame(() => adjustHeight());
+    if (outcome instanceof Promise) {
+      // Awaited: what was typed stays in the box until the send says it went.
+      setSending(true);
+      outcome
+        .then((sent) => {
+          if (sent !== false) clearAfterSend();
+        })
+        .catch(() => {
+          /* The sender reports its own failure; the box keeps the text. */
+        })
+        .finally(() => setSending(false));
+      return;
+    }
+    if (outcome === false) return;
+    clearAfterSend();
   }
 
   function handleDragOver(e: DragEvent) {
@@ -978,6 +1086,11 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   }
 
   function handleStartCall(kind: CallKind = "voice") {
+    if (call) {
+      call.onCall(kind);
+      return;
+    }
+    if (!roomId) return;
     if (isConnecting) return;
     // Already in THIS room's call → nothing to start (the call surface is on
     // screen). Connected to a DIFFERENT room's call → connect() treats this as
@@ -1004,14 +1117,30 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
   // while attachments are still uploading (handleSend blocks then too).
   const uploadsInFlight = uploads.some((t) => t.status === "uploading");
   const canSend =
-    (content.trim().length > 0 || pending.length > 0) && !uploadsInFlight;
+    (content.trim().length > 0 || pending.length > 0) &&
+    !uploadsInFlight &&
+    !sending &&
+    !blockedReason;
+  // Who the message is for and its brain share the box with the input. On a
+  // phone they take a row of their own above it; from `sm` up they sit at
+  // its two ends — the brain between the input and the send button, which
+  // keeps the far end.
+  const slotted = leading != null || trailing != null;
+  const trailingInline = trailing != null && wide;
+  // A room's menus open upward, over the conversation. At the top of a page
+  // there is nothing above the box to open into.
+  const menuSide = menus === "below" ? "top-full mt-2" : "bottom-full mb-2";
+  const showCallButtons =
+    call === undefined ? roomId !== null && activeCallRoomId !== roomId && !isConnecting : call !== null;
 
   return (
     <div
       className={clsx(
-        "relative min-w-0 shrink-0 px-2 pt-1.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-3 md:px-6",
+        "relative min-w-0 shrink-0",
+        className ?? "px-2 pt-1.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-3 md:px-6",
         dragOver && "bg-stable-purple/5 ring-2 ring-inset ring-stable-purple/30",
       )}
+      data-testid="composer"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -1025,7 +1154,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
       {showEmojiPanel && (
         <div
           ref={emojiPanelRef}
-          className="absolute bottom-full left-3 z-30 mb-2 md:left-6"
+          className={clsx("absolute left-3 z-30 md:left-6", menuSide)}
         >
           <EmojiPicker
             onPick={insertEmojiAtCursor}
@@ -1039,7 +1168,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
 
       {showSlashMenu && slashMatches.length > 0 && (
         <div
-          className="glass-heavy absolute bottom-full left-3 right-3 z-30 mb-2 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6"
+          className={clsx(
+            "glass-heavy absolute left-3 right-3 z-30 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6",
+            menuSide,
+          )}
           role="listbox"
           aria-label="Slash command suggestions"
         >
@@ -1074,7 +1206,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
 
       {showEmojiPicker && emojiMatches.length > 0 && (
         <div
-          className="glass-heavy absolute bottom-full left-3 z-30 mb-2 max-h-48 w-72 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6"
+          className={clsx(
+            "glass-heavy absolute left-3 z-30 max-h-48 w-72 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6",
+            menuSide,
+          )}
           role="listbox"
           aria-label="Emoji suggestions"
         >
@@ -1101,7 +1236,10 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
 
       {showMentions && mentionSuggestions.length > 0 && (
         <div
-          className="glass-heavy absolute bottom-full left-3 right-3 z-30 mb-2 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6"
+          className={clsx(
+            "glass-heavy absolute left-3 right-3 z-30 max-h-48 overflow-y-auto rounded-xl p-1 shadow-pop animate-slide-up md:left-6 md:right-6",
+            menuSide,
+          )}
           role="listbox"
           aria-label="Mention suggestions"
         >
@@ -1228,8 +1366,31 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
         </div>
       )}
 
-      <div className="flex min-w-0 items-end gap-0.5 rounded-2xl border border-line bg-stable-glass px-1 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15 sm:gap-1 sm:px-1.5">
-        <div className="flex shrink-0 items-center pb-0.5 sm:gap-0.5 sm:pb-1">
+      <div
+        className={clsx(
+          "flex min-w-0 items-end gap-0.5 rounded-2xl border border-line bg-stable-glass px-1 py-1.5 shadow-soft backdrop-blur-xl transition focus-within:border-stable-purple/50 focus-within:ring-2 focus-within:ring-stable-purple/15 sm:gap-1 sm:px-1.5",
+          slotted && "max-sm:flex-wrap",
+        )}
+        data-testid="composer-box"
+      >
+        {leading != null && (
+          <div className="order-1 flex min-w-0 shrink items-center self-center max-sm:pl-1 sm:shrink-0 sm:pb-0.5">
+            {leading}
+          </div>
+        )}
+        {trailing != null && !trailingInline && (
+          <div className="order-2 ml-auto flex min-w-0 shrink items-center self-center pr-1">
+            {trailing}
+          </div>
+        )}
+        {/* The break after the phone's first row. */}
+        {slotted && <div className="order-3 h-0 basis-full sm:hidden" aria-hidden="true" />}
+        <div
+          className={clsx(
+            "flex shrink-0 items-center pb-0.5 sm:gap-0.5 sm:pb-1",
+            slotted && "order-4 sm:order-2",
+          )}
+        >
           <button
             onClick={handleFileSelect}
             className="rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 focus-ring md:p-1.5"
@@ -1262,10 +1423,18 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
           </button>
         </div>
 
-        <div className="relative min-w-0 flex-1">
+        <div
+          className={clsx(
+            "relative min-w-0 flex-1",
+            slotted && "order-5 sm:order-3",
+            trailingInline && "flex items-end",
+          )}
+        >
           <textarea
             ref={textareaRef}
             value={content}
+            readOnly={sending}
+            aria-busy={sending || undefined}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
@@ -1274,9 +1443,17 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             onBlur={() => setFormatBar(null)}
             placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
             rows={1}
-            className="w-full resize-none bg-transparent px-1.5 py-2.5 pr-11 text-base text-slate-100 placeholder:text-slate-500 outline-none sm:px-2.5 md:pr-10 md:text-sm"
+            className={clsx(
+              "resize-none bg-transparent px-1.5 py-2.5 text-base text-slate-100 placeholder:text-slate-500 outline-none sm:px-2.5 md:text-sm",
+              // The send button floats over the input's right edge; with the
+              // brain in line it floats over the brain's margin instead.
+              trailingInline ? "min-w-0 flex-1" : "w-full pr-11 md:pr-10",
+            )}
             aria-label="Message input"
           />
+          {trailingInline && (
+            <div className="mb-1.5 mr-11 flex shrink-0 items-center md:mb-2 md:mr-10">{trailing}</div>
+          )}
 
           <button
             onClick={handleSend}
@@ -1287,9 +1464,15 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
                 ? "gradient-bg glow-iris text-white hover:opacity-95 active:scale-[0.98]"
                 : "border border-line bg-surface-2 text-slate-500",
             )}
-            aria-label="Send message"
+            aria-label={sending ? "Sending" : "Send message"}
+            title={blockedReason ?? undefined}
+            data-testid="composer-send"
           >
-            <Send className="h-3.5 w-3.5" />
+            {sending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
           </button>
 
           {/* Selection format bar — gated off whenever an autocomplete menu is
@@ -1309,9 +1492,9 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             instead of hiding all three behind a menu (desktop only — a phone
             composer has no room for a fourth icon, and a ring there is
             what the caller wants). */}
-        {activeCallRoomId !== roomId && !isConnecting && (
-          <>
-            {quietJoin && (
+        {showCallButtons && (
+          <div className={clsx("flex shrink-0 items-end gap-0.5 sm:gap-1", slotted && "order-6 sm:order-5")}>
+            {quietJoin && roomId && !call && (
               <button
                 onClick={() => void startCall(roomId, { kind: "voice", ring: false })}
                 className="hidden shrink-0 rounded-lg p-2.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-stable-mint focus-ring sm:inline-flex md:p-1.5 md:pb-2.5"
@@ -1348,7 +1531,7 @@ export function MessageInput({ roomId, onSend, onTyping, onEditLast, disabledRea
             >
               <Phone className="h-4 w-4" />
             </button>
-          </>
+          </div>
         )}
       </div>
 

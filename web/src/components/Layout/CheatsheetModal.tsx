@@ -13,6 +13,7 @@ interface Row {
 
 const KEYS: Row[] = [
   { combo: `${mod} K`, desc: "Quick channel switcher" },
+  { combo: `${mod} ⇧ K`, desc: "Home's composer — message a seat, from anywhere" },
   { combo: `${mod} \u21e7 F`, desc: "Search messages across all channels" },
   { combo: `${mod} /`, desc: "This cheatsheet" },
   { combo: "?", desc: "This cheatsheet (outside inputs)" },

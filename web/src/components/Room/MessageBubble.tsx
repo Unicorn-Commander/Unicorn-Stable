@@ -1,3 +1,5 @@
+import { isSystemLine, systemLineText } from "@/lib/systemLines";
+import { threadSeedOf } from "@/lib/conversation";
 import { useState, useRef, useEffect, useMemo, createElement } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -1091,7 +1093,7 @@ function PromoteToProjectOpsModal({
     return () => {
       active = false;
     };
-  }, []);
+  }, [message.room_id]);
 
   const preview = buildDescriptionPreview(message, description);
 
@@ -1266,6 +1268,8 @@ export function MessageBubble({
   const delegated = delegationMeta(message);
   const pushToast = useAppStore((s) => s.pushToast);
   const updateMessage = useAppStore((s) => s.updateMessage);
+  // The roster, to put a name on a system line's participant id.
+  const roomMembers = useAppStore((s) => s.participants[message.room_id]);
   const queryClient = useQueryClient();
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   const canDecideAction = useAppStore((s) => {
@@ -1717,11 +1721,29 @@ export function MessageBubble({
     }
   }
 
-  if (message.sender_type === "system") {
+  // A thread's seed line is a quote under its true author: it says where it
+  // came from rather than reading as a fresh message from them.
+  const seed = threadSeedOf(message);
+  if (seed) {
     return (
-      <div className="flex justify-center py-2">
-        <p className="rounded-full border border-line bg-white/[0.04] px-4 py-1 text-xs text-slate-400">
+      <div className="px-4 py-2" data-testid="thread-seed">
+        <p className="text-[11px] font-medium text-slate-500">{seed.label}</p>
+        <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-line-strong pl-3 text-sm leading-relaxed text-slate-300">
           {message.content}
+        </blockquote>
+      </div>
+    );
+  }
+
+  // A line the server wrote as "system" — whoever its sender_id is (the
+  // parent's thread line is under its creator). The server's text names
+  // nobody; the starter, the reason and the thread's title come from the
+  // line's metadata.
+  if (isSystemLine(message)) {
+    return (
+      <div className="flex justify-center py-2" data-testid="system-line">
+        <p className="rounded-full border border-line bg-white/[0.04] px-4 py-1 text-center text-xs text-slate-400">
+          {systemLineText(message, roomMembers) ?? message.content}
         </p>
       </div>
     );

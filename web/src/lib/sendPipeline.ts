@@ -519,3 +519,82 @@ export class SendFlow {
     }
   }
 }
+
+/** The content types a client may say. "system" is the server's (a 422). */
+export const CLIENT_CONTENT_TYPES = ["text", "action", "image", "file"] as const;
+export type ClientContentType = (typeof CLIENT_CONTENT_TYPES)[number];
+
+/** Wire content_type for a send request. Older `failed_request` snapshots
+ *  predate the explicit field — re-derive it from the attachments then, and
+ *  likewise for any value a client may not say. */
+export function contentTypeForRequest(req: OutgoingSendRequest): ClientContentType {
+  const said: unknown = req.content_type;
+  if (typeof said === "string" && (CLIENT_CONTENT_TYPES as readonly string[]).includes(said)) {
+    return said as ClientContentType;
+  }
+  const hasImage = (req.attachments ?? []).some((a) =>
+    a.content_type.startsWith("image/"),
+  );
+  if (hasImage) return "image";
+  if (req.attachments?.length) return "file";
+  return "text";
+}
+
+/** The body of a message-create POST, exactly as it leaves. */
+export interface SendRequestBody {
+  content: string;
+  content_type: ClientContentType;
+  client_msg_id: string;
+  metadata?: Record<string, unknown>;
+  thread_id?: string;
+  model?: string;
+}
+
+/**
+ * THE body of one send — first attempts, the automatic retry and manual
+ * Retry taps all post exactly this. Metadata is the attachments plus what
+ * the composer's command attached; the ACK id, the thread and the model
+ * override are top-level fields, never metadata.
+ */
+export function buildSendRequest(
+  send: Pick<TrackedSend, "clientMsgId" | "request">,
+  modelOverride?: string | null,
+): SendRequestBody {
+  const req = send.request;
+  const body: SendRequestBody = {
+    content: req.content,
+    content_type: contentTypeForRequest(req),
+    client_msg_id: send.clientMsgId,
+  };
+  const meta: Record<string, unknown> = {};
+  if (req.attachments?.length) meta.attachments = req.attachments;
+  if (req.extraMetadata) Object.assign(meta, req.extraMetadata);
+  if (Object.keys(meta).length > 0) body.metadata = meta;
+  if (req.thread_id) body.thread_id = req.thread_id;
+  if (modelOverride) body.model = modelOverride;
+  return body;
+}
+
+/**
+ * The client metadata keys the server KEEPS on message create. Anything
+ * else is dropped with a 201 — silently — so nothing the web sends may
+ * rely on another key surviving the round trip. (`content_type: "system"`
+ * is a 422: system lines are the server's, or local-only receipts.)
+ */
+export const SERVER_KEPT_METADATA_KEYS = [
+  "attachments",
+  "research",
+  "facilitate",
+  "council",
+  "poll",
+  "client_msg_id",
+] as const;
+
+/** The keys of a send's metadata the server would drop. Empty is the contract. */
+export function droppedMetadataKeys(
+  metadata: Record<string, unknown> | null | undefined,
+): string[] {
+  const kept = new Set<string>(SERVER_KEPT_METADATA_KEYS);
+  return Object.keys(metadata ?? {}).filter((key) => !kept.has(key));
+}
+

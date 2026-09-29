@@ -1,3 +1,4 @@
+import { lastLinePreview } from "@/lib/systemLines";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -29,7 +30,7 @@ import {
 import clsx from "clsx";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Room } from "@/services/api";
+import { api, type Message, type Room } from "@/services/api";
 import { ws } from "@/services/websocket";
 import {
   isMuted,
@@ -83,6 +84,7 @@ import {
   type SidebarView,
 } from "./sidebarModel";
 import { ViewSwitcher } from "./ViewSwitcher";
+import { CrewSection } from "./CrewSection";
 import { CreateDmModal } from "./CreateDmModal";
 import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
@@ -97,6 +99,7 @@ import type { PeopleDirectoryEntry } from "@/services/api";
 
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { HomeRail } from "@/components/Home/HomeRail";
+import { useIsDesktop } from "@/hooks/usePanelResize";
 
 /** Active workspace, pinned above the one Conversations list. */
 function WorkspaceTitle() {
@@ -110,14 +113,17 @@ function WorkspaceTitle() {
     ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
     : "Stable";
   return (
-    <div className="shrink-0 px-3 pt-2" data-testid="conversation-list-header">
+    <div
+      className="flex h-6 shrink-0 items-baseline gap-2 px-1"
+      data-testid="conversation-list-header"
+    >
       <p
         data-testid="workspace-name"
-        className="truncate text-sm font-semibold text-slate-50"
+        className="min-w-0 truncate text-sm font-semibold text-slate-50"
       >
         {name}
       </p>
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+      <h2 className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         Conversations
       </h2>
     </div>
@@ -167,6 +173,29 @@ function DraftPencil() {
   );
 }
 
+/** "Name: line" for a message; a system line is its own sentence, unnamed. */
+function LastLine({
+  message,
+  nameClassName,
+  format,
+}: {
+  message: Message;
+  nameClassName: string;
+  format: (content: string) => string;
+}) {
+  const line = lastLinePreview(message);
+  return (
+    <>
+      {line.sender && (
+        <>
+          <span className={nameClassName}>{line.sender}:</span>{" "}
+        </>
+      )}
+      {format(line.text)}
+    </>
+  );
+}
+
 export function RoomList() {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -189,11 +218,21 @@ export function RoomList() {
   const navV1 = isNavV1Enabled();
   const activeView = useNavStore((s) => s.activeView);
   const storedV2Destination = useNavStore((s) => s.v2Destination);
+  const isDesktop = useIsDesktop();
   // Directory follows the URL. A stored "directory" on any other path is Home.
-  const v2Destination = shellDestinationForPath(
+  const routedV2Destination = shellDestinationForPath(
     location.pathname,
     storedV2Destination,
   );
+  // Crew and Calls are phone tabs (Nav v3 §2.6). On a desktop the crew is a
+  // section above the one list and standing rooms are channel rows in it.
+  // Home has no rail of its own (§2.7): one rail, always — on Home it is the
+  // same Crew and Conversations, with the same search and New.
+  const v2Destination =
+    routedV2Destination === "home" ||
+    (isDesktop && (routedV2Destination === "crew" || routedV2Destination === "calls"))
+      ? "conversations"
+      : routedV2Destination;
   const conversationFilter = useNavStore((s) => s.conversationFilter);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rememberRoom = useNavStore((s) => s.rememberRoom);
@@ -210,7 +249,14 @@ export function RoomList() {
   useDraftVersion();
   // Model view: classic mode always builds the full tree. The one list builds
   // its own rows (view "all") so a Meetings/Direct activeView cannot hide them.
-  const modelView: SidebarView = navV2 ? "all" : navV1 ? activeView : "all";
+  // The phone's Calls tab is the standing-room list (the v1 Meetings body).
+  const modelView: SidebarView = navV2
+    ? v2Destination === "calls"
+      ? "meetings"
+      : "all"
+    : navV1
+      ? activeView
+      : "all";
   // The agent the "New chat" button + the primary conversation section key off
   // (the user's chosen default, else Majik, else the first agent).
   const defaultAgent = resolveDefaultAgent(agents, defaultAgentId);
@@ -255,8 +301,12 @@ export function RoomList() {
       rememberRoom(scope, view, id);
       // Standing rooms stay channels in the one list. viewForRoom still
       // records the v1 slot so the five-view fallback can restore Meetings.
-      if (navV2) setV2Destination("conversations");
-      else if (navV1) setActiveView(view);
+      // A room opened from the phone's Crew or Calls tab keeps that tab.
+      if (navV2) {
+        if (v2Destination !== "crew" && v2Destination !== "calls") {
+          setV2Destination("conversations");
+        }
+      } else if (navV1) setActiveView(view);
     }
     navigate(`/c/${id}`);
     // On mobile the sidebar is an overlay drawer; close it after selecting a
@@ -629,7 +679,9 @@ export function RoomList() {
     queryKey: ["conference-catalog", scope],
     queryFn: () => api.getConferenceCatalog(),
     staleTime: 5 * 60_000,
-    enabled: !navV2 && navV1 && activeView === "meetings",
+    enabled:
+      (!navV2 && navV1 && activeView === "meetings") ||
+      (navV2 && v2Destination === "calls"),
   });
   // Hide catalog entries the user already joined (matched by display label).
   const unjoinedConferenceCatalog = useMemo(() => {
@@ -880,9 +932,12 @@ export function RoomList() {
         }}
         className={clsx(
           "focus-ring mr-1 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100 md:p-1",
+          // At rest on a desktop the trigger takes no room (it used to
+          // reserve a column while invisible); hover or keyboard focus in
+          // the row brings it, and a touch device always has it.
           open || alwaysVisible
             ? "opacity-100"
-            : "opacity-70 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+            : "opacity-70 md:hidden md:opacity-100 md:group-hover:block md:group-focus-within:block [@media(hover:none)]:block",
         )}
         aria-label={label}
         aria-haspopup="menu"
@@ -1070,7 +1125,7 @@ export function RoomList() {
               </div>
               {room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
-                  {formatLastMessage(room.last_message.content)}
+                  {formatLastMessage(lastLinePreview(room.last_message).text)}
                 </p>
               )}
             </div>
@@ -1135,12 +1190,19 @@ export function RoomList() {
     );
   }
 
-  function agentDisplayName(agentId: string, threads: Room[]): string {
+  function agentDisplayName(agentId: string, hub: Room | null, threads: Room[]): string {
     const rosterAgent = agents.find((a) => a.id === agentId);
     if (rosterAgent) return rosterAgent.display_name || rosterAgent.name;
-    // Roster not loaded (or agent retired): fall back to the room label
-    // without its "Chat with " prefix.
-    const label = threads[0]?.display_name || threads[0]?.name || agentId;
+    // A runner seat is never in the Brigade roster: its hub names it. Only
+    // a legacy DM with no hub falls back to the newest room's label (minus
+    // its "Chat with " prefix) — never a thread's title.
+    const label =
+      hub?.counterpart?.display_name ||
+      hub?.display_name ||
+      hub?.name ||
+      threads[0]?.display_name ||
+      threads[0]?.name ||
+      agentId;
     return label.replace(/^chat with /i, "");
   }
 
@@ -1185,10 +1247,7 @@ export function RoomList() {
               <span className="truncate text-[13px]">
                 {room.last_message ? (
                   <>
-                    <span className="font-medium">
-                      {room.last_message.sender_name}:
-                    </span>{" "}
-                    {formatLastMessage(room.last_message.content)}
+                    <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                   </>
                 ) : (
                   <span className="italic text-slate-500">
@@ -1226,7 +1285,7 @@ export function RoomList() {
     const isAgent = entry.kind === "agent";
     const threads = entry.threads;
     const name = isAgent
-      ? agentDisplayName(entry.agentId, threads)
+      ? agentDisplayName(entry.agentId, entry.hub, threads)
       : entry.name;
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
@@ -1377,14 +1436,21 @@ export function RoomList() {
               <div className="flex items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className="truncate text-sm font-medium"
+                    className="min-w-[3.5rem] truncate text-sm font-medium"
                     style={isAgent ? { color: ident.text } : undefined}
                   >
                     {name}
                   </span>
-                  {isAgent && entry.kind === "agent" && entry.mode && (
-                    <AgentModeChip mode={entry.mode} compact />
-                  )}
+                  {/* Only a mode that differs from a private conversation's
+                      default says anything; "Answers everyone" on every hub
+                      was noise that cost the name its room. When shown, the
+                      chip gives way before the name does. */}
+                  {isAgent &&
+                    entry.kind === "agent" &&
+                    entry.mode &&
+                    entry.mode !== "answers_all" && (
+                      <AgentModeChip mode={entry.mode} compact className="min-w-0 shrink-[3]" />
+                    )}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <LiveCallBadge
@@ -1425,7 +1491,7 @@ export function RoomList() {
           <button
             onClick={() => void startThreadOn(entry.hub.id)}
             disabled={startingChat}
-            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+            className="focus-ring rounded-md p-1 text-slate-500 opacity-60 transition-all hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40 md:hidden md:opacity-100 md:group-hover:block md:group-focus-within:block [@media(hover:none)]:block"
             aria-label={`New thread with ${name}`}
             title={`New thread with ${name}`}
           >
@@ -1607,10 +1673,7 @@ export function RoomList() {
               </div>
               {room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
-                  <span className="font-medium text-slate-500">
-                    {room.last_message.sender_name}:
-                  </span>{" "}
-                  {formatLastMessage(room.last_message.content)}
+                  <LastLine message={room.last_message} nameClassName="font-medium text-slate-500" format={formatLastMessage} />
                 </p>
               )}
             </div>
@@ -2116,10 +2179,7 @@ export function RoomList() {
                     <span className="min-w-0 flex-1 truncate text-[13px]">
                       {room.last_message ? (
                         <>
-                          <span className="font-medium">
-                            {room.last_message.sender_name}:
-                          </span>{" "}
-                          {formatLastMessage(room.last_message.content)}
+                          <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                         </>
                       ) : (
                         <span className="italic text-slate-500">
@@ -2319,7 +2379,7 @@ export function RoomList() {
     );
   }
 
-  /** Home: crew and conversations. The destination switcher stays on the rail. */
+  /** Home in the five-view shell (the flag's fallback) keeps its own rail. */
   function renderHomeBody() {
     return <HomeRail onOpenRoom={openRoom} />;
   }
@@ -2356,6 +2416,26 @@ export function RoomList() {
       ? rooms.find((room) => room.id === activeRoomId)
       : undefined;
     return (
+      <>
+        {/* Desktop: the crew pinned above the list (Nav v3 §2.1). The phone
+            has a Crew tab instead, and the section renders nothing there. */}
+        <CrewSection variant="section" onOpenRoom={openRoom} />
+        <div>
+          {/* The workspace title and the filters stay put while the list
+              scrolls under them; Mark read sits beside the filters, where it
+              reads as a Conversations action, not a Crew one. */}
+          <div
+            className="sticky top-0 z-10 -mx-2 bg-surface-0/95 px-2 pb-1 backdrop-blur-md"
+            data-testid="conversation-list-sticky"
+          >
+            <WorkspaceTitle />
+            <div className="flex items-start gap-1">
+              <div className="min-w-0 flex-1">
+                <ViewSwitcher />
+              </div>
+              {renderMarkReadButton(true)}
+            </div>
+          </div>
       <section data-testid="conversations-card" aria-label="Conversations">
         {conversationFilter === "channels" && (
           <div className="flex items-center justify-between px-2.5 pb-1">
@@ -2399,7 +2479,14 @@ export function RoomList() {
           standing={activeRoom?.is_conference === true}
         />
       </section>
+        </div>
+      </>
     );
+  }
+
+  /** The phone's Crew tab: everyone, grouped, no cap (Nav v3 §2.6). */
+  function renderCrewBody() {
+    return <CrewSection variant="page" onOpenRoom={openRoom} />;
   }
 
   /** Directory is the Agents page in the main pane, not a second conversation list. */
@@ -2450,8 +2537,9 @@ export function RoomList() {
   function renderNavBody() {
     if (!roomsLoaded) return renderNavSkeleton();
     if (navV2) {
-      if (v2Destination === "home") return renderHomeBody();
       if (v2Destination === "directory") return renderDirectoryBody();
+      if (v2Destination === "crew") return renderCrewBody();
+      if (v2Destination === "calls") return renderMeetingsBody();
       return renderConversationBody();
     }
     if (!navV1) {
@@ -2521,12 +2609,42 @@ export function RoomList() {
     }
   }
 
-  // Search + New chat: hide on Home. The one list shows them; Directory does not.
+  /** Mark every visible unread room read. Compact = icon only, beside the filters. */
+  function renderMarkReadButton(compact: boolean) {
+    return (
+      <button
+        type="button"
+        onClick={markVisibleSectionRead}
+        disabled={markingAllRead || visibleUnreadTargets.length === 0}
+        className={clsx(
+          "focus-ring shrink-0 rounded-lg border border-line text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40",
+          compact ? "p-1.5" : "px-2 py-1",
+        )}
+        aria-label={
+          visibleUnreadTargets.length === 0
+            ? "No unread rooms to mark as read"
+            : `Mark ${visibleUnreadTargets.length} visible room${visibleUnreadTargets.length === 1 ? "" : "s"} as read`
+        }
+        title="Mark all visible as read"
+        data-testid="mark-visible-read"
+      >
+        <span className="inline-flex items-center gap-1">
+          <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+          {!compact && <span className="hidden sm:inline">Mark read</span>}
+        </span>
+      </button>
+    );
+  }
+
+  // Search + New chat: hide on Home. The one list and the Crew tab show them;
+  // Directory and Calls do not.
   const showToolbar = navV2
-    ? v2Destination === "conversations"
+    ? v2Destination === "conversations" || v2Destination === "crew"
     : !navV1 || activeView !== "home";
   const searchPlaceholder = navV2
-    ? "Search conversations…"
+    ? v2Destination === "crew"
+      ? "Search crew…"
+      : "Search conversations…"
     : activeView === "agents"
       ? "Search agents…"
       : activeView === "channels"
@@ -2609,32 +2727,10 @@ export function RoomList() {
               </button>
             </div>
             )}
-            <button
-              type="button"
-              onClick={markVisibleSectionRead}
-              disabled={markingAllRead || visibleUnreadTargets.length === 0}
-              className="focus-ring shrink-0 rounded-lg border border-line px-2 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label={
-                visibleUnreadTargets.length === 0
-                  ? "No unread rooms to mark as read"
-                  : `Mark ${visibleUnreadTargets.length} visible room${visibleUnreadTargets.length === 1 ? "" : "s"} as read`
-              }
-              title="Mark all visible as read"
-            >
-              <span className="inline-flex items-center gap-1">
-                <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                <span className="hidden sm:inline">Mark read</span>
-              </span>
-            </button>
+            {/* The one list carries Mark read beside its filters instead. */}
+            {!navV2 && renderMarkReadButton(false)}
           </div>
         </div>
-      )}
-
-      {navV2 && v2Destination === "conversations" && (
-        <>
-          <WorkspaceTitle />
-          <ViewSwitcher />
-        </>
       )}
 
       <nav

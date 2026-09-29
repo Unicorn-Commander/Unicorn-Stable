@@ -28,6 +28,28 @@ interface ConversationUiState {
   inviteSheetRoomId: string | null;
   openInviteSheet: (roomId: string) => void;
   closeInviteSheet: () => void;
+  /** The phone's Me tab sheet (profile, People, Activity, Saved, Settings, Sign out). */
+  meSheetOpen: boolean;
+  openMeSheet: () => void;
+  closeMeSheet: () => void;
+  /** Bumped to put the cursor in Home's composer (the shortcut, "Message …"). */
+  homeComposerNonce: number;
+  focusHomeComposer: () => void;
+  /**
+   * Attachments on their way to a room's composer: a message that could not
+   * be posted into a conversation Home just created lands there as a draft,
+   * and what was attached goes with it. Taken once, by that room's composer.
+   */
+  handedAttachments: Record<string, HandedAttachment[]>;
+  handAttachments: (roomId: string, attachments: HandedAttachment[]) => void;
+  takeAttachments: (roomId: string) => HandedAttachment[];
+}
+
+export interface HandedAttachment {
+  url: string;
+  filename: string;
+  content_type: string;
+  size: number;
 }
 
 export const useConversationUi = create<ConversationUiState>((set, get) => ({
@@ -58,4 +80,27 @@ export const useConversationUi = create<ConversationUiState>((set, get) => ({
   inviteSheetRoomId: null,
   openInviteSheet: (roomId) => set({ inviteSheetRoomId: roomId }),
   closeInviteSheet: () => set({ inviteSheetRoomId: null }),
+  meSheetOpen: false,
+  openMeSheet: () => set({ meSheetOpen: true }),
+  closeMeSheet: () => set({ meSheetOpen: false }),
+  homeComposerNonce: 0,
+  focusHomeComposer: () => set((s) => ({ homeComposerNonce: s.homeComposerNonce + 1 })),
+  handedAttachments: {},
+  handAttachments: (roomId, attachments) =>
+    set((s) => {
+      const next = { ...s.handedAttachments };
+      if (attachments.length > 0) next[roomId] = attachments;
+      else delete next[roomId];
+      return { handedAttachments: next };
+    }),
+  takeAttachments: (roomId) => {
+    const handed = get().handedAttachments[roomId];
+    if (!handed) return [];
+    set((s) => {
+      const next = { ...s.handedAttachments };
+      delete next[roomId];
+      return { handedAttachments: next };
+    });
+    return handed;
+  },
 }));
