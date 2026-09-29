@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, Cpu, Lock, X } from "lucide-react";
 import clsx from "clsx";
-import { api, type Room, type RoomAgentMember, type RoomMember } from "@/services/api";
+import { api, type Room, type RoomAgentMember, type RoomMember, type RoomSeat } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { Identity } from "@/components/ui/Identity";
@@ -28,10 +28,21 @@ import {
   seatOwnerPossessive,
 } from "@/lib/seatSettings";
 
+/**
+ * The brain of a conversation that does not exist yet (Home's composer):
+ * nothing is written, the choice is handed back, and the caller applies it
+ * to the thread it creates. There is no member row yet, so no Mode.
+ */
+export interface SeatDraft {
+  seat: RoomSeat;
+  onChange: (seat: RoomSeat) => void;
+}
+
 export interface SeatSettingsProps {
-  roomId: string;
+  /** The room whose seat this is. Absent with `draft`. */
+  roomId?: string;
   /** The room detail (`["room", roomId]`) — its `agents[]` rows carry the mode. */
-  room: Room | null | undefined;
+  room?: Room | null;
   match: SeatMemberMatch;
   /** Controlled by the room: the header chip, the phone's More entry and `?seat=1` all open it. */
   open: boolean;
@@ -39,9 +50,16 @@ export interface SeatSettingsProps {
   /** The server said 409 "no runner seat here" — this room has no seat after all. */
   onNoSeat?: () => void;
   /** Mode writes need room owner/admin; others see the mode, read-only. */
-  canEditMode: boolean;
+  canEditMode?: boolean;
   /** More than one seat in the room: the chip says whose it is. */
   labelled?: boolean;
+  draft?: SeatDraft;
+  /**
+   * "header": the room header's chip — hidden on a phone, whose bar is full
+   * (More carries the entry). "composer": beside an input, shown at every
+   * width, its panel hung from its right edge.
+   */
+  variant?: "header" | "composer";
 }
 
 const PHONE_QUERY = "(max-width: 639px)";
@@ -81,12 +99,14 @@ export function SeatSettings({
   open,
   onOpenChange,
   onNoSeat,
-  canEditMode,
+  canEditMode = false,
   labelled = false,
+  draft,
+  variant = "header",
 }: SeatSettingsProps) {
   const qc = useQueryClient();
-  const storeRoom = useAppStore((s) => s.rooms.find((r) => r.id === roomId));
-  const participants = useAppStore((s) => s.participants[roomId]);
+  const storeRoom = useAppStore((s) => (roomId ? s.rooms.find((r) => r.id === roomId) : undefined));
+  const participants = useAppStore((s) => (roomId ? s.participants[roomId] : undefined));
   const chipRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -95,7 +115,7 @@ export function SeatSettings({
   const caps = match.member.seat_capabilities;
   const agentId = match.member.agent_id;
   const pid = match.participantId;
-  const seat = readRoomSeat(storeRoom?.metadata_ ? storeRoom : room, agentId);
+  const seat = draft ? draft.seat : readRoomSeat(storeRoom?.metadata_ ? storeRoom : room, agentId);
   const label = seatChipLabel(seat, caps);
   const editable = match.editable;
   const rowMatches = (row: { participant_id?: string | null; agent_id?: string | null }) =>
@@ -134,6 +154,12 @@ export function SeatSettings({
 
   async function writeSeat(next: { model: string | null; effort: string | null }) {
     if (busy || !editable) return;
+    if (draft) {
+      // No room yet: the pick is kept by the caller and written with the thread.
+      draft.onChange(next);
+      return;
+    }
+    if (!roomId) return;
     setBusy("seat");
     const state = useAppStore.getState();
     const before = state.rooms.find((r) => r.id === roomId) ?? room ?? null;
@@ -177,6 +203,7 @@ export function SeatSettings({
 
   /** The mode, written into every copy of the row: the room detail, the store room, the members roster. */
   function placeMode(value: AgentMode | null) {
+    if (!roomId) return;
     const patchAgents = (rows: RoomAgentMember[] | undefined) =>
       (rows ?? []).map((row) => (rowMatches(row) ? { ...row, agent_mode: value } : row));
     const patchMembers = (rows: RoomMember[]) =>
@@ -193,7 +220,7 @@ export function SeatSettings({
   }
 
   async function writeMode(next: AgentMode) {
-    if (busy || !editable || !canEditMode) return;
+    if (busy || !editable || !canEditMode || !roomId) return;
     setBusy("mode");
     const previous = mode;
     placeMode(next);
@@ -232,11 +259,16 @@ export function SeatSettings({
     />
   );
 
+  // The header's chip leaves a phone's bar; the composer's is always there,
+  // and on a phone it is tall enough for a finger.
+  const chipDisplay =
+    variant === "composer" ? "inline-flex max-sm:min-h-9 max-sm:px-2.5" : "hidden sm:inline-flex";
+
   if (!editable) {
     if (!label) return null;
     return (
       <span
-        className={clsx(chipClass, "hidden border-line bg-white/[0.03] text-slate-400 sm:inline-flex")}
+        className={clsx(chipClass, chipDisplay, "border-line bg-white/[0.03] text-slate-400")}
         title={`${label} — ${ownerName ? `${ownerName} seat` : "a partner's seat"}; only its owner can change it`}
         data-testid="seat-chip"
         data-editable="false"
@@ -264,15 +296,19 @@ export function SeatSettings({
       data-testid="seat-settings"
       data-agent-id={agentId}
       className={clsx(
-        "glass-heavy flex max-h-[min(70dvh,32rem)] flex-col overflow-y-auto rounded-xl py-1 shadow-pop",
+        "flex max-h-[min(70dvh,32rem)] flex-col overflow-y-auto rounded-xl py-1 shadow-pop",
+        // Inside the composer's box a glass panel has nothing to blur (the
+        // box has a backdrop filter of its own), so there it is solid.
         phone
-          ? "fixed inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-[60] w-auto"
-          : "absolute left-0 top-full z-50 mt-1 w-72",
+          ? "glass-heavy fixed inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-[60] w-auto"
+          : variant === "composer"
+            ? "absolute right-0 top-full z-50 mt-1 w-72 border border-line bg-surface-1"
+            : "glass-heavy absolute left-0 top-full z-50 mt-1 w-72",
       )}
     >
       <div className="flex items-center justify-between px-3 pb-1 pt-1.5">
         <p className="min-w-0 truncate text-xs font-semibold text-slate-100">
-          {match.member.display_name} · this conversation
+          {match.member.display_name} · {draft ? "new conversation" : "this conversation"}
         </p>
         <button
           type="button"
@@ -384,6 +420,8 @@ export function SeatSettings({
         })}
       </div>
 
+      {draft ? null : (
+        <>
       <p id={`seat-mode-heading-${agentId}`} className="px-3 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         Mode
       </p>
@@ -419,8 +457,12 @@ export function SeatSettings({
           </span>
         </p>
       )}
+        </>
+      )}
       <p className="px-3 pb-1.5 pt-2 text-[11px] leading-snug text-slate-500">
-        Applies from the next reply in this conversation only.
+        {draft
+          ? "Applies to the conversation you start here, and only to it."
+          : "Applies from the next reply in this conversation only."}
       </p>
     </div>
   );
@@ -433,15 +475,26 @@ export function SeatSettings({
         onClick={() => onOpenChange(!open)}
         className={clsx(
           chipClass,
-          "focus-ring hidden transition-colors sm:inline-flex",
+          chipDisplay,
+          "focus-ring transition-colors",
           isDefaultSeat(seat)
             ? "border-line bg-white/[0.03] text-slate-300 hover:border-line-strong hover:text-slate-100"
             : "border-stable-cyan/40 bg-stable-cyan/10 text-stable-cyan hover:bg-stable-cyan/15",
         )}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`Brain for ${match.member.display_name} in this conversation: ${label ?? "seat default"}. Change model, effort or mode`}
-        title={isDefaultSeat(seat) ? `${label ?? "Seat default"} — the seat's default` : `${label} — set for this conversation`}
+        aria-label={
+          draft
+            ? `Brain for a new conversation with ${match.member.display_name}: ${label ?? "seat default"}. Change model or effort`
+            : `Brain for ${match.member.display_name} in this conversation: ${label ?? "seat default"}. Change model, effort or mode`
+        }
+        title={
+          isDefaultSeat(seat)
+            ? `${label ?? "Seat default"} — the seat's default`
+            : draft
+              ? `${label} — for the conversation you start`
+              : `${label} — set for this conversation`
+        }
         data-testid="seat-chip"
         data-editable="true"
         data-agent-id={agentId}

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
-import { api, type Room, type RoomMember } from "@/services/api";
+import { api, type Room, type RoomMember, type RoomSeat } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { CREW_FIXTURE, PERSEPHONE_HUB_ID, PERSEPHONE_MEMBER } from "@/mocks/crewFixture";
 import { findSeatMember, type SeatMemberMatch } from "@/lib/seatSettings";
@@ -295,5 +295,65 @@ describe("SeatSettings", () => {
     expect(chip).toHaveTextContent("Shafen’s Flow · Fable 5.1 · high");
     expect(chip.querySelector('[data-testid="seat-chip-lock"]')).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  describe("for a conversation that does not exist yet", () => {
+    function Draft({ onPick }: { onPick: (seat: RoomSeat) => void }) {
+      const [open, setOpen] = useState(false);
+      const [seat, setSeat] = useState<RoomSeat>({ model: null, effort: null });
+      const match = findSeatMember(hub(), [PERSEPHONE_MEMBER], CREW_FIXTURE)!;
+      return (
+        <SeatSettings
+          match={match}
+          open={open}
+          onOpenChange={setOpen}
+          variant="composer"
+          draft={{
+            seat,
+            onChange: (next) => {
+              setSeat(next);
+              onPick(next);
+            },
+          }}
+        />
+      );
+    }
+
+    it("hands the pick back and writes nothing", () => {
+      const update = spy(vi.spyOn(api, "updateRoom"));
+      const mode = spy(vi.spyOn(api, "setAgentMode"));
+      const onPick = vi.fn();
+      render(<Draft onPick={onPick} />, { wrapper: Wrapper });
+      const chip = screen.getByTestId("seat-chip");
+      expect(chip).toHaveTextContent("Fable 5.1 · high");
+      // Beside an input the chip is there at every width.
+      expect(chip.className).toContain("inline-flex");
+      expect(chip.className).not.toContain("hidden");
+      fireEvent.click(chip);
+      expect(screen.getByRole("dialog", { name: "Seat settings for Persephone" })).toHaveTextContent(
+        "Persephone · new conversation",
+      );
+      fireEvent.click(screen.getByTestId("seat-model-claude-opus-5-5"));
+      expect(onPick).toHaveBeenLastCalledWith({ model: "claude-opus-5-5", effort: null });
+      expect(screen.getByTestId("seat-chip")).toHaveTextContent("Opus 5.5 · high");
+      fireEvent.click(screen.getByTestId("seat-effort-max"));
+      expect(onPick).toHaveBeenLastCalledWith({ model: "claude-opus-5-5", effort: "max" });
+      expect(screen.getByTestId("seat-chip")).toHaveTextContent("Opus 5.5 · max");
+      fireEvent.click(screen.getByTestId("seat-default"));
+      expect(onPick).toHaveBeenLastCalledWith({ model: null, effort: null });
+      expect(update).not.toHaveBeenCalled();
+      expect(mode).not.toHaveBeenCalled();
+    });
+
+    it("has no Mode: there is no member row to set it on", () => {
+      render(<Draft onPick={() => {}} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByTestId("seat-chip"));
+      expect(screen.getAllByRole("radiogroup")).toHaveLength(1);
+      expect(screen.queryByTestId("seat-mode-listening")).toBeNull();
+      expect(screen.queryByTestId("seat-mode-readonly")).toBeNull();
+      expect(screen.getByTestId("seat-settings")).toHaveTextContent(
+        "Applies to the conversation you start here, and only to it.",
+      );
+    });
   });
 });
