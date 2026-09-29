@@ -1,3 +1,11 @@
+import {
+  continueWalk,
+  isEditableTarget,
+  releaseWalk,
+  roomIdFromPath,
+  walkBlockedBy,
+  type KeyboardWalk,
+} from "@/lib/keyboardWalk";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -26,6 +34,7 @@ import {
   shellDestinationForPath,
   useNavStore,
   viewForRoom,
+  listDestination,
 } from "@/stores/navStore";
 import {
   buildConversationRows,
@@ -140,6 +149,8 @@ function SurfaceLoading() {
  * this index whenever that row still holds the active room.
  */
 let lastKeyboardIndex: number | null = null;
+/** The walk in progress, and the order it keeps (lib/keyboardWalk). */
+let keyboardWalk: KeyboardWalk | null = null;
 
 function sidebarRoomOrder(queryClient: QueryClient): string[][] {
   const {
@@ -167,11 +178,9 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
       window.location.pathname,
       useNavStore.getState().v2Destination,
     );
-    // Same fold RoomList applies: Crew and Calls are phone tabs; a desktop
-    // shows the crew above the one list and standing rooms inside it.
+    // The fold RoomList applies (Home lists Crew and Conversations too).
     const isDesktop = window.matchMedia("(min-width: 768px)").matches;
-    const destination =
-      isDesktop && (routed === "crew" || routed === "calls") ? "conversations" : routed;
+    const destination = listDestination(routed, isDesktop);
     const cached = readCrewCache(queryClient, scope);
     const crewSection = (page: boolean) =>
       buildCrewSection({
@@ -242,17 +251,6 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
       expandedPeople,
       view,
     }),
-  );
-}
-
-function isEditableTarget(t: EventTarget | null): boolean {
-  const el = t as HTMLElement | null;
-  if (!el) return false;
-  return (
-    el.tagName === "INPUT" ||
-    el.tagName === "TEXTAREA" ||
-    el.tagName === "SELECT" ||
-    el.isContentEditable
   );
 }
 
@@ -568,12 +566,17 @@ export function AppShell() {
         !e.ctrlKey &&
         (e.key === "ArrowUp" || e.key === "ArrowDown")
       ) {
-        // Not while typing — Alt+arrows are word/line motions in editors.
-        if (isEditableTarget(e.target)) return;
-        const entries = sidebarRoomOrder(queryClient);
+        // Not while typing — Alt+arrows are word/line motions in editors —
+        // except in an empty message box (Home puts the cursor in one).
+        if (walkBlockedBy(e.target)) return;
+        // One order for the whole walk: each step opens a room and moves it
+        // in the unread-first list (lib/keyboardWalk).
+        keyboardWalk = continueWalk(keyboardWalk, () => sidebarRoomOrder(queryClient), Date.now());
+        const entries = keyboardWalk.entries;
         if (entries.length === 0) return;
         e.preventDefault();
-        const current = useAppStore.getState().activeRoomId;
+        const current =
+          roomIdFromPath(window.location.pathname) ?? useAppStore.getState().activeRoomId;
         const delta = e.key === "ArrowUp" ? -1 : 1;
         // No active room: enter the list from the end you're moving toward.
         const step = stepKeyboardOrder(entries, current, delta, lastKeyboardIndex);
@@ -586,8 +589,22 @@ export function AppShell() {
         }
       }
     }
+    // Alt up (or the window losing focus with it down) ends the held part
+    // of a walk; quick presses still continue it for a moment.
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.key === "Alt") keyboardWalk = releaseWalk(keyboardWalk);
+    }
+    function onBlur() {
+      keyboardWalk = releaseWalk(keyboardWalk);
+    }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, [navigate, queryClient]);
 
   useEffect(() => {

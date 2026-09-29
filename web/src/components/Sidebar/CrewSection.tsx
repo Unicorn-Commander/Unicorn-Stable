@@ -320,6 +320,8 @@ export function CrewSection({
         data-testid="crew-row"
         data-group={member.group}
         data-agent-id={member.agent_id}
+        // A stop for Alt+↑/↓ (flattenCrewRows): only rows with a room.
+        data-walk-room={row.roomId ?? undefined}
       >
         <div
           className={clsx(

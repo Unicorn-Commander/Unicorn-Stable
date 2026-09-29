@@ -1167,6 +1167,73 @@ test.describe("Service worker", () => {
   });
 });
 
+/**
+ * Alt+↑/↓ walks the rows on screen, one per press (review 2, P1-3). The rows
+ * the walk stops on carry `data-walk-room`, drawn from the same model the
+ * keyboard reads, so "on screen" is read from the page, not restated here.
+ */
+test.describe("Alt+↑/↓ walks the rows on screen", () => {
+  const walkStops = (page: Page) =>
+    page
+      .locator('[data-testid="crew-section"] [data-walk-room], [data-testid="conversations-card"] [data-walk-room]')
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-walk-room") ?? ""));
+  const at = (roomId: string) => new RegExp(`/c/${roomId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+
+  test("from Home, with the cursor in the empty composer", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("home-dashboard")).toHaveAttribute("data-state", "loaded");
+    await expect(page.getByTestId("crew-section")).toBeVisible();
+    const stops = await walkStops(page);
+    expect(stops.length).toBeGreaterThanOrEqual(10);
+    // Home puts the cursor in its composer; empty, it lets the walk through.
+    await homeComposer(page).input.focus();
+    const presses = 8;
+    await page.keyboard.down("Alt");
+    for (let i = 0; i < presses; i += 1) {
+      await page.keyboard.press("ArrowDown");
+      await expect(page).toHaveURL(at(stops[i]!));
+    }
+    await page.keyboard.press("ArrowUp");
+    await expect(page).toHaveURL(at(stops[presses - 2]!));
+    await page.keyboard.up("Alt");
+    // Rows past the unread ones were reached: the walk did not loop.
+    expect(new Set(stops.slice(0, presses)).size).toBeGreaterThanOrEqual(presses - 1);
+  });
+
+  test("from a room, past the rooms each step opens and re-sorts", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await stubHomeSummary(page);
+    await stubNavV3World(page);
+    await page.goto("/c/room-general");
+    await waitForAppReady(page);
+    await expect(page.getByTestId("room-view")).toBeVisible();
+    await expect(page.getByTestId("crew-section")).toBeVisible();
+    // Opening #general cleared its unread and moved it: read the list after.
+    await expect.poll(async () => (await walkStops(page)).length).toBeGreaterThanOrEqual(10);
+    const stops = await walkStops(page);
+    const start = stops.indexOf("room-general");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const presses = Math.min(6, stops.length - start - 1);
+    expect(presses).toBeGreaterThanOrEqual(4);
+    // From the page (the room's box may hold the cursor; empty, it lets the walk through too).
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.down("Alt");
+    for (let i = 1; i <= presses; i += 1) {
+      await page.keyboard.press("ArrowDown");
+      await expect(page).toHaveURL(at(stops[start + i]!));
+    }
+    await page.keyboard.up("Alt");
+    // Every room the walk opened lost its unread and moved down the list;
+    // the walk still went straight down the order it started with.
+    const visited = stops.slice(start + 1, start + 1 + presses);
+    expect(new Set(visited).size).toBe(visited.length);
+  });
+});
+
 test.describe("Accessibility sweep (report only)", () => {
   for (const surface of SURFACES) {
     test(`a11y:${surface.name}`, async ({ page }) => {

@@ -62,6 +62,7 @@ import {
   useNavStore,
   viewForRoom,
   type ConversationFilter,
+  listDestination,
 } from "@/stores/navStore";
 import {
   useChannelCategories,
@@ -224,15 +225,9 @@ export function RoomList() {
     location.pathname,
     storedV2Destination,
   );
-  // Crew and Calls are phone tabs (Nav v3 §2.6). On a desktop the crew is a
-  // section above the one list and standing rooms are channel rows in it.
-  // Home has no rail of its own (§2.7): one rail, always — on Home it is the
-  // same Crew and Conversations, with the same search and New.
-  const v2Destination =
-    routedV2Destination === "home" ||
-    (isDesktop && (routedV2Destination === "crew" || routedV2Destination === "calls"))
-      ? "conversations"
-      : routedV2Destination;
+  // Home has no rail of its own (§2.7), and Crew and Calls are phone tabs:
+  // the same fold the Alt+↑/↓ walk uses, so the two cannot disagree.
+  const v2Destination = listDestination(routedV2Destination, isDesktop);
   const conversationFilter = useNavStore((s) => s.conversationFilter);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
   const rememberRoom = useNavStore((s) => s.rememberRoom);
@@ -1051,6 +1046,7 @@ export function RoomList() {
         className="relative"
         data-shape="channel"
         data-testid="conversation-row"
+        data-walk-room={room.id}
       >
         <div
           className={clsx(
@@ -1224,7 +1220,7 @@ export function RoomList() {
     const isActive = activeRoomId === room.id;
     const unread = unreadFor(room);
     return (
-      <li key={room.id}>
+      <li key={room.id} data-walk-room={room.id}>
         <button
           onClick={() => openRoom(room.id)}
           className={clsx(
@@ -1348,6 +1344,9 @@ export function RoomList() {
         className="relative"
         data-shape="direct"
         data-testid="conversation-row"
+        // A stop for Alt+↑/↓ (flattenConversationRows): the latest thread,
+        // unless the row is open and its threads are the stops.
+        data-walk-room={expanded && threads.length > 1 ? undefined : latest?.id}
       >
         <div
           className={clsx(
@@ -1597,6 +1596,7 @@ export function RoomList() {
         className="relative"
         data-shape="group"
         data-testid="conversation-row"
+        data-walk-room={room.id}
       >
         <div
           className={clsx(

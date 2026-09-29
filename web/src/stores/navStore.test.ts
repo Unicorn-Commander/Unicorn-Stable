@@ -6,6 +6,7 @@ import {
   NAV_V2_FLAG_KEY,
   shellDestinationForPath,
   viewForRoom,
+  listDestination,
 } from "./navStore";
 
 function memoryStorage() {
@@ -117,3 +118,22 @@ describe("nav v3 phone tabs", () => {
     expect(railDestination("directory")).toBe("directory");
   });
 });
+
+describe("what the sidebar lists", () => {
+  it("lists Crew and Conversations on Home, the same as the Alt+↑/↓ walk", () => {
+    // Review 2, P1-3: the walk read "home" as nothing to walk while the rail
+    // drew the whole list.
+    expect(listDestination("home", true)).toBe("conversations");
+    expect(listDestination("home", false)).toBe("conversations");
+  });
+
+  it("folds the phone tabs into the one list on a desktop only", () => {
+    expect(listDestination("crew", true)).toBe("conversations");
+    expect(listDestination("calls", true)).toBe("conversations");
+    expect(listDestination("crew", false)).toBe("crew");
+    expect(listDestination("calls", false)).toBe("calls");
+    expect(listDestination("directory", true)).toBe("directory");
+    expect(listDestination("conversations", false)).toBe("conversations");
+  });
+});
+

@@ -173,6 +173,19 @@ export function shellDestinationForPath(
   return stored;
 }
 
+/**
+ * What the sidebar lists for a destination — one answer for RoomList and
+ * for the Alt+↑/↓ walk, which must agree (the one-list rule). Home has no
+ * list of its own: its rail is Crew and Conversations, as everywhere else
+ * (Nav v3 §2.7). Crew and Calls are phone tabs: on a desktop the crew sits
+ * above the one list and standing rooms are channel rows in it.
+ */
+export function listDestination(routed: ShellDestination, isDesktop: boolean): ShellDestination {
+  if (routed === "home") return "conversations";
+  if (isDesktop && (routed === "crew" || routed === "calls")) return "conversations";
+  return routed;
+}
+
 function initialShellDestination(): ShellDestination {
   if (typeof window === "undefined") return "home";
   return shellDestinationForPath(window.location.pathname, "home");

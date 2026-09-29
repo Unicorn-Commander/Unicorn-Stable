@@ -106,6 +106,17 @@ describe("a room's composer", () => {
     expect(screen.getByTestId("composer-box").className).not.toContain("flex-wrap");
   });
 
+  it("leaves Alt+↑ in an empty box to the sidebar walk, not to editing the last message", () => {
+    const onEditLast = vi.fn();
+    show({ onSend: vi.fn(), onEditLast });
+    fireEvent.keyDown(box(), { key: "ArrowUp", altKey: true });
+    expect(onEditLast).not.toHaveBeenCalled();
+    fireEvent.keyDown(box(), { key: "ArrowUp" });
+    expect(onEditLast).toHaveBeenCalledTimes(1);
+    // The walk knows the box by this mark.
+    expect(box().dataset.composer).toBe("message");
+  });
+
   it("takes what was handed to it with the draft", () => {
     saveDraft("room-1", "with the file");
     useConversationUi.getState().handAttachments("room-1", [

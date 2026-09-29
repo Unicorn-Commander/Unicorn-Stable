@@ -822,9 +822,11 @@ export function MessageInput({
       setShowEmojiPanel(false);
       return;
     }
-    // Cmd+Up (or plain Up on empty) → edit last own message.
+    // Cmd+Up (or plain Up on empty) → edit last own message. Not with Alt:
+    // Alt+↑/↓ in an empty box walks the sidebar (lib/keyboardWalk).
     if (
       e.key === "ArrowUp" &&
+      !e.altKey &&
       !showEmojiPicker &&
       !showMentions &&
       !showSlashMenu &&
@@ -1442,6 +1444,7 @@ export function MessageInput({
             onScroll={syncFormatBar}
             onBlur={() => setFormatBar(null)}
             placeholder={placeholder ?? "Type a message, paste images, or drop files…"}
+            data-composer="message"
             rows={1}
             className={clsx(
               "resize-none bg-transparent px-1.5 py-2.5 text-base text-slate-100 placeholder:text-slate-500 outline-none sm:px-2.5 md:text-sm",
