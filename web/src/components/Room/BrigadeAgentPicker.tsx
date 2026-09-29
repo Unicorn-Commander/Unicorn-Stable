@@ -49,6 +49,16 @@ interface Props {
  * trigger (a true conditional render, not an opacity fade), and the open
  * panel sits on an opaque glass surface.
  */
+/**
+ * The roster now lists other members' crew seats too, marked `entitled:
+ * false` (only a seat's owner may add it — 403 "ask the seat's owner").
+ * They are not offered: an invite that can only refuse is not a choice.
+ * Any other un-entitled agent is left out for the same reason.
+ */
+export function invitableAgents<T extends { entitled?: boolean }>(list: readonly T[]): T[] {
+  return list.filter((agent) => agent.entitled !== false);
+}
+
 export function BrigadeAgentPicker({
   roomName,
   onInvited,
@@ -96,7 +106,7 @@ export function BrigadeAgentPicker({
       try {
         const list = await api.getBrigadeAgents();
         if (!cancelled) {
-          setAgents(list);
+          setAgents(invitableAgents(list));
           setError(null);
         }
       } catch (e: unknown) {

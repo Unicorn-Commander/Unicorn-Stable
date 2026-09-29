@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -16,8 +16,9 @@ import { api, type CrewMember, type PeopleDirectoryEntry, type Room } from "@/se
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { CREW_GROUP_LABEL, brainLabel, crewTargetRoom, ownerSeatLabel, readRoomSeat } from "@/lib/crew";
-import { buildToPicks } from "@/lib/newSheetPicker";
+import { buildToPicks, crewWithRoster, stepPick, type ToPickRef } from "@/lib/newSheetPicker";
 import { useCrew } from "@/hooks/useCrew";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   NEW_SHEET_ITEMS,
   channelConsequence,
@@ -183,23 +184,35 @@ function ToStep({
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { crew, crewAnswered } = useCrew();
+  const roster = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
   const active = q.trim().length > 0;
+  // The crew filters on every keystroke (local); the directory and the
+  // channel browse wait for the query to hold still.
+  const debounced = useDebouncedValue(q.trim(), 150);
   const { data: people = [], isFetching: peopleFetching } = useQuery({
-    queryKey: ["people-directory", "new-sheet-to", q.trim()],
-    queryFn: () => api.getPeopleDirectory(q.trim()),
-    enabled: active,
+    queryKey: ["people-directory", "new-sheet-to", debounced],
+    queryFn: () => api.getPeopleDirectory(debounced),
+    enabled: debounced.length > 0,
   });
   const { data: browsable = [] } = useQuery({
-    queryKey: ["rooms-browse", "new-sheet-to", q.trim()],
-    queryFn: () => api.browseChannels(q.trim()),
-    enabled: active,
+    queryKey: ["rooms-browse", "new-sheet-to", debounced],
+    queryFn: () => api.browseChannels(debounced),
+    enabled: debounced.length > 0,
     retry: false,
   });
   const picks = useMemo(
-    () => buildToPicks({ crew, people, rooms, browsable, query: q }),
-    [crew, people, rooms, browsable, q],
+    () => buildToPicks({ crew, roster, people, rooms, browsable, query: q }),
+    [crew, roster, people, rooms, browsable, q],
   );
+  // Arrow keys walk the flat list; Enter opens the active row (the first
+  // when none is active). The index resets when the list changes.
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const flatKey = picks.flat.map((ref) => `${ref.kind}:${ref.key}`).join("|");
+  useEffect(() => {
+    setActiveIndex(null);
+  }, [flatKey]);
+  const optionId = (ref: ToPickRef) => `new-sheet-pick-${ref.kind}-${ref.key}`;
 
   function fail(title: string, err: unknown) {
     useAppStore.getState().pushToast({
@@ -239,6 +252,42 @@ function ToStep({
     }
   }
 
+  function openRef(ref: ToPickRef) {
+    if (ref.kind === "crew") {
+      const member = picks.crew.find((m) => m.agent_id === ref.key);
+      if (member) void openCrewMember(member, navigate, crewAnswered).then((ok) => ok && onDone());
+    } else if (ref.kind === "person") {
+      const person = picks.people.find((p) => p.id === ref.key);
+      if (person) void pickPerson(person);
+    } else {
+      const pick = picks.channels.find((c) => c.room.id === ref.key);
+      if (pick) void pickChannel(pick.room, pick.joined);
+    }
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex(stepPick(picks.flat.length, activeIndex, e.key === "ArrowDown" ? 1 : -1));
+      return;
+    }
+    if (e.key === "Enter") {
+      const ref = picks.flat[activeIndex ?? 0];
+      if (!ref) return;
+      e.preventDefault();
+      openRef(ref);
+    }
+  }
+
+  const activeRef = activeIndex === null ? null : (picks.flat[activeIndex] ?? null);
+  const rowProps = (ref: ToPickRef) => ({
+    id: optionId(ref),
+    active: activeRef?.kind === ref.kind && activeRef.key === ref.key,
+    onHover: () => setActiveIndex(ref.index),
+  });
+  const refFor = (kind: ToPickRef["kind"], key: string) =>
+    picks.flat.find((ref) => ref.kind === kind && ref.key === key) ?? { kind, key, index: -1 };
+
   return (
     <div className="flex flex-col gap-3">
       <label className="flex items-center gap-2 rounded-xl border border-line bg-slate-950/60 px-3 py-2 focus-within:border-stable-purple/60">
@@ -246,13 +295,20 @@ function ToStep({
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={onKeyDown}
           aria-label="To"
           placeholder="An agent, a person, or a channel"
           autoFocus
+          role="combobox"
+          aria-expanded={picks.flat.length > 0}
+          aria-controls="new-sheet-picks"
+          aria-activedescendant={activeRef ? optionId(activeRef) : undefined}
+          aria-autocomplete="list"
           data-testid="new-sheet-to"
           className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
         />
       </label>
+      <div id="new-sheet-picks" role="listbox" aria-label="Matches" className="flex flex-col gap-3">
       {picks.crew.length > 0 && (
         <PickGroup label="Crew" testId="new-sheet-picks-crew">
           {picks.crew.map((member) => (
@@ -271,6 +327,7 @@ function ToStep({
               onClick={() =>
                 void openCrewMember(member, navigate, crewAnswered).then((ok) => ok && onDone())
               }
+              {...rowProps(refFor("crew", member.agent_id))}
             />
           ))}
         </PickGroup>
@@ -284,6 +341,7 @@ function ToStep({
               subtitle={person.username}
               face={resolveIdentity(person)}
               onClick={() => void pickPerson(person)}
+              {...rowProps(refFor("person", person.id))}
             />
           ))}
         </PickGroup>
@@ -296,10 +354,12 @@ function ToStep({
               title={roomLabel(room)}
               subtitle={joined ? (room.visibility === "private" ? "Private channel" : "Channel") : "Join channel"}
               onClick={() => void pickChannel(room, joined)}
+              {...rowProps(refFor("channel", room.id))}
             />
           ))}
         </PickGroup>
       )}
+      </div>
       {active && peopleFetching && picks.empty && (
         <p className="px-1 text-xs text-slate-500">Searching…</p>
       )}
@@ -460,10 +520,13 @@ function PersonStep({ onDone }: { onDone: () => void }) {
  */
 function AgentStep({ onDone }: { onDone: () => void }) {
   const { crew, loaded, fromRoster, crewAnswered } = useCrew();
+  const roster = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
   const [q, setQ] = useState("");
   const navigate = useNavigate();
-  const rows = crew.filter((member) => {
+  // The crew first, then every entitled roster agent not already in it.
+  const pool = useMemo(() => crewWithRoster(crew, roster), [crew, roster]);
+  const rows = pool.filter((member) => {
     const hay = `${member.display_name} ${member.agent_id} ${member.role_line ?? ""} ${member.owner ?? ""}`.toLowerCase();
     return hay.includes(q.trim().toLowerCase());
   });
@@ -749,18 +812,30 @@ function PickRow({
   subtitle,
   face,
   onClick,
+  id,
+  active = false,
+  onHover,
 }: {
   title: string;
   subtitle?: string;
   face?: ReturnType<typeof resolveIdentity>;
   onClick: () => void;
+  /** Keyboard-walkable rows (the To box): the option id and its active state. */
+  id?: string;
+  active?: boolean;
+  onHover?: () => void;
 }) {
   return (
-    <li>
+    <li id={id} role={id ? "option" : undefined} aria-selected={id ? active : undefined} data-active={active || undefined}>
       <button
         type="button"
         onClick={onClick}
-        className="focus-ring flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-white/[0.05]"
+        onMouseEnter={onHover}
+        tabIndex={id ? -1 : undefined}
+        className={clsx(
+          "focus-ring flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-white/[0.05]",
+          active && "bg-white/[0.08]",
+        )}
       >
         {face && <Identity {...face} presence={null} size={28} />}
         <span className="min-w-0">

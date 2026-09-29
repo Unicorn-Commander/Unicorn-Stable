@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { PeopleDirectoryEntry, Room } from "@/services/api";
+import type { Agent, PeopleDirectoryEntry, Room } from "@/services/api";
 import { CREW_FIXTURE } from "@/mocks/crewFixture";
-import { buildToPicks } from "./newSheetPicker";
+import { buildToPicks, crewWithRoster, stepPick } from "./newSheetPicker";
+
+const agent = (over: Partial<Agent> & { id: string }): Agent =>
+  ({ name: over.id, display_name: over.id, description: "", avatar_url: null, status: "active", capabilities: [], model: "", ...over }) as Agent;
+const roster: Agent[] = [
+  agent({ id: "harmony", display_name: "Harmony", title: "Voice of the house", availability: "available" }),
+  agent({ id: "majik", display_name: "Majik Mane" }),
+  agent({ id: "locked", display_name: "Locked", entitled: false }),
+];
 
 function room(over: Partial<Room> & { id: string }): Room {
   return {
@@ -77,6 +85,35 @@ describe("New sheet To picker", () => {
     expect(
       buildToPicks({ crew: CREW_FIXTURE, people: [], rooms: [], query: "fleet" }).crew.map((m) => m.agent_id),
     ).toEqual(["the-general"]);
+  });
+
+  it("lists the crew first, then entitled roster agents it does not already hold", () => {
+    const pool = crewWithRoster(CREW_FIXTURE, roster);
+    expect(pool.slice(0, 12).map((m) => m.agent_id)).toEqual(CREW_FIXTURE.map((m) => m.agent_id));
+    expect(pool.slice(12).map((m) => m.agent_id)).toEqual(["harmony"]);
+    expect(pool.filter((m) => m.agent_id === "majik")).toHaveLength(1);
+    // Typing "Harmony" must find her, as the old Talk-to-an-agent list did.
+    const picks = buildToPicks({ crew: CREW_FIXTURE, roster, people, rooms, query: "harm" });
+    expect(picks.crew.map((m) => m.display_name)).toEqual(["Harmony"]);
+    expect(picks.crew[0]).toMatchObject({ group: "house", kind: "brigade", presence: "online" });
+    expect(picks.empty).toBe(false);
+    expect(buildToPicks({ crew: CREW_FIXTURE, roster, people, rooms, query: "locked" }).empty).toBe(true);
+  });
+
+  it("flattens the groups in order for the keyboard, and steps with wrap", () => {
+    const picks = buildToPicks({ crew: CREW_FIXTURE, people, rooms, browsable, query: "sha" });
+    expect(picks.flat.map((ref) => [ref.kind, ref.key])).toEqual([
+      ["crew", "shafen-claude-code"],
+      ["crew", "shox"],
+      ["crew", "okapi-grok"],
+      ["person", "u-shafen"],
+    ]);
+    expect(picks.flat.map((ref) => ref.index)).toEqual([0, 1, 2, 3]);
+    expect(stepPick(4, null, 1)).toBe(0);
+    expect(stepPick(4, null, -1)).toBe(3);
+    expect(stepPick(4, 3, 1)).toBe(0);
+    expect(stepPick(4, 0, -1)).toBe(3);
+    expect(stepPick(0, null, 1)).toBeNull();
   });
 
   it("caps each group and reports empty when nothing matches", () => {
