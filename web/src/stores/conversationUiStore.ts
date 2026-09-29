@@ -28,6 +28,10 @@ interface ConversationUiState {
   inviteSheetRoomId: string | null;
   openInviteSheet: (roomId: string) => void;
   closeInviteSheet: () => void;
+  /** The phone's Me tab sheet (profile, People, Activity, Saved, Settings, Sign out). */
+  meSheetOpen: boolean;
+  openMeSheet: () => void;
+  closeMeSheet: () => void;
 }
 
 export const useConversationUi = create<ConversationUiState>((set, get) => ({
@@ -58,4 +62,7 @@ export const useConversationUi = create<ConversationUiState>((set, get) => ({
   inviteSheetRoomId: null,
   openInviteSheet: (roomId) => set({ inviteSheetRoomId: roomId }),
   closeInviteSheet: () => set({ inviteSheetRoomId: null }),
+  meSheetOpen: false,
+  openMeSheet: () => set({ meSheetOpen: true }),
+  closeMeSheet: () => set({ meSheetOpen: false }),
 }));

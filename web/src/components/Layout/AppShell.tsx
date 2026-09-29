@@ -62,6 +62,7 @@ import { SettingsModal } from "./SettingsModal";
 import { SavedPanel } from "./SavedPanel";
 import { PeopleDrawer } from "./PeopleDrawer";
 import { PhoneTabBar } from "./PhoneTabBar";
+import { MeSheet } from "./MeSheet";
 import { readCrewCache } from "@/hooks/useCrew";
 import { ActivityCenter, type ActivityTab } from "./ActivityCenter";
 import { QuickSwitcher } from "./QuickSwitcher";
@@ -784,7 +785,7 @@ export function AppShell() {
             <div
               className={clsx(
                 "flex min-h-0 flex-1 flex-col",
-                phoneTabsInDrawer && "max-md:pb-14",
+                phoneTabsInDrawer && "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
               )}
               style={{ width: sidebarWidth }}
             >
@@ -825,9 +826,10 @@ export function AppShell() {
                 </button>
               </div>
               <RoomList />
-              {/* Mobile-only account footer. On phones the top Header (with the
-                  avatar menu) is hidden while a room is open, so account actions
-                  live at the foot of the drawer. Desktop keeps the Header menu. */}
+              {/* Mobile-only account footer for the five-view shell. Nav v3
+                  moved it to the Me tab's sheet so the Crew and Chats tabs are
+                  the full-height lists; desktop keeps the Header menu. */}
+              {!phoneTabsInDrawer && (
               <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:hidden">
                 {showPhotoNudge && (
                   <div className="mb-1 px-1">
@@ -903,6 +905,7 @@ export function AppShell() {
                   Sign out
                 </button>
               </div>
+              )}
             </div>
             {/* Desktop-only drag handle (double-click resets, arrows nudge).
                 The phone drawer keeps its fixed width. Stays OUTSIDE the
@@ -934,7 +937,7 @@ export function AppShell() {
       <main
         className={clsx(
           "flex min-w-0 flex-1 flex-col overflow-hidden",
-          phoneTabs && "max-md:pb-14",
+          phoneTabs && "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
         )}
       >
         <Header
@@ -968,6 +971,7 @@ export function AppShell() {
           and under every modal (z-50), so a tap reaches them with the
           drawer open and a sheet still paints over them. */}
       <PhoneTabBar />
+      <MeSheet />
       <AnimatePresence>
         {createRoomModalOpen && <CreateRoomModal />}
       </AnimatePresence>

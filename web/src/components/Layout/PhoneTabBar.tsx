@@ -12,7 +12,8 @@ import {
   useNavStore,
   type PhoneTab,
 } from "@/stores/navStore";
-import { countNeedsYou } from "@/lib/conversation";
+import { shellBadges } from "@/lib/shellBadges";
+import { useConversationUi } from "@/stores/conversationUiStore";
 import { getNotifyLevel } from "@/utils/mute";
 
 const ICON: Record<PhoneTab, LucideIcon> = {
@@ -28,7 +29,8 @@ const ICON: Record<PhoneTab, LucideIcon> = {
  *
  * On a phone the lists live in the drawer, so Chats, Crew and Calls set the
  * drawer's destination and open it; Home closes it and goes to the
- * dashboard; Me opens Settings. Agents is no longer a tab — the directory
+ * dashboard; Me opens the Me sheet (profile, People, Activity, Saved,
+ * Settings, Sign out). Agents is no longer a tab — the directory
  * is "All agents" under Crew and still answers at /agents. The bar leaves
  * the screen while a room is open — a conversation takes the whole phone —
  * and returns with the drawer, so the lists can be switched from a room.
@@ -39,22 +41,26 @@ export function PhoneTabBar() {
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const sidebarOpen = useAppStore((s) => s.ui.sidebarOpen);
   const settingsOpen = useAppStore((s) => s.ui.settingsOpen);
-  const openSettings = useAppStore((s) => s.openSettings);
+  const meSheetOpen = useConversationUi((s) => s.meSheetOpen);
+  const openMeSheet = useConversationUi((s) => s.openMeSheet);
+  const pendingInvites = useConversationUi((s) => s.pendingInvites.length);
   const rooms = useAppStore((s) => s.rooms);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const stored = useNavStore((s) => s.v2Destination);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
 
-  const chatsBadge = useMemo(
+  // Threads count (a seat answers in a thread); Home carries the invites too.
+  const badges = useMemo(
     () =>
-      countNeedsYou(
-        rooms.filter((room) => !room.parent_room_id),
+      shellBadges({
+        rooms,
         unreadCounts,
         mentionUnreads,
-        (roomId) => getNotifyLevel(roomId) === "muted",
-      ),
-    [rooms, unreadCounts, mentionUnreads],
+        isMuted: (roomId) => getNotifyLevel(roomId) === "muted",
+        pendingInvites,
+      }),
+    [rooms, unreadCounts, mentionUnreads, pendingInvites],
   );
 
   // Inside a room the conversation has the whole phone; the tabs come back
@@ -62,13 +68,14 @@ export function PhoneTabBar() {
   if (!isNavV2Enabled() || (activeRoomId && !sidebarOpen)) return null;
 
   const destination = shellDestinationForPath(path, stored);
-  const activeTab: PhoneTab = settingsOpen ? "me" : phoneTabForDestination(destination);
+  const activeTab: PhoneTab =
+    settingsOpen || meSheetOpen ? "me" : phoneTabForDestination(destination);
 
   function select(tab: PhoneTab) {
     const state = useAppStore.getState();
     const drawerOpen = state.ui.sidebarOpen;
     if (tab === "me") {
-      openSettings("account");
+      openMeSheet();
       return;
     }
     const spec = PHONE_TABS.find((item) => item.id === tab);
@@ -93,7 +100,7 @@ export function PhoneTabBar() {
         {PHONE_TABS.map(({ id, label, testId }) => {
           const Icon = ICON[id];
           const active = activeTab === id;
-          const badge = id === "chats" ? chatsBadge : 0;
+          const badge = id === "chats" ? badges.conversations : id === "home" ? badges.home : 0;
           const name = badge > 0 ? `${label}, ${badge > 99 ? "99+" : badge} need you` : label;
           return (
             <li key={id}>

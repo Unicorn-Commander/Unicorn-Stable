@@ -25,6 +25,7 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { countNeedsYou } from "@/lib/conversation";
+import { shellBadges } from "@/lib/shellBadges";
 import { getNotifyLevel } from "@/utils/mute";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
 import {
@@ -111,11 +112,16 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
     const muted = (roomId: string) => getNotifyLevel(roomId) === "muted";
     const out: Record<string, number> = {};
     if (navV2) {
-      const list = rooms.filter((room) => !room.parent_room_id);
-      const n = countNeedsYou(list, unreadCounts, mentionUnreads, muted);
-      if (n > 0) out.conversations = n;
-      const home = n + pendingInvites.length;
-      if (home > 0) out.home = home;
+      // Threads count: a seat's reply lands in one.
+      const shell = shellBadges({
+        rooms,
+        unreadCounts,
+        mentionUnreads,
+        isMuted: muted,
+        pendingInvites: pendingInvites.length,
+      });
+      if (shell.conversations > 0) out.conversations = shell.conversations;
+      if (shell.home > 0) out.home = shell.home;
       return out;
     }
     for (const id of ["direct", "channels", "meetings", "agents"] as const) {
@@ -174,10 +180,11 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
     }
   }
 
-  // Nav v3 (§2.6): the phone's destinations are the bottom tabs, so the
-  // drawer strip keeps only what the tabs do not carry — the quick switcher
-  // (rooms, servers, message search) and the server switcher when federated.
+  // Nav v3 (§2.6): the phone's destinations are the bottom tabs and the Me
+  // sheet carries the quick switcher, so the drawer is the list and nothing
+  // else — except the server switcher when federated.
   if (mobile && navV2) {
+    if (!multi) return null;
     return (
       <div
         className="flex h-12 w-full shrink-0 items-center gap-1 border-b border-slate-700/50 px-2 md:hidden"
@@ -186,23 +193,13 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
       >
         <button
           type="button"
-          aria-label="Search"
-          onClick={() => useConversationUi.getState().requestQuickSwitcher()}
+          aria-label="Switch server"
+          onClick={() => setSwitcherOpen(true)}
           className="focus-ring flex h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-sm text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-100"
         >
-          <Search className="h-4 w-4 shrink-0" />
-          <span className="truncate">Search</span>
+          <Plus className="h-4 w-4 shrink-0" />
+          <span className="truncate">Switch server</span>
         </button>
-        {multi && (
-          <button
-            type="button"
-            aria-label="Switch server"
-            onClick={() => setSwitcherOpen(true)}
-            className="focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white/[0.06] hover:text-slate-100"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-        )}
       </div>
     );
   }
