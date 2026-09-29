@@ -91,7 +91,8 @@ class CreateThreadOnAnyRoom(IsolatedAsyncioTestCase):
         ]
         if seed is not None:
             results.append(_res(scalar=seed))
-        results.append(_res(scalar=creator))  # creator participant
+        # (Nav v3 fix lane 4: the creator's row is no longer read — the
+        # parent's line carries the creator's id, not a name.)
         results.append(_res(rows=list(members)))  # parent roster
         db.execute = AsyncMock(side_effect=results)
         svc = RoomService(db=db, livekit=AsyncMock(), presence=AsyncMock())
@@ -150,10 +151,13 @@ class CreateThreadOnAnyRoom(IsolatedAsyncioTestCase):
         self.assertEqual(quote.metadata_["seed_sender_name"], "Aaron")
         self.assertEqual(quote.metadata_["kind"], "thread_seed")
         self.assertIs(made.seed_message, quote)
-        # The parent's system line names the starter and the title.
+        # The parent's system line is server-worded (Nav v3 fix lane 4,
+        # REVIEW-4 P2-8): the starter and the title ride in metadata.
         self.assertEqual(system_line.room_id, parent.id)
         self.assertEqual(system_line.content_type, ContentType.SYSTEM)
-        self.assertTrue(system_line.content.startswith("Alice started a thread: "))
+        self.assertEqual(system_line.content, "Channel thread started")
+        self.assertEqual(system_line.sender_id, creator.id)
+        self.assertEqual(system_line.metadata_["created_by"], str(creator.id))
         self.assertEqual(system_line.metadata_["thread_room_id"], str(made.room.id))
         self.assertEqual(system_line.metadata_["kind"], "thread_started")
         self.assertIs(made.system_message, system_line)
@@ -161,7 +165,8 @@ class CreateThreadOnAnyRoom(IsolatedAsyncioTestCase):
         title = svc.create_room.call_args.kwargs["display_name"]
         self.assertEqual(title, RoomService.thread_title_from_seed(seed.content))
         self.assertLessEqual(len(title), RoomService.THREAD_TITLE_FROM_SEED_CHARS)
-        self.assertEqual(system_line.content, f"Alice started a thread: {title}")
+        self.assertEqual(system_line.metadata_["thread_title"], title)
+        self.assertNotIn(title, system_line.content)
         # The seed_message_id recorded on the thread points at the seed.
         self.assertEqual(svc.create_room.call_args.kwargs["metadata"]["thread"]["seed_message_id"], str(seed.id))
 

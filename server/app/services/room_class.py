@@ -21,8 +21,11 @@ fact full shell hands depend on, so it is computed the paranoid way:
   in the room (deleted lines included) and the true author of a thread's
   seed. A NULL sender is foreign unless it is one of Stable's own SYSTEM
   notices — ``content_type = system`` AND ``metadata.kind = "recording"``,
-  judged NULL-safe: a missing kind is "not a notice". A thread is judged on
-  its own lines only — its context and its poll never hold a parent line.
+  judged NULL-safe: a missing kind is "not a notice". A notice that names
+  who caused it (``metadata.started_by``, a participant id) counts that
+  participant as an AUTHOR of the room, in the union and in the floor
+  verdict; an id that does not load is foreign. A thread is judged on its
+  own lines only — its context and its poll never hold a parent line.
 * **Floors are written ONLY from what was written** — a monotone,
   viewer-independent cache of "this history cannot be one party's".
   ``rooms.metadata.class_floor = "shared"`` is written when the historical
@@ -93,6 +96,9 @@ THREAD_META_KEY = "thread"
 #: messages.metadata.kind of Stable's own NULL-sender SYSTEM notices
 #: (services/call_recording.py) — house, not foreign.
 SYSTEM_NOTICE_KINDS: tuple[str, ...] = ("recording",)
+#: messages.metadata key naming the participant who caused a notice (the
+#: person who started the recording). Counted as an author of the room.
+NOTICE_STARTER_KEY = "started_by"
 
 #: Thinking-effort levels a seat accepts (design §2.4).
 SEAT_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
@@ -599,6 +605,9 @@ class RoomHistory:
     #: True when a NULL-sender line exists that is not one of Stable's own
     #: SYSTEM notices (recording) — foreign, fail closed.
     foreign_null: bool = False
+    #: Distinct ``metadata.started_by`` of Stable's own notices, as the text
+    #: that was stored: whoever caused a notice is an author of the room.
+    starters: list[str] = field(default_factory=list)
 
 
 def foreign_null_line(
@@ -623,8 +632,31 @@ def foreign_null_line(
     return and_(sender_id.is_(None), not_(func.coalesce(is_notice, False)))
 
 
+def notice_with_starter(
+    sender_id: Any,
+    content_type: Any,
+    kind_text: Any,
+    starter_text: Any,
+    *,
+    system_value: Any,
+    notice_kinds: Iterable[str] = SYSTEM_NOTICE_KINDS,
+) -> Any:
+    """SQL predicate: one of Stable's own NULL-sender SYSTEM notices that
+    names who caused it (``metadata.started_by`` is not NULL). The notice is
+    house; the person it names is not necessarily the owner, and rows
+    written before REVIEW-4 carry that person's chosen display name in
+    their text — so they count as an author. Column expressions, like
+    :func:`foreign_null_line`, so the tests run it on a real SQL engine."""
+    return and_(
+        sender_id.is_(None),
+        content_type == system_value,
+        kind_text.in_(list(notice_kinds)),
+        starter_text.isnot(None),
+    )
+
+
 def history_statement(room_ids: list[Any]):
-    """One statement for a batch of rooms (P2-2), two index-friendly
+    """One statement for a batch of rooms (P2-2), three index-friendly
     subplans per room:
 
     * the distinct non-NULL sender ids — ``array_agg(DISTINCT sender_id)``
@@ -633,7 +665,10 @@ def history_statement(room_ids: list[Any]):
       purpose: a deleted line was still read.
     * a bounded ``EXISTS`` for a foreign NULL-sender line
       (:func:`foreign_null_line`): it visits NULL-sender rows only and stops
-      at the first hit."""
+      at the first hit.
+    * the distinct ``metadata.started_by`` of Stable's own notices
+      (:func:`notice_with_starter`): NULL-sender rows only, the same few
+      rows the EXISTS reads."""
     from app.models.message import ContentType, Message
     from app.models.room import Room
 
@@ -657,7 +692,23 @@ def history_statement(room_ids: list[Any]):
         .correlate(Room)
         .exists()
     )
-    return select(Room.id, senders, foreign_null).where(Room.id.in_(room_ids))
+    starter_text = Message.metadata_[NOTICE_STARTER_KEY].astext
+    starters = (
+        select(func.array_agg(distinct(starter_text)))
+        .where(
+            Message.room_id == Room.id,
+            notice_with_starter(
+                Message.sender_id,
+                Message.content_type,
+                Message.metadata_[KIND_KEY].astext,
+                starter_text,
+                system_value=ContentType.SYSTEM,
+            ),
+        )
+        .correlate(Room)
+        .scalar_subquery()
+    )
+    return select(Room.id, senders, foreign_null, starters).where(Room.id.in_(room_ids))
 
 
 async def load_room_history(db: Any, room_ids: Iterable[Any]) -> dict[str, RoomHistory]:
@@ -666,10 +717,26 @@ async def load_room_history(db: Any, room_ids: Iterable[Any]) -> dict[str, RoomH
     if not ids:
         return {}
     rows = (await db.execute(history_statement(ids))).all()
-    return {
-        str(room_id): RoomHistory(senders=list(senders or []), foreign_null=bool(foreign_null))
-        for room_id, senders, foreign_null in rows
-    }
+    out: dict[str, RoomHistory] = {}
+    for row in rows:
+        starters = row[3] if len(row) > 3 else None
+        out[str(row[0])] = RoomHistory(
+            senders=list(row[1] or []),
+            foreign_null=bool(row[2]),
+            starters=[str(s) for s in (starters or []) if s is not None],
+        )
+    return out
+
+
+def _participant_key(value: Any) -> str | None:
+    """A participant id as the key members and senders are stored under
+    (the canonical UUID text), or None when the value is not a UUID."""
+    if value is None:
+        return None
+    try:
+        return str(value if isinstance(value, uuid.UUID) else uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 def _actor_from_columns(row: Any) -> Actor:
@@ -858,9 +925,14 @@ async def compute_room_classes(
         loaded_by_id.setdefault(str(asking_seat.id), asking_seat)
     wanted: set[Any] = set()
     for room in room_list:
-        for sender in history.get(str(room.id), RoomHistory()).senders:
+        record = history.get(str(room.id), RoomHistory())
+        for sender in record.senders:
             if sender is not None and str(sender) not in loaded_by_id:
                 wanted.add(sender)
+        for starter in record.starters:
+            key = _participant_key(starter)
+            if key is not None and key not in loaded_by_id:
+                wanted.add(uuid.UUID(key))
         if _needs_history(room):
             _has_seed, seed_id = thread_seed_of(getattr(room, "metadata_", None))
             if seed_id and seed_id not in loaded_by_id:
@@ -876,6 +948,12 @@ async def compute_room_classes(
         historical: list[Any] = [loaded_by_id.get(str(s)) for s in record.senders]
         if record.foreign_null:
             historical.append(None)
+        # Whoever caused a notice is an author too (REVIEW-4 P1-1). An id
+        # that is not a UUID, or names no participant, loads as None:
+        # unattributed, foreign.
+        for starter in record.starters:
+            key = _participant_key(starter)
+            historical.append(loaded_by_id.get(key) if key is not None else None)
         has_seed, seed_id = thread_seed_of(getattr(room, "metadata_", None))
         seed_sender = loaded_by_id.get(seed_id) if seed_id else None
         out[str(room.id)] = room_class_facts(
@@ -1020,6 +1098,7 @@ __all__ = [
     "INTEGRATION_KIND",
     "JWT_AGENT_ID_PREFIX",
     "KIND_KEY",
+    "NOTICE_STARTER_KEY",
     "OWNER_KEY",
     "ROOM_CLASSES",
     "ROOM_CLASS_CHANNEL",
@@ -1058,6 +1137,7 @@ __all__ = [
     "load_room_history",
     "load_rooms_lite",
     "norm_username",
+    "notice_with_starter",
     "participant_kind",
     "room_class_facts",
     "room_class_for",

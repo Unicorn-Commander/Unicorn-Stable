@@ -69,12 +69,31 @@ NESTED_THREADS_PER_PARENT = 25
 ROOM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
+#: The parent's type in Stable's own words. The parent's "thread started"
+#: SYSTEM line is built from this closed vocabulary, so a line a seat reads
+#: as ``[system] …`` never carries a name or a title somebody chose.
+THREAD_KIND_WORDS: dict[str, str] = {
+    "agent_hub": "Hub",
+    "channel": "Channel",
+    "group_dm": "Group",
+    "dm": "DM",
+}
+
+
+def thread_started_text(parent_room_type: Any) -> str:
+    """``"<kind> thread started"`` — the title and the creator are in the
+    line's metadata (``thread_title``, ``created_by``)."""
+    word = THREAD_KIND_WORDS.get(str(getattr(parent_room_type, "value", parent_room_type) or ""))
+    return f"{word} thread started" if word else "Thread started"
+
+
 @dataclass
 class ThreadCreation:
     """What ``create_thread`` made: the thread room, the parent's system
-    line ("<name> started a thread: <title>"), the quoted seed (when a
-    ``seed_message_id`` was given) and every member it seeded — so the API
-    layer can fan the two messages out and push the room to each member."""
+    line ("<kind> thread started"; the title and the creator are in its
+    metadata), the quoted seed (when a ``seed_message_id`` was given) and
+    every member it seeded — so the API layer can fan the two messages out
+    and push the room to each member."""
 
     room: Room
     system_message: Message | None = None
@@ -1437,8 +1456,9 @@ class RoomService:
         ``seed_message_id`` quotes that message as the thread's first entry —
         a SYSTEM-styled message whose ``metadata.seed_message_id`` /
         ``seed_room_id`` link back to the original, which is not moved. The
-        parent gets a SYSTEM line "<name> started a thread: <title>" carrying
-        ``metadata.thread_room_id``. ``thread_count`` on the parent is derived
+        parent gets a SYSTEM line "<kind> thread started" carrying
+        ``metadata.thread_room_id``, ``thread_title`` and ``created_by`` (the
+        creator's participant id). ``thread_count`` on the parent is derived
         (``_conversation_extras``), so nothing else needs maintaining.
         """
         parent = (await self._db.execute(select(Room).where(Room.id == parent_id))).scalar_one_or_none()
@@ -1470,15 +1490,6 @@ class RoomService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Seed message not found in this room",
                 )
-
-        creator = (
-            await self._db.execute(select(Participant).where(Participant.id == creator_id))
-        ).scalar_one_or_none()
-        creator_name = (
-            (getattr(creator, "display_name", None) or getattr(creator, "username", None) or "Someone")
-            if creator is not None
-            else "Someone"
-        )
 
         parent_meta = dict(parent.metadata_ or {})
         meta: dict[str, Any] = {
@@ -1587,15 +1598,20 @@ class RoomService:
             )
             self._db.add(seed_message)
 
+        # Server-worded on purpose: the title and the creator's name are
+        # text somebody chose, so they ride in metadata (the web renders
+        # them) and never in a line a seat reads as "[system] …".
         system_message = Message(
             room_id=parent.id,
             sender_id=creator_id,
-            content=f"{creator_name} started a thread: {display}",
+            content=thread_started_text(parent.room_type),
             content_type=ContentType.SYSTEM,
             metadata_={
                 "kind": "thread_started",
                 "thread_room_id": str(room.id),
                 "thread_title": display,
+                "created_by": str(creator_id),
+                "seed_message_id": str(seed.id) if seed is not None else None,
             },
         )
         self._db.add(system_message)

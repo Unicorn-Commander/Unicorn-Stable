@@ -464,7 +464,7 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         thread = SimpleNamespace(id=uuid.uuid4(), name="crew-t-1", metadata_={}, parent_room_id=None)
         db = AsyncMock()
         db.execute = AsyncMock(side_effect=[
-            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed), _Result(scalar=AARON),
+            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed),
             _Result(rows=[(SimpleNamespace(agent_mode="answers_all"), PERSEPHONE)]),
         ])
         db.add = MagicMock()
@@ -487,7 +487,7 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         hook = _webhook()
         seed_hook = SimpleNamespace(id=uuid.uuid4(), sender_id=hook.id, sender=hook, content="build failed", created_at=NOW)
         db.execute = AsyncMock(side_effect=[
-            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed_hook), _Result(scalar=AARON),
+            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed_hook),
             _Result(rows=[(SimpleNamespace(agent_mode="answers_all"), PERSEPHONE)]),
         ])
         svc.create_room = AsyncMock(return_value=thread)
@@ -496,7 +496,7 @@ class P2_PollOrderAndCost(IsolatedAsyncioTestCase):
         # The owner's own line as the seed: no floor at birth.
         seed_mine = SimpleNamespace(id=uuid.uuid4(), sender_id=AARON.id, sender=AARON, content="mine", created_at=NOW)
         db.execute = AsyncMock(side_effect=[
-            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed_mine), _Result(scalar=AARON),
+            _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed_mine),
             _Result(rows=[(SimpleNamespace(agent_mode="answers_all"), PERSEPHONE)]),
         ])
         svc.create_room = AsyncMock(return_value=thread)

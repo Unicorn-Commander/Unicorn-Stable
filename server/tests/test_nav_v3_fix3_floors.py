@@ -306,7 +306,7 @@ class P1_2_FloorsComeOnlyFromWhatWasWritten(IsolatedAsyncioTestCase):
             seed = SimpleNamespace(id=uuid.uuid4(), sender_id=getattr(seed_author, "id", None), sender=seed_author, content="ship it", created_at=NOW)
             db = AsyncMock()
             db.execute = AsyncMock(side_effect=[
-                _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed), _Result(scalar=AARON),
+                _Result(scalar=parent), _Result(scalar=SimpleNamespace()), _Result(scalar=seed),
                 _Result(rows=[(SimpleNamespace(agent_mode="answers_all"), PERSEPHONE), (SimpleNamespace(agent_mode=None), SHAFEN)]),
             ])
             db.add = MagicMock()

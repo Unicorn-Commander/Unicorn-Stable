@@ -348,7 +348,6 @@ class P0_2_CreateThreadRecordsTheTrueAuthor(IsolatedAsyncioTestCase):
             _Result(scalar=parent),                 # parent
             _Result(scalar=SimpleNamespace()),      # creator membership
             _Result(scalar=seed),                   # seed message
-            _Result(scalar=aaron),                  # creator
             _Result(rows=[]),                       # parent members
         ])
         db.add = MagicMock()
