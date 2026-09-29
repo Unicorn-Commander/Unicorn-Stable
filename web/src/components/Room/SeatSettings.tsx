@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { api, type Room, type RoomAgentMember, type RoomMember, type RoomSeat } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { AGENT_MODES, AGENT_MODE_LABEL, agentModeLabel, type AgentMode } from "@/lib/conversation";
@@ -140,6 +141,8 @@ export function SeatSettings({
   }, [open, onOpenChange]);
 
   useMenuKeyboard(open, panelRef, chipRef, () => onOpenChange(false));
+  // On a phone the panel is a modal sheet: the focus stays in it (P2-13).
+  useModalA11y(open && phone, () => onOpenChange(false), panelRef);
 
   function fail(title: string, err: unknown) {
     useAppStore.getState().pushToast({
@@ -260,16 +263,24 @@ export function SeatSettings({
   );
 
   // The header's chip leaves a phone's bar; the composer's is always there,
-  // and on a phone it is tall enough for a finger.
+  // and under a finger it is 44px tall (P2-12).
   const chipDisplay =
-    variant === "composer" ? "inline-flex max-sm:min-h-9 max-sm:px-2.5" : "hidden sm:inline-flex";
+    variant === "composer"
+      ? "inline-flex min-w-0 pointer-coarse:min-h-11"
+      : "hidden sm:inline-flex";
 
   if (!editable) {
     if (!label) return null;
+    const whose = ownerName ? `${ownerName} seat` : "a partner's seat";
     return (
-      <span
-        className={clsx(chipClass, chipDisplay, "border-line bg-white/[0.03] text-slate-400")}
-        title={`${label} — ${ownerName ? `${ownerName} seat` : "a partner's seat"}; only its owner can change it`}
+      // Read-only, and said so: a screen reader hears a dimmed button whose
+      // name ends "read-only" (P2-13), not a bare span with a tooltip.
+      <button
+        type="button"
+        aria-disabled="true"
+        aria-label={`${ownerName ? `${ownerName} ` : ""}${match.member.display_name}: ${label}. Read-only; only its owner can change it`}
+        className={clsx(chipClass, chipDisplay, "cursor-default border-line bg-white/[0.03] text-slate-400")}
+        title={`${label} — ${whose}; only its owner can change it`}
         data-testid="seat-chip"
         data-editable="false"
         data-agent-id={agentId}
@@ -279,9 +290,14 @@ export function SeatSettings({
           {ownerName ? `${ownerName} ` : ""}
           {match.member.display_name} · {label}
         </span>
-      </span>
+      </button>
     );
   }
+
+  // A seat whose runner never announced anything, with nothing set here:
+  // there is no brain to show or pick, and a chip reading "Brain" said
+  // nothing (review 2, D10). It comes back once the runner announces.
+  if (!caps && !label) return null;
 
   const models = seatModelOptions(caps);
   const efforts = seatEffortOptions(caps);
@@ -293,17 +309,19 @@ export function SeatSettings({
       ref={panelRef}
       role="dialog"
       aria-label={`Seat settings for ${match.member.display_name}`}
+      aria-modal={phone || undefined}
       data-testid="seat-settings"
       data-agent-id={agentId}
       className={clsx(
-        "flex max-h-[min(70dvh,32rem)] flex-col overflow-y-auto rounded-xl py-1 shadow-pop",
+        "flex max-h-[min(70dvh,32rem)] flex-col overflow-y-auto py-1 shadow-pop",
         // Inside the composer's box a glass panel has nothing to blur (the
-        // box has a backdrop filter of its own), so there it is solid.
+        // box has a backdrop filter of its own), so there it is solid; the
+        // phone's sheet is solid over its scrim (review 2, D5).
         phone
-          ? "glass-heavy fixed inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-[60] w-auto"
+          ? "mx-2 mb-[max(0.5rem,env(safe-area-inset-bottom))] w-full rounded-2xl border border-line bg-surface-1"
           : variant === "composer"
-            ? "absolute right-0 top-full z-50 mt-1 w-72 border border-line bg-surface-1"
-            : "glass-heavy absolute left-0 top-full z-50 mt-1 w-72",
+            ? "absolute right-0 top-full z-50 mt-1 w-72 rounded-xl border border-line bg-surface-1"
+            : "glass-heavy absolute left-0 top-full z-50 mt-1 w-72 rounded-xl",
       )}
     >
       <div className="flex items-center justify-between px-3 pb-1 pt-1.5">
@@ -313,7 +331,7 @@ export function SeatSettings({
         <button
           type="button"
           onClick={() => onOpenChange(false)}
-          className="focus-ring rounded-md p-1 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100 sm:hidden"
+          className="focus-ring inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-slate-400 hover:bg-white/[0.06] hover:text-slate-100 sm:hidden"
           aria-label="Close"
         >
           <X className="h-4 w-4" />
@@ -467,8 +485,19 @@ export function SeatSettings({
     </div>
   );
 
+  // The phone's sheet hangs over a scrim that dims the page (and, pressed,
+  // closes the sheet: the outside press above does that).
+  const sheet = (
+    <div
+      className="fixed inset-0 z-[60] flex items-end bg-slate-950/70 backdrop-blur-sm"
+      data-testid="seat-settings-scrim"
+    >
+      {panel}
+    </div>
+  );
+
   return (
-    <span className="relative inline-flex">
+    <span className="relative inline-flex min-w-0">
       <button
         ref={chipRef}
         type="button"
@@ -499,13 +528,18 @@ export function SeatSettings({
         data-editable="true"
         data-agent-id={agentId}
       >
-        {labelled ? face : <Cpu className="h-3 w-3 shrink-0" aria-hidden="true" />}
+        {labelled ? (
+          face
+        ) : (
+          // On a phone's toolbar the label is what matters: the icon goes.
+          <Cpu className={clsx("h-3 w-3 shrink-0", variant === "composer" && "max-sm:hidden")} aria-hidden="true" />
+        )}
         <span className="truncate">
           {labelled ? `${match.member.display_name} · ` : ""}
-          {label ?? "Brain"}
+          {label ?? "Default"}
         </span>
       </button>
-      {open && (phone ? createPortal(panel, document.body) : panel)}
+      {open && (phone ? createPortal(sheet, document.body) : panel)}
     </span>
   );
 }

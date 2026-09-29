@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Room, RoomMember } from "@/services/api";
-import { CREW_FIXTURE, PARTNER_SEAT_MEMBER, PERSEPHONE_HUB_ID, PERSEPHONE_MEMBER } from "@/mocks/crewFixture";
+import {
+  CREW_FIXTURE,
+  MAJIK_MEMBER,
+  PARTNER_SEAT_MEMBER,
+  PERSEPHONE_HUB_ID,
+  PERSEPHONE_MEMBER,
+} from "@/mocks/crewFixture";
 import {
   applySeatToRoom,
   effectiveEffort,
@@ -119,6 +125,13 @@ describe("seat member match", () => {
     );
     expect(seatMenuEntries(shared, silent).map((entry) => entry.key)).toEqual(["persephone"]);
     expect(seatMenuEntries(null, [])).toEqual([]);
+    // Yours, when its runner never announced and nothing is set here: no
+    // line either — it used to read "seat default" and open an empty sheet
+    // (review 2, D10). Set something, and the line is back.
+    const unannounced = alone.map((match) => ({ ...match, member: { ...match.member, seat_capabilities: null } }));
+    expect(seatMenuEntries(hub, unannounced)).toEqual([]);
+    const withSeat = room({ metadata_: { seats: { persephone: { model: null, effort: "max" } } } });
+    expect(seatMenuEntries(withSeat, unannounced)).toEqual([{ key: "persephone", label: "max", locked: false }]);
   });
 
   it("marks a partner's seat read-only and ignores house agents", () => {
@@ -155,9 +168,57 @@ describe("switcher and refusals", () => {
     expect(shouldShowModelSwitcher(humansOnly, [], CREW_FIXTURE)).toBe(true);
     // Members payload alone (no agents[] on the detail) decides the same way.
     const viaMembers = room({ type: "channel", counterpart: null, agent_members: [] });
-    const majik: RoomMember = { ...PERSEPHONE_MEMBER, participant_id: "p-majik", display_name: "Majik" };
     expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER], CREW_FIXTURE)).toBe(false);
-    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, majik], CREW_FIXTURE)).toBe(true);
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, MAJIK_MEMBER], CREW_FIXTURE)).toBe(true);
+  });
+
+  it("counts only house agents: a guest agent or an integration does not bring the switcher back (review 2, P2-10)", () => {
+    const withAgents = (...rows: Array<{ pid: string; agent: string }>) =>
+      room({
+        type: "channel",
+        counterpart: null,
+        agent_members: rows.map((row) => ({ participant_id: row.pid, agent_id: row.agent, display_name: row.agent })),
+      });
+    const guest: RoomMember = {
+      ...PERSEPHONE_MEMBER,
+      participant_id: "p-taxsq-assistant",
+      display_name: "Northbridge Tax Assistant",
+      metadata: { kind: "guest_agent", backend: null, owner: null, owner_display_name: null },
+    };
+    const integration: RoomMember = {
+      ...PERSEPHONE_MEMBER,
+      participant_id: "p-webhook",
+      display_name: "Webhook",
+      metadata: { kind: "integration", backend: null, owner: null, owner_display_name: null },
+    };
+    const strangerSeat: RoomMember = {
+      ...PERSEPHONE_MEMBER,
+      participant_id: "p-someone-elses-seat",
+      display_name: "Someone else's seat",
+      metadata: { kind: null, backend: "runner", owner: "someone", owner_display_name: "Someone" },
+    };
+    const houseAgent: RoomMember = {
+      ...PERSEPHONE_MEMBER,
+      participant_id: "p-majik",
+      display_name: "Majik",
+      metadata: { kind: null, backend: null, owner: null, owner_display_name: null },
+    };
+    const persephone = { pid: "p-persephone", agent: "persephone" };
+    // #taxsq-portal: your seat and the customer's own AI. Nothing to switch.
+    const portal = withAgents(persephone, { pid: "p-taxsq-assistant", agent: "taxsq-assistant" });
+    expect(shouldShowModelSwitcher(portal, [PERSEPHONE_MEMBER, guest], CREW_FIXTURE)).toBe(false);
+    // Found through the members payload alone, the same.
+    const viaMembers = withAgents();
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, guest, integration], CREW_FIXTURE)).toBe(false);
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, strangerSeat], CREW_FIXTURE)).toBe(false);
+    // A house agent still brings it, with or without metadata.
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, guest, houseAgent], CREW_FIXTURE)).toBe(true);
+    const oldServer: RoomMember = { ...houseAgent, metadata: undefined };
+    expect(shouldShowModelSwitcher(viaMembers, [PERSEPHONE_MEMBER, oldServer], CREW_FIXTURE)).toBe(true);
+    // A room whose only agent is a guest reads like a room with none.
+    expect(shouldShowModelSwitcher(withAgents(), [guest], CREW_FIXTURE)).toBe(
+      shouldShowModelSwitcher(withAgents(), [], CREW_FIXTURE),
+    );
   });
 
   it("tells the two 409s apart", () => {

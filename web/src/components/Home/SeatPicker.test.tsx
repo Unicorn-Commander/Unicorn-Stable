@@ -25,6 +25,72 @@ function Harness({ onPick, start = "persephone" }: { onPick?: (seat: CrewMember)
   );
 }
 
+/**
+ * A phone: the picker is a sheet below 640px. The focus trap keeps only
+ * elements with an offsetParent, and jsdom has no layout: give every
+ * element one while the phone is on.
+ */
+function asPhone() {
+  const real = window.matchMedia;
+  const offsetParent = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetParent");
+  Object.defineProperty(HTMLElement.prototype, "offsetParent", {
+    configurable: true,
+    get() {
+      return document.body;
+    },
+  });
+  window.matchMedia = ((query: string) => ({
+    matches: query === "(max-width: 639px)",
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = real;
+    if (offsetParent) Object.defineProperty(HTMLElement.prototype, "offsetParent", offsetParent);
+  };
+}
+
+describe("SeatPicker on a phone (review 2, D5 and P2-13)", () => {
+  it("is an opaque modal sheet over a scrim: the focus stays in it, Escape and the scrim close it", () => {
+    const restore = asPhone();
+    try {
+      render(<Harness />);
+      const button = screen.getByTestId("seat-picker");
+      fireEvent.click(button);
+      const sheet = screen.getByRole("dialog", { name: "Who the message is for" });
+      expect(sheet.getAttribute("aria-modal")).toBe("true");
+      // Solid, not glass: nothing on the page reads through the list.
+      expect(sheet.className).toContain("bg-surface-1");
+      expect(sheet.className).not.toContain("glass");
+      expect(screen.getByTestId("seat-picker-scrim").contains(sheet)).toBe(true);
+      const list = within(sheet).getByRole("listbox");
+      expect(document.activeElement).toBe(list);
+      // Tab goes round inside the sheet: from the list to Close, not out.
+      fireEvent.keyDown(list, { key: "Tab" });
+      expect(document.activeElement).toBe(within(sheet).getByRole("button", { name: "Close" }));
+      fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+      expect(document.activeElement).toBe(list);
+      // Escape closes it, and the focus is back on the button.
+      fireEvent.keyDown(list, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(button);
+      // A press on the scrim closes it too; a press in the sheet does not.
+      fireEvent.click(button);
+      fireEvent.click(screen.getByRole("dialog"));
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      fireEvent.click(screen.getByTestId("seat-picker-scrim"));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("SeatPicker", () => {
   it("shows who the message is for and lists your seats, then the house (never a partner's seat)", () => {
     render(<Harness />);

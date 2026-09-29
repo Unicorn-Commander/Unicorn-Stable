@@ -290,11 +290,39 @@ describe("SeatSettings", () => {
       { wrapper: Wrapper },
     );
     const chip = screen.getByTestId("seat-chip");
-    expect(chip.tagName).toBe("SPAN");
     expect(chip.getAttribute("data-editable")).toBe("false");
     expect(chip).toHaveTextContent("Shafen’s Flow · Fable 5.1 · high");
     expect(chip.querySelector('[data-testid="seat-chip-lock"]')).toBeTruthy();
+    // A screen reader hears that it is read-only (review 2, P2-13): a
+    // dimmed button whose name says so, which opens nothing when pressed.
+    expect(chip.tagName).toBe("BUTTON");
+    expect(chip.getAttribute("aria-disabled")).toBe("true");
+    expect(chip.getAttribute("aria-label")).toBe(
+      "Shafen’s Flow: Fable 5.1 · high. Read-only; only its owner can change it",
+    );
+    fireEvent.click(chip);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("draws no chip for your seat whose runner never announced, until something is set (review 2, D10)", () => {
+    const silent = CREW_FIXTURE.find((m) => m.agent_id === "claude")!;
+    expect(silent.seat_capabilities).toBeNull();
+    const match: SeatMemberMatch = { member: silent, participantId: silent.participant_id, editable: true, agentMode: null };
+    const view = render(
+      <SeatSettings roomId={PERSEPHONE_HUB_ID} room={hub()} match={match} open={false} onOpenChange={() => {}} />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.queryByTestId("seat-chip")).toBeNull();
+    expect(screen.queryByText("Brain")).toBeNull();
+    view.unmount();
+    // Something set in the room before: that is shown, as it was.
+    const set = hub({ metadata_: { seats: { claude: { model: "claude-opus-5-5", effort: "max" } } } });
+    useAppStore.setState({ rooms: [set] });
+    render(
+      <SeatSettings roomId={PERSEPHONE_HUB_ID} room={set} match={match} open={false} onOpenChange={() => {}} />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByTestId("seat-chip")).toHaveTextContent("max");
   });
 
   describe("for a conversation that does not exist yet", () => {

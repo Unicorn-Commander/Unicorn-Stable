@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 /**
  * Elements a modal focus trap may land on. Visibility is filtered at query
@@ -36,9 +36,18 @@ const FOCUSABLE_SELECTOR = [
  *
  * `onClose` is read through a ref, so an inline-arrow prop won't retrigger
  * the effect (which would re-run initial focus) on every parent render.
+ *
+ * `target`: a panel whose ref the component already owns (a popover that
+ * becomes a modal sheet on a phone) — the hook works on it instead of
+ * handing out a ref of its own.
  */
-export function useModalA11y(active: boolean, onClose: () => void) {
-  const panelRef = useRef<HTMLDivElement>(null);
+export function useModalA11y(
+  active: boolean,
+  onClose: () => void,
+  target?: RefObject<HTMLElement | null>,
+) {
+  const ownRef = useRef<HTMLDivElement>(null);
+  const panelRef: RefObject<HTMLElement | null> = target ?? ownRef;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -115,7 +124,7 @@ export function useModalA11y(active: boolean, onClose: () => void) {
         previouslyFocused.focus();
       }
     };
-  }, [active]);
+  }, [active, panelRef]);
 
-  return panelRef;
+  return ownRef;
 }

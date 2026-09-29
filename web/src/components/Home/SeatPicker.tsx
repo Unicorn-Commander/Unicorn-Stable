@@ -4,6 +4,7 @@ import { Check, ChevronDown, X } from "lucide-react";
 import clsx from "clsx";
 import type { CrewMember } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { resolveIdentity } from "@/lib/identity";
 import {
   crewPresence,
@@ -78,6 +79,7 @@ export function SeatPicker({
   const rootRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(() => groupCrew(seats), [seats]);
   const flat = useMemo(() => groups.flatMap((group) => group.members), [groups]);
 
@@ -99,13 +101,23 @@ export function SeatPicker({
     close();
   }
 
+  // On a phone the list is a modal sheet: the focus stays in it, Escape
+  // closes it, and the focus goes back to the button (review 2, P2-13).
+  useModalA11y(open && phone, () => close(), sheetRef);
+
   useEffect(() => {
     if (!open) return;
     panelRef.current?.focus();
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      if (
+        rootRef.current?.contains(target) ||
+        panelRef.current?.contains(target) ||
+        sheetRef.current?.contains(target)
+      ) {
+        return;
+      }
       setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -142,7 +154,8 @@ export function SeatPicker({
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       pick(flat[active]);
-    } else if (event.key === "Tab") {
+    } else if (event.key === "Tab" && !phone) {
+      // A popover closes on Tab; the phone's sheet keeps the focus inside.
       setOpen(false);
     }
   }
@@ -155,35 +168,23 @@ export function SeatPicker({
       ref={panelRef}
       id={listId}
       role="listbox"
-      tabIndex={-1}
+      // In the phone's sheet the list is one of the trap's two stops (Close,
+      // the list); as a popover it is reached from the button only.
+      tabIndex={phone ? 0 : -1}
       aria-label="Who the message is for"
       aria-activedescendant={open && flat[active] ? `${listId}-${flat[active]!.agent_id}` : undefined}
       onKeyDown={onKeyDown}
       data-testid="seat-picker-list"
       className={clsx(
-        "flex max-h-[min(70dvh,26rem)] flex-col overflow-y-auto rounded-xl py-1 shadow-pop outline-none",
-        // The sheet hangs from the body and is glass. The popover hangs
-        // inside the composer's box, whose own backdrop filter leaves a
-        // glass child nothing to blur: there it is a solid surface, or the
-        // page reads through it.
+        "flex flex-col overflow-y-auto outline-none",
+        // A solid surface both ways: the popover hangs inside the composer's
+        // box, whose own backdrop filter leaves a glass child nothing to
+        // blur, and the phone's sheet sits over a scrim (review 2, D5).
         phone
-          ? "glass-heavy fixed inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-[60]"
-          : "absolute left-0 top-full z-50 mt-1 w-72 border border-line bg-surface-1",
+          ? "min-h-0 flex-1 pb-1"
+          : "absolute left-0 top-full z-50 mt-1 max-h-[min(70dvh,26rem)] w-72 rounded-xl border border-line bg-surface-1 py-1 shadow-pop",
       )}
     >
-      {phone && (
-        <div className="flex items-center justify-between px-3 pb-1 pt-1.5">
-          <p className="text-xs font-semibold text-slate-100">Message</p>
-          <button
-            type="button"
-            onClick={() => close()}
-            className="focus-ring rounded-md p-1 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100"
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
       {groups.map((group) => (
         <div key={group.group} role="group" aria-label={group.label} data-testid={`seat-picker-group-${group.group}`}>
           <p className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
@@ -207,7 +208,7 @@ export function SeatPicker({
                 onPointerMove={() => setActive(at)}
                 onClick={() => pick(seat)}
                 className={clsx(
-                  "flex cursor-pointer items-center gap-2.5 px-3 py-1.5 max-sm:min-h-11",
+                  "flex cursor-pointer items-center gap-2.5 px-3 py-1.5 max-sm:min-h-11 pointer-coarse:min-h-11",
                   at === active ? "bg-white/[0.06]" : "",
                 )}
               >
@@ -238,6 +239,40 @@ export function SeatPicker({
     </div>
   );
 
+  // The phone's sheet: opaque, over a scrim that dims and closes, like the
+  // Me sheet (review 2, D5 and P2-13).
+  const sheet = (
+    <div
+      className="fixed inset-0 z-[60] flex items-end bg-slate-950/70 backdrop-blur-sm"
+      data-testid="seat-picker-scrim"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
+    >
+      <div
+        ref={sheetRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Who the message is for"
+        data-testid="seat-picker-sheet"
+        className="mx-2 mb-[max(0.5rem,env(safe-area-inset-bottom))] flex max-h-[min(70dvh,26rem)] w-full flex-col overflow-hidden rounded-2xl border border-line bg-surface-1 shadow-pop"
+      >
+        <div className="flex shrink-0 items-center justify-between px-3 pb-1 pt-1.5">
+          <p className="text-xs font-semibold text-slate-100">Message</p>
+          <button
+            type="button"
+            onClick={() => close()}
+            className="focus-ring inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-slate-400 hover:bg-white/[0.06] hover:text-slate-100"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {panel}
+      </div>
+    </div>
+  );
+
   return (
     <span ref={rootRef} className="relative inline-flex min-w-0">
       <button
@@ -257,7 +292,7 @@ export function SeatPicker({
         aria-label={selected ? `Message ${name}. Change who the message is for` : name}
         data-testid="seat-picker"
         data-agent-id={selected?.agent_id}
-        className="focus-ring inline-flex min-w-0 max-w-[12rem] items-center gap-1.5 rounded-full border border-line bg-white/[0.03] py-1 pl-1 pr-2 text-xs font-medium text-slate-200 transition-colors hover:border-line-strong hover:text-slate-50 disabled:opacity-60 max-sm:min-h-9 max-sm:pl-1.5 max-sm:pr-2.5"
+        className="focus-ring inline-flex min-w-0 max-w-[12rem] items-center gap-1.5 rounded-full border border-line bg-white/[0.03] py-1 pl-1 pr-2 text-xs font-medium text-slate-200 transition-colors hover:border-line-strong hover:text-slate-50 disabled:opacity-60 max-sm:max-w-[9.5rem] max-sm:gap-1 pointer-coarse:min-h-11"
       >
         {selected ? (
           <Face seat={selected} size={20} />
@@ -267,7 +302,7 @@ export function SeatPicker({
         <span className="min-w-0 truncate">{name}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
       </button>
-      {open && (phone ? createPortal(panel, document.body) : panel)}
+      {open && (phone ? createPortal(sheet, document.body) : panel)}
     </span>
   );
 }
