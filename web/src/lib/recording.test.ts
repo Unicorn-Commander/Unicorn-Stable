@@ -40,6 +40,34 @@ describe("recording pill reducer", () => {
     expect(parseRecordingFrame({ active: "yes" })).toBeNull();
   });
 
+  it("reads the starter the way the socket frame carries it: {id, display_name}", () => {
+    // server/app/services/call_recording.py announce_recording
+    expect(
+      parseRecordingFrame({
+        room_id: "room-1",
+        active: true,
+        kind: "audio",
+        started_by: { id: "p-aaron", display_name: "Aaron Stransky" },
+        started_at: STARTED,
+        recording_id: "rec-1",
+        reason: "user",
+      })?.state,
+    ).toEqual({
+      active: true,
+      kind: "audio",
+      startedBy: "p-aaron",
+      startedByName: "Aaron Stransky",
+      startedAt: STARTED,
+    });
+    // A policy start has no starter.
+    expect(
+      parseRecordingFrame({ active: true, kind: "audio", started_by: null, started_at: STARTED })?.state,
+    ).toMatchObject({ startedBy: null, startedByName: null });
+    expect(
+      parseRecordingFrame({ active: true, kind: "audio", started_by: { id: "p-aaron" } })?.state,
+    ).toMatchObject({ startedBy: "p-aaron", startedByName: null });
+  });
+
   it("reads the contract fields, including an optional room id and name", () => {
     expect(
       parseRecordingFrame({
