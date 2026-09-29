@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -125,6 +125,10 @@ class RoomMemberResponse(BaseModel):
     # AGENTS ONLY (null for humans): how this agent behaves in this room.
     agent_mode: AgentMode | None = None
     context_depth: int | None = None
+    # AGENTS ONLY (null for humans and guests): a guest-safe subset of the
+    # participant's metadata — ``{kind, backend, owner, owner_display_name}``
+    # and nothing else (Nav v3: the roster marks and the Mode popover).
+    metadata: dict[str, Any] | None = None
 
 
 class RoomResponse(BaseModel):

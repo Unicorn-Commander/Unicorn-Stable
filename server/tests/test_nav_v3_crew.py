@@ -59,9 +59,9 @@ def _brigade(agent_id, **kw):
     return _agent(agent_id, backend=None, crew=False, owner=None, **kw)
 
 
-def _hub(human_id=CALLER, parent=None):
+def _hub(human_id=CALLER, parent=None, agent_id="persephone"):
     return SimpleNamespace(id=uuid.uuid4(), room_type=RoomType.AGENT_HUB, parent_room_id=parent,
-                           metadata_={"agent_hub": {"human_id": str(human_id), "agent_id": "x"}})
+                           metadata_={"agent_hub": {"human_id": str(human_id), "agent_id": agent_id}})
 
 
 def _plain(room_type=RoomType.GROUP_DM):
@@ -69,7 +69,9 @@ def _plain(room_type=RoomType.GROUP_DM):
 
 
 def _row(participant, room=None, mode="answers_all"):
-    return (participant, SimpleNamespace(agent_mode=mode), room if room is not None else _hub())
+    # Default: the caller's own hub WITH this agent (P2-4: a hub is for one agent).
+    hub = room if room is not None else _hub(agent_id=C.agent_id_of(participant))
+    return (participant, SimpleNamespace(agent_mode=mode), hub)
 
 
 def _msg(participant, days_ago, text="On it."):
@@ -287,7 +289,8 @@ class HomeCrewReusesTheBuilder(IsolatedAsyncioTestCase):
         self.assertEqual(
             set(dumped),
             {"agent_id", "participant_id", "display_name", "avatar_url", "role_line", "backend", "kind",
-             "owner", "group", "presence", "hub_room_id", "seat_capabilities", "last_line", "last_at", "unread"},
+             "owner", "group", "presence", "last_seen_at", "hub_room_id", "seat_capabilities", "last_line",
+             "last_at", "unread"},
         )
         self.assertEqual((dumped["kind"], dumped["owner"], dumped["group"], dumped["unread"]), ("seat", "aaron", "own_seat", 2))
         self.assertIsInstance(crew_row(entry), CrewRow)
@@ -329,8 +332,10 @@ class BuildCrewWiring(IsolatedAsyncioTestCase):
             R(scalars=[_heartbeat("agent-persephone", 1)]),                     # events
         ])
         redis = AsyncMock()
-        with patch("app.services.agent_availability.get_gateway_fresh", new=AsyncMock(return_value={"persephone"})):
+        with patch("app.services.agent_availability.get_gateway_fresh", new=AsyncMock(return_value={"persephone"})), \
+             patch("app.services.agent_availability.get_gateway_last_seen", new=AsyncMock(return_value={"persephone": NOW})):
             crew = await C.build_crew(db, CALLER, NOW, redis=redis)
+        self.assertEqual(crew[0].last_seen_at, NOW)
         self.assertEqual(db.execute.await_count, 7)
         self.assertEqual(len(crew), 1)
         entry = crew[0]

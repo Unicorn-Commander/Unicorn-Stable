@@ -48,7 +48,10 @@ class CrewRow(BaseModel):
     #: agents: Brigade's roster says registered + enabled, or a worker
     #: heartbeat landed in the last 6 minutes.
     presence: Literal["online", "offline"]
-    #: The caller's OWN hub with this agent (R7), when one exists.
+    #: Seats: when the runner last called the gateway (30-day memory); null
+    #: for house agents and for a seat that has never called.
+    last_seen_at: datetime | None = None
+    #: The caller's OWN hub with this agent (R7 + P2-4), when one exists.
     hub_room_id: str | None = None
     #: What the runner announced through ``PUT /gateway/me`` (harness,
     #: default_model, default_effort, models[], efforts[], updated_at); null
@@ -72,6 +75,7 @@ def crew_row(entry: CrewEntry) -> CrewRow:
         owner=entry.owner,
         group=entry.group,  # type: ignore[arg-type]
         presence="online" if entry.presence == "online" else "offline",
+        last_seen_at=entry.last_seen_at,
         hub_room_id=entry.hub_room_id,
         seat_capabilities=entry.seat_capabilities,
         last_line=entry.last_line,
@@ -94,13 +98,10 @@ async def list_crew(
     now = datetime.now(timezone.utc)
     roles, entries = await asyncio.gather(
         load_brigade_role_lines(redis),
-        build_crew(
-            db,
-            user["participant_id"],
-            now,
-            caller_username=user.get("username"),
-            redis=redis,
-        ),
+        # The owner match uses the caller's DB username, looked up by
+        # participant id inside build_crew — never the token's
+        # preferred_username (P2-7: two Keycloaks).
+        build_crew(db, user["participant_id"], now, redis=redis),
     )
     apply_role_lines(entries, roles)
     return [crew_row(entry) for entry in entries]

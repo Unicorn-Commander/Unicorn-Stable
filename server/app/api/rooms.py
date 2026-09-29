@@ -1088,6 +1088,9 @@ def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
         avatar_emoji=m.get("avatar_emoji"),
         availability=m.get("availability"),
         availability_reason=m.get("availability_reason"),
+        agent_mode=m.get("agent_mode"),
+        context_depth=m.get("context_depth"),
+        metadata=m.get("metadata"),
     )
 
 

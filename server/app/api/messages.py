@@ -91,6 +91,37 @@ async def list_activity_events(
     ) for e, m, room_name, actor_name in rows]
 
 
+#: Message-metadata keys only the GATEWAY may set: they say "an agent wrote
+#: this" (``agent_id``, ``gateway``), on whose behalf (``on_behalf_of``) and
+#: through what (``via``). A human or guest body that carries them is
+#: forging an agent line; they are dropped before storage so neither the
+#: web nor a runner's poll ever sees a human's text wearing a seat's id.
+FORGEABLE_METADATA_KEYS: frozenset[str] = frozenset({"agent_id", "on_behalf_of", "gateway", "via"})
+
+
+def _principal_is_agent(user: dict[str, Any] | None) -> bool:
+    """The gateway's derived identity (``sub = brigade:<id>``) or an
+    agent-typed principal — the only callers that may stamp agent metadata."""
+    user = user or {}
+    return user.get("participant_type") == "agent" or str(user.get("sub") or "").startswith("brigade:")
+
+
+def scrub_forgeable_metadata(metadata: dict[str, Any] | None, user: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Defense in depth for the runner (Nav v3): strip agent-only keys from a
+    HUMAN or GUEST post; everything else (``client_msg_id``, attachments…)
+    is kept as sent. Agent principals pass through untouched."""
+    if not metadata or _principal_is_agent(user):
+        return metadata
+    cleaned = {k: v for k, v in metadata.items() if k not in FORGEABLE_METADATA_KEYS}
+    if len(cleaned) != len(metadata):
+        logger.info(
+            "message_metadata_scrubbed",
+            dropped=sorted(set(metadata) - set(cleaned)),
+            participant_id=str((user or {}).get("participant_id")),
+        )
+    return cleaned
+
+
 def _build_message_service(
     db: AsyncSession,
     livekit: LiveKitService,
@@ -322,7 +353,7 @@ async def send_message(
     # metadata so (a) this lookup can find it and (b) the ws echo carries it
     # back to the sender as a delivery acknowledgement.
     client_msg_id = (body.client_msg_id or "").strip() or None
-    metadata = body.metadata
+    metadata = scrub_forgeable_metadata(body.metadata, user)
     if client_msg_id:
         existing = await _find_recent_send_by_client_msg_id(
             db,
@@ -338,7 +369,7 @@ async def send_message(
                 client_msg_id=client_msg_id,
             )
             return _msg_to_response(existing)
-        metadata = {**(body.metadata or {}), "client_msg_id": client_msg_id}
+        metadata = {**(metadata or {}), "client_msg_id": client_msg_id}
 
     # Normalize friendly aliases to the underlying ContentType enum values.
     ct_aliases = {"action": "agent_action", "image": "text", "file": "text"}

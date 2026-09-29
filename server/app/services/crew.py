@@ -126,6 +126,8 @@ class CrewEntry:
     agent_mode: str | None
     current_task: str | None
     since: datetime | None
+    #: Last authenticated gateway call (seats only; 30-day memory).
+    last_seen_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -190,10 +192,12 @@ def is_crew_runner_seat(participant: Any, live_key_agent_ids: set[str]) -> bool:
     )
 
 
-def is_caller_hub(room: Any, caller_id: Any) -> bool:
-    """R7: the caller's hub with an agent — ``agent_hub``, top level, and
-    ``metadata.agent_hub.human_id`` is the caller. A thread inherits the
-    hub's room_type and someone else's hub carries their id: neither is it."""
+def is_caller_hub(room: Any, caller_id: Any, agent_id: str | None = None) -> bool:
+    """R7 (+ P2-4): the caller's hub with THIS agent — ``agent_hub``, top
+    level, ``metadata.agent_hub.human_id`` is the caller and
+    ``metadata.agent_hub.agent_id`` is the agent. A thread inherits the
+    hub's room_type, someone else's hub carries their id, and a second agent
+    sitting in the hub is not the agent the hub is for: none of those is it."""
     room_type = getattr(getattr(room, "room_type", None), "value", getattr(room, "room_type", None))
     if room_type != RoomType.AGENT_HUB.value:
         return False
@@ -202,7 +206,12 @@ def is_caller_hub(room: Any, caller_id: Any) -> bool:
     meta = getattr(room, "metadata_", None)
     hub = meta.get("agent_hub") if isinstance(meta, dict) else None
     human_id = hub.get("human_id") if isinstance(hub, dict) else None
-    return isinstance(human_id, str) and caller_id is not None and human_id == str(caller_id)
+    hub_agent = hub.get("agent_id") if isinstance(hub, dict) else None
+    if not (isinstance(human_id, str) and caller_id is not None and human_id == str(caller_id)):
+        return False
+    if agent_id is None:
+        return True
+    return isinstance(hub_agent, str) and hub_agent == agent_id
 
 
 def role_line_of(participant: Any, brigade_roles: dict[str, str] | None = None) -> str | None:
@@ -276,6 +285,7 @@ def assemble_crew(
     unread_by_room: dict[str, int],
     events: Iterable[Any],
     gateway_fresh: set[str] | None = None,
+    gateway_last_seen: dict[str, datetime] | None = None,
     roster_status: dict[str, str] | None = None,
     brigade_roles: dict[str, str] | None = None,
 ) -> list[CrewEntry]:
@@ -294,6 +304,7 @@ def assemble_crew(
     ``unread_by_room``      room id → the caller's unread count there;
     ``events``              recent agent_events (heartbeats, tasks);
     ``gateway_fresh``       agent ids whose bridge called the gateway recently;
+    ``gateway_last_seen``   agent id → last authenticated gateway call;
     ``roster_status``       Brigade's ``{agent_id: status}`` (None = unknown).
     """
     now = _aware(now)
@@ -332,7 +343,7 @@ def assemble_crew(
         if participant is None or is_excluded_kind(participant):
             continue
         room_type = _room_type_value(room)
-        is_hub = is_caller_hub(room, caller_id)
+        is_hub = is_caller_hub(room, caller_id, agent_id_of(participant))
         if is_runner_seat(participant):
             if not is_crew_runner_seat(participant, live_key_agent_ids):
                 # A runner seat without the crew flag / a live key is not on
@@ -423,6 +434,7 @@ def assemble_crew(
                 agent_mode=slot["agent_mode"],
                 current_task=task,
                 since=since,
+                last_seen_at=(gateway_last_seen or {}).get(agent_id) if slot["kind"] == KIND_SEAT else None,
             )
         )
     return entries
@@ -705,14 +717,20 @@ async def build_crew(
         )
 
     gateway_fresh: set[str] = set()
+    gateway_last_seen: dict[str, datetime] = {}
     roster_status: dict[str, str] | None = None
     if redis is not None:
-        from app.services.agent_availability import _load_roster_status, get_gateway_fresh
+        from app.services.agent_availability import (
+            _load_roster_status,
+            get_gateway_fresh,
+            get_gateway_last_seen,
+        )
 
         seat_ids = sorted({entry.agent_id for entry in entries if entry.kind == KIND_SEAT})
         house_ids = [entry.agent_id for entry in entries if entry.kind == KIND_BRIGADE]
         try:
             gateway_fresh = await get_gateway_fresh(redis, seat_ids)
+            gateway_last_seen = await get_gateway_last_seen(redis, seat_ids)
         except Exception:
             logger.debug("crew_gateway_fresh_failed", exc_info=True)
         if house_ids:
@@ -733,6 +751,7 @@ async def build_crew(
         unread_by_room=unread_by_room,
         events=events,
         gateway_fresh=gateway_fresh,
+        gateway_last_seen=gateway_last_seen,
         roster_status=roster_status,
         brigade_roles=brigade_roles,
     )
