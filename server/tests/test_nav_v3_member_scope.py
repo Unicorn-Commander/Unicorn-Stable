@@ -176,23 +176,29 @@ class RoomControllerHonoursMemberScope(IsolatedAsyncioTestCase):
 
 class KeyBodiesAcceptTheToken(TestCase):
     def test_mint_and_patch_accept_member(self) -> None:
-        self.assertEqual(G.MintKeyBody(agent_id="persephone", allowed_rooms=["@member"]).allowed_rooms, ["@member"])
+        self.assertEqual(
+            G.MintKeyBody(agent_id="persephone", allowed_rooms=["@member"], no_expiry=True, history="full").allowed_rooms,
+            ["@member"],
+        )
         self.assertEqual(G.PatchKeyBody(allowed_rooms=["@member"]).allowed_rooms, ["@member"])
 
     def test_names_and_star_are_unchanged_and_deduplicated(self) -> None:
         body = G.MintKeyBody(
-            agent_id="rook", allowed_rooms=["persephone", "stable-persephone", "*", "persephone"]
+            agent_id="rook",
+            allowed_rooms=["persephone", "stable-persephone", "*", "persephone"],
+            no_expiry=True,
+            history="full",
         )
         self.assertEqual(body.allowed_rooms, ["persephone", "stable-persephone", "*"])
-        self.assertEqual(G.MintKeyBody(agent_id="rook").allowed_rooms, ["*"])
+        self.assertEqual(G.MintKeyBody(agent_id="rook", no_expiry=True, history="full").allowed_rooms, ["*"])
         self.assertIsNone(G.PatchKeyBody(label="x").allowed_rooms)
 
     def test_a_mistyped_token_an_empty_entry_or_an_empty_list_is_refused(self) -> None:
         with self.assertRaises(ValidationError):
-            G.MintKeyBody(agent_id="rook", allowed_rooms=["@memberr"])
+            G.MintKeyBody(agent_id="rook", allowed_rooms=["@memberr"], no_expiry=True, history="full")
         with self.assertRaises(ValidationError):
             G.PatchKeyBody(allowed_rooms=["@all"])
         with self.assertRaises(ValidationError):
-            G.MintKeyBody(agent_id="rook", allowed_rooms=["persephone", "  "])
+            G.MintKeyBody(agent_id="rook", allowed_rooms=["persephone", "  "], no_expiry=True, history="full")
         with self.assertRaises(ValidationError):
             G.PatchKeyBody(allowed_rooms=[])

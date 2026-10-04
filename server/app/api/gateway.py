@@ -13,10 +13,11 @@ rollback = drop this router / GATEWAY_ENABLED=false).
 
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Iterable, Literal
 
 import structlog
@@ -33,7 +34,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from redis.asyncio import Redis
 from sqlalchemy import cast, delete, func, select, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -490,11 +491,172 @@ async def require_human_owner(db: AsyncSession, owner: str) -> str:
     return owner
 
 
+def _principal_history_from(principal: Any) -> datetime | None:
+    """The key's history floor, or None.
+
+    None is full history: the JWT path sets it explicitly, and a NULL
+    ``history_from`` column means the same. A caller double that predates
+    the field is treated as NULL, never as 'hide everything'. A value that
+    is present and not a datetime is not full history: the caller reads
+    nothing older than now."""
+    value = getattr(principal, "history_from", None)
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.now(timezone.utc)
+
+
 def _operator_of(request: Request) -> str | None:
     """Who the caller says they are (``X-Operator``), for the audit line.
     Self-declared by the holder of the key-admin secret; capped."""
     value = (request.headers.get("X-Operator") or "").strip()
     return value[:120] or None
+
+
+#: Named in every 422 that rejects a missing or doubled expiry choice.
+EXPIRY_CHOICE_DETAIL = (
+    "Choose exactly one of expires_in_days, expires_at, or no_expiry=true"
+)
+HISTORY_DETAIL = 'history must be "full", "from_mint", or an ISO-8601 time'
+HISTORY_FUTURE_DETAIL = "history must not be in the future"
+EXPIRES_PAST_DETAIL = "expires_at is in the past"
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _expiry_choice_count(
+    expires_in_days: int | None, expires_at: datetime | None, no_expiry: bool
+) -> int:
+    """``no_expiry`` counts only when true. False is the default, not a choice."""
+    return (
+        int(expires_in_days is not None)
+        + int(expires_at is not None)
+        + int(bool(no_expiry))
+    )
+
+
+def parse_history(history: str, *, now: datetime, from_mint_at: datetime) -> datetime | None:
+    """``full`` → NULL, ``from_mint`` → ``from_mint_at``, else an ISO time.
+
+    An ISO time in the future is refused. Naive datetimes are UTC.
+    """
+    raw = (history or "").strip()
+    if raw == "full":
+        return None
+    if raw == "from_mint":
+        return _as_utc(from_mint_at)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(HISTORY_DETAIL) from exc
+    parsed = _as_utc(parsed)
+    if parsed > _as_utc(now):
+        raise ValueError(HISTORY_FUTURE_DETAIL)
+    return parsed
+
+
+def resolve_expiry(
+    *,
+    expires_in_days: int | None,
+    expires_at: datetime | None,
+    no_expiry: bool,
+    now: datetime,
+) -> datetime | None:
+    """The ``expires_at`` to store. The caller has already required one choice."""
+    if no_expiry:
+        return None
+    if expires_in_days is not None:
+        return _as_utc(now) + timedelta(days=int(expires_in_days))
+    if expires_at is None:
+        raise ValueError(EXPIRY_CHOICE_DETAIL)
+    expires = _as_utc(expires_at)
+    # ``<= now`` matches verify_gateway_key, so mint cannot store a key that
+    # is already expired.
+    if expires <= _as_utc(now):
+        raise ValueError(EXPIRES_PAST_DETAIL)
+    return expires
+
+
+def resolve_mint_lifetime(
+    *,
+    expires_in_days: int | None,
+    expires_at: datetime | None,
+    no_expiry: bool,
+    history: str,
+    now: datetime,
+) -> tuple[datetime | None, datetime | None]:
+    if _expiry_choice_count(expires_in_days, expires_at, no_expiry) != 1:
+        raise ValueError(EXPIRY_CHOICE_DETAIL)
+    return (
+        resolve_expiry(
+            expires_in_days=expires_in_days,
+            expires_at=expires_at,
+            no_expiry=no_expiry,
+            now=now,
+        ),
+        parse_history(history, now=now, from_mint_at=now),
+    )
+
+
+def apply_patch_lifetime(row: Any, body: Any, now: datetime) -> None:
+    """Set or extend expiry, and/or set history. Does not touch ``revoked_at``."""
+    count = _expiry_choice_count(body.expires_in_days, body.expires_at, body.no_expiry)
+    if count > 1:
+        raise ValueError(EXPIRY_CHOICE_DETAIL)
+    if count == 1:
+        row.expires_at = resolve_expiry(
+            expires_in_days=body.expires_in_days,
+            expires_at=body.expires_at,
+            no_expiry=body.no_expiry,
+            now=now,
+        )
+    if body.history is not None:
+        mint_at = getattr(row, "created_at", None)
+        if not isinstance(mint_at, datetime):
+            mint_at = now
+        row.history_from = parse_history(body.history, now=now, from_mint_at=mint_at)
+
+
+def key_lifetime_view(
+    expires_at: datetime | None,
+    history_from: datetime | None,
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """``days_left`` is a positive integer, or null. An expired key is
+    ``expired: true`` with ``days_left`` null — never 0 or a negative."""
+    now_utc = _as_utc(now)
+    expires = _as_utc(expires_at) if isinstance(expires_at, datetime) else None
+    history = _as_utc(history_from) if isinstance(history_from, datetime) else None
+    if expires is None:
+        expired = False
+        days_left: int | None = None
+    else:
+        seconds = (expires - now_utc).total_seconds()
+        expired = seconds <= 0
+        if expired:
+            days_left = None
+        else:
+            days_left = math.ceil(seconds / 86400)
+            if days_left <= 0:
+                days_left = None
+    return {
+        "expires_at": expires,
+        "history_from": history,
+        "days_left": days_left,
+        "expired": expired,
+    }
+
+
+def _lifetime_422(exc: ValueError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+    )
 
 
 class MintKeyBody(BaseModel):
@@ -514,6 +676,34 @@ class MintKeyBody(BaseModel):
     #: then if the seat has never posted — so the seat is owned from its
     #: first contact (R1 / P2-9). Ownership decides room privacy.
     owner: str | None = None
+    #: Exactly one of these three. ``no_expiry=true`` stores NULL (the key
+    #: does not expire). ``expires_in_days`` is 1..366 from now.
+    expires_in_days: int | None = Field(default=None, ge=1, le=366)
+    expires_at: datetime | None = None
+    no_expiry: bool = False
+    #: Required. ``full`` stores NULL (the whole room). ``from_mint`` stores
+    #: the mint time. An ISO-8601 time stores that time, and must not be in
+    #: the future. There is no default: a forgotten field must not grant
+    #: the room's full history.
+    history: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _history_is_required(cls, data: Any) -> Any:
+        # A missing or null history is not "full". Blank it so the field
+        # validator names the three options, and so other missing fields
+        # (agent_id) are still reported on the same 422.
+        if isinstance(data, dict) and data.get("history") is None:
+            data = dict(data)
+            data["history"] = ""
+        return data
+
+    @field_validator("history", mode="before")
+    @classmethod
+    def _history_names_the_options(cls, value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(HISTORY_DETAIL)
+        return value
 
     @field_validator("allowed_rooms")
     @classmethod
@@ -524,6 +714,20 @@ class MintKeyBody(BaseModel):
     @classmethod
     def _owner(cls, value: Any) -> str | None:
         return validate_owner(value)
+
+    @model_validator(mode="after")
+    def _explicit_expiry(self) -> MintKeyBody:
+        try:
+            resolve_mint_lifetime(
+                expires_in_days=self.expires_in_days,
+                expires_at=self.expires_at,
+                no_expiry=self.no_expiry,
+                history=self.history,
+                now=datetime.now(timezone.utc),
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 
 class PatchKeyBody(BaseModel):
@@ -539,6 +743,15 @@ class PatchKeyBody(BaseModel):
     #: created if the seat has never posted. The only way to own a seat
     #: minted before owners existed.
     owner: str | None = None
+    #: Omitted = leave ``expires_at`` as it is. When any of these is sent,
+    #: exactly one: set ``expires_at``, set it to now + days, or clear it.
+    #: There is no field that clears ``revoked_at``.
+    expires_in_days: int | None = Field(default=None, ge=1, le=366)
+    expires_at: datetime | None = None
+    no_expiry: bool = False
+    #: Omitted = leave ``history_from``. Same three values as mint.
+    #: ``from_mint`` stores the key's ``created_at``, not the patch time.
+    history: str | None = None
 
     @field_validator("allowed_rooms")
     @classmethod
@@ -549,6 +762,28 @@ class PatchKeyBody(BaseModel):
     @classmethod
     def _owner(cls, value: Any) -> str | None:
         return validate_owner(value)
+
+    @model_validator(mode="after")
+    def _expiry_choice(self) -> PatchKeyBody:
+        count = _expiry_choice_count(
+            self.expires_in_days, self.expires_at, self.no_expiry
+        )
+        if count > 1:
+            raise ValueError(EXPIRY_CHOICE_DETAIL)
+        now = datetime.now(timezone.utc)
+        try:
+            if count == 1:
+                resolve_expiry(
+                    expires_in_days=self.expires_in_days,
+                    expires_at=self.expires_at,
+                    no_expiry=self.no_expiry,
+                    now=now,
+                )
+            if self.history is not None:
+                parse_history(self.history, now=now, from_mint_at=now)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 
 SeatEffort = Literal["low", "medium", "high", "max"]
@@ -822,7 +1057,15 @@ async def gateway_get_messages(
         logger.debug("gateway_relay_clear_failed", exc_info=True)
 
     svc = _build_message_service(db, livekit)
-    result = await svc.get_messages(room_id=room_obj.id, cursor=cursor, limit=limit)
+    # history_from NULL (and the JWT path) is the whole room. A cursor older
+    # than the floor cannot page past it: get_messages ANDs the cursor with
+    # not_before, so that page is empty.
+    result = await svc.get_messages(
+        room_id=room_obj.id,
+        cursor=cursor,
+        limit=limit,
+        not_before=_principal_history_from(principal),
+    )
     messages = scrub_identity_on_read(
         [
             (item["message"], _msg_to_response(item["message"], item["reply_count"]))
@@ -872,11 +1115,16 @@ async def gateway_get_context(
                 )
             )
         ).scalar_one_or_none()
+    # The key floor hides lines from before history_from, and build_context
+    # withholds the rolling summary when a floor is set (that summary covers
+    # lines the floor exists to hide). A `since` older than the floor is not
+    # a way under it: the floor stays the lower bound.
     payload = await build_context(
         db,
         room_id=room_obj.id,
         budget_tokens=budget_tokens,
         since_message_id=since,
+        not_before=_principal_history_from(principal),
         for_participant_id=seat.id if seat is not None else None,
     )
     # Plain JSON (uuids/datetimes stringified) — the runner reads it as data.
@@ -1623,6 +1871,17 @@ async def mint_gateway_key(
     if body.owner is not None:
         # Before the key exists: a refused owner must not leave a key behind.
         await require_human_owner(db, body.owner)
+    now = datetime.now(timezone.utc)
+    try:
+        expires_at, history_from = resolve_mint_lifetime(
+            expires_in_days=body.expires_in_days,
+            expires_at=body.expires_at,
+            no_expiry=body.no_expiry,
+            history=body.history,
+            now=now,
+        )
+    except ValueError as exc:
+        raise _lifetime_422(exc) from exc
     raw = f"{_KEY_PREFIXES[0]}{secrets.token_urlsafe(32)}"
     row = AgentGatewayKey(
         key_hash=hash_key(raw),
@@ -1633,6 +1892,8 @@ async def mint_gateway_key(
         rate_limit_rpm=body.rate_limit_rpm,
         can_manage_voice_settings=bool(body.can_manage_voice_settings),
         created_by=(request.headers.get("X-Operator") or "operator"),
+        expires_at=expires_at,
+        history_from=history_from,
     )
     db.add(row)
     await db.commit()
@@ -1661,7 +1922,7 @@ async def mint_gateway_key(
     return {
         "id": key_id,
         "agent_id": agent_id,
-        "key": raw,  # shown ONCE
+        "key": raw,  # shown ONCE — never logged, never repeated by GET /keys
         "key_prefix": key_prefix,
         "allowed_rooms": allowed_rooms,
         "rate_limit_rpm": rate_limit_rpm,
@@ -1670,6 +1931,7 @@ async def mint_gateway_key(
         # mint; PATCH the key to change it).
         "owner": stored_owner,
         "owner_stamped": owner_stamped,
+        **key_lifetime_view(expires_at, history_from, now=now),
     }
 
 
@@ -1764,9 +2026,14 @@ async def list_gateway_keys(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """List key metadata (no secrets). Operator-only."""
+    """List key metadata (no secrets). Operator-only.
+
+    Never the raw key and never its hash. ``days_left`` is null when the
+    key has no expiry, and null (with ``expired: true``) once it has lapsed.
+    """
     verify_key_admin_bearer(request)
     rows = (await db.execute(select(AgentGatewayKey))).scalars().all()
+    now = datetime.now(timezone.utc)
     return {
         "keys": [
             {
@@ -1778,6 +2045,11 @@ async def list_gateway_keys(
                 "rate_limit_rpm": r.rate_limit_rpm,
                 "can_manage_voice_settings": bool(r.can_manage_voice_settings),
                 "revoked": r.revoked_at is not None,
+                **key_lifetime_view(
+                    getattr(r, "expires_at", None),
+                    getattr(r, "history_from", None),
+                    now=now,
+                ),
             }
             for r in rows
         ]
@@ -1817,6 +2089,13 @@ async def patch_gateway_key(
         row.rate_limit_rpm = body.rate_limit_rpm
     if body.can_manage_voice_settings is not None:
         row.can_manage_voice_settings = bool(body.can_manage_voice_settings)
+    now = datetime.now(timezone.utc)
+    try:
+        # Sets expires_at / history_from only. revoked_at is not a field
+        # on the body and is not assigned here, so a PATCH cannot un-revoke.
+        apply_patch_lifetime(row, body, now)
+    except ValueError as exc:
+        raise _lifetime_422(exc) from exc
     await db.commit()
     out = {
         "id": str(row.id),
@@ -1827,6 +2106,11 @@ async def patch_gateway_key(
         "rate_limit_rpm": row.rate_limit_rpm,
         "can_manage_voice_settings": bool(row.can_manage_voice_settings),
         "revoked": False,
+        **key_lifetime_view(
+            getattr(row, "expires_at", None),
+            getattr(row, "history_from", None),
+            now=now,
+        ),
     }
     if body.owner is not None:
         # The operator's explicit choice: stamped on the seat's row by merge
