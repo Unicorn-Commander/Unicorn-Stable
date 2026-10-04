@@ -48,6 +48,15 @@ export const recordingHandlers = [
     ]),
   ),
 
+  http.get("*/api/v1/rooms/:roomId/recordings/:recordingId/download", () =>
+    HttpResponse.json({
+      url: "https://signed.example/rec-1.ogg?X-Amz-Signature=test",
+      expires_in_seconds: 900,
+      kind: "audio",
+      content_type: "audio/ogg",
+    }),
+  ),
+
   http.patch("*/api/v1/rooms/:roomId", async ({ request }) => {
     const body = (await request.json()) as { recording_policy?: unknown };
     if (

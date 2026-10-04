@@ -1381,6 +1381,21 @@ class StableApiClient {
     return Array.isArray(rows) ? rows : [];
   }
 
+  async downloadRecording(
+    roomId: string,
+    recordingId: string,
+  ): Promise<{
+    url: string;
+    expires_in_seconds: number;
+    kind: string;
+    content_type?: string | null;
+  }> {
+    return this.request(
+      "GET",
+      `/api/v1/rooms/${roomId}/recordings/${recordingId}/download`,
+    );
+  }
+
   /** Archive a room (server-side soft-delete via is_archived). Returns the updated room. */
   async archiveRoom(roomId: string): Promise<Room> {
     // DELETE /rooms/{id} is the archive endpoint per rooms.py

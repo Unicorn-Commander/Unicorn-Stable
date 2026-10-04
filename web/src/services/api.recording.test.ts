@@ -48,6 +48,13 @@ describe("recording API (MSW until L8s)", () => {
     });
   });
 
+  it("gets a short-lived download URL for a recording", async () => {
+    await expect(api.downloadRecording("room-1", "rec-1")).resolves.toMatchObject({
+      url: "https://signed.example/rec-1.ogg?X-Amz-Signature=test",
+      expires_in_seconds: 900,
+    });
+  });
+
   it("patches the room recording policy", async () => {
     await expect(api.updateRecordingPolicy("room-1", "on_request")).resolves.toMatchObject({
       recording_policy: "on_request",
