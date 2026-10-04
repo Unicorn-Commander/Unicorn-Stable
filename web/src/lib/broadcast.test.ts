@@ -19,10 +19,13 @@ const iso = (msFromNow: number) => new Date(NOW + msFromNow).toISOString();
 
 describe("parseBroadcastOptions", () => {
   it("reads the token, the background mode and the audio request", () => {
-    const opts = parseBroadcastOptions("?token=sbt-abc&bg=transparent&audio=1");
+    const opts = parseBroadcastOptions(
+      "?token=sbt-abc&bg=transparent&audio=1&source=screen",
+    );
     expect(opts.token).toBe("sbt-abc");
     expect(opts.transparent).toBe(true);
     expect(opts.wantAudio).toBe(true);
+    expect(opts.source).toBe("screen");
   });
 
   it("defaults to an opaque, silent feed", () => {
@@ -32,6 +35,7 @@ describe("parseBroadcastOptions", () => {
     const opts = parseBroadcastOptions("?token=sbt-abc");
     expect(opts.transparent).toBe(false);
     expect(opts.wantAudio).toBe(false);
+    expect(opts.source).toBe("auto");
   });
 
   it("treats bg=black and any other value as opaque", () => {
@@ -46,6 +50,13 @@ describe("parseBroadcastOptions", () => {
     expect(parseBroadcastOptions("?audio=0").wantAudio).toBe(false);
     expect(parseBroadcastOptions("?audio=maybe").wantAudio).toBe(false);
     expect(parseBroadcastOptions("").wantAudio).toBe(false);
+  });
+
+  it("normalizes camera and treats missing or unknown source values as auto", () => {
+    expect(parseBroadcastOptions("?source=camera").source).toBe("camera");
+    expect(parseBroadcastOptions("?source=SCREEN").source).toBe("screen");
+    expect(parseBroadcastOptions("?source=presentation").source).toBe("auto");
+    expect(parseBroadcastOptions("?").source).toBe("auto");
   });
 
   it("returns an empty token rather than undefined when none is present", () => {
@@ -162,6 +173,27 @@ describe("buildBroadcastUrl", () => {
     ).not.toMatch(/bg=|audio=/);
   });
 
+  it("emits an explicit source and omits the auto default", () => {
+    expect(
+      buildBroadcastUrl({
+        origin: "https://x.test",
+        roomId: "r",
+        participantIdentity: "p",
+        token: "t",
+        source: "screen",
+      }),
+    ).toBe("https://x.test/broadcast/r/p?token=t&source=screen");
+    expect(
+      buildBroadcastUrl({
+        origin: "https://x.test",
+        roomId: "r",
+        participantIdentity: "p",
+        token: "t",
+        source: "auto",
+      }),
+    ).toBe("https://x.test/broadcast/r/p?token=t");
+  });
+
   it("escapes identities and tokens so nothing truncates the query", () => {
     // A '?' or '#' landing in an identity would silently cut the token off
     // the pasted URL — the feed would then just 401 with no clue why.
@@ -223,6 +255,14 @@ describe("pickBroadcastVideoPublication", () => {
     expect(pickBroadcastVideoPublication([screen])).toBe(screen);
   });
 
+  it("selects each requested source without crossing the source boundary", () => {
+    expect(pickBroadcastVideoPublication([screen, cam], "auto")).toBe(cam);
+    expect(pickBroadcastVideoPublication([screen, cam], "camera")).toBe(cam);
+    expect(pickBroadcastVideoPublication([screen, cam], "screen")).toBe(screen);
+    expect(pickBroadcastVideoPublication([screen], "camera")).toBeNull();
+    expect(pickBroadcastVideoPublication([cam], "screen")).toBeNull();
+  });
+
   it("renders NOTHING when the camera is off", () => {
     // Not a placeholder, not the screen share the person happens to also be
     // publishing while their camera is muted — nothing. Whatever this returns
@@ -246,7 +286,7 @@ describe("pickBroadcastVideoPublication", () => {
       pickBroadcastVideoPublication([camUnsubscribed], { requireTrack: true }),
     ).toBeNull();
     expect(
-      pickBroadcastVideoPublication([camUnsubscribed, screen], {
+      pickBroadcastVideoPublication([camUnsubscribed, screen], "auto", {
         requireTrack: true,
       }),
     ).toBe(screen);
@@ -255,12 +295,21 @@ describe("pickBroadcastVideoPublication", () => {
 
 describe("pickBroadcastAudioPublication", () => {
   it("prefers the microphone, then anything else audible", () => {
-    expect(pickBroadcastAudioPublication([screenAudio, mic])).toBe(mic);
-    expect(pickBroadcastAudioPublication([screenAudio])).toBe(screenAudio);
+    expect(pickBroadcastAudioPublication([screenAudio, mic], "auto")).toBe(mic);
+    expect(pickBroadcastAudioPublication([screenAudio], "auto")).toBe(screenAudio);
+  });
+
+  it("uses only the microphone for camera and screen audio before microphone", () => {
+    expect(pickBroadcastAudioPublication([screenAudio, mic], "camera")).toBe(mic);
+    expect(pickBroadcastAudioPublication([screenAudio], "camera")).toBeNull();
+    expect(pickBroadcastAudioPublication([screenAudio, mic], "screen")).toBe(
+      screenAudio,
+    );
+    expect(pickBroadcastAudioPublication([mic], "screen")).toBe(mic);
   });
 
   it("skips a muted mic and video publications", () => {
-    expect(pickBroadcastAudioPublication([micMuted])).toBeNull();
-    expect(pickBroadcastAudioPublication([cam, screen])).toBeNull();
+    expect(pickBroadcastAudioPublication([micMuted], "auto")).toBeNull();
+    expect(pickBroadcastAudioPublication([cam, screen], "auto")).toBeNull();
   });
 });

@@ -70,6 +70,12 @@ export const REFRESH_FRACTION = 0.8;
 /** Floor on the refresh timer, so a dying link can't spin a tight re-mint loop. */
 export const MIN_REFRESH_DELAY_S = 10;
 
+export type BroadcastSource = "auto" | "camera" | "screen";
+
+function normalizeBroadcastSource(value: unknown): BroadcastSource {
+  return value === "camera" || value === "screen" ? value : "auto";
+}
+
 /**
  * How long the LiveKit token minted at `nowMs` will actually live, given the
  * broadcast token's expiry. Mirrors the server:
@@ -126,16 +132,20 @@ export interface BroadcastOptions {
   transparent: boolean;
   /** `?audio=1` — a REQUEST for audio. The server's `allow_audio` still decides. */
   wantAudio: boolean;
+  /** Which video source to render. Missing and unknown values mean `auto`. */
+  source: BroadcastSource;
 }
 
 export function parseBroadcastOptions(search: string): BroadcastOptions {
   const params = new URLSearchParams(search);
   const bg = (params.get("bg") ?? "").trim().toLowerCase();
   const audio = (params.get("audio") ?? "").trim().toLowerCase();
+  const source = (params.get("source") ?? "").trim().toLowerCase();
   return {
     token: (params.get("token") ?? "").trim(),
     transparent: bg === "transparent",
     wantAudio: audio === "1" || audio === "true" || audio === "yes",
+    source: normalizeBroadcastSource(source),
   };
 }
 
@@ -147,6 +157,7 @@ export interface BroadcastUrlParts {
   token: string;
   transparent?: boolean;
   audio?: boolean;
+  source?: BroadcastSource;
 }
 
 /**
@@ -159,6 +170,9 @@ export interface BroadcastUrlParts {
  */
 export function buildBroadcastUrl(parts: BroadcastUrlParts): string {
   const query = new URLSearchParams({ token: parts.token });
+  if (parts.source === "camera" || parts.source === "screen") {
+    query.set("source", parts.source);
+  }
   if (parts.transparent) query.set("bg", "transparent");
   if (parts.audio) query.set("audio", "1");
   const path = [
@@ -219,6 +233,26 @@ interface PickOptions {
    * SUBSCRIBE to (nothing is subscribed yet); true when deciding what to ATTACH.
    */
   requireTrack?: boolean;
+  /** Optional object-form source for callers that also need `requireTrack`. */
+  source?: BroadcastSource;
+}
+
+type PickSourceArg = BroadcastSource | PickOptions;
+
+function resolvePickOptions(
+  sourceOrOptions: PickSourceArg | undefined,
+  options: PickOptions | undefined,
+): { source: BroadcastSource; options?: PickOptions } {
+  if (typeof sourceOrOptions === "string") {
+    return {
+      source: sourceOrOptions,
+      options,
+    };
+  }
+  return {
+    source: normalizeBroadcastSource(sourceOrOptions?.source),
+    options: sourceOrOptions,
+  };
 }
 
 function live<T extends BroadcastPublicationLike>(
@@ -247,8 +281,19 @@ function live<T extends BroadcastPublicationLike>(
  */
 export function pickBroadcastVideoPublication<
   T extends BroadcastPublicationLike,
->(pubs: readonly T[], opts?: PickOptions): T | null {
-  const candidates = live(pubs, "video", opts);
+>(
+  pubs: readonly T[],
+  sourceOrOptions: PickSourceArg = "auto",
+  options?: PickOptions,
+): T | null {
+  const resolved = resolvePickOptions(sourceOrOptions, options);
+  const candidates = live(pubs, "video", resolved.options);
+  if (resolved.source === "camera") {
+    return candidates.find((p) => p.source === "camera") ?? null;
+  }
+  if (resolved.source === "screen") {
+    return candidates.find((p) => p.source === "screen_share") ?? null;
+  }
   return (
     candidates.find((p) => p.source === "camera") ??
     candidates.find((p) => p.source === "screen_share") ??
@@ -258,16 +303,29 @@ export function pickBroadcastVideoPublication<
 
 /**
  * The ONE audio publication a broadcast feed plays, when audio was BOTH minted
- * (`allow_audio`) and requested (`?audio=1`). Microphone first, then whatever
- * else is live (a screen share's audio).
+ * (`allow_audio`) and requested (`?audio=1`). Auto preserves today's
+ * microphone-first fallback; camera is microphone-only; screen prefers the
+ * screen share's audio and falls back to the microphone.
  */
 export function pickBroadcastAudioPublication<
   T extends BroadcastPublicationLike,
->(pubs: readonly T[], opts?: PickOptions): T | null {
-  const candidates = live(pubs, "audio", opts);
-  return (
-    candidates.find((p) => p.source === "microphone") ?? candidates[0] ?? null
-  );
+>(
+  pubs: readonly T[],
+  sourceOrOptions: PickSourceArg = "auto",
+  options?: PickOptions,
+): T | null {
+  const resolved = resolvePickOptions(sourceOrOptions, options);
+  const candidates = live(pubs, "audio", resolved.options);
+  const microphone = candidates.find((p) => p.source === "microphone");
+  if (resolved.source === "camera") return microphone ?? null;
+  if (resolved.source === "screen") {
+    return (
+      candidates.find((p) => p.source === "screen_share_audio") ??
+      microphone ??
+      null
+    );
+  }
+  return microphone ?? candidates[0] ?? null;
 }
 
 /**

@@ -19,7 +19,7 @@ import {
 import { BroadcastLowerThird } from "@/components/Room/LowerThird";
 
 /**
- * /broadcast/:roomId/:participantIdentity?token=…&bg=…&audio=…
+ * /broadcast/:roomId/:participantIdentity?token=…&source=…&bg=…&audio=…
  *
  * ONE participant's camera, full-bleed, with zero app UI — a URL an OBS browser
  * source can point at. It replaces screen-scraping Stable's `window.open`
@@ -248,9 +248,13 @@ export function BroadcastPage() {
           participant.identity,
           session.join.participant_identity,
         );
-        const wantVideo = isTarget ? pickBroadcastVideoPublication(pubs) : null;
+        const wantVideo = isTarget
+          ? pickBroadcastVideoPublication(pubs, options.source)
+          : null;
         const wantAudio =
-          isTarget && playAudio ? pickBroadcastAudioPublication(pubs) : null;
+          isTarget && playAudio
+            ? pickBroadcastAudioPublication(pubs, options.source)
+            : null;
         for (const pub of pubs) {
           const wanted = pub === wantVideo || pub === wantAudio;
           if (pub.isSubscribed !== wanted) pub.setSubscribed(wanted);
@@ -277,14 +281,18 @@ export function BroadcastPage() {
       const pubs = target
         ? (Array.from(target.trackPublications.values()) as RemoteTrackPublication[])
         : [];
-      const videoPub = pickBroadcastVideoPublication(pubs, {
-        requireTrack: true,
-      });
+      const videoPub = pickBroadcastVideoPublication(
+        pubs,
+        options.source,
+        { requireTrack: true },
+      );
       const audioPub = shouldPlayAudio(
         session.join.allow_audio,
         options.wantAudio,
       )
-        ? pickBroadcastAudioPublication(pubs, { requireTrack: true })
+        ? pickBroadcastAudioPublication(pubs, options.source, {
+            requireTrack: true,
+          })
         : null;
       setVideoTrack(videoPub?.track ?? null);
       setAudioTrack(audioPub?.track ?? null);
@@ -493,7 +501,7 @@ export function BroadcastPage() {
       roomRef.current = null;
       if (dead) void dead.room.disconnect();
     };
-  }, [options.token, options.wantAudio, clearFreeze]);
+  }, [options.source, options.token, options.wantAudio, clearFreeze]);
 
   /* Autoplay. An OBS browser source is allowed to start audio unprompted; a
      normal tab is not, and the FIRST gesture unblocks it. Deliberately no UI —

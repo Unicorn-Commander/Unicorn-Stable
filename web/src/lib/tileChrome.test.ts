@@ -155,10 +155,12 @@ describe("broadcast opt-in", () => {
   });
 
   it("adds the flag to a broadcast URL only when asked", () => {
-    const bare = "https://stable.example/broadcast/r/p?token=sbt-abc";
+    const bare =
+      "https://stable.example/broadcast/r/p?token=sbt-abc&source=screen";
     expect(withLowerThirdParam(bare, false)).toBe(bare);
     const on = new URL(withLowerThirdParam(bare, true));
     expect(on.searchParams.get("token")).toBe("sbt-abc");
+    expect(on.searchParams.get("source")).toBe("screen");
     expect(on.searchParams.get("lowerThird")).toBe("1");
   });
 });
