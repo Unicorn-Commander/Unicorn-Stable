@@ -16,7 +16,9 @@ class AgentGatewayKey(Base, UUIDPrimaryKeyMixin):
     stolen key cannot impersonate another agent) and an explicit ``allowed_rooms``
     allowlist (``["*"]`` = any room). Stored only as a SHA-256 hash — the raw key
     is shown once at mint time and never persisted. ``revoked_at`` gives instant
-    per-lane revocation.
+    per-lane revocation. ``expires_at`` NULL means the key does not expire.
+    ``history_from`` NULL means the key may read a room's full history; a
+    timestamp is a hard floor on every gateway read of message bodies.
     """
 
     __tablename__ = "agent_gateway_keys"
@@ -48,6 +50,14 @@ class AgentGatewayKey(Base, UUIDPrimaryKeyMixin):
         DateTime(timezone=True), server_default=text("now()"), nullable=False
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # NULL = does not expire (every row that predates this column).
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # NULL = full history. A timestamp is the oldest message this key may read.
+    history_from: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
