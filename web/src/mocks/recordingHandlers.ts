@@ -41,7 +41,7 @@ export const recordingHandlers = [
         duration_seconds: 724,
         storage_url: "https://storage.example/rec-1.ogg",
         mo_session_id: "mo-1",
-        session_url: "https://meetingops.example/sessions/mo-1",
+        mo_session_url: "https://meetingops.example/sessions/mo-1",
         retention_until: null,
         legal_hold: false,
       },

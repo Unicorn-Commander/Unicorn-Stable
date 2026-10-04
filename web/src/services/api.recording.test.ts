@@ -44,7 +44,7 @@ describe("recording API (MSW until L8s)", () => {
       kind: "audio",
       started_by_name: "Aaron",
       duration_seconds: 724,
-      session_url: "https://meetingops.example/sessions/mo-1",
+      mo_session_url: "https://meetingops.example/sessions/mo-1",
     });
   });
 

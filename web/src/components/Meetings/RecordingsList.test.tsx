@@ -13,7 +13,7 @@ const ROW: RecordingListItem = {
   duration_seconds: 12,
   storage_url: "https://private-storage.example/rec-1.ogg",
   mo_session_id: "mo-1",
-  session_url: "https://meetingops.example/sessions/mo-1",
+  mo_session_url: "https://meetingops.example/sessions/mo-1",
 };
 
 function renderList() {

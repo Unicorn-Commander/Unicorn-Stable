@@ -38,6 +38,7 @@ from app.models.room import MemberRole, Room, RoomMember, TranscriptExport
 from app.schemas.room import RecordingResponse
 from app.services import call_recording, recording_policy_admin, recording_storage
 from app.services.agent_access import is_instance_admin
+from app.services.meeting_ops import trusted_remote_session_url
 from app.services.recording_policy import (
     RECORDER_ROLE,
     decide_delete,
@@ -262,6 +263,7 @@ async def list_recordings(
     user: Annotated[dict[str, Any], Depends(require_room_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(50, ge=1, le=200),
+    settings: Annotated[Settings, Depends(get_settings_dep)] = None,  # type: ignore[assignment]
 ) -> list[RecordingResponse]:
     """The room's recordings (every member may see THAT a call was recorded;
     the file itself is served by the storage layer with its own ACL)."""
@@ -275,6 +277,10 @@ async def list_recordings(
     ).scalars().all()
     if not rows:
         return []
+    if settings is None:
+        from app.config import get_settings
+
+        settings = get_settings()
 
     starter_ids = {r.started_by for r in rows if r.started_by is not None}
     names: dict[Any, str] = {}
@@ -310,7 +316,14 @@ async def list_recordings(
         item = RecordingResponse.model_validate(r)
         item.egress_id = r.egress_id
         item.started_by_name = names.get(r.started_by) if r.started_by is not None else None
-        item.mo_session_url = session_urls.get(r.mo_session_id) if r.mo_session_id else None
+        session_url = session_urls.get(r.mo_session_id) if r.mo_session_id else None
+        meeting_ops_base = (settings.meeting_ops_url or "").strip().rstrip("/")
+        if session_url is None and r.mo_session_id and meeting_ops_base:
+            session_url = trusted_remote_session_url(
+                settings,
+                f"{meeting_ops_base}/sessions/{r.mo_session_id}",
+            )
+        item.mo_session_url = session_url
         item.handoff_status = r.handoff_status
         item.file_size_bytes = r.file_size_bytes
         item.can_delete = decide_delete(

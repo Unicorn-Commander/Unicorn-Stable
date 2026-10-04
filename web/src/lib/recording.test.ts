@@ -269,7 +269,7 @@ describe("recordings list permissions", () => {
   });
 
   it("opens Meeting-Ops only from an http(s) link", () => {
-    expect(meetingOpsHref({ session_url: "https://meetingops.example/sessions/mo-1" })).toBe(
+    expect(meetingOpsHref({ mo_session_url: "https://meetingops.example/sessions/mo-1" })).toBe(
       "https://meetingops.example/sessions/mo-1",
     );
     expect(meetingOpsHref({ mo_session_id: "mo-1" })).toBeNull();

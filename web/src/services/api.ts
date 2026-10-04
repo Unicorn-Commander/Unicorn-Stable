@@ -829,7 +829,7 @@ export interface RecordingListItem {
   storage_url?: string | null;
   mo_session_id?: string | null;
   /** Present when L8s (or a proxy) knows the Meeting-Ops session URL. */
-  session_url?: string | null;
+  mo_session_url?: string | null;
   retention_until?: string | null;
   legal_hold?: boolean;
 }
