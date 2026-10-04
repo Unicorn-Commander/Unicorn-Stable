@@ -162,7 +162,7 @@ class P2_8_MintTellsTheTruthAndNeverLosesTheKey(IsolatedAsyncioTestCase):
         owned = _seat("persephone", owner="shafen")           # already owned: mint keeps it
         db = self._db([_human_found(), _Result(scalar=owned)])
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
-            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="persephone", owner="aaron", no_expiry=True), SimpleNamespace(headers={}), db)
+            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="persephone", owner="aaron", no_expiry=True, history="full"), SimpleNamespace(headers={}), db)
         self.assertEqual(out["owner"], "shafen")               # not an echo of the request
         self.assertTrue(out["owner_stamped"])
         self.assertTrue(out["key"])
@@ -170,7 +170,7 @@ class P2_8_MintTellsTheTruthAndNeverLosesTheKey(IsolatedAsyncioTestCase):
     async def test_a_failed_owner_stamp_never_costs_the_caller_the_key(self) -> None:
         db = self._db([_human_found(), RuntimeError("participants is locked")])
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
-            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron", no_expiry=True), SimpleNamespace(headers={}), db)
+            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron", no_expiry=True, history="full"), SimpleNamespace(headers={}), db)
         self.assertTrue(out["key"])                            # shown once: it must arrive
         self.assertIsNone(out["owner"])
         self.assertFalse(out["owner_stamped"])
@@ -179,7 +179,7 @@ class P2_8_MintTellsTheTruthAndNeverLosesTheKey(IsolatedAsyncioTestCase):
     async def test_a_mint_without_owner_says_so(self) -> None:
         db = self._db([])
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
-            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", no_expiry=True), SimpleNamespace(headers={}), db)
+            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", no_expiry=True, history="full"), SimpleNamespace(headers={}), db)
         self.assertIsNone(out["owner"])
         self.assertTrue(out["owner_stamped"])                  # nothing was asked for
         db.execute.assert_not_awaited()

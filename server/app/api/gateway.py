@@ -681,9 +681,29 @@ class MintKeyBody(BaseModel):
     expires_in_days: int | None = Field(default=None, ge=1, le=366)
     expires_at: datetime | None = None
     no_expiry: bool = False
-    #: ``full`` stores NULL (the whole room). ``from_mint`` stores the mint
-    #: time. An ISO-8601 time stores that time, and must not be in the future.
-    history: str = "full"
+    #: Required. ``full`` stores NULL (the whole room). ``from_mint`` stores
+    #: the mint time. An ISO-8601 time stores that time, and must not be in
+    #: the future. There is no default: a forgotten field must not grant
+    #: the room's full history.
+    history: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _history_is_required(cls, data: Any) -> Any:
+        # A missing or null history is not "full". Blank it so the field
+        # validator names the three options, and so other missing fields
+        # (agent_id) are still reported on the same 422.
+        if isinstance(data, dict) and data.get("history") is None:
+            data = dict(data)
+            data["history"] = ""
+        return data
+
+    @field_validator("history", mode="before")
+    @classmethod
+    def _history_names_the_options(cls, value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(HISTORY_DETAIL)
+        return value
 
     @field_validator("allowed_rooms")
     @classmethod

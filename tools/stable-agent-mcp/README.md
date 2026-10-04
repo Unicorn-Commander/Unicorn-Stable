@@ -160,16 +160,19 @@ dependency, so Pydantic validates the request body **first**. The response you
 get depends on whether your body is well-formed:
 
 ```bash
-# no body / empty body → 422, BEFORE any auth check
+# no body / empty body → 422, BEFORE any auth check.
+# agent_id is required. history is required too ("full", "from_mint", or an
+# ISO-8601 time) and has no default. Both are named on this 422.
 curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
   -H 'Content-Type: application/json' -d '{}'
-# 422 {"detail":[{"type":"missing","loc":["body","agent_id"],"msg":"Field required","input":{}}]}
 
 # well-formed body, no secret → 401
 # expiry is required and explicit: exactly one of expires_in_days,
-# expires_at, or no_expiry=true. Omitting all three is 422, still before auth.
+# expires_at, or no_expiry=true. history is required too, with no default:
+# "full", "from_mint", or an ISO-8601 time. Omitting either is 422, still
+# before auth.
 curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
-  -H 'Content-Type: application/json' -d '{"agent_id":"probe","no_expiry":true}'
+  -H 'Content-Type: application/json' -d '{"agent_id":"probe","no_expiry":true,"history":"full"}'
 # 401 {"detail":"Bad agent secret"}
 ```
 
@@ -184,8 +187,9 @@ So: **ask an operator.** Operator-side, minting looks like:
 
 ```bash
 # operator only — needs INTERNAL_AGENT_SECRET
-# expires_in_days is 1..366. history is "full" (NULL, the whole room),
-# "from_mint" (the floor is the mint time), or an ISO-8601 time not in the future.
+# expires_in_days is 1..366. history is required (no default): "full"
+# (NULL, the whole room), "from_mint" (the floor is the mint time), or an
+# ISO-8601 time not in the future. Omitting history is 422.
 curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
   -H "Authorization: Bearer $INTERNAL_AGENT_SECRET" \
   -H "Content-Type: application/json" \

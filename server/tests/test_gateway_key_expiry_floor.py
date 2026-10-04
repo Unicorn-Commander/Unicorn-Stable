@@ -193,14 +193,14 @@ async def test_revoked_still_wins_and_keeps_the_old_message():
 
 def test_mint_validation_matrix():
     with pytest.raises(ValidationError) as none:
-        G.MintKeyBody(agent_id="probe")
+        G.MintKeyBody(agent_id="probe", history="full")
     text = str(none.value)
     assert "expires_in_days" in text
     assert "expires_at" in text
     assert "no_expiry" in text
 
     with pytest.raises(ValidationError) as two:
-        G.MintKeyBody(agent_id="probe", expires_in_days=10, no_expiry=True)
+        G.MintKeyBody(agent_id="probe", expires_in_days=10, no_expiry=True, history="full")
     assert "expires_in_days" in str(two.value)
     assert "no_expiry" in str(two.value)
 
@@ -208,6 +208,7 @@ def test_mint_validation_matrix():
         G.MintKeyBody(
             agent_id="probe",
             expires_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            history="full",
         )
     assert "past" in str(past.value)
 
@@ -215,10 +216,18 @@ def test_mint_validation_matrix():
         G.MintKeyBody(agent_id="probe", no_expiry=True, history="2099-01-01T00:00:00Z")
     assert "future" in str(future.value)
 
+    with pytest.raises(ValidationError) as missing_history:
+        G.MintKeyBody(agent_id="probe", no_expiry=True)
+    missing = str(missing_history.value)
+    assert "full" in missing
+    assert "from_mint" in missing
+    assert "ISO-8601" in missing
+
+    # Guest-style: the floor is the mint time, not the whole room.
     ok = G.MintKeyBody(agent_id="probe", expires_in_days=30, history="from_mint")
     assert ok.expires_in_days == 30
     assert ok.history == "from_mint"
-    assert G.MintKeyBody(agent_id="probe", no_expiry=True).history == "full"
+    assert G.MintKeyBody(agent_id="probe", no_expiry=True, history="full").history == "full"
 
 
 async def test_mint_matrix_is_http_422():
@@ -228,31 +237,42 @@ async def test_mint_matrix_is_http_422():
     # before it answers 422, and a bare app has no session factory.
     app.dependency_overrides[get_db] = lambda: AsyncMock()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        none = await client.post("/api/v1/gateway/keys", json={"agent_id": "probe"})
+        none = await client.post(
+            "/api/v1/gateway/keys", json={"agent_id": "probe", "history": "full"}
+        )
         two = await client.post(
             "/api/v1/gateway/keys",
             json={
                 "agent_id": "probe",
                 "expires_in_days": 10,
                 "expires_at": "2030-01-01T00:00:00Z",
+                "history": "full",
             },
         )
         past = await client.post(
             "/api/v1/gateway/keys",
-            json={"agent_id": "probe", "expires_at": "2020-01-01T00:00:00Z"},
+            json={"agent_id": "probe", "expires_at": "2020-01-01T00:00:00Z", "history": "full"},
         )
         future = await client.post(
             "/api/v1/gateway/keys",
             json={"agent_id": "probe", "no_expiry": True, "history": "2099-01-01T00:00:00+00:00"},
         )
-    for response in (none, two, past, future):
+        missing_history = await client.post(
+            "/api/v1/gateway/keys",
+            json={"agent_id": "probe", "no_expiry": True},
+        )
+    for response in (none, two, past, future, missing_history):
         assert response.status_code == 422, response.text
     assert "expires_in_days" in none.text and "expires_at" in none.text and "no_expiry" in none.text
     assert "past" in past.text
     assert "future" in future.text
+    assert "full" in missing_history.text
+    assert "from_mint" in missing_history.text
+    assert "ISO-8601" in missing_history.text
 
 
 async def test_mint_stores_the_choice_and_does_not_return_the_hash():
+    """Guest-style mint: history \"from_mint\" floors the key at the mint time."""
     db = AsyncMock()
     db.add = MagicMock()
     db.commit = AsyncMock()
