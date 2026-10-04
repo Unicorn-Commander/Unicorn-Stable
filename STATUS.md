@@ -43,7 +43,7 @@ This file describes behavior present in this checkout.
 
 ## Agent gateway keys
 
-- Gateway keys are bound to one agent identity, store only a SHA-256 hash, and return the raw key once. `allowed_rooms` defaults to `["*"]` (any room). It can instead list room slugs or LiveKit room names, or include `@member` (`server/app/models/agent_gateway_key.py`, `server/app/api/gateway.py`, `server/app/auth/gateway_auth.py`).
+- Gateway keys are bound to one agent identity, store only a SHA-256 hash, and return the raw key once. `allowed_rooms` defaults to `["*"]` (any room). An explicit entry matches the room slug or the LiveKit room name. `@member` matches only a room that is not archived, where the agent is a member and the seat's human owner is also a current member. A seat with no owner matches nothing (`server/app/models/agent_gateway_key.py`, `server/app/api/gateway.py`, `server/app/auth/gateway_auth.py`).
 - Minting a gateway key requires exactly one expiry choice: `expires_in_days` (1 through 366), an absolute `expires_at`, or `no_expiry=true`. It also requires a history choice of `full`, `from_mint`, or a timestamp that is not in the future. Message and context reads use the resulting `history_from` as a lower bound on `messages.created_at` (`server/app/api/gateway.py`, `server/alembic/versions/025_gateway_key_expiry_floor.py`, `server/app/services/message_service.py`).
 - The gateway rejects expired keys. A patch of a key that is not revoked can change its expiry and history floor. A revoked key answers 409, and the patch body has no field that clears `revoked_at` (`server/app/auth/gateway_auth.py`, `server/app/api/gateway.py`).
 
