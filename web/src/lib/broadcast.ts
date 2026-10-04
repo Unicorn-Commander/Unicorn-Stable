@@ -263,6 +263,43 @@ export function livekitIdentityForMember(
   return `${username}_${participantId}`;
 }
 
+export type BroadcastViewerCount = number | null | undefined;
+
+/** Human-readable count for the consent surfaces; null means unknown. */
+export function broadcastViewerCountLabel(
+  viewerCount: BroadcastViewerCount,
+): string | null {
+  if (viewerCount == null) return null;
+  return `${viewerCount} viewer${viewerCount === 1 ? "" : "s"}`;
+}
+
+export function broadcastBadgeTitle(
+  name: string,
+  viewerCount: BroadcastViewerCount,
+): string {
+  const count = broadcastViewerCountLabel(viewerCount);
+  return `${name} is being broadcast to an external feed right now${count ? ` — ${count}` : ""}`;
+}
+
+export function broadcastMenuHeader(
+  name: string,
+  viewerCount: BroadcastViewerCount,
+): string {
+  const count = broadcastViewerCountLabel(viewerCount);
+  return `Broadcast ${name}${count ? ` · ${count}` : ""}`;
+}
+
+export const BROADCAST_MULTI_VIEWER_WARNING =
+  "More than one viewer is using this link. Revoke it if that is not you.";
+
+export function broadcastViewerWarning(
+  viewerCount: BroadcastViewerCount,
+): string | null {
+  return viewerCount != null && viewerCount >= 2
+    ? BROADCAST_MULTI_VIEWER_WARNING
+    : null;
+}
+
 /** The shape of a LiveKit TrackPublication this module needs. Structural on
  * purpose: local and remote publications both satisfy it, and so does a test. */
 export interface BroadcastPublicationLike {

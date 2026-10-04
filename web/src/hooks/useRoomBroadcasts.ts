@@ -51,10 +51,19 @@ export function useRoomBroadcasts(roomId: string | null | undefined) {
     [identities],
   );
 
+  const viewerCountFor = useCallback(
+    (identity: string | null | undefined) =>
+      identity
+        ? broadcasting.find((b) => b.participant_identity === identity)
+            ?.viewer_count
+        : undefined,
+    [broadcasting],
+  );
+
   /** Pull the list forward — call after minting or revoking. */
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["room-broadcasts", roomId] });
   }, [qc, roomId]);
 
-  return { broadcasting, identities, isBroadcasting, refresh };
+  return { broadcasting, identities, isBroadcasting, viewerCountFor, refresh };
 }

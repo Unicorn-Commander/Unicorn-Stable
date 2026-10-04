@@ -64,7 +64,10 @@ import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
 import { useIsDesktop } from "@/hooks/usePanelResize";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
 import {
+  broadcastBadgeTitle,
   broadcastCopyVariantConfig,
+  broadcastMenuHeader,
+  broadcastViewerWarning,
   buildBroadcastUrl,
   type BroadcastCopyVariant,
 } from "@/lib/broadcast";
@@ -377,10 +380,12 @@ const BROADCAST_COPY_ITEMS: Array<{
 function BroadcastCopyMenu({
   targetName,
   isBroadcasting,
+  viewerCount,
   onCopy,
 }: {
   targetName: string;
   isBroadcasting?: boolean;
+  viewerCount?: number | null;
   onCopy: (variant: BroadcastCopyVariant) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -459,8 +464,13 @@ function BroadcastCopyMenu({
             className="glass-heavy fixed z-[70] w-64 overflow-hidden rounded-xl p-1 text-xs shadow-pop animate-fade-in"
           >
             <p className="truncate px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Broadcast {targetName}
+              {broadcastMenuHeader(targetName, viewerCount)}
             </p>
+            {broadcastViewerWarning(viewerCount) && (
+              <p className="px-2 py-1 text-[10px] leading-snug text-amber-200">
+                {broadcastViewerWarning(viewerCount)}
+              </p>
+            )}
             {BROADCAST_COPY_ITEMS.map((item) => (
               <button
                 key={item.variant}
@@ -812,6 +822,7 @@ interface ParticipantTileProps {
    * indication anywhere. The feed stays invisible; the FACT of it does not.
    */
   isBroadcasting?: boolean;
+  viewerCount?: number | null;
   /**
    * Run a moderation action on THIS participant's live-call connection.
    * Supplied only to a room owner/admin, and never for your own tile; the
@@ -849,6 +860,7 @@ function ParticipantTile({
   inPopout,
   onCopyBroadcastUrl,
   isBroadcasting,
+  viewerCount,
   onModerate,
 }: ParticipantTileProps) {
   const pip = usePipTile();
@@ -1193,7 +1205,7 @@ function ParticipantTile({
       {isBroadcasting && (
         <span
           className={clsx("pointer-events-none absolute flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-pop", immersive ? "left-3 top-24" : "left-1/2 top-1.5 -translate-x-1/2")}
-          title={`${p.name} is being broadcast to an external feed right now`}
+          title={broadcastBadgeTitle(p.name, viewerCount)}
         >
           <span aria-hidden="true" className="text-[8px] leading-none">
             ●
@@ -1264,6 +1276,7 @@ function ParticipantTile({
           <BroadcastCopyMenu
             targetName={p.name}
             isBroadcasting={isBroadcasting}
+            viewerCount={viewerCount}
             onCopy={onCopyBroadcastUrl}
           />
         )}
@@ -1820,7 +1833,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   // Who is being streamed right now — the consent surface, read by every
   // member. Drives the "● Broadcasting" badge on the tiles below.
-  const { isBroadcasting, refresh: refreshBroadcasts } =
+  const {
+    isBroadcasting,
+    viewerCountFor,
+    refresh: refreshBroadcasts,
+  } =
     useRoomBroadcasts(roomId);
 
   // Minting is OWNER-only on the server. Read the caller's own membership row
@@ -2582,6 +2599,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // broadcast token is scoped to the REAL identity ("<username>_<pid>"), so
     // minting one against "local" would produce a URL that renders nobody.
     const lkIdentity = p.isLocal ? (localParticipant?.identity ?? null) : p.id;
+    const viewerCount = viewerCountFor(lkIdentity);
     // The tile may read "Aaron (you)"; the token list should say the name.
     const lkLabel = p.isLocal ? localParticipant?.name || p.name : p.name;
     return (
@@ -2590,6 +2608,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         p={p}
         roomId={roomId}
         isBroadcasting={isBroadcasting(lkIdentity)}
+        viewerCount={viewerCount}
         onCopyBroadcastUrl={
           isRoomOwner && lkIdentity
             ? (variant) => void copyBroadcastUrl(lkIdentity, lkLabel, variant)

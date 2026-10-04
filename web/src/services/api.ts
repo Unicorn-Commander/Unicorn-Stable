@@ -403,6 +403,7 @@ export interface ActiveBroadcast {
   participant_label: string | null;
   allow_audio: boolean;
   expires_at: string | null;
+  viewer_count?: number | null;
 }
 
 export interface ActiveBroadcasts {

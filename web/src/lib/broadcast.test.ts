@@ -3,8 +3,11 @@ import {
   LIVEKIT_TOKEN_MAX_TTL_S,
   MIN_REFRESH_DELAY_S,
   backoffDelayMs,
+  broadcastBadgeTitle,
   buildBroadcastUrl,
   broadcastCopyVariantConfig,
+  broadcastMenuHeader,
+  broadcastViewerWarning,
   isBroadcastTarget,
   livekitIdentityForMember,
   livekitTokenTtlSeconds,
@@ -258,6 +261,31 @@ describe("livekitIdentityForMember", () => {
     expect(livekitIdentityForMember("aaron", null)).toBeNull();
     expect(livekitIdentityForMember(undefined, "abc-123")).toBeNull();
     expect(livekitIdentityForMember("", "")).toBeNull();
+  });
+});
+
+describe("broadcast viewer consent copy", () => {
+  it("puts singular and plural counts in the broadcasting badge title", () => {
+    expect(broadcastBadgeTitle("Aaron", 1)).toContain("1 viewer");
+    expect(broadcastBadgeTitle("Aaron", 3)).toContain("3 viewers");
+    expect(broadcastMenuHeader("Aaron", 1)).toContain("1 viewer");
+    expect(broadcastMenuHeader("Aaron", 3)).toContain("3 viewers");
+  });
+
+  it("shows the multi-viewer warning only at two or more", () => {
+    expect(broadcastViewerWarning(1)).toBeNull();
+    expect(broadcastViewerWarning(2)).toBe(
+      "More than one viewer is using this link. Revoke it if that is not you.",
+    );
+    expect(broadcastViewerWarning(3)).toBe(
+      "More than one viewer is using this link. Revoke it if that is not you.",
+    );
+  });
+
+  it("leaves the badge and menu header count empty when unknown", () => {
+    expect(broadcastBadgeTitle("Aaron", null)).not.toContain("viewer");
+    expect(broadcastMenuHeader("Aaron", null)).toBe("Broadcast Aaron");
+    expect(broadcastViewerWarning(null)).toBeNull();
   });
 });
 
