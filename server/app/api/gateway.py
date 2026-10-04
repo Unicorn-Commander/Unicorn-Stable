@@ -490,6 +490,16 @@ async def require_human_owner(db: AsyncSession, owner: str) -> str:
     return owner
 
 
+def _principal_history_from(principal: Any) -> datetime | None:
+    """The key's history floor, or None.
+
+    None is full history: the JWT path sets it explicitly, and a NULL
+    ``history_from`` column means the same. A caller double that predates
+    the field is treated as NULL, never as 'hide everything'."""
+    value = getattr(principal, "history_from", None)
+    return value if isinstance(value, datetime) else None
+
+
 def _operator_of(request: Request) -> str | None:
     """Who the caller says they are (``X-Operator``), for the audit line.
     Self-declared by the holder of the key-admin secret; capped."""
@@ -822,7 +832,15 @@ async def gateway_get_messages(
         logger.debug("gateway_relay_clear_failed", exc_info=True)
 
     svc = _build_message_service(db, livekit)
-    result = await svc.get_messages(room_id=room_obj.id, cursor=cursor, limit=limit)
+    # history_from NULL (and the JWT path) is the whole room. A cursor older
+    # than the floor cannot page past it: get_messages ANDs the cursor with
+    # not_before, so that page is empty.
+    result = await svc.get_messages(
+        room_id=room_obj.id,
+        cursor=cursor,
+        limit=limit,
+        not_before=_principal_history_from(principal),
+    )
     messages = scrub_identity_on_read(
         [
             (item["message"], _msg_to_response(item["message"], item["reply_count"]))
@@ -872,11 +890,16 @@ async def gateway_get_context(
                 )
             )
         ).scalar_one_or_none()
+    # The key floor hides lines from before history_from, and build_context
+    # withholds the rolling summary when a floor is set (that summary covers
+    # lines the floor exists to hide). A `since` older than the floor is not
+    # a way under it: the floor stays the lower bound.
     payload = await build_context(
         db,
         room_id=room_obj.id,
         budget_tokens=budget_tokens,
         since_message_id=since,
+        not_before=_principal_history_from(principal),
         for_participant_id=seat.id if seat is not None else None,
     )
     # Plain JSON (uuids/datetimes stringified) — the runner reads it as data.
