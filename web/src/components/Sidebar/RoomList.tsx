@@ -1053,6 +1053,7 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
+    const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
     const unread = rowBadgeCount({
       kind: "channel",
       id: room.id,
@@ -1145,7 +1146,7 @@ export function RoomList() {
                   </span>
                 )}
               </div>
-              {room.last_message && (
+              {showPreview && room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
                   {formatLastMessage(lastLinePreview(room.last_message).text)}
                 </p>
@@ -1245,6 +1246,7 @@ export function RoomList() {
   function renderThreadRow(room: Room, identColor: string) {
     const isActive = activeRoomId === room.id;
     const unread = unreadFor(room);
+    const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
     return (
       <li key={room.id} data-walk-room={room.id}>
         <button
@@ -1267,7 +1269,7 @@ export function RoomList() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-[13px]">
-                {room.last_message ? (
+                {showPreview && room.last_message ? (
                   <>
                     <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                   </>
@@ -1280,7 +1282,7 @@ export function RoomList() {
               <div className="flex shrink-0 items-center gap-1.5">
                 <LiveCallBadge call={liveCallByRoomId[room.id]} />
                 {hasDraft(room.id) && <DraftPencil />}
-                {room.last_message && (
+                {showPreview && room.last_message && (
                   <span className="text-[10px] tabular-nums text-slate-500">
                     {formatTimestamp(room.last_message.created_at)}
                   </span>
@@ -1311,6 +1313,7 @@ export function RoomList() {
       : entry.name;
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
+    const showPreview = !presenterEnabled || (latest ? rule.isOpenRoom(latest.id) : false);
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = rowBadgeCount({
       kind: "person",
@@ -1484,7 +1487,7 @@ export function RoomList() {
                     }
                   />
                   {latest && hasDraft(latest.id) && <DraftPencil />}
-                  {latest?.last_message && (
+                  {showPreview && latest?.last_message && (
                     <span className="text-[10px] tabular-nums text-slate-500">
                       {formatTimestamp(latest.last_message.created_at)}
                     </span>
@@ -1496,7 +1499,7 @@ export function RoomList() {
                   )}
                 </div>
               </div>
-              {latest?.last_message ? (
+              {showPreview && latest?.last_message ? (
                 <p className="truncate text-[11px] text-slate-500">
                   <span className="font-medium text-slate-500">
                     {latest.last_message.sender_name}:
@@ -1583,6 +1586,7 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
+    const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
     const unread = rowBadgeCount({
       kind: "group",
       id: room.id,
@@ -1685,7 +1689,7 @@ export function RoomList() {
                       {room.member_count}
                     </span>
                   )}
-                  {room.last_message && (
+                  {showPreview && room.last_message && (
                     <span className="text-[10px] tabular-nums text-slate-500">
                       {formatTimestamp(room.last_message.created_at)}
                     </span>
@@ -1697,7 +1701,7 @@ export function RoomList() {
                   )}
                 </div>
               </div>
-              {room.last_message && (
+              {showPreview && room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
                   <LastLine message={room.last_message} nameClassName="font-medium text-slate-500" format={formatLastMessage} />
                 </p>
@@ -2205,7 +2209,7 @@ export function RoomList() {
                     className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
                   >
                     <span className="min-w-0 flex-1 truncate text-[13px]">
-                      {room.last_message ? (
+                      {(!presenterEnabled || rule.isOpenRoom(room.id)) && room.last_message ? (
                         <>
                           <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                         </>
@@ -2215,7 +2219,7 @@ export function RoomList() {
                         </span>
                       )}
                     </span>
-                    {room.last_message && (
+                    {(!presenterEnabled || rule.isOpenRoom(room.id)) && room.last_message && (
                       <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
                         {formatTimestamp(room.last_message.created_at)}
                       </span>
