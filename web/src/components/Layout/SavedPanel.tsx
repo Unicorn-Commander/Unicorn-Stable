@@ -115,6 +115,7 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
 
   const listBody = (
     <div className="min-h-0 flex-1 overflow-y-auto">
+      <PresenterHiddenLine count={presenterEnabled ? saved.length - visibleSaved.length : 0} />
       {visibleSaved.length === 0 ? (
         <div className="flex flex-col items-center px-4 py-14 text-center">
           <div className="relative mb-4">
@@ -135,7 +136,6 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
         </div>
       ) : (
         <>
-        <PresenterHiddenLine count={presenterEnabled ? saved.length - visibleSaved.length : 0} />
         <ul className="divide-y divide-line">
           {visibleSaved.map((m: Message) => {
             const ident = identityFor(m.sender_id, m.sender_name);

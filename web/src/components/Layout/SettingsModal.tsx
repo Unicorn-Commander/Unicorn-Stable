@@ -22,6 +22,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { usePresenterStore } from "@/stores/presenterStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 import { logout } from "@/services/auth";
 import { api } from "@/services/api";
@@ -286,6 +288,10 @@ function AgentsPane() {
   });
   const [saving, setSaving] = useState<string | null>(null);
   const defaultAgentId = preferences?.default_agent_id ?? null;
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const visibleRoster = presenterEnabled
+    ? roster.filter((agent) => rule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : roster;
 
   const choose = async (id: string | null) => {
     if (saving) return;
@@ -381,7 +387,7 @@ function AgentsPane() {
             </span>,
             "none",
           )}
-          {roster.map((agent) =>
+          {visibleRoster.map((agent) =>
             choiceRow(
               defaultAgentId === agent.id,
               saving === agent.id,
@@ -408,6 +414,10 @@ function AgentsPane() {
           )}
         </ul>
       )}
+      <PresenterHiddenLine
+        count={presenterEnabled ? roster.length - visibleRoster.length : 0}
+        className="mt-2 px-0"
+      />
     </div>
   );
 }
@@ -432,6 +442,7 @@ function InstancePane() {
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
   const instances = useFederationStore((s) => s.accessibleInstances);
   const active = instances.find((i) => i.id === activeInstanceId);
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
 
   const {
     data: health,
@@ -477,7 +488,7 @@ function InstancePane() {
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
           <dt className="text-slate-500">Server</dt>
           <dd className="truncate text-slate-200">
-            {active ? `${active.name} — ${active.apiBaseUrl}` : "This server"}
+            {presenterEnabled ? "Workspace" : active ? `${active.name} — ${active.apiBaseUrl}` : "This server"}
           </dd>
           <dt className="text-slate-500">Backend</dt>
           <dd className="font-mono text-slate-200">
@@ -550,7 +561,7 @@ function InstancePane() {
         {roster.length} agents — {fleet.working} working · {fleet.active} active
         · {fleet.idle} idle · {fleet.offline} offline
       </p>
-      {unreachable.length > 0 && (
+      {unreachable.length > 0 && !presenterEnabled && (
         <p className="mt-1.5 text-xs text-amber-300/90">
           Unreachable:{" "}
           {unreachable
@@ -578,8 +589,8 @@ function InstancePane() {
                   : "bg-slate-500",
               )}
             />
-            <span className="font-medium text-slate-200">{inst.name}</span>
-            <span className="truncate text-slate-500">{inst.apiBaseUrl}</span>
+            <span className="font-medium text-slate-200">{presenterEnabled ? "Workspace" : inst.name}</span>
+            {!presenterEnabled && <span className="truncate text-slate-500">{inst.apiBaseUrl}</span>}
             {inst.id === activeInstanceId && (
               <span className="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide text-stable-mint">
                 active

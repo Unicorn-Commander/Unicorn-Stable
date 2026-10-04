@@ -612,7 +612,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
   );
 
   const emptyDirectory =
-    !isLoading && visibleDirectory.length === 0 && !debounced;
+    !isLoading && directory.length === 0 && !debounced;
 
   const body = (
     <>
@@ -653,9 +653,14 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
             </p>
           </div>
         ) : visibleDirectory.length === 0 ? (
-          <p className="px-2 py-8 text-center text-xs text-slate-500">
-            {presenterEnabled ? "No visible people match." : `No matches for “${debounced}”.`}
-          </p>
+          <>
+            <PresenterHiddenLine
+              count={presenterEnabled ? directory.length - visibleDirectory.length : 0}
+            />
+            <p className="px-2 py-8 text-center text-xs text-slate-500">
+              {presenterEnabled ? "No visible people match." : `No matches for “${debounced}”.`}
+            </p>
+          </>
         ) : (
           <>
             <PresenterHiddenLine

@@ -113,7 +113,7 @@ export function Header({
       </div>
 
       <div className="flex items-center gap-1">
-        <PresenterBadge className="mr-1 hidden sm:inline-flex" />
+        <PresenterBadge className="mr-1 inline-flex" />
         {/* Global People directory — always available (not the room participant panel). */}
         <Tooltip content="People" placement="bottom">
           <button

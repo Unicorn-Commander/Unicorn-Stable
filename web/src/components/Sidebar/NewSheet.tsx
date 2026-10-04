@@ -33,6 +33,8 @@ import { useConversationUi } from "@/stores/conversationUiStore";
 import { isNavV2Enabled } from "@/stores/navStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { ChannelBrowser } from "./ChannelBrowser";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 /**
  * ⌘N / + New / the phone FAB outside a room.
@@ -163,7 +165,13 @@ async function openCrewMember(
   return !!hub;
 }
 
-function crewSubtitle(member: CrewMember, rooms: readonly Room[], crewAnswered: boolean): string {
+function crewSubtitle(
+  member: CrewMember,
+  rooms: readonly Room[],
+  crewAnswered: boolean,
+  presenterEnabled = false,
+): string {
+  if (presenterEnabled) return member.group === "own_seat" ? "Your seat" : "Agent";
   const parts: string[] = [];
   if (member.group === "partner" && member.owner) parts.push(ownerSeatLabel(member.owner));
   else if (member.role_line) parts.push(member.role_line);
@@ -194,6 +202,14 @@ function ToStep({
   const { crew, crewAnswered } = useCrew();
   const roster = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const visibleCrew = presenterEnabled
+    ? crew.filter((member) => rule.isIdentityAllowed(member.agent_id, member.display_name))
+    : crew;
+  const visibleRoster = presenterEnabled
+    ? roster.filter((agent) => rule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : roster;
+  const visibleRooms = presenterEnabled ? rooms.filter((room) => rule.isRoomAllowed(room.id)) : rooms;
   const active = q.trim().length > 0;
   // The crew filters on every keystroke (local); the directory and the
   // channel browse wait for the query to hold still.
@@ -209,9 +225,15 @@ function ToStep({
     enabled: debounced.length > 0,
     retry: false,
   });
+  const visiblePeople = presenterEnabled
+    ? people.filter((person) => rule.isIdentityAllowed(person.id, person.display_name))
+    : people;
+  const visibleBrowsable = presenterEnabled
+    ? browsable.filter((room) => rule.isRoomAllowed(room.id))
+    : browsable;
   const picks = useMemo(
-    () => buildToPicks({ crew, roster, people, rooms, browsable, query: q }),
-    [crew, roster, people, rooms, browsable, q],
+    () => buildToPicks({ crew: visibleCrew, roster: visibleRoster, people: visiblePeople, rooms: visibleRooms, browsable: visibleBrowsable, query: q }),
+    [visibleCrew, visibleRoster, visiblePeople, visibleRooms, visibleBrowsable, q],
   );
   // Arrow keys walk the flat list; Enter opens the active row (the first
   // when none is active). The index resets when the list changes.
@@ -325,7 +347,7 @@ function ToStep({
             <PickRow
               key={member.agent_id}
               title={member.display_name}
-              subtitle={crewSubtitle(member, rooms, crewAnswered)}
+              subtitle={crewSubtitle(member, visibleRooms, crewAnswered, presenterEnabled)}
               face={resolveIdentity({
                 id: member.agent_id,
                 participant_id: member.participant_id || undefined,
@@ -378,6 +400,14 @@ function ToStep({
           No agent, person, or channel matches “{q.trim()}”.
         </p>
       )}
+      <PresenterHiddenLine
+        count={
+          presenterEnabled
+            ? crew.length - visibleCrew.length + people.length - visiblePeople.length + browsable.length - visibleBrowsable.length
+            : 0
+        }
+        className="px-1"
+      />
       <p className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         Or start
       </p>
@@ -484,10 +514,14 @@ function PersonStep({ onDone }: { onDone: () => void }) {
   const [q, setQ] = useState("");
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const { data = [], isFetching } = useQuery({
     queryKey: ["people-directory", "new-sheet", q],
     queryFn: () => api.getPeopleDirectory(q),
   });
+  const visiblePeople = presenterEnabled
+    ? data.filter((person) => rule.isIdentityAllowed(person.id, person.display_name))
+    : data;
   async function pick(person: PeopleDirectoryEntry) {
     try {
       const room = await ensureHumanDm(person);
@@ -512,7 +546,7 @@ function PersonStep({ onDone }: { onDone: () => void }) {
       loading={isFetching}
       empty="No one matches."
     >
-      {data.map((person) => (
+      {visiblePeople.map((person) => (
         <PickRow
           key={person.id}
           title={person.display_name}
@@ -520,6 +554,7 @@ function PersonStep({ onDone }: { onDone: () => void }) {
           onClick={() => void pick(person)}
         />
       ))}
+      <PresenterHiddenLine count={presenterEnabled ? data.length - visiblePeople.length : 0} className="px-1" />
     </Picker>
   );
 }
@@ -532,10 +567,16 @@ function AgentStep({ onDone }: { onDone: () => void }) {
   const { crew, loaded, fromRoster, crewAnswered } = useCrew();
   const roster = useAppStore((s) => s.agents);
   const rooms = useAppStore((s) => s.rooms);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const [q, setQ] = useState("");
   const navigate = useNavigate();
   // The crew first, then every entitled roster agent not already in it.
-  const pool = useMemo(() => crewWithRoster(crew, roster), [crew, roster]);
+  const pool = useMemo(() => {
+    const all = crewWithRoster(crew, roster);
+    return presenterEnabled
+      ? all.filter((member) => rule.isIdentityAllowed(member.agent_id, member.display_name))
+      : all;
+  }, [crew, roster, presenterEnabled, rule]);
   const rows = pool.filter((member) => {
     const hay = `${member.display_name} ${member.agent_id} ${member.role_line ?? ""} ${member.owner ?? ""}`.toLowerCase();
     return hay.includes(q.trim().toLowerCase());
@@ -552,7 +593,7 @@ function AgentStep({ onDone }: { onDone: () => void }) {
         <PickRow
           key={member.agent_id}
           title={member.display_name}
-          subtitle={crewSubtitle(member, rooms, crewAnswered)}
+          subtitle={crewSubtitle(member, rooms, crewAnswered, presenterEnabled)}
           face={resolveIdentity({
             id: member.agent_id,
             participant_id: member.participant_id || undefined,
@@ -566,22 +607,28 @@ function AgentStep({ onDone }: { onDone: () => void }) {
           }
         />
       ))}
+      <PresenterHiddenLine
+        count={presenterEnabled ? crewWithRoster(crew, roster).length - pool.length : 0}
+        className="px-1"
+      />
     </Picker>
   );
 }
 
 function ThreadStep({ onDone }: { onDone: () => void }) {
   const rooms = useAppStore((s) => s.rooms);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const [q, setQ] = useState("");
   const navigate = useNavigate();
   const parents = useMemo(
     () =>
       rooms.filter((room) => {
+        if (presenterEnabled && !rule.isRoomAllowed(room.id)) return false;
         if (room.parent_room_id || room.is_archived) return false;
         const label = roomLabel(room).toLowerCase();
         return label.includes(q.trim().toLowerCase());
       }),
-    [rooms, q],
+    [rooms, q, presenterEnabled, rule],
   );
   return (
     <Picker label="Search rooms" query={q} onQuery={setQ} empty="No rooms match.">
@@ -593,6 +640,10 @@ function ThreadStep({ onDone }: { onDone: () => void }) {
           onClick={() => void beginThread({ roomId: room.id, navigate }).then((t) => t && onDone())}
         />
       ))}
+      <PresenterHiddenLine
+        count={presenterEnabled ? rooms.filter((room) => !rule.isRoomAllowed(room.id)).length : 0}
+        className="px-1"
+      />
     </Picker>
   );
 }
@@ -688,6 +739,7 @@ function ChannelStep({ onDone }: { onDone: () => void }) {
 
 function ProjectStep({ onDone }: { onDone: () => void }) {
   const navigate = useNavigate();
+  const presenterEnabled = usePresentedRooms().enabled;
   const { data = [], isFetching, error } = useQuery({
     queryKey: ["project-ops-projects"],
     queryFn: () => api.getProjectOpsProjects(),
@@ -723,8 +775,9 @@ function ProjectStep({ onDone }: { onDone: () => void }) {
       {error && (
         <p className="px-1 text-xs text-rose-300">Project-Ops didn't answer. Nothing was created.</p>
       )}
+      <PresenterHiddenLine count={presenterEnabled ? data.length : 0} className="px-1" />
       <ul className="flex flex-col gap-1">
-        {data.map((project) => (
+        {!presenterEnabled && data.map((project) => (
           <li key={project.projectNumber}>
             <button
               type="button"
@@ -752,8 +805,12 @@ function ProjectStep({ onDone }: { onDone: () => void }) {
 
 function CallStep({ onDone }: { onDone: () => void }) {
   const rooms = useAppStore((s) => s.rooms);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const navigate = useNavigate();
-  const parents = rooms.filter((room) => !room.parent_room_id && !room.is_archived).slice(0, 20);
+  const parents = rooms
+    .filter((room) => !room.parent_room_id && !room.is_archived)
+    .filter((room) => !presenterEnabled || rule.isRoomAllowed(room.id))
+    .slice(0, 20);
   function go(room: Room, kind: "voice" | "video") {
     navigate(`/c/${room.id}?join=1&kind=${kind}`);
     onDone();
@@ -779,6 +836,10 @@ function CallStep({ onDone }: { onDone: () => void }) {
           </button>
         </li>
       ))}
+      <PresenterHiddenLine
+        count={presenterEnabled ? rooms.filter((room) => !rule.isRoomAllowed(room.id)).length : 0}
+        className="px-1"
+      />
     </ul>
   );
 }

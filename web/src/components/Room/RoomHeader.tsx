@@ -318,7 +318,7 @@ export function RoomHeader({
         data-testid="room-header-actions"
         className="relative flex shrink-0 items-center gap-0.5"
       >
-        <PresenterBadge className="mr-1 hidden sm:inline-flex" />
+        <PresenterBadge className="mr-1 inline-flex" />
         {/* Desktop only: on a phone the 44px row is full and the FAB inside
             a hub already starts a thread, so the entry sits in More there. */}
         {onNewConversation && (

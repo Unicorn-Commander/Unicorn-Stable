@@ -8,13 +8,19 @@ import { api } from "@/services/api";
 import type { CreateRoomRequest, Room } from "@/services/api";
 import { identityFor } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 type RoomType = "channel" | "group_dm" | "dm";
 
 export function CreateRoomModal() {
   const setCreateRoomModalOpen = useAppStore((s) => s.setCreateRoomModalOpen);
   const navigate = useNavigate();
-  const agents = useAppStore((s) => s.agents);
+  const allAgents = useAppStore((s) => s.agents);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const agents = presenterEnabled
+    ? allAgents.filter((agent) => rule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : allAgents;
   const queryClient = useQueryClient();
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -275,6 +281,10 @@ export function CreateRoomModal() {
               </div>
             </div>
           )}
+          <PresenterHiddenLine
+            count={presenterEnabled ? allAgents.length - agents.length : 0}
+            className="px-0"
+          />
 
           {createMutation.isError && (
             <p className="text-xs text-rose-400">

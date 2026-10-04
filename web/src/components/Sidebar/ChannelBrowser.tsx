@@ -6,6 +6,8 @@ import { Hash, Search, X } from "lucide-react";
 import { api, type Room } from "@/services/api";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 interface ChannelBrowserProps {
   onClose: () => void;
@@ -18,6 +20,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [joiningId, setJoiningId] = useState<string | null>(null);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   // Esc-to-close, focus trap + restore — shared modal a11y.
   const panelRef = useModalA11y(true, onClose);
 
@@ -33,6 +36,10 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
     queryKey: ["browse-channels", debounced],
     queryFn: () => api.browseChannels(debounced),
   });
+  const visibleChannels = presenterEnabled
+    ? channels.filter((channel) => rule.isRoomAllowed(channel.id))
+    : channels;
+  const hiddenChannelCount = presenterEnabled ? channels.length - visibleChannels.length : 0;
 
   async function join(room: Room) {
     if (joiningId) return;
@@ -111,7 +118,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
                 Try again
               </button>
             </li>
-          ) : channels.length === 0 ? (
+          ) : visibleChannels.length === 0 ? (
             <li className="flex flex-col items-center gap-2 px-3 py-10 text-center">
               <span className="glow-iris flex h-10 w-10 items-center justify-center rounded-xl bg-stable-purple/15">
                 <Hash className="h-5 w-5 text-stable-purple-light" />
@@ -124,7 +131,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
               </p>
             </li>
           ) : (
-            channels.map((c) => (
+            visibleChannels.map((c) => (
               <li
                 key={c.id}
                 className="flex items-center gap-3 p-3 transition-colors hover:bg-white/[0.03]"
@@ -151,6 +158,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
             ))
           )}
         </ul>
+        <PresenterHiddenLine count={hiddenChannelCount} className="border-t border-line px-4 py-2" />
       </motion.div>
     </motion.div>
   );
