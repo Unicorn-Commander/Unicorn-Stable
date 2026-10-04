@@ -16,6 +16,7 @@ import {
   recordingKindLabel,
   recordingWho,
 } from "@/lib/recording";
+import { openSignedDownload } from "@/lib/openSignedDownload";
 
 /**
  * The fact of a recording, for every member. The file and the Meeting-Ops
@@ -40,14 +41,7 @@ export function RecordingsList({
     if (downloadingId) return;
     setDownloadingId(row.id);
     try {
-      const result = await api.downloadRecording(roomId, row.id);
-      const anchor = document.createElement("a");
-      anchor.href = result.url;
-      anchor.target = "_blank";
-      anchor.rel = "noopener";
-      anchor.download = "";
-      anchor.click();
-      anchor.remove();
+      await openSignedDownload(() => api.downloadRecording(roomId, row.id), window);
     } catch (error) {
       const err = error as ApiError;
       useAppStore.getState().pushToast({

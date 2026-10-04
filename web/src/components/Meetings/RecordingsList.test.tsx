@@ -53,16 +53,22 @@ describe("RecordingsList downloads", () => {
       content_type: "audio/ogg",
     });
     restores.push(() => download.mockRestore());
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => undefined);
-    restores.push(() => click.mockRestore());
+    const location = { replace: vi.fn() };
+    const tab = {
+      opener: window,
+      location,
+      close: vi.fn(),
+    } as unknown as Window;
+    const open = vi.spyOn(window, "open").mockReturnValue(tab);
+    restores.push(() => open.mockRestore());
 
     renderList();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
 
     await waitFor(() => expect(download).toHaveBeenCalledWith("room-1", "rec-1"));
-    expect(click).toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(tab.opener).toBeNull();
+    expect(location.replace).toHaveBeenCalledWith("https://signed.example/rec-1.ogg?sig=test");
   });
 
   it("shows the server detail when the download is forbidden", async () => {
@@ -72,6 +78,8 @@ describe("RecordingsList downloads", () => {
       detail: "Only the room owner may download this recording",
     });
     restores.push(() => download.mockRestore());
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    restores.push(() => open.mockRestore());
 
     renderList();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
