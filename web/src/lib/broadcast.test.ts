@@ -8,6 +8,7 @@ import {
   broadcastCopyVariantConfig,
   broadcastMenuHeader,
   broadcastViewerWarning,
+  summarizeBroadcastViewers,
   isBroadcastTarget,
   livekitIdentityForMember,
   livekitTokenTtlSeconds,
@@ -275,11 +276,43 @@ describe("broadcast viewer consent copy", () => {
   it("shows the multi-viewer warning only at two or more", () => {
     expect(broadcastViewerWarning(1)).toBeNull();
     expect(broadcastViewerWarning(2)).toBe(
-      "More than one viewer is using this link. Revoke it if that is not you.",
+      "One of these links has more than one viewer. Revoke it if that is not you.",
     );
     expect(broadcastViewerWarning(3)).toBe(
-      "More than one viewer is using this link. Revoke it if that is not you.",
+      "One of these links has more than one viewer. Revoke it if that is not you.",
     );
+  });
+
+  it("totals a participant's viewers across links but warns per link", () => {
+    const rows = [
+      { participant_identity: "aaron_1", viewer_count: 1 },
+      { participant_identity: "aaron_1", viewer_count: 1 },
+      { participant_identity: "shafen_2", viewer_count: 3 },
+    ];
+    // A camera link and a screen link with one viewer each: two viewers in
+    // total, and NOT a leak.
+    const aaron = summarizeBroadcastViewers(rows, "aaron_1");
+    expect(aaron).toEqual({ links: 2, total: 2, maxPerLink: 1 });
+    expect(broadcastBadgeTitle("Aaron", aaron?.total)).toContain("2 viewers");
+    expect(broadcastViewerWarning(aaron?.maxPerLink)).toBeNull();
+    // Three viewers on one link is the leak shape.
+    const shafen = summarizeBroadcastViewers(rows, "shafen_2");
+    expect(shafen).toEqual({ links: 1, total: 3, maxPerLink: 3 });
+    expect(broadcastViewerWarning(shafen?.maxPerLink)).not.toBeNull();
+  });
+
+  it("reports unknown, never a guess, when any link's count is missing", () => {
+    const rows = [
+      { participant_identity: "aaron_1", viewer_count: 2 },
+      { participant_identity: "aaron_1", viewer_count: null },
+    ];
+    expect(summarizeBroadcastViewers(rows, "aaron_1")).toEqual({
+      links: 2,
+      total: null,
+      maxPerLink: null,
+    });
+    expect(summarizeBroadcastViewers(rows, "nobody")).toBeNull();
+    expect(summarizeBroadcastViewers(rows, null)).toBeNull();
   });
 
   it("leaves the badge and menu header count empty when unknown", () => {

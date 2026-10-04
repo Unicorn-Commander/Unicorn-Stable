@@ -381,11 +381,15 @@ function BroadcastCopyMenu({
   targetName,
   isBroadcasting,
   viewerCount,
+  maxViewersPerLink,
   onCopy,
 }: {
   targetName: string;
   isBroadcasting?: boolean;
+  /** Viewers across every live link for this participant. */
   viewerCount?: number | null;
+  /** The most viewers on any single link: what the leak warning reads. */
+  maxViewersPerLink?: number | null;
   onCopy: (variant: BroadcastCopyVariant) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -466,9 +470,9 @@ function BroadcastCopyMenu({
             <p className="truncate px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
               {broadcastMenuHeader(targetName, viewerCount)}
             </p>
-            {broadcastViewerWarning(viewerCount) && (
+            {broadcastViewerWarning(maxViewersPerLink) && (
               <p className="px-2 py-1 text-[10px] leading-snug text-amber-200">
-                {broadcastViewerWarning(viewerCount)}
+                {broadcastViewerWarning(maxViewersPerLink)}
               </p>
             )}
             {BROADCAST_COPY_ITEMS.map((item) => (
@@ -823,6 +827,7 @@ interface ParticipantTileProps {
    */
   isBroadcasting?: boolean;
   viewerCount?: number | null;
+  maxViewersPerLink?: number | null;
   /**
    * Run a moderation action on THIS participant's live-call connection.
    * Supplied only to a room owner/admin, and never for your own tile; the
@@ -861,6 +866,7 @@ function ParticipantTile({
   onCopyBroadcastUrl,
   isBroadcasting,
   viewerCount,
+  maxViewersPerLink,
   onModerate,
 }: ParticipantTileProps) {
   const pip = usePipTile();
@@ -1277,6 +1283,7 @@ function ParticipantTile({
             targetName={p.name}
             isBroadcasting={isBroadcasting}
             viewerCount={viewerCount}
+            maxViewersPerLink={maxViewersPerLink}
             onCopy={onCopyBroadcastUrl}
           />
         )}
@@ -1836,6 +1843,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   const {
     isBroadcasting,
     viewerCountFor,
+    maxViewersPerLinkFor,
     refresh: refreshBroadcasts,
   } =
     useRoomBroadcasts(roomId);
@@ -2600,6 +2608,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // minting one against "local" would produce a URL that renders nobody.
     const lkIdentity = p.isLocal ? (localParticipant?.identity ?? null) : p.id;
     const viewerCount = viewerCountFor(lkIdentity);
+    const maxViewersPerLink = maxViewersPerLinkFor(lkIdentity);
     // The tile may read "Aaron (you)"; the token list should say the name.
     const lkLabel = p.isLocal ? localParticipant?.name || p.name : p.name;
     return (
@@ -2609,6 +2618,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         roomId={roomId}
         isBroadcasting={isBroadcasting(lkIdentity)}
         viewerCount={viewerCount}
+        maxViewersPerLink={maxViewersPerLink}
         onCopyBroadcastUrl={
           isRoomOwner && lkIdentity
             ? (variant) => void copyBroadcastUrl(lkIdentity, lkLabel, variant)

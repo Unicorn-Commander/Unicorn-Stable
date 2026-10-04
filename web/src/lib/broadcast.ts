@@ -290,14 +290,56 @@ export function broadcastMenuHeader(
 }
 
 export const BROADCAST_MULTI_VIEWER_WARNING =
-  "More than one viewer is using this link. Revoke it if that is not you.";
+  "One of these links has more than one viewer. Revoke it if that is not you.";
 
+/**
+ * The leak warning. Takes the most viewers on any SINGLE link, not a total:
+ * one viewer on a camera link plus one on a screen link is the expected shape.
+ */
 export function broadcastViewerWarning(
-  viewerCount: BroadcastViewerCount,
+  maxViewersPerLink: BroadcastViewerCount,
 ): string | null {
-  return viewerCount != null && viewerCount >= 2
+  return maxViewersPerLink != null && maxViewersPerLink >= 2
     ? BROADCAST_MULTI_VIEWER_WARNING
     : null;
+}
+
+/** Viewers of ONE participant across every live link minted for them. */
+export interface BroadcastViewerSummary {
+  /** How many live links this participant has. */
+  links: number;
+  /** Viewers across all of those links; null when any link's count is unknown. */
+  total: number | null;
+  /** The most viewers on any single link; null when any link's count is unknown. */
+  maxPerLink: number | null;
+}
+
+/**
+ * One participant can have several live links at once (a camera link and a
+ * screen link, say), and each is its own `/broadcast/active` row. The badge
+ * wants the TOTAL; the leak warning wants the most on any SINGLE link.
+ * An unknown count on any link makes both numbers unknown, never a guess.
+ */
+export function summarizeBroadcastViewers(
+  rows: readonly {
+    participant_identity: string;
+    viewer_count?: number | null;
+  }[],
+  identity: string | null | undefined,
+): BroadcastViewerSummary | null {
+  if (!identity) return null;
+  const mine = rows.filter((row) => row.participant_identity === identity);
+  if (mine.length === 0) return null;
+  const counts = mine.map((row) => row.viewer_count);
+  if (counts.some((count) => count == null)) {
+    return { links: mine.length, total: null, maxPerLink: null };
+  }
+  const known = counts as number[];
+  return {
+    links: mine.length,
+    total: known.reduce((sum, count) => sum + count, 0),
+    maxPerLink: Math.max(...known),
+  };
 }
 
 /** The shape of a LiveKit TrackPublication this module needs. Structural on
