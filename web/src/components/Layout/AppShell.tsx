@@ -51,7 +51,13 @@ import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useFacePrefStore } from "@/stores/facePrefStore";
 import { usePresenterStore } from "@/stores/presenterStore";
-import { filterRooms, presenterRule } from "@/lib/presenterMode";
+import {
+  filterRooms,
+  isPresenterShortcut,
+  presenterQueryValue,
+  presenterRule,
+  removePresenterQuery,
+} from "@/lib/presenterMode";
 import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -368,14 +374,14 @@ export function AppShell() {
   // not become a persistent presentation switch.
   const setPresenterEnabled = usePresenterStore((s) => s.setEnabled);
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const value = params.get("present");
-    if (value !== "1" && value !== "0") return;
-    setPresenterEnabled(value === "1");
-    params.delete("present");
-    const nextSearch = params.toString();
-    const next = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
-    window.history.replaceState(window.history.state, "", next);
+    const value = presenterQueryValue(location.search);
+    if (value === null) return;
+    setPresenterEnabled(value);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      removePresenterQuery(window.location.pathname, location.search, window.location.hash),
+    );
   }, [location.search, setPresenterEnabled]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
@@ -562,13 +568,14 @@ export function AppShell() {
       }
       // Cmd/Ctrl+Alt+P is not used by Stable and is not a browser-reserved
       // command. It is intentionally ignored while editing text.
-      if (
-        (e.metaKey || e.ctrlKey) &&
-        e.altKey &&
-        !e.shiftKey &&
-        e.key.toLowerCase() === "p" &&
-        !isEditableTarget(e.target)
-      ) {
+      if (isPresenterShortcut({
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        key: e.key,
+        editable: isEditableTarget(e.target),
+      })) {
         e.preventDefault();
         usePresenterStore.getState().toggleEnabled();
         return;

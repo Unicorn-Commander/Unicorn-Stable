@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { Room } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { usePanelChromeStore } from "@/stores/panelChromeStore";
+import { usePresenterStore } from "@/stores/presenterStore";
 import { RoomHeader, type RoomHeaderProps } from "./RoomHeader";
 
 vi.mock("@/hooks/useDirectCall", () => ({
@@ -112,11 +113,13 @@ describe("RoomHeader", () => {
       },
       rooms: [room("off")],
     });
+    usePresenterStore.setState({ enabled: false, safeRoomIds: [], scopedUserId: null });
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     useAppStore.setState({ currentUser: null, rooms: [] });
+    usePresenterStore.setState({ enabled: false, safeRoomIds: [], scopedUserId: null });
   });
 
   it("is one 44px row whose primary actions are Call, Members, Threads, Pop out, More", async () => {
@@ -196,5 +199,21 @@ describe("RoomHeader", () => {
     expect(screen.getByRole("menuitem", { name: "Search" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Invite members" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Call" })).toHaveLength(1);
+  });
+
+  it("persists the per-device safe-room check in the room menu", async () => {
+    renderHeader();
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "More room actions" }));
+    const safe = screen.getByRole("menuitemcheckbox", {
+      name: "Safe to show while presenting",
+    });
+    expect(safe).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(safe);
+    expect(usePresenterStore.getState().safeRoomIds).toEqual(["room-1"]);
+    fireEvent.click(screen.getByRole("button", { name: "More room actions" }));
+    expect(screen.getByRole("menuitemcheckbox", {
+      name: "Safe to show while presenting",
+    })).toHaveAttribute("aria-checked", "true");
   });
 });

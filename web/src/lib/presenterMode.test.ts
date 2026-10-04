@@ -1,5 +1,12 @@
-import type { CrewMember, Room } from "@/services/api";
-import { presenterRule } from "./presenterMode";
+import type { CrewMember, Message, Room } from "@/services/api";
+import {
+  isPresenterShortcut,
+  filterRooms,
+  presenterQueryValue,
+  presenterRule,
+  messageForList,
+  removePresenterQuery,
+} from "./presenterMode";
 
 const room = (overrides: Partial<Room>): Room =>
   ({
@@ -132,6 +139,52 @@ describe("presenter rule", () => {
     expect(rule.isRoomAllowed("private")).toBe(false);
     expect(rule.isNameAllowed("Private Person")).toBe(true);
     expect(rule.isIdentityAllowed("person-private", "Private Person")).toBe(true);
+    expect(filterRooms(rooms, rule).map((item) => item.id)).toEqual([
+      "open",
+      "thread",
+      "safe",
+      "private",
+    ]);
+  });
+
+  it("removes list message content while preserving it for the open room", () => {
+    const rule = presenterRule({
+      enabled: true,
+      openRoomId: "open",
+      safeRoomIds: ["safe"],
+      rooms,
+    });
+    const message = { content: "ZZPREVIEW_PRIVATE", sender_name: "Private Person" } as Message;
+    expect(messageForList("safe", message, rule)).toBeNull();
+    expect(messageForList("open", message, rule)).toBe(message);
+  });
+
+  it("pins the URL switch and the browser-safe keyboard chord", () => {
+    expect(presenterQueryValue("?present=1&room=open")).toBe(true);
+    expect(presenterQueryValue("?room=open&present=0")).toBe(false);
+    expect(presenterQueryValue("?present=yes")).toBeNull();
+    expect(removePresenterQuery("/c/open", "?present=1&room=open", "#messages")).toBe(
+      "/c/open?room=open#messages",
+    );
+    expect(
+      isPresenterShortcut({
+        metaKey: true,
+        ctrlKey: false,
+        altKey: true,
+        shiftKey: false,
+        key: "p",
+        editable: false,
+      }),
+    ).toBe(true);
+    expect(
+      isPresenterShortcut({
+        metaKey: true,
+        ctrlKey: false,
+        altKey: true,
+        shiftKey: false,
+        key: "p",
+        editable: true,
+      }),
+    ).toBe(false);
   });
 });
-

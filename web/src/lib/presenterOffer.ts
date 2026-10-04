@@ -1,7 +1,7 @@
 import { useAppStore } from "@/stores/appStore";
 import { usePresenterStore } from "@/stores/presenterStore";
 
-const OFFER_TITLE = "Hide other rooms and names while you present?";
+export const OFFER_TITLE = "Hide other rooms and names while you present?";
 
 /** Offer the local display filter once for the current presentation action. */
 export function offerPresenterMode(): void {

@@ -242,6 +242,40 @@ export function filterRooms(
   return rooms.filter((room) => rule.isRoomAllowed(room.id));
 }
 
+/** URL and keyboard helpers stay pure so the browser controls are regression-tested too. */
+export function presenterQueryValue(search: string): boolean | null {
+  const value = new URLSearchParams(search).get("present");
+  return value === "1" ? true : value === "0" ? false : null;
+}
+
+export function removePresenterQuery(
+  pathname: string,
+  search: string,
+  hash: string,
+): string {
+  const params = new URLSearchParams(search);
+  params.delete("present");
+  const nextSearch = params.toString();
+  return `${pathname}${nextSearch ? `?${nextSearch}` : ""}${hash}`;
+}
+
+export function isPresenterShortcut(input: {
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  key: string;
+  editable: boolean;
+}): boolean {
+  return (
+    (input.metaKey || input.ctrlKey) &&
+    input.altKey &&
+    !input.shiftKey &&
+    input.key.toLowerCase() === "p" &&
+    !input.editable
+  );
+}
+
 /** List surfaces may show an allowed room's name, but not its message preview. */
 export function messageForList(
   roomId: string,
