@@ -26,7 +26,10 @@ from sqlalchemy.dialects import postgresql
 
 from app.models.room import RoomType
 
-NOW = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+# Relative to the real clock, never a fixed date: the handlers under test read
+# ``datetime.now``, so a frozen NOW made every "valid for 7 days" invite expire
+# a week later (these tests went red on 2026-09-28).
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _res(*, scalar=None, rows=None, scalars=None, scalar_value=None):
