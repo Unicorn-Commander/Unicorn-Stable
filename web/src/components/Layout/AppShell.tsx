@@ -51,6 +51,7 @@ import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useFacePrefStore } from "@/stores/facePrefStore";
 import { usePresenterStore } from "@/stores/presenterStore";
+import { filterRooms, presenterRule } from "@/lib/presenterMode";
 import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -156,19 +157,40 @@ let keyboardWalk: KeyboardWalk | null = null;
 
 function sidebarRoomOrder(queryClient: QueryClient): string[][] {
   const {
-    rooms,
+    rooms: allRooms,
     activeRoomId,
     unreadCounts,
     mentionUnreads,
     agents,
     currentParticipantId,
     currentUser,
+    participants,
   } = useAppStore.getState();
   const { categories, people, folders, collapsed } =
     useChannelCategories.getState();
   const { searchQuery, expandedPeople, focusMode, crewShowAll } =
     useSidebarUi.getState();
   const scope = useFederationStore.getState().activeInstanceId;
+  const cached = readCrewCache(queryClient, scope);
+  const presenterPrefs = usePresenterStore.getState();
+  const rule = presenterRule({
+    enabled: presenterPrefs.enabled,
+    openRoomId: activeRoomId,
+    safeRoomIds: presenterPrefs.safeRoomIds,
+    rooms: allRooms,
+    participantsByRoom: participants,
+    currentUser: currentUser
+      ? {
+          id: currentUser.id,
+          displayName: currentUser.displayName,
+          username: currentUser.username,
+          email: currentUser.email,
+        }
+      : null,
+    crew: cached.crew,
+    agents,
+  });
+  const rooms = filterRooms(allRooms, rule);
   const isUnread = (room: { id: string; unread_count?: number }) => {
     const raw = unreadCounts[room.id] ?? room.unread_count ?? 0;
     return badgeCount(room.id, raw) > 0 || mentionUnreads[room.id] === true;
@@ -183,10 +205,15 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
     // The fold RoomList applies (Home lists Crew and Conversations too).
     const isDesktop = window.matchMedia("(min-width: 768px)").matches;
     const destination = listDestination(routed, isDesktop);
-    const cached = readCrewCache(queryClient, scope);
-    const crewSection = (page: boolean) =>
-      buildCrewSection({
-        crew: cached.crew,
+    const crewSection = (page: boolean) => {
+      const built = buildCrewSection({
+        crew: presenterPrefs.enabled
+          ? cached.crew.filter(
+              (member) =>
+                member.group === "own_seat" ||
+                rule.isIdentityAllowed(member.agent_id, member.display_name),
+            )
+          : cached.crew,
         crewAnswered: cached.crewAnswered,
         selfIds: [currentParticipantId, currentUser?.id],
         rooms,
@@ -197,6 +224,19 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
         roomUnread: (room) =>
           badgeCount(room.id, unreadCounts[room.id] ?? room.unread_count ?? 0),
       });
+      if (!presenterPrefs.enabled) return built;
+      return {
+        ...built,
+        groups: built.groups.map((group) => ({
+          ...group,
+          rows: group.rows.map((row) =>
+            row.roomId && !rule.isRoomAllowed(row.roomId)
+              ? { ...row, roomId: null }
+              : row,
+          ),
+        })),
+      };
+    };
     if (destination === "crew") return flattenCrewRows(crewSection(true));
     if (destination === "calls") {
       return flattenSidebarOrder(
