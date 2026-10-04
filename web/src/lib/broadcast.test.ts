@@ -4,6 +4,7 @@ import {
   MIN_REFRESH_DELAY_S,
   backoffDelayMs,
   buildBroadcastUrl,
+  broadcastCopyVariantConfig,
   isBroadcastTarget,
   livekitIdentityForMember,
   livekitTokenTtlSeconds,
@@ -205,6 +206,34 @@ describe("buildBroadcastUrl", () => {
     });
     expect(url).toContain("/broadcast/room%2F1/od%3Fd%20%23name?");
     expect(url).toContain("token=sbt-a%2Bb%2Fc%3D");
+  });
+});
+
+describe("broadcast copy variants", () => {
+  it("maps every menu action to the right mint permission and URL", () => {
+    const expected = {
+      camera: { source: "camera", allowAudio: false, audio: false },
+      "camera-audio": { source: "camera", allowAudio: true, audio: true },
+      screen: { source: "screen", allowAudio: false, audio: false },
+      "screen-audio": { source: "screen", allowAudio: true, audio: true },
+    } as const;
+
+    for (const variant of Object.keys(expected) as Array<keyof typeof expected>) {
+      const config = broadcastCopyVariantConfig(variant);
+      expect(config).toMatchObject(expected[variant]);
+      const url = buildBroadcastUrl({
+        origin: "https://stable.example",
+        roomId: "room",
+        participantIdentity: "person",
+        token: "sbt-once",
+        source: config.source,
+        audio: config.audio,
+      });
+      expect(new URL(url).searchParams.get("source")).toBe(config.source);
+      expect(new URL(url).searchParams.get("audio")).toBe(
+        config.audio ? "1" : null,
+      );
+    }
   });
 });
 

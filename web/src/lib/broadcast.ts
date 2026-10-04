@@ -160,6 +160,55 @@ export interface BroadcastUrlParts {
   source?: BroadcastSource;
 }
 
+export type BroadcastCopyVariant =
+  | "camera"
+  | "camera-audio"
+  | "screen"
+  | "screen-audio";
+
+export interface BroadcastCopyVariantConfig {
+  source: Exclude<BroadcastSource, "auto">;
+  allowAudio: boolean;
+  audio: boolean;
+  label: string;
+}
+
+/** The one-to-one mapping from the owner menu to mint and URL settings. */
+export function broadcastCopyVariantConfig(
+  variant: BroadcastCopyVariant,
+): BroadcastCopyVariantConfig {
+  switch (variant) {
+    case "camera":
+      return {
+        source: "camera",
+        allowAudio: false,
+        audio: false,
+        label: "Camera",
+      };
+    case "camera-audio":
+      return {
+        source: "camera",
+        allowAudio: true,
+        audio: true,
+        label: "Camera with audio",
+      };
+    case "screen":
+      return {
+        source: "screen",
+        allowAudio: false,
+        audio: false,
+        label: "Screen",
+      };
+    case "screen-audio":
+      return {
+        source: "screen",
+        allowAudio: true,
+        audio: true,
+        label: "Screen with audio",
+      };
+  }
+}
+
 /**
  * The absolute URL to paste into an OBS browser source.
  *
