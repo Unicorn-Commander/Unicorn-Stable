@@ -182,4 +182,33 @@ describe("useGlobalNotifications presenter masking", () => {
       "ZZPREVIEW_PRIVATE_1",
     );
   });
+
+  it("masks an invite toast from a non-open room", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+
+    await act(async () => {
+      wsHandlers.get("room_invited")?.({
+        room_id: "safe",
+        inviter_name: "ZZPERSON_SAFE_INVITER",
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(useAppStore.getState().toasts).toHaveLength(1));
+    expect(useAppStore.getState().toasts[0]).toMatchObject({
+      title: "New message",
+      body: undefined,
+      roomId: "safe",
+    });
+    expect(JSON.stringify(useAppStore.getState().toasts)).not.toContain(
+      "ZZPERSON_SAFE_INVITER",
+    );
+  });
 });

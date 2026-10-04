@@ -145,7 +145,9 @@ function WorkspaceTitle() {
 function PendingInvites() {
   const rows = useConversationUi((s) => s.pendingInvites);
   const dismiss = useConversationUi((s) => s.dismissInvite);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
   if (rows.length === 0) return null;
+  if (presenterEnabled) return <PresenterHiddenLine count={rows.length} />;
   return (
     <ul className="border-b border-line px-2 py-2" aria-label="Pending invites">
       {rows.map((row) => (
@@ -2315,7 +2317,11 @@ export function RoomList() {
 
   /** Meetings: live rejoin + joined conference rooms + catalog entry points. */
   function renderMeetingsBody() {
-    const hasActiveCall = Boolean(isConnected && activeCallRoomId);
+    const hasActiveCall = Boolean(
+      isConnected &&
+        activeCallRoomId &&
+        (!presenterEnabled || rule.isRoomAllowed(activeCallRoomId)),
+    );
     const activeCallRoom = hasActiveCall
       ? rooms.find((r) => r.id === activeCallRoomId) ?? null
       : null;

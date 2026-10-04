@@ -137,6 +137,31 @@ describe("presenter display leak seam", () => {
     expect(document.body.innerHTML).toContain("ZZPREVIEW_PRIVATE_1");
   });
 
+  it("keeps default room and search results rich when presenter mode is off", async () => {
+    usePresenterStore.setState({ enabled: false, safeRoomIds: [], scopedUserId: null });
+    renderSwitcher();
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Quick switcher" })).toBeTruthy());
+    expect(screen.getByText("ZZROOM_PRIVATE_1")).toBeTruthy();
+    cleanup();
+
+    spies.push(vi.spyOn(api, "searchAllMessages").mockResolvedValue([
+      {
+        id: "message-private-off",
+        room_id: "private",
+        sender_id: "private-member",
+        sender_name: "ZZPERSON_PRIVATE_1",
+        content: "ZZPREVIEW_PRIVATE_1",
+        created_at: "2026-01-01T00:00:00Z",
+      } as Message,
+    ]));
+    renderSearch();
+    const dialog = screen.getByRole("dialog", { name: "Search all messages" });
+    fireEvent.change(dialog.querySelector("input")!, { target: { value: "search" } });
+    await waitFor(() => expect(screen.getByText("ZZPREVIEW_PRIVATE_1")).toBeTruthy());
+    expect(document.body.innerHTML).toContain("ZZPERSON_PRIVATE_1");
+    expect(document.body.innerHTML).toContain("ZZROOM_PRIVATE_1");
+  });
+
   it("keeps only the allowed room names in a display title", () => {
     document.title = "ZZROOM_ALLOWED_A — Stable";
     expect(document.title).toContain("ZZROOM_ALLOWED_A");

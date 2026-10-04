@@ -46,7 +46,11 @@ export function IncomingCallBanner() {
   const { connect, isConnecting } = useVoice();
   const navigate = useNavigate();
   const { rule } = usePresentedRooms();
-  const masked = !!call && rule.enabled && !rule.isRoomAllowed(call.roomId);
+  const masked =
+    !!call &&
+    rule.enabled &&
+    (!rule.isRoomAllowed(call.roomId) ||
+      !rule.isIdentityAllowed(call.callerId, call.callerName));
   // Room we're navigating toward to join its call; connect() fires once the
   // route -> store sync makes it the active room.
   const pendingJoinRoomId = useRef<string | null>(null);

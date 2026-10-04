@@ -73,6 +73,20 @@ describe("IncomingCallBanner presenter masking", () => {
           members: [],
           agents: [],
         },
+        {
+          id: "safe",
+          name: "ZZROOM_ALLOWED_B",
+          display_name: "ZZROOM_ALLOWED_B",
+          description: "",
+          type: "channel",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          member_count: 0,
+          unread_count: 0,
+          last_message: null,
+          members: [],
+          agents: [],
+        },
       ],
     });
     useIncomingCallStore.setState({
@@ -119,6 +133,37 @@ describe("IncomingCallBanner presenter masking", () => {
     expect(screen.getByRole("button", { name: "Decline" })).toBeTruthy();
     expect(document.body.innerHTML).not.toContain("ZZPERSON_PRIVATE_1");
     expect(document.body.innerHTML).not.toContain("ZZROOM_PRIVATE_1");
+    expect(document.body.querySelector("img")).toBeNull();
+  });
+
+  it("masks a safe-room caller whose membership is not known", async () => {
+    useIncomingCallStore.setState({
+      call: {
+        callId: "call-safe-unknown",
+        roomId: "safe",
+        roomType: "channel",
+        roomName: "ZZROOM_ALLOWED_B",
+        callerId: "safe-unknown-person",
+        callerName: "ZZPERSON_SAFE_UNKNOWN",
+        callerAvatarUrl: "https://example.invalid/safe.png",
+        startedAt: "2026-01-01T00:00:00Z",
+        expiresAt: null,
+      },
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <IncomingCallBanner />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByText("Incoming call")).toBeTruthy();
+    expect(document.body.innerHTML).not.toContain("ZZPERSON_SAFE_UNKNOWN");
     expect(document.body.querySelector("img")).toBeNull();
   });
 });

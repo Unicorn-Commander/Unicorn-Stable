@@ -234,9 +234,12 @@ export function useGlobalNotifications() {
       // (playCue gates on soundCues itself).
       playCue("notify");
       if (loadPrefs().inAppToasts) {
+        const masked = maskTransientRoom(event.room_id);
         pushToast({
-          title: "You were added to a room",
-          body: event.inviter_name
+          title: masked ? "New message" : "You were added to a room",
+          body: masked
+            ? undefined
+            : event.inviter_name
             ? `${event.inviter_name} invited you.`
             : "Click here to open it.",
           roomId: event.room_id,

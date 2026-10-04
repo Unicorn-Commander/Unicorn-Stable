@@ -655,7 +655,7 @@ export function HomeDashboard({
             })}
             {recaps.map((meeting) => (
               <li key={meeting.id} className={clsx(ROW, "flex items-center gap-3 px-3 py-2")}>
-                <AppFace id="meeting-ops" name="Meeting-Ops" />
+                <AppFace id="meeting-ops" name={presenterEnabled ? "Workspace" : "Meeting-Ops"} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
                   <p className="truncate text-xs text-slate-400">
