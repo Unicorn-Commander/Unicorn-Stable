@@ -12,6 +12,7 @@ import {
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
+import { UserSearchHint } from "@/components/ui/UserSearchHint";
 import { useAppStore } from "@/stores/appStore";
 
 interface CreateDmModalProps {
@@ -354,6 +355,7 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
             className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
           />
         </div>
+        {tab === "people" ? <UserSearchHint /> : null}
 
         <div className="mb-4 max-h-64 overflow-y-auto">
           {tab === "people" ? (
