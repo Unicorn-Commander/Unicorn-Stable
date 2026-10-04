@@ -1726,9 +1726,15 @@ class PeopleDirectoryExclusionTests(IsolatedAsyncioTestCase):
 
         self.assertNotEqual(ParticipantType.GUEST.value, "human")
 
-    def test_all_three_human_only_sites_in_users_py_are_intact(self) -> None:
-        """Aaron's recon named three: the favourites validator, the directory,
-        and the realm user search. All three must keep the filter."""
+    def test_human_only_sites_in_users_py_are_intact(self) -> None:
+        """Human-only filters in api/users.py.
+
+        The original three are the favourites validator, the directory, and
+        the realm user-search lookup. Members-scope search adds two more:
+        the local list, and the exact-match local row. Guests stay out of
+        every one of them. A change to this count means a filter was added
+        or removed — check that guests still cannot leak into that surface.
+        """
         import inspect
 
         from app.api import users as users_api
@@ -1736,7 +1742,7 @@ class PeopleDirectoryExclusionTests(IsolatedAsyncioTestCase):
         source = inspect.getsource(users_api)
         self.assertEqual(
             source.count("Participant.participant_type == ParticipantType.HUMAN"),
-            3,
+            5,
             "a `== HUMAN` filter was added or removed in api/users.py — "
             "check whether guests can now leak into that surface",
         )
