@@ -49,19 +49,20 @@ describe("openSignedDownload", () => {
     const url = "https://signed.example/recording.ogg?sig=test";
     const open = vi.fn(() => null);
     const browser = { open, document } as unknown as Pick<Window, "open" | "document">;
-    let clickedAnchor: HTMLAnchorElement | null = null;
+    const clickedAnchors: HTMLAnchorElement[] = [];
     let wasAttachedDuringClick = false;
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {
-      clickedAnchor = document.body.querySelector("a");
-      wasAttachedDuringClick = clickedAnchor !== null;
+      const anchor = document.body.querySelector("a");
+      if (anchor) clickedAnchors.push(anchor);
+      wasAttachedDuringClick = anchor !== null;
     });
 
     await openSignedDownload(async () => ({ url }), browser);
 
     expect(open).toHaveBeenCalledWith("about:blank", "_blank");
-    expect(clickedAnchor).not.toBeNull();
+    expect(clickedAnchors).toHaveLength(1);
     expect(wasAttachedDuringClick).toBe(true);
-    if (!clickedAnchor) throw new Error("The fallback anchor was not clicked");
+    const clickedAnchor = clickedAnchors[0]!;
     expect(clickedAnchor.getAttribute("href")).toBe(url);
     expect(clickedAnchor.target).toBe("_blank");
     expect(clickedAnchor.rel).toBe("noopener");
