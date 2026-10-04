@@ -23,6 +23,7 @@ import hmac
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Iterable
 
@@ -73,6 +74,10 @@ class GatewayPrincipal:
     # Key path only: the row id (for audit) and the voice-settings grant.
     key_id: str | None = None
     can_manage_voice_settings: bool = False
+    # Key path: the row's history floor (NULL = full history) and expiry.
+    # JWT path leaves both None — a human-gated caller is not floored here.
+    history_from: datetime | None = None
+    expires_at: datetime | None = None
 
     def may_manage_voice_settings(self) -> bool:
         """A KEY whose agent is the desk app, or one an operator promoted."""
@@ -171,6 +176,8 @@ async def validate_gateway_jwt(token: str, settings) -> GatewayPrincipal:
         rate_key=f"gwjwt:{sub}",
         rate_limit_rpm=_default_rate_rpm(),
         human_sub=sub,
+        history_from=None,
+        expires_at=None,
     )
 
 
@@ -189,6 +196,15 @@ async def verify_gateway_key(raw_key: str, db: AsyncSession) -> GatewayPrincipal
     # a hypothetical hash-collision/timing seam (the DB lookup already used the hash).
     if row is None or not hmac.compare_digest(row.key_hash, key_hash):
         raise GatewayAuthError(401, "Invalid or revoked gateway key")
+    # Revoked wins over expired, with the same message as a missing row.
+    # The query above already excludes revoked rows; this is that answer
+    # again if a revoked row is ever handed back.
+    if getattr(row, "revoked_at", None) is not None:
+        raise GatewayAuthError(401, "Invalid or revoked gateway key")
+
+    expires_at = _as_utc(getattr(row, "expires_at", None))
+    if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+        raise GatewayAuthError(401, "Gateway key expired")
 
     # A NULL allowlist is the legacy default ("*"); an EMPTY list is a key an
     # operator scoped to nothing and stays that way (never a wildcard).
@@ -204,7 +220,22 @@ async def verify_gateway_key(raw_key: str, db: AsyncSession) -> GatewayPrincipal
         can_manage_voice_settings=bool(
             getattr(row, "can_manage_voice_settings", False)
         ),
+        history_from=_as_utc(getattr(row, "history_from", None)),
+        expires_at=expires_at,
     )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """A timestamptz as UTC. Naive values are UTC already (the column is
+    ``timestamptz``; a test double sometimes omits the tz). None stays None,
+    which is 'no expiry' / 'full history'."""
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 #: ``allowed_rooms`` token meaning "any room where this key's agent participant
