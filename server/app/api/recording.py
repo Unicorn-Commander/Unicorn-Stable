@@ -14,6 +14,7 @@ owner/admin and whoever started the recording.
 
 from __future__ import annotations
 
+import urllib.parse
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -310,6 +311,7 @@ async def list_recordings(
 
     owner_or_admin = await _is_owner_or_admin(db, room_id, user)
     me = user.get("participant_id")
+    meeting_ops_base = (settings.meeting_ops_url or "").strip().rstrip("/")
     out: list[RecordingResponse] = []
     for r in rows:
         starter = r.started_by is not None and str(r.started_by) == str(me)
@@ -317,11 +319,11 @@ async def list_recordings(
         item.egress_id = r.egress_id
         item.started_by_name = names.get(r.started_by) if r.started_by is not None else None
         session_url = session_urls.get(r.mo_session_id) if r.mo_session_id else None
-        meeting_ops_base = (settings.meeting_ops_url or "").strip().rstrip("/")
         if session_url is None and r.mo_session_id and meeting_ops_base:
+            session_id = urllib.parse.quote(str(r.mo_session_id), safe="")
             session_url = trusted_remote_session_url(
                 settings,
-                f"{meeting_ops_base}/sessions/{r.mo_session_id}",
+                f"{meeting_ops_base}/sessions/{session_id}",
             )
         item.mo_session_url = session_url
         item.handoff_status = r.handoff_status

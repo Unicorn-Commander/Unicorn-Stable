@@ -314,6 +314,33 @@ class ListRoute(IsolatedAsyncioTestCase):
         )
         self.assertEqual(out[0].mo_session_url, "https://mo.test/sessions/12345")
 
+    async def test_listing_quotes_fallback_session_id_path_delimiters(self) -> None:
+        r = room()
+        row = _egress_row(r, started_by=PID, mo_session_id="session/with?query")
+        calls = {"n": 0}
+
+        def router(stmt):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult(rows=[row])
+            if calls["n"] == 2:
+                return FakeResult(rows=[(PID, "Aaron", "aaron")])
+            if calls["n"] == 3:
+                return FakeResult(rows=[])
+            return FakeResult(scalar=SimpleNamespace(role=MemberRole.MEMBER))
+
+        out = await R.list_recordings(
+            r.id,
+            USER,
+            FakeDB(router=router),
+            50,
+            Settings(meeting_ops_url="https://mo.test///"),
+        )
+        self.assertEqual(
+            out[0].mo_session_url,
+            "https://mo.test/sessions/session%2Fwith%3Fquery",
+        )
+
     async def test_listing_has_no_meeting_ops_fallback_without_a_base(self) -> None:
         r = room()
         row = _egress_row(r, started_by=PID, mo_session_id="12345")
