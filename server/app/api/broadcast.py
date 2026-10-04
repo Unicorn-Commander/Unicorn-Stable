@@ -290,6 +290,26 @@ class BroadcastJoinResponse(BaseModel):
     mode: str = "participant"
 
 
+def _viewer_identity_prefix(token_id: uuid.UUID) -> str:
+    """Stable LiveKit identity prefix for every viewer of one token."""
+    return f"broadcast-{token_id}"
+
+
+def _viewer_identity_matches(identity: Any, token_id: uuid.UUID) -> bool:
+    """Match only this token's identity or its per-join descendants."""
+    if not isinstance(identity, str):
+        return False
+    prefix = _viewer_identity_prefix(token_id)
+    return identity == prefix or identity.startswith(f"{prefix}-")
+
+
+def _participant_identity(participant: Any) -> Any:
+    identity = getattr(participant, "identity", None)
+    if identity is None and isinstance(participant, dict):
+        identity = participant.get("identity")
+    return identity
+
+
 async def _resolve_room(db: AsyncSession, ref: str) -> Room:
     """Resolve a room by id, livekit_room_name, or slug (mirrors tokens.py)."""
     conditions = (Room.livekit_room_name == ref) | (Room.name == ref)
@@ -472,6 +492,7 @@ async def list_active_broadcasts(
     room: str,
     user: Annotated[dict, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
 ) -> dict:
     """Who currently has a live broadcast feed in this room.
 
@@ -494,6 +515,24 @@ async def list_active_broadcasts(
             )
         )
     ).scalars().all()
+    active_rows = [r for r in rows if not is_recorder_token(r)]
+    viewer_counts: dict[Any, int | None] = {}
+    if active_rows:
+        try:
+            info = await livekit.get_room(room_obj.livekit_room_name)
+            participants = info.get("participants", []) if isinstance(info, dict) else []
+            viewer_counts = {
+                row.id: sum(
+                    _viewer_identity_matches(_participant_identity(p), row.id)
+                    for p in participants
+                )
+                for row in active_rows
+            }
+        except Exception:
+            # The consent row remains useful during a LiveKit outage, but a
+            # stale count would be more misleading than an explicit unknown.
+            viewer_counts = {row.id: None for row in active_rows}
+
     return {
         "room_id": str(room_obj.id),
         "broadcasting": [
@@ -502,13 +541,13 @@ async def list_active_broadcasts(
                 "participant_label": r.participant_label,
                 "allow_audio": r.allow_audio,
                 "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "viewer_count": viewer_counts.get(r.id),
             }
-            for r in rows
+            for r in active_rows
             # A recorder token is a RECORDING, not a broadcast; it announces
             # itself through recording_state (contract: this shape unchanged).
             # Serialize token rows, never LiveKit viewer identities: one token
             # is one consent/badge row even when several pages joined it.
-            if not is_recorder_token(r)
         ],
     }
 
@@ -516,11 +555,6 @@ async def list_active_broadcasts(
 # ---------------------------------------------------------------------------
 # Token-authenticated join (NO Keycloak session — this is the OBS path)
 # ---------------------------------------------------------------------------
-
-
-def _viewer_identity_prefix(token_id: uuid.UUID) -> str:
-    """Stable LiveKit identity prefix for every viewer of one token."""
-    return f"broadcast-{token_id}"
 
 
 def _viewer_identity(token_id: uuid.UUID) -> str:
@@ -535,7 +569,6 @@ def _viewer_identity(token_id: uuid.UUID) -> str:
 
 async def _evict_viewers(livekit: Any, room_name: str, token_id: uuid.UUID) -> None:
     """Evict every current LiveKit viewer created from one broadcast token."""
-    prefix = _viewer_identity_prefix(token_id)
     try:
         info = await livekit.get_room(room_name)
         participants = info.get("participants", []) if isinstance(info, dict) else []
@@ -546,10 +579,8 @@ async def _evict_viewers(livekit: Any, room_name: str, token_id: uuid.UUID) -> N
         return
 
     for participant in participants:
-        identity = getattr(participant, "identity", None)
-        if identity is None and isinstance(participant, dict):
-            identity = participant.get("identity")
-        if not isinstance(identity, str) or not identity.startswith(prefix):
+        identity = _participant_identity(participant)
+        if not _viewer_identity_matches(identity, token_id):
             continue
         try:
             await livekit.remove_participant(

@@ -214,12 +214,110 @@ class TestViewerLifecycle(IsolatedAsyncioTestCase):
             "test-room",
             {"participant_id": uuid.uuid4()},
             FakeDB(router=router),
+            SimpleNamespace(get_room=AsyncMock(return_value={"participants": []})),
         )
         self.assertEqual(len(out["broadcasting"]), 1)
         self.assertEqual(
             out["broadcasting"][0]["participant_identity"],
             token_row.participant_identity,
         )
+
+    async def test_active_counts_each_token_with_a_strict_identity_prefix(self):
+        import app.api.broadcast as B
+
+        room_row = room()
+        first = _broadcast_row(room_row.id)
+        second = _broadcast_row(room_row.id)
+        second.participant_identity = "other_participant"
+        first_prefix = B._viewer_identity_prefix(first.id)
+        second_prefix = B._viewer_identity_prefix(second.id)
+        livekit = SimpleNamespace(
+            get_room=AsyncMock(
+                return_value={
+                    "participants": [
+                        SimpleNamespace(identity=first_prefix),
+                        SimpleNamespace(identity=f"{first_prefix}-viewer"),
+                        SimpleNamespace(identity=f"{first_prefix}without-dash"),
+                        {"identity": second_prefix},
+                        {"identity": f"{second_prefix}-viewer"},
+                        {"identity": f"{second_prefix}without-dash"},
+                    ]
+                }
+            )
+        )
+        calls = {"n": 0}
+
+        def router(_statement):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult(rows=[room_row])
+            if calls["n"] == 2:
+                return FakeResult(scalar=uuid.uuid4())
+            return FakeResult(rows=[first, second])
+
+        out = await B.list_active_broadcasts(
+            "test-room",
+            {"participant_id": uuid.uuid4()},
+            FakeDB(router=router),
+            livekit,
+        )
+        counts = {
+            row["participant_identity"]: row["viewer_count"]
+            for row in out["broadcasting"]
+        }
+        self.assertEqual(counts, {"aaron_participant": 2, "other_participant": 2})
+        livekit.get_room.assert_awaited_once_with(room_row.livekit_room_name)
+
+    async def test_active_livekit_failure_returns_null_count_without_raising(self):
+        import app.api.broadcast as B
+
+        room_row = room()
+        token_row = _broadcast_row(room_row.id)
+        calls = {"n": 0}
+
+        def router(_statement):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult(rows=[room_row])
+            if calls["n"] == 2:
+                return FakeResult(scalar=uuid.uuid4())
+            return FakeResult(rows=[token_row])
+
+        livekit = SimpleNamespace(
+            get_room=AsyncMock(side_effect=RuntimeError("LiveKit unavailable"))
+        )
+        out = await B.list_active_broadcasts(
+            "test-room",
+            {"participant_id": uuid.uuid4()},
+            FakeDB(router=router),
+            livekit,
+        )
+        self.assertEqual(out["broadcasting"][0]["viewer_count"], None)
+        livekit.get_room.assert_awaited_once_with(room_row.livekit_room_name)
+
+    async def test_active_does_not_list_livekit_without_active_tokens(self):
+        import app.api.broadcast as B
+
+        room_row = room()
+        calls = {"n": 0}
+
+        def router(_statement):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult(rows=[room_row])
+            if calls["n"] == 2:
+                return FakeResult(scalar=uuid.uuid4())
+            return FakeResult(rows=[])
+
+        livekit = SimpleNamespace(get_room=AsyncMock())
+        out = await B.list_active_broadcasts(
+            "test-room",
+            {"participant_id": uuid.uuid4()},
+            FakeDB(router=router),
+            livekit,
+        )
+        self.assertEqual(out["broadcasting"], [])
+        livekit.get_room.assert_not_awaited()
 
     async def test_revoke_evicts_all_viewers_for_one_token_prefix(self):
         import app.api.broadcast as B
@@ -244,8 +342,12 @@ class TestViewerLifecycle(IsolatedAsyncioTestCase):
             get_room=AsyncMock(
                 return_value={
                     "participants": [
+                        SimpleNamespace(identity=B._viewer_identity_prefix(token_row.id)),
                         SimpleNamespace(identity=first),
                         SimpleNamespace(identity=second),
+                        SimpleNamespace(
+                            identity=f"{B._viewer_identity_prefix(token_row.id)}without-dash"
+                        ),
                         SimpleNamespace(identity="broadcast-other-token-12345678"),
                     ]
                 }
@@ -264,7 +366,10 @@ class TestViewerLifecycle(IsolatedAsyncioTestCase):
             call.kwargs["identity"]
             for call in livekit.remove_participant.await_args_list
         }
-        self.assertEqual(removed, {first, second})
+        self.assertEqual(
+            removed,
+            {B._viewer_identity_prefix(token_row.id), first, second},
+        )
         livekit.get_room.assert_awaited_once_with(room_row.livekit_room_name)
 
 

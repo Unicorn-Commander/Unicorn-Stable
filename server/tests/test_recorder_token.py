@@ -245,7 +245,13 @@ class ConsentSurface(IsolatedAsyncioTestCase):
                 return FakeResult(scalar=uuid.uuid4())  # is_room_member
             return FakeResult(rows=[human, recorder])
 
-        out = await B.list_active_broadcasts("r", {"participant_id": uuid.uuid4()}, FakeDB(router=router))
+        livekit = SimpleNamespace(get_room=AsyncMock(return_value={"participants": []}))
+        out = await B.list_active_broadcasts(
+            "r",
+            {"participant_id": uuid.uuid4()},
+            FakeDB(router=router),
+            livekit,
+        )
         self.assertEqual([b["participant_identity"] for b in out["broadcasting"]], ["aaron_1"])
 
     def test_viewer_identity_is_still_a_service_identity(self) -> None:
