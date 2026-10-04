@@ -107,7 +107,7 @@ export function allowedRoomIds(
         ids.add(room.id);
         break;
       }
-      const parentId = cursor.parent_room_id ?? null;
+      const parentId: string | null = cursor.parent_room_id ?? null;
       cursor = parentId ? byId.get(parentId) : undefined;
     }
   }
@@ -198,7 +198,7 @@ export function presenterRule(context: PresenterContext): PresenterRule {
           openRoomIds.add(room.id);
           break;
         }
-        const parentId = cursor.parent_room_id ?? null;
+        const parentId: string | null = cursor.parent_room_id ?? null;
         cursor = parentId
           ? context.rooms.find((candidate) => candidate.id === parentId)
           : undefined;

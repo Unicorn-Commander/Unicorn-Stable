@@ -48,6 +48,7 @@ import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { PhotoNudge, useShowPhotoNudge } from "@/components/ui/Identity";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { ModelSwitcher } from "./ModelSwitcher";
+import { PresenterBadge } from "@/components/Layout/PresenterBadge";
 
 /**
  * The room's only bar. 44px: identity on the left, then Call, Record,
@@ -313,6 +314,7 @@ export function RoomHeader({
         data-testid="room-header-actions"
         className="relative flex shrink-0 items-center gap-0.5"
       >
+        <PresenterBadge className="mr-1 hidden sm:inline-flex" />
         {/* Desktop only: on a phone the 44px row is full and the FAB inside
             a hub already starts a thread, so the entry sits in More there. */}
         {onNewConversation && (

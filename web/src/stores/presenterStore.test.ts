@@ -1,3 +1,4 @@
+import { beforeEach, describe, expect, it, afterEach, vi } from "vitest";
 import { usePresenterStore, PRESENTER_PREF_KEY } from "./presenterStore";
 
 function memoryStorage(): Storage {

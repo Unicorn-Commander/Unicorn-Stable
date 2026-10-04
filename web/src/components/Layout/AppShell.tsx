@@ -50,6 +50,7 @@ import {
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useFacePrefStore } from "@/stores/facePrefStore";
+import { usePresenterStore } from "@/stores/presenterStore";
 import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -316,10 +317,26 @@ export function AppShell() {
   // the same reason: restored here, not in the settings modal, so it applies
   // to the first call tile of the session, not the first visit to Settings.
   const scopeFacePref = useFacePrefStore((s) => s.scopeToUser);
+  const scopePresenter = usePresenterStore((s) => s.scopeToUser);
   useEffect(() => {
     scopePalette(currentUser?.id ?? null);
     scopeFacePref(currentUser?.id ?? null);
-  }, [currentUser?.id, scopePalette, scopeFacePref]);
+    scopePresenter(currentUser?.id ?? null);
+  }, [currentUser?.id, scopePalette, scopeFacePref, scopePresenter]);
+  // URL control is a one-shot convenience for a presenter who is already
+  // looking at the app. Remove it without navigation so the browser URL does
+  // not become a persistent presentation switch.
+  const setPresenterEnabled = usePresenterStore((s) => s.setEnabled);
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const value = params.get("present");
+    if (value !== "1" && value !== "0") return;
+    setPresenterEnabled(value === "1");
+    params.delete("present");
+    const nextSearch = params.toString();
+    const next = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  }, [location.search, setPresenterEnabled]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const selfFace = useSelfFace();
@@ -501,6 +518,19 @@ export function AppShell() {
       if ((e.metaKey || e.ctrlKey) && e.key === "/") {
         e.preventDefault();
         useAppStore.getState().toggleCheatsheet();
+        return;
+      }
+      // Cmd/Ctrl+Alt+P is not used by Stable and is not a browser-reserved
+      // command. It is intentionally ignored while editing text.
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.altKey &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === "p" &&
+        !isEditableTarget(e.target)
+      ) {
+        e.preventDefault();
+        usePresenterStore.getState().toggleEnabled();
         return;
       }
       // Bare "?" (Shift+/) opens the same cheatsheet — the near-universal
