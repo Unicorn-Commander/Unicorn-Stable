@@ -185,6 +185,8 @@ services:
       # http://<STABLE_HOST>:<web port>/auth.
       - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set — run ./install.sh}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-stable}
+      # Realm search is correct here: this bundle's Keycloak realm belongs to the installing organization.
+      - USER_SEARCH_SCOPE=realm
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-stable-backend}
       - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET:-}
       # --- app URLs ---
