@@ -397,16 +397,16 @@ class R5MatchesTheDbUsernameAndCoversEveryPrincipal(IsolatedAsyncioTestCase):
 
 class MintOwnerAndIdCap(IsolatedAsyncioTestCase):
     def test_body_accepts_owner_and_caps_the_id(self) -> None:
-        body = G.MintKeyBody(agent_id="persephone", owner="Aaron")
+        body = G.MintKeyBody(agent_id="persephone", owner="Aaron", no_expiry=True)
         self.assertEqual(body.owner, "aaron")
         # REVIEW-4 P2-4: one name. A list is written by migration only.
         with self.assertRaises(ValidationError):
-            G.MintKeyBody(agent_id="flow", owner=["shafen", "ShafenKhan", "shafen"])
+            G.MintKeyBody(agent_id="flow", owner=["shafen", "ShafenKhan", "shafen"], no_expiry=True)
         with self.assertRaises(ValidationError):
-            G.MintKeyBody(agent_id="x" * 95)
+            G.MintKeyBody(agent_id="x" * 95, no_expiry=True)
         with self.assertRaises(ValidationError):
-            G.MintKeyBody(agent_id="x", owner=[""])
-        self.assertIsNone(G.MintKeyBody(agent_id="x").owner)
+            G.MintKeyBody(agent_id="x", owner=[""], no_expiry=True)
+        self.assertIsNone(G.MintKeyBody(agent_id="x", no_expiry=True).owner)
 
     async def test_mint_stamps_the_owner_on_a_new_seat_row(self) -> None:
         db = AsyncMock()

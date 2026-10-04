@@ -166,8 +166,10 @@ curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
 # 422 {"detail":[{"type":"missing","loc":["body","agent_id"],"msg":"Field required","input":{}}]}
 
 # well-formed body, no secret → 401
+# expiry is required and explicit: exactly one of expires_in_days,
+# expires_at, or no_expiry=true. Omitting all three is 422, still before auth.
 curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
-  -H 'Content-Type: application/json' -d '{"agent_id":"probe"}'
+  -H 'Content-Type: application/json' -d '{"agent_id":"probe","no_expiry":true}'
 # 401 {"detail":"Bad agent secret"}
 ```
 
@@ -182,16 +184,22 @@ So: **ask an operator.** Operator-side, minting looks like:
 
 ```bash
 # operator only — needs INTERNAL_AGENT_SECRET
+# expires_in_days is 1..366. history is "full" (NULL, the whole room),
+# "from_mint" (the floor is the mint time), or an ISO-8601 time not in the future.
 curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
   -H "Authorization: Bearer $INTERNAL_AGENT_SECRET" \
   -H "Content-Type: application/json" \
   -H "X-Operator: aaron" \
-  -d '{"agent_id":"dev-codex","label":"codex lane","allowed_rooms":["stable-dev-lane"],"rate_limit_rpm":30}'
+  -d '{"agent_id":"dev-codex","label":"codex lane","allowed_rooms":["stable-dev-lane"],"rate_limit_rpm":30,"expires_in_days":90,"history":"from_mint"}'
 ```
 
 The raw key is returned **once** (only its SHA-256 hash is stored). List metadata
-with `GET /api/v1/gateway/keys`; revoke instantly with
-`DELETE /api/v1/gateway/keys/{key_id}`. Both are likewise operator-only.
+with `GET /api/v1/gateway/keys` (it includes `expires_at`, `history_from`,
+`days_left`, and `expired`, and never the key or its hash); revoke instantly with
+`DELETE /api/v1/gateway/keys/{key_id}`. Both are likewise operator-only. A key
+whose `expires_at` is at or before now is rejected with `401 Gateway key expired`.
+`PATCH /api/v1/gateway/keys/{key_id}` can set or extend `expires_at`, clear it
+with `no_expiry: true`, or set `history` the same way. It cannot un-revoke.
 
 ## Why an agent should use this MCP instead of hand-rolled `curl`
 
@@ -440,7 +448,10 @@ from "MCP config is wrong", which are otherwise easy to confuse.
 - **Revocation is instant.** `DELETE /api/v1/gateway/keys/{key_id}` sets
   `revoked_at`, and `verify_gateway_key` filters on it every request. Keys are
   stored as SHA-256 hashes and compared with `hmac.compare_digest`, so a DB read
-  does not yield a usable credential.
+  does not yield a usable credential. A non-null `expires_at` at or before now
+  is a distinct `401` (`Gateway key expired`); revoked still wins over expired.
+  `history_from` floors `GET /gateway/rooms/{room}/messages` and `.../context`.
+  NULL on either column is the old behaviour: no expiry, full history.
 - **Give each lane its own key** — that is what makes attribution and per-lane
   revocation real. Never reuse one key across lanes; if you truly must, set a
   distinct `STABLE_LANE_PREFIX` per lane so messages stay attributable.

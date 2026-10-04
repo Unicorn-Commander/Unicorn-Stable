@@ -194,7 +194,7 @@ class P1_1_MemberScopeFollowsTheHuman(IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             G.PatchKeyBody(allowed_rooms=[])
         with self.assertRaises(ValidationError):
-            G.MintKeyBody(agent_id="x", allowed_rooms=[])
+            G.MintKeyBody(agent_id="x", allowed_rooms=[], no_expiry=True)
 
     async def test_a_stored_empty_allowlist_does_not_become_a_wildcard(self) -> None:
         token = "sbk-unit-test-empty-scope-not-a-real-secret"

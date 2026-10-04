@@ -113,7 +113,7 @@ class P2_3_TheOwnerIsAnExistingHuman(IsolatedAsyncioTestCase):
         db = _db([NOBODY()])
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None):
             with self.assertRaises(HTTPException) as ctx:
-                await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron2"), _request(), db)
+                await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron2", no_expiry=True), _request(), db)
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertIn("existing human participant", ctx.exception.detail)
         db.add.assert_not_called()                          # no key row was made
@@ -173,7 +173,10 @@ class P2_3_TheOwnerIsAnExistingHuman(IsolatedAsyncioTestCase):
 
 class P2_4_OneNameOnly(IsolatedAsyncioTestCase):
     def test_both_bodies_refuse_a_list_and_say_why(self) -> None:
-        for build in (lambda owner: G.MintKeyBody(agent_id="flow", owner=owner), lambda owner: G.PatchKeyBody(owner=owner)):
+        for build in (
+            lambda owner: G.MintKeyBody(agent_id="flow", owner=owner, no_expiry=True),
+            lambda owner: G.PatchKeyBody(owner=owner),
+        ):
             for owner in (["shafen", "shafenkhan"], ["aaron", "shafen"], ["aaron"], ("aaron",), []):
                 with self.assertRaises(ValidationError) as ctx:
                     build(owner)
@@ -189,7 +192,10 @@ class P2_4_OneNameOnly(IsolatedAsyncioTestCase):
         app.include_router(G.router, prefix="/api/v1")
         app.dependency_overrides[get_db] = lambda: _db([])
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            minted = await client.post("/api/v1/gateway/keys", json={"agent_id": "flow", "owner": ["aaron", "shafen"]})
+            minted = await client.post(
+                "/api/v1/gateway/keys",
+                json={"agent_id": "flow", "owner": ["aaron", "shafen"], "no_expiry": True},
+            )
             patched = await client.patch(f"/api/v1/gateway/keys/{uuid.uuid4()}", json={"owner": ["shafen", "shafenkhan"]})
         for response in (minted, patched):
             self.assertEqual(response.status_code, 422, response.text)
@@ -235,7 +241,7 @@ class P2_3_EveryOwnerChangeIsLogged(IsolatedAsyncioTestCase):
         db = _db([HUMAN_FOUND(), _Result(scalar=None)])
         log = _Log()
         with patch.object(G, "verify_key_admin_bearer", lambda _r: None), patch.object(G.logger, "info", new=log):
-            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron"), _request("aaron"), db)
+            out = await G.mint_gateway_key(G.MintKeyBody(agent_id="house-voice", owner="aaron", no_expiry=True), _request("aaron"), db)
         self.assertEqual(log.named("gateway_seat_owner_changed"), [{
             "agent_id": "house-voice", "old_owner": None, "new_owner": "aaron",
             "operator": "aaron", "source": "mint", "row_created": True,
