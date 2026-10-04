@@ -461,7 +461,9 @@ export function HomeDashboard({
                     <span className="text-slate-600"> · </span>
                   </>
                 )}
-                {previewText(row.preview) || "—"}
+                {!presenterEnabled || rule.isOpenRoom(row.room.id)
+                  ? previewText(row.preview) || "—"
+                  : "—"}
                 {/* The room, when it is not the person: a hub or a DM is named by its face. */}
                 {row.kind !== "mention" && otherRoom(row) && (
                   <>
@@ -608,7 +610,7 @@ export function HomeDashboard({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">{card.display_name}</p>
                   <p className="truncate text-xs text-slate-400">
-                    {card.current_task || "Working"}
+                    {presenterEnabled ? "Working" : card.current_task || "Working"}
                     {card.since ? ` · ${rowTime(card.since)}` : ""}
                   </p>
                 </div>
@@ -657,7 +659,9 @@ export function HomeDashboard({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
                   <p className="truncate text-xs text-slate-400">
-                    {meeting.summary || "Recap"}
+                    {!presenterEnabled || !meeting.room_id || rule.isOpenRoom(meeting.room_id)
+                      ? meeting.summary || "Recap"
+                      : "Recap"}
                     {meeting.at ? ` · ${rowTime(meeting.at)}` : ""}
                   </p>
                 </div>
@@ -719,7 +723,7 @@ export function HomeDashboard({
                   <RoomFace room={room} selfId={selfId} agents={rosterAgents} size={20} />
                   <span className="min-w-0 flex-1 truncate text-[13px]">
                     <span className="font-medium text-slate-100">{room.display_name || room.name}</span>
-                    {room.last_message && (
+                    {room.last_message && (!presenterEnabled || rule.isOpenRoom(room.id)) && (
                       <span className="text-slate-500">
                         {" "}
                         · {previewText(lastLinePreview(room.last_message).text)}

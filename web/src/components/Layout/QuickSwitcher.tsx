@@ -34,6 +34,7 @@ import {
 } from "@/stores/navStore";
 import { displayName, instanceHost } from "@/lib/instances";
 import { useModalA11y } from "@/hooks/useModalA11y";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
 interface QuickSwitcherProps {
   onClose: () => void;
@@ -76,7 +77,7 @@ function fuzzyScore(needle: string, hay: string): number {
 }
 
 export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProps) {
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms, rule, enabled: presenterEnabled } = usePresentedRooms();
   // Servers live in the federation store. They are folded into THIS palette
   // rather than getting a chord of their own: one switcher that finds rooms,
   // agents, commands and servers beats two competing for Cmd/Ctrl+K.
@@ -123,15 +124,20 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
         label: r.name,
         sub: "direct message",
       }));
-    const agentItems: Item[] = agents.map((a) => ({
+    const agentItems: Item[] = agents
+      .filter(
+        (a) =>
+          !presenterEnabled || rule.isIdentityAllowed(a.id, a.name),
+      )
+      .map((a) => ({
       kind: "agent" as const,
       id: a.id,
       label: a.name,
-      sub: a.description?.slice(0, 60) ?? "agent",
+      sub: presenterEnabled ? "agent" : a.description?.slice(0, 60) ?? "agent",
     }));
     // Everything from `meta` is untrusted peer output — already sanitised and
     // length-capped in @/lib/instances, and rendered here as a text node.
-    const serverItems: Item[] = multiServer
+    const serverItems: Item[] = !presenterEnabled && multiServer
       ? instances
           .filter((instance) => instance.id !== activeInstanceId)
           .map((instance) => {
@@ -226,6 +232,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       ...agentItems,
       ...serverItems,
     ];
+    if (presenterEnabled && !q.trim()) return [];
     if (!q.trim()) return all.slice(0, 12);
     const scored = all
       .map((it) => ({ it, score: Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub)) }))
@@ -243,6 +250,8 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
     metaByInstance,
     multiServer,
     navigate,
+    presenterEnabled,
+    rule,
   ]);
 
   useEffect(() => {

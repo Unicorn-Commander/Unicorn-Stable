@@ -37,6 +37,8 @@ import {
   usePanelResize,
 } from "@/hooks/usePanelResize";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 import { useFederationStore } from "@/stores/federationStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import {
@@ -364,6 +366,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
   const { startCall } = useDirectCall();
   const isDesktop = useIsDesktop();
   const pushToast = useAppStore((s) => s.pushToast);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const setActiveRoomId = useAppStore((s) => s.setActiveRoomId);
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
 
@@ -424,6 +427,9 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
     queryFn: () => api.getPeopleDirectory(debounced),
     refetchInterval: 30_000,
   });
+  const visibleDirectory = presenterEnabled
+    ? directory.filter((person) => rule.isIdentityAllowed(person.id, person.display_name))
+    : directory;
 
   useEffect(() => {
     if (directory.length === 0) return;
@@ -462,7 +468,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
     const everyone: PeopleDirectoryEntry[] = [];
     const now = Date.now();
 
-    const sorted = [...directory].sort((a, b) =>
+    const sorted = [...visibleDirectory].sort((a, b) =>
       a.display_name.localeCompare(b.display_name),
     );
 
@@ -496,7 +502,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
     });
 
     return { favorites, online, recent, everyone };
-  }, [directory, favoriteSet, isOnline]);
+  }, [visibleDirectory, favoriteSet, isOnline]);
 
   const toggleFavorite = useCallback(
     async (participantId: string) => {
@@ -606,7 +612,7 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
   );
 
   const emptyDirectory =
-    !isLoading && directory.length === 0 && !debounced;
+    !isLoading && visibleDirectory.length === 0 && !debounced;
 
   const body = (
     <>
@@ -646,12 +652,15 @@ export function PeopleDrawer({ onClose }: PeopleDrawerProps) {
               Coworkers appear after they sign into Stable on this server.
             </p>
           </div>
-        ) : directory.length === 0 ? (
+        ) : visibleDirectory.length === 0 ? (
           <p className="px-2 py-8 text-center text-xs text-slate-500">
-            No matches for “{debounced}”.
+            {presenterEnabled ? "No visible people match." : `No matches for “${debounced}”.`}
           </p>
         ) : (
           <>
+            <PresenterHiddenLine
+              count={presenterEnabled ? directory.length - visibleDirectory.length : 0}
+            />
             <Section title="Favorites" count={sections.favorites.length}>
               {sections.favorites.map(renderPerson)}
             </Section>

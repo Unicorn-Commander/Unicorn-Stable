@@ -7,6 +7,7 @@ import { displayName, instanceHost } from "@/lib/instances";
 import { useIsDesktop } from "@/hooks/usePanelResize";
 import { isServerAdmin } from "./admin";
 import { ServerLogo } from "./ServerLogo";
+import { usePresenterStore } from "@/stores/presenterStore";
 
 /**
  * Server search + directory.
@@ -30,6 +31,7 @@ export function ServerSwitcher() {
   const setSwitcherOpen = useFederationStore((state) => state.setSwitcherOpen);
   const setAddServerOpen = useFederationStore((state) => state.setAddServerOpen);
   const setIdentityOpen = useFederationStore((state) => state.setIdentityOpen);
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -54,11 +56,12 @@ export function ServerSwitcher() {
         unread: unreadByInstance[instance.id] ?? 0,
       };
     });
+    if (presenterEnabled) return [];
     if (!needle) return rows;
     return rows.filter((row) =>
       `${row.name} ${row.host} ${row.description}`.toLowerCase().includes(needle),
     );
-  }, [instances, metaByInstance, unreadByInstance, query]);
+  }, [instances, metaByInstance, unreadByInstance, presenterEnabled, query]);
 
   useEffect(() => {
     setCursor(0);
@@ -134,11 +137,15 @@ export function ServerSwitcher() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {results.length === 0 && (
+          {presenterEnabled ? (
+            <p className="px-3 py-6 text-center text-sm text-slate-500">
+              Server details hidden while presenting.
+            </p>
+          ) : results.length === 0 ? (
             <p className="px-3 py-6 text-center text-sm text-slate-500">
               No server matches “{query.trim()}”.
             </p>
-          )}
+          ) : null}
           {results.map((row, index) => {
             const active = row.instance.id === activeId;
             return (
