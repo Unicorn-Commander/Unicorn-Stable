@@ -48,6 +48,16 @@ export function AgentsPage() {
         (a.tools || []).some((t) => t.toLowerCase().includes(q)),
     );
   }, [agents, query]);
+  const displayAgents = presenterEnabled
+    ? filtered.map((agent) => ({
+        ...agent,
+        title: undefined,
+        domain: undefined,
+        description: "",
+        capabilities: [],
+        tools: [],
+      }))
+    : filtered;
 
   const onlineCount = useMemo(
     () => agents.filter((a) => a.status !== "offline").length,
@@ -186,12 +196,12 @@ export function AgentsPage() {
         {/* Active view */}
         {view === "chart" ? (
           <AgentOrgChart
-            agents={filtered}
+            agents={displayAgents}
             onOpen={setModalAgent}
             expandAll={query.trim().length > 0}
           />
         ) : (
-          <AgentList agents={filtered} onOpen={setModalAgent} />
+          <AgentList agents={displayAgents} onOpen={setModalAgent} />
         )}
       </div>
 

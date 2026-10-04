@@ -403,9 +403,11 @@ function AgentsPane() {
                     {agent.display_name || agent.name}
                   </span>
                   <span className="block truncate text-xs text-slate-500">
-                    {[agent.rank, agent.title, agent.model]
-                      .filter(Boolean)
-                      .join(" · ") || agent.description}
+                    {presenterEnabled
+                      ? "Agent"
+                      : [agent.rank, agent.title, agent.model]
+                          .filter(Boolean)
+                          .join(" · ") || agent.description}
                   </span>
                 </span>
               </>,
@@ -545,7 +547,7 @@ function InstancePane() {
                     state.ok ? "bg-stable-mint" : "bg-amber-400",
                   )}
                 />
-                {name} · {state.label}
+                {presenterEnabled ? "Service" : name} · {state.label}
               </li>
             );
           })}
@@ -772,6 +774,7 @@ function NotificationsPane() {
  * on the live transcript panel; this is only the always-by-default seed.
  */
 function MeetingOpsTranscriptSection() {
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
   const [moPrefs, setMoPrefs] =
     useState<MeetingOpsTranscriptPrefs>(loadMeetingOpsPrefs);
   const [moConfigured, setMoConfigured] = useState<boolean | null>(null);
@@ -815,9 +818,15 @@ function MeetingOpsTranscriptSection() {
       </h3>
       <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface-1/60">
         <Toggle
-          label="Send call transcripts to Meeting-Ops by default"
+          label={
+            presenterEnabled
+              ? "Send call transcripts to an external service by default"
+              : "Send call transcripts to Meeting-Ops by default"
+          }
           hint={
-            moConfigured === false
+            presenterEnabled
+              ? "The transcript destination is hidden while presenting."
+              : moConfigured === false
               ? "On by default for new calls. Meeting-Ops is not fully configured, so exports remain safely blocked in Stable until URL, PAT, and organization are wired."
               : moConfigured === true
                 ? "New calls start with “Send to Meeting-Ops” on. You can still flip it per call in the live transcript panel."

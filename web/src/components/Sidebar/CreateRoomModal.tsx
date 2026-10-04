@@ -266,7 +266,7 @@ export function CreateRoomModal() {
                           {agent.display_name}
                         </p>
                         <p className="truncate text-[11px] text-slate-500">
-                          {agent.description}
+                          {presenterEnabled ? "Agent" : agent.description}
                         </p>
                       </div>
                       {selected && (

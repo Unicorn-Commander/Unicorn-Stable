@@ -114,7 +114,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
         kind: "channel" as const,
         id: r.id,
         label: r.name,
-        sub: r.description || "channel",
+        sub: presenterEnabled ? "channel" : r.description || "channel",
       }));
     const dmItems: Item[] = rooms
       .filter((r) => r.type === "dm" || r.type === "group_dm")

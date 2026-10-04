@@ -141,7 +141,7 @@ export function ChannelBrowser({ onClose }: ChannelBrowserProps) {
                   <p className="truncate text-sm font-medium text-slate-100">
                     {c.name}
                   </p>
-                  {c.description && (
+                  {!presenterEnabled && c.description && (
                     <p className="truncate text-xs text-slate-500">
                       {c.description}
                     </p>

@@ -180,6 +180,7 @@ describe("presenter display leak seam", () => {
     await waitFor(() => expect(screen.getByText("ZZROOM_ALLOWED_A")).toBeTruthy());
     expect(document.body.innerHTML).not.toContain("ZZROOM_PRIVATE_1");
     expect(document.body.innerHTML).not.toContain("ZZDESCRIPTION_private");
+    expect(document.body.innerHTML).not.toContain("ZZDESCRIPTION_safe");
   });
 
   it("filters global search rooms and masks safe-room message previews", async () => {

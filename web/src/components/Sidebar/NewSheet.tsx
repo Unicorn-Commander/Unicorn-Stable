@@ -773,7 +773,11 @@ function ProjectStep({ onDone }: { onDone: () => void }) {
       <p className="px-1 text-xs leading-5 text-slate-400">{projectChannelConsequence()}</p>
       {isFetching && <p className="px-1 text-xs text-slate-500">Loading projects…</p>}
       {error && (
-        <p className="px-1 text-xs text-rose-300">Project-Ops didn't answer. Nothing was created.</p>
+        <p className="px-1 text-xs text-rose-300">
+          {presenterEnabled
+            ? "The project list is unavailable while presenting."
+            : "Project-Ops didn't answer. Nothing was created."}
+        </p>
       )}
       <PresenterHiddenLine count={presenterEnabled ? data.length : 0} className="px-1" />
       <ul className="flex flex-col gap-1">

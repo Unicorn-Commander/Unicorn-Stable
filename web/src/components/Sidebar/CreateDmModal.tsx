@@ -471,7 +471,7 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                           {a.name}
                         </p>
                         <p className="truncate text-xs text-slate-500">
-                          {a.description || `@${a.id}`}
+                          {presenterEnabled ? "Agent" : a.description || `@${a.id}`}
                         </p>
                       </div>
                     </div>
