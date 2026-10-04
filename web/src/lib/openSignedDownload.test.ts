@@ -61,9 +61,10 @@ describe("openSignedDownload", () => {
     expect(open).toHaveBeenCalledWith("about:blank", "_blank");
     expect(clickedAnchor).not.toBeNull();
     expect(wasAttachedDuringClick).toBe(true);
-    expect(clickedAnchor?.getAttribute("href")).toBe(url);
-    expect(clickedAnchor?.target).toBe("_blank");
-    expect(clickedAnchor?.rel).toBe("noopener");
+    if (!clickedAnchor) throw new Error("The fallback anchor was not clicked");
+    expect(clickedAnchor.getAttribute("href")).toBe(url);
+    expect(clickedAnchor.target).toBe("_blank");
+    expect(clickedAnchor.rel).toBe("noopener");
     expect(document.body.contains(clickedAnchor)).toBe(false);
   });
 });
