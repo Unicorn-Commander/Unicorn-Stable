@@ -101,6 +101,9 @@ import type { PeopleDirectoryEntry } from "@/services/api";
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { HomeRail } from "@/components/Home/HomeRail";
 import { useIsDesktop } from "@/hooks/usePanelResize";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
+import { usePresenterStore } from "@/stores/presenterStore";
 
 /** Active workspace, pinned above the one Conversations list. */
 function WorkspaceTitle() {
@@ -108,11 +111,14 @@ function WorkspaceTitle() {
   const instances = useFederationStore((s) => s.instances);
   const accessible = useFederationStore((s) => s.accessibleInstances);
   const metaByInstance = useFederationStore((s) => s.metaByInstance);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
   const pool = accessible.length > 0 ? accessible : instances;
   const instance = pool.find((item) => item.id === activeId) ?? pool[0];
-  const name = instance
-    ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
-    : "Stable";
+  const name = presenterEnabled
+    ? "Workspace"
+    : instance
+      ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
+      : "Stable";
   return (
     <div
       className="flex h-6 shrink-0 items-baseline gap-2 px-1"
@@ -201,7 +207,12 @@ export function RoomList() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const location = useLocation();
-  const rooms = useAppStore((s) => s.rooms);
+  const {
+    rooms,
+    hiddenCount: presenterHiddenCount,
+    rule,
+    enabled: presenterEnabled,
+  } = usePresentedRooms();
   const roomsLoaded = useAppStore((s) => s.roomsLoaded);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
@@ -345,7 +356,7 @@ export function RoomList() {
     if (!ids.length) return [];
     const set = new Set(ids);
     return peopleDirectory
-      .filter((p) => set.has(p.id))
+      .filter((p) => set.has(p.id) && rule.isIdentityAllowed(p.id, p.display_name))
       .sort((a, b) => {
         const ao = presenceById[a.id]?.isOnline ?? a.is_online;
         const bo = presenceById[b.id]?.isOnline ?? b.is_online;
@@ -394,6 +405,17 @@ export function RoomList() {
       cancelled = true;
     };
   }, [scope]);
+
+  const presentedArchivedRooms = useMemo(
+    () =>
+      presenterEnabled
+        ? archivedRooms.filter((room) => rule.isRoomAllowed(room.id))
+        : archivedRooms,
+    [archivedRooms, presenterEnabled, rule],
+  );
+  const archivedHiddenCount = presenterEnabled
+    ? archivedRooms.length - presentedArchivedRooms.length
+    : 0;
 
   async function handleArchiveRoom(room: Room) {
     try {
@@ -688,10 +710,14 @@ export function RoomList() {
           [r.display_name, r.name].filter(Boolean).map((s) => s!.toLowerCase()),
         ),
     );
+    if (presenterEnabled) return [];
     return conferenceCatalog.filter(
       (c) => !joinedLabels.has(c.display_name.toLowerCase()),
     );
-  }, [conferenceCatalog, rooms]);
+  }, [conferenceCatalog, presenterEnabled, rooms]);
+  const hiddenConferenceCatalogCount = presenterEnabled
+    ? conferenceCatalog.length
+    : 0;
   const [enteringConference, setEnteringConference] = useState<string | null>(
     null,
   );
@@ -2102,7 +2128,9 @@ export function RoomList() {
                     <span>
                       {startingChat
                         ? "Starting…"
-                        : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
+                        : presenterEnabled
+                          ? "Start a new conversation — it will appear here."
+                          : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
                     </span>
                   </button>
                 )}
@@ -2139,7 +2167,7 @@ export function RoomList() {
   }
 
   function renderArchivedSection() {
-    if (archivedRooms.length === 0) return null;
+    if (presentedArchivedRooms.length === 0) return null;
     const collapsed = showArchived;
     return (
       <section>
@@ -2153,7 +2181,7 @@ export function RoomList() {
             <Archive className="h-3 w-3 shrink-0 opacity-60" />
             <span className="truncate">Archived</span>
             <span className="ml-auto tabular-nums text-slate-500">
-              {archivedRooms.length}
+              {presentedArchivedRooms.length}
             </span>
             <ChevronDown
               className={clsx(
@@ -2165,7 +2193,7 @@ export function RoomList() {
         </div>
         {collapsed && (
           <ul role="list" className="ml-1.5 border-l border-line pl-1">
-            {archivedRooms.map((room) => (
+            {presentedArchivedRooms.map((room) => (
               <li key={room.id} className="relative">
                 <div className="flex items-center gap-1">
                   <button
@@ -2274,6 +2302,7 @@ export function RoomList() {
             )}
 
             {renderSectionBody(channelSection)}
+            <PresenterHiddenLine count={presenterHiddenCount} />
           </>
         )}
       </section>
@@ -2372,6 +2401,10 @@ export function RoomList() {
                 ))}
               </div>
             )}
+            <PresenterHiddenLine
+              count={hiddenConferenceCatalogCount}
+              className="mx-2"
+            />
           </>
         )}
         <MeetingsRecordings roomId={activeRoomId} />
@@ -2755,6 +2788,10 @@ export function RoomList() {
           </div>
         )}
         {renderNavBody()}
+        <PresenterHiddenLine
+          count={presenterHiddenCount + archivedHiddenCount}
+          className="mt-auto"
+        />
       </nav>
 
       {createDmOpen && (

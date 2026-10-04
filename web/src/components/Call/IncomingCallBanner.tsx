@@ -9,6 +9,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useIncomingCallStore } from "@/stores/incomingCallStore";
 import { useVoice } from "@/contexts/VoiceProvider";
 import { cueBlockedReason, playCue } from "@/lib/sounds";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
 /**
  * Fallback ring window used ONLY when the server didn't tell us its deadline
@@ -44,6 +45,8 @@ export function IncomingCallBanner() {
   const pushToast = useAppStore((s) => s.pushToast);
   const { connect, isConnecting } = useVoice();
   const navigate = useNavigate();
+  const { rule } = usePresentedRooms();
+  const masked = !!call && rule.enabled && !rule.isRoomAllowed(call.roomId);
   // Room we're navigating toward to join its call; connect() fires once the
   // route -> store sync makes it the active room.
   const pendingJoinRoomId = useRef<string | null>(null);
@@ -127,7 +130,10 @@ export function IncomingCallBanner() {
         if (status === 410) {
           // The caller hung up (or it rang out) while we reached for it. Say
           // that, and do NOT drop into an empty room.
-          pushToast({ title: "That call already ended", body: call.callerName });
+          pushToast({
+            title: "That call already ended",
+            body: masked ? undefined : call.callerName,
+          });
           acting.current = false;
           return;
         }
@@ -183,27 +189,35 @@ export function IncomingCallBanner() {
                   phone icon rides the corner so the call is still legible as a
                   call at a glance. */}
               <div className="relative shrink-0">
-                <Identity
-                  {...resolveIdentity({
-                    id: call.callerId,
-                    display_name: call.callerName,
-                    avatar_url: call.callerAvatarUrl,
-                    participant_type: "human",
-                  })}
-                  size={40}
-                />
+                {masked ? (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-700/50">
+                    <PhoneIncoming className="h-5 w-5 text-slate-300" />
+                  </div>
+                ) : (
+                  <Identity
+                    {...resolveIdentity({
+                      id: call.callerId,
+                      display_name: call.callerName,
+                      avatar_url: call.callerAvatarUrl,
+                      participant_type: "human",
+                    })}
+                    size={40}
+                  />
+                )}
                 <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-slate-900 p-1">
                   <PhoneIncoming className="h-3.5 w-3.5 animate-pulse text-emerald-400" />
                 </span>
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-semibold text-slate-100">
-                  {call.callerName}{" "}
-                  <span className="font-normal text-slate-300">is calling</span>
+                  {masked ? "Incoming call" : call.callerName + " "}
+                  {!masked && (
+                    <span className="font-normal text-slate-300">is calling</span>
+                  )}
                 </p>
-                <p className="truncate text-xs text-slate-400">
-                  {call.roomName}
-                </p>
+                {!masked && (
+                  <p className="truncate text-xs text-slate-400">{call.roomName}</p>
+                )}
                 {silentReason && (
                   <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-amber-300/90">
                     <VolumeX className="h-3 w-3 shrink-0" />
