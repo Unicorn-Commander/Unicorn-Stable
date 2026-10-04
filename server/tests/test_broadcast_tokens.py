@@ -11,6 +11,15 @@ from __future__ import annotations
 import typing
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest import IsolatedAsyncioTestCase
+from unittest.mock import AsyncMock
+
+from app.auth.gateway_auth import hash_key
+from app.config import Settings
+from app.models.room import MemberRole
+from recording_fakes import FakeDB, FakeResult, room
 
 
 class TestAuthPosture(unittest.TestCase):
@@ -92,11 +101,15 @@ class TestIdentitySafety(unittest.TestCase):
     flip presence for a UUID it does not own.
     """
 
-    def test_viewer_identity_contains_no_underscore(self):
-        from app.api.broadcast import _viewer_identity
+    def test_viewer_identity_has_a_stable_prefix_and_eight_url_safe_chars(self):
+        from app.api.broadcast import _viewer_identity, _viewer_identity_prefix
 
-        identity = _viewer_identity(uuid.uuid4())
-        self.assertNotIn("_", identity)
+        token_id = uuid.uuid4()
+        identity = _viewer_identity(token_id)
+        prefix = _viewer_identity_prefix(token_id)
+        self.assertTrue(identity.startswith(f"{prefix}-"))
+        suffix = identity[len(prefix) + 1 :]
+        self.assertRegex(suffix, r"^[A-Za-z0-9_-]{8}$")
 
     def test_webhook_parser_cannot_attribute_a_viewer_identity(self):
         from app.api.broadcast import _viewer_identity
@@ -115,10 +128,144 @@ class TestIdentitySafety(unittest.TestCase):
 
     def test_identities_are_unique_per_token(self):
         # Duplicate LiveKit identities evict each other (DUPLICATE_IDENTITY),
-        # so two OBS sources on one feed would silently kill each other.
+        # so each POST /join needs a distinct identity even for one token.
         from app.api.broadcast import _viewer_identity
 
-        self.assertNotEqual(_viewer_identity(uuid.uuid4()), _viewer_identity(uuid.uuid4()))
+        token_id = uuid.uuid4()
+        self.assertNotEqual(_viewer_identity(token_id), _viewer_identity(token_id))
+
+
+def _broadcast_row(room_id, raw: str = "sbt-test"):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        room_id=room_id,
+        participant_identity="aaron_participant",
+        participant_label="Aaron",
+        token_prefix=raw[:12],
+        token_hash=hash_key(raw),
+        allow_audio=False,
+        label="OBS · Aaron",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        revoked_at=None,
+        last_used_at=None,
+    )
+
+
+class TestViewerLifecycle(IsolatedAsyncioTestCase):
+    async def test_two_joins_share_a_token_but_get_different_identities(self):
+        import app.api.broadcast as B
+
+        raw = "sbt-same-token"
+        room_row = room()
+        token_row = _broadcast_row(room_row.id, raw)
+        calls = {"n": 0}
+        identities: list[str] = []
+
+        def router(_statement):
+            calls["n"] += 1
+            return FakeResult(scalar=token_row if calls["n"] % 2 else room_row)
+
+        def generate_token(**kwargs):
+            identities.append(kwargs["identity"])
+            return f"lk-{len(identities)}"
+
+        request = SimpleNamespace(
+            headers={"Authorization": f"Bearer {raw}"},
+            client=None,
+        )
+        livekit = SimpleNamespace(generate_token=generate_token)
+        settings = Settings(
+            livekit_public_url="wss://livekit.test",
+            livekit_api_key="key",
+            livekit_api_secret="secret",
+        )
+
+        await B.broadcast_join(
+            request, FakeDB(router=router), livekit, settings, None
+        )
+        await B.broadcast_join(
+            request, FakeDB(router=router), livekit, settings, None
+        )
+
+        prefix = B._viewer_identity_prefix(token_row.id)
+        self.assertEqual(len(identities), 2)
+        self.assertNotEqual(identities[0], identities[1])
+        for identity in identities:
+            self.assertTrue(identity.startswith(f"{prefix}-"))
+            self.assertEqual(len(identity[len(prefix) + 1 :]), 8)
+
+    async def test_active_is_one_consent_row_per_token(self):
+        import app.api.broadcast as B
+
+        room_row = room()
+        token_row = _broadcast_row(room_row.id)
+        calls = {"n": 0}
+
+        def router(_statement):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult(rows=[room_row])
+            if calls["n"] == 2:
+                return FakeResult(scalar=uuid.uuid4())
+            return FakeResult(rows=[token_row])
+
+        out = await B.list_active_broadcasts(
+            "test-room",
+            {"participant_id": uuid.uuid4()},
+            FakeDB(router=router),
+        )
+        self.assertEqual(len(out["broadcasting"]), 1)
+        self.assertEqual(
+            out["broadcasting"][0]["participant_identity"],
+            token_row.participant_identity,
+        )
+
+    async def test_revoke_evicts_all_viewers_for_one_token_prefix(self):
+        import app.api.broadcast as B
+
+        room_row = room()
+        token_row = _broadcast_row(room_row.id)
+        owner_id = uuid.uuid4()
+        member = SimpleNamespace(participant_id=owner_id, role=MemberRole.OWNER)
+        calls = {"n": 0}
+
+        def router(_statement):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult(scalar=token_row)
+            if calls["n"] == 2:
+                return FakeResult(scalar=room_row)
+            return FakeResult(scalar=member)
+
+        first = B._viewer_identity(token_row.id)
+        second = B._viewer_identity(token_row.id)
+        livekit = SimpleNamespace(
+            get_room=AsyncMock(
+                return_value={
+                    "participants": [
+                        SimpleNamespace(identity=first),
+                        SimpleNamespace(identity=second),
+                        SimpleNamespace(identity="broadcast-other-token-12345678"),
+                    ]
+                }
+            ),
+            remove_participant=AsyncMock(),
+        )
+        out = await B.revoke_broadcast_token(
+            token_row.id,
+            {"participant_id": owner_id},
+            FakeDB(router=router),
+            livekit,
+        )
+
+        self.assertTrue(out["revoked"])
+        removed = {
+            call.kwargs["identity"]
+            for call in livekit.remove_participant.await_args_list
+        }
+        self.assertEqual(removed, {first, second})
+        livekit.get_room.assert_awaited_once_with(room_row.livekit_room_name)
 
 
 class TestTokenShape(unittest.TestCase):

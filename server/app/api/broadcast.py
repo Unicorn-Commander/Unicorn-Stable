@@ -229,12 +229,7 @@ async def revoke_recorder_tokens(
             row.revoked_at = _now()
             revoked += 1
             if livekit is not None and room_name:
-                try:
-                    await livekit.remove_participant(
-                        room_name=room_name, identity=_viewer_identity(row.id)
-                    )
-                except Exception:
-                    logger.debug("recorder_viewer_evict_failed", exc_info=True)
+                await _evict_viewers(livekit, room_name, row.id)
         if rows:
             await db.commit()
             logger.info(
@@ -461,10 +456,7 @@ async def revoke_broadcast_token(
         await db.commit()
 
     try:
-        await livekit.remove_participant(
-            room_name=room.livekit_room_name,
-            identity=_viewer_identity(row.id),
-        )
+        await _evict_viewers(livekit, room.livekit_room_name, row.id)
     except Exception:
         # The viewer may not be connected; revocation already stands.
         logger.debug("broadcast_viewer_evict_failed", exc_info=True)
@@ -514,6 +506,8 @@ async def list_active_broadcasts(
             for r in rows
             # A recorder token is a RECORDING, not a broadcast; it announces
             # itself through recording_state (contract: this shape unchanged).
+            # Serialize token rows, never LiveKit viewer identities: one token
+            # is one consent/badge row even when several pages joined it.
             if not is_recorder_token(r)
         ],
     }
@@ -524,14 +518,48 @@ async def list_active_broadcasts(
 # ---------------------------------------------------------------------------
 
 
-def _viewer_identity(token_id: uuid.UUID) -> str:
-    """Per-token LiveKit identity.
-
-    Unique per token because a duplicate identity causes LiveKit to evict the
-    older session (DUPLICATE_IDENTITY) — two OBS sources on the same feed would
-    otherwise silently kill each other.
-    """
+def _viewer_identity_prefix(token_id: uuid.UUID) -> str:
+    """Stable LiveKit identity prefix for every viewer of one token."""
     return f"broadcast-{token_id}"
+
+
+def _viewer_identity(token_id: uuid.UUID) -> str:
+    """Per-join LiveKit identity under the token's stable prefix.
+
+    A duplicate identity causes LiveKit to evict the older session
+    (DUPLICATE_IDENTITY), so every POST /join gets its own 8-character random
+    suffix while revocation matches the stable prefix.
+    """
+    return f"{_viewer_identity_prefix(token_id)}-{secrets.token_urlsafe(6)}"
+
+
+async def _evict_viewers(livekit: Any, room_name: str, token_id: uuid.UUID) -> None:
+    """Evict every current LiveKit viewer created from one broadcast token."""
+    prefix = _viewer_identity_prefix(token_id)
+    try:
+        info = await livekit.get_room(room_name)
+        participants = info.get("participants", []) if isinstance(info, dict) else []
+    except Exception:
+        # Revocation remains durable even if LiveKit is unavailable. A later
+        # join is refused by the revoked row, and no raw credential is logged.
+        logger.debug("broadcast_viewer_list_failed", exc_info=True)
+        return
+
+    for participant in participants:
+        identity = getattr(participant, "identity", None)
+        if identity is None and isinstance(participant, dict):
+            identity = participant.get("identity")
+        if not isinstance(identity, str) or not identity.startswith(prefix):
+            continue
+        try:
+            await livekit.remove_participant(
+                room_name=room_name,
+                identity=identity,
+            )
+        except Exception:
+            # One stale viewer must not prevent the other viewers from being
+            # removed, and the database revocation already stands.
+            logger.debug("broadcast_viewer_evict_failed", exc_info=True)
 
 
 @router.post("/join", response_model=BroadcastJoinResponse)

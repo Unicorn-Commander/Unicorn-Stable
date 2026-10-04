@@ -113,8 +113,8 @@ export function refreshDelayMs(
 
 /**
  * Reconnect/retry backoff. Doubles from 2s to a 30s ceiling — long enough that
- * two OBS sources pointed at the SAME link (which evict each other, one LiveKit
- * identity per token) damp out instead of flapping at full speed.
+ * two OBS sources pointed at the SAME link (which now receive distinct
+ * LiveKit identities per join) damp out instead of flapping at full speed.
  */
 export function backoffDelayMs(attempt: number): number {
   const n = Math.max(1, Math.floor(attempt));
