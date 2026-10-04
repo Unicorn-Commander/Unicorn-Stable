@@ -129,12 +129,30 @@ class MintAndRevoke(IsolatedAsyncioTestCase):
         egress_row_id = uuid.uuid4()
         row = _recorder_row(uuid.uuid4(), label=B.recorder_label(egress_row_id))
         db = FakeDB(router=lambda stmt: FakeResult(rows=[row]))
-        lk = SimpleNamespace(remove_participant=AsyncMock())
-        n = await B.revoke_recorder_tokens(db, lk, egress_row_id=egress_row_id, room_name="stable-x")
+        first = B._viewer_identity(row.id)
+        second = B._viewer_identity(row.id)
+        lk = SimpleNamespace(
+            get_room=AsyncMock(
+                return_value={
+                    "participants": [
+                        SimpleNamespace(identity=first),
+                        SimpleNamespace(identity=second),
+                    ]
+                }
+            ),
+            remove_participant=AsyncMock(),
+        )
+        n = await B.revoke_recorder_tokens(
+            db, lk, egress_row_id=egress_row_id, room_name="stable-x"
+        )
         self.assertEqual(n, 1)
         self.assertIsNotNone(row.revoked_at)
-        lk.remove_participant.assert_awaited_once_with(
-            room_name="stable-x", identity=B._viewer_identity(row.id)
+        self.assertEqual(
+            {
+                call.kwargs["identity"]
+                for call in lk.remove_participant.await_args_list
+            },
+            {first, second},
         )
         self.assertEqual(db.commits, 1)
 
@@ -177,7 +195,11 @@ class JoinAsRecorder(IsolatedAsyncioTestCase):
         self.assertTrue(grants.can_subscribe)
         self.assertTrue(grants.recorder)
         self.assertEqual(captured["name"], "recorder")
-        self.assertEqual(captured["identity"], B._viewer_identity(token_row.id))
+        self.assertTrue(
+            captured["identity"].startswith(
+                f"{B._viewer_identity_prefix(token_row.id)}-"
+            )
+        )
         # Bounded to the token's remaining life and the 1h cap.
         self.assertLessEqual(captured["ttl"], B.LIVEKIT_TOKEN_MAX_TTL_S)
         self.assertIsNotNone(token_row.last_used_at)
@@ -223,7 +245,13 @@ class ConsentSurface(IsolatedAsyncioTestCase):
                 return FakeResult(scalar=uuid.uuid4())  # is_room_member
             return FakeResult(rows=[human, recorder])
 
-        out = await B.list_active_broadcasts("r", {"participant_id": uuid.uuid4()}, FakeDB(router=router))
+        livekit = SimpleNamespace(get_room=AsyncMock(return_value={"participants": []}))
+        out = await B.list_active_broadcasts(
+            "r",
+            {"participant_id": uuid.uuid4()},
+            FakeDB(router=router),
+            livekit,
+        )
         self.assertEqual([b["participant_identity"] for b in out["broadcasting"]], ["aaron_1"])
 
     def test_viewer_identity_is_still_a_service_identity(self) -> None:

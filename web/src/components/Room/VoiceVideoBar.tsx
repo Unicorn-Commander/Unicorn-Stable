@@ -63,7 +63,14 @@ import { useVoice } from "@/contexts/VoiceProvider";
 import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
 import { useIsDesktop } from "@/hooks/usePanelResize";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
-import { buildBroadcastUrl } from "@/lib/broadcast";
+import {
+  broadcastBadgeTitle,
+  broadcastCopyVariantConfig,
+  broadcastMenuHeader,
+  broadcastViewerWarning,
+  buildBroadcastUrl,
+  type BroadcastCopyVariant,
+} from "@/lib/broadcast";
 import {
   agentRosterRole,
   humanTitleFromMember,
@@ -333,6 +340,158 @@ function TileControlButton({
     >
       <Icon className="h-3.5 w-3.5 md:h-3 md:w-3" />
     </button>
+  );
+}
+
+const BROADCAST_COPY_ITEMS: Array<{
+  variant: BroadcastCopyVariant;
+  icon: LucideIcon;
+  label: string;
+  title: string;
+}> = [
+  {
+    variant: "camera",
+    icon: Video,
+    label: "Copy camera link",
+    title: "Mint a video-only camera feed link",
+  },
+  {
+    variant: "camera-audio",
+    icon: Volume2,
+    label: "Copy camera link with audio",
+    title: "Mint a camera feed link with microphone audio",
+  },
+  {
+    variant: "screen",
+    icon: MonitorUp,
+    label: "Copy screen link",
+    title: "Mint a screen-share feed link; it stays black until a share starts",
+  },
+  {
+    variant: "screen-audio",
+    icon: Volume2,
+    label: "Copy screen link with audio",
+    title:
+      "Mint a screen-share feed link with audio; it stays black until a share starts",
+  },
+];
+
+/** Owner-only broadcast variants. Portal it because participant tiles clip menus. */
+function BroadcastCopyMenu({
+  targetName,
+  isBroadcasting,
+  viewerCount,
+  maxViewersPerLink,
+  onCopy,
+}: {
+  targetName: string;
+  isBroadcasting?: boolean;
+  /** Viewers across every live link for this participant. */
+  viewerCount?: number | null;
+  /** The most viewers on any single link: what the leak warning reads. */
+  maxViewersPerLink?: number | null;
+  onCopy: (variant: BroadcastCopyVariant) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onMove = () => setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onMove);
+    window.addEventListener("scroll", onMove, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onMove);
+      window.removeEventListener("scroll", onMove, true);
+    };
+  }, [open]);
+
+  function toggle(e: ReactMouseEvent) {
+    e.stopPropagation();
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPos({
+        top: rect.bottom + 4,
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    }
+    setOpen((current) => !current);
+  }
+
+  function choose(e: ReactMouseEvent, variant: BroadcastCopyVariant) {
+    e.stopPropagation();
+    setOpen(false);
+    onCopy(variant);
+  }
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={toggle}
+        aria-label={`Broadcast options for ${targetName}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`Broadcast options for ${targetName}. Each link is a credential: anyone with it can watch until it expires or you revoke it.`}
+        className={clsx(
+          "glass focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-200 transition-colors hover:text-white md:h-6 md:w-6",
+          isBroadcasting &&
+            "text-stable-purple-light ring-1 ring-stable-purple/60",
+          open && "text-stable-cyan ring-1 ring-stable-cyan/60",
+        )}
+      >
+        <Radio className="h-3.5 w-3.5 md:h-3 md:w-3" />
+      </button>
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label={`Broadcast links for ${targetName}`}
+            style={{ top: pos.top, right: pos.right }}
+            className="glass-heavy fixed z-[70] w-64 overflow-hidden rounded-xl p-1 text-xs shadow-pop animate-fade-in"
+          >
+            <p className="truncate px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              {broadcastMenuHeader(targetName, viewerCount)}
+            </p>
+            {broadcastViewerWarning(maxViewersPerLink) && (
+              <p className="px-2 py-1 text-[10px] leading-snug text-amber-200">
+                {broadcastViewerWarning(maxViewersPerLink)}
+              </p>
+            )}
+            {BROADCAST_COPY_ITEMS.map((item) => (
+              <button
+                key={item.variant}
+                type="button"
+                role="menuitem"
+                onClick={(e) => choose(e, item.variant)}
+                title={item.title}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-slate-200 transition-colors hover:bg-white/[0.06] focus-ring"
+              >
+                <item.icon className="h-3.5 w-3.5 text-slate-400" />
+                {item.label}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -657,7 +816,7 @@ interface ParticipantTileProps {
    * room OWNER (minting a no-login URL to someone else's camera is an
    * owner-level act); the server's 403 is the backstop, not the rule.
    */
-  onCopyBroadcastUrl?: () => void;
+  onCopyBroadcastUrl?: (variant: BroadcastCopyVariant) => void;
   /**
    * A live broadcast link exists for this participant right now.
    *
@@ -667,6 +826,8 @@ interface ParticipantTileProps {
    * indication anywhere. The feed stays invisible; the FACT of it does not.
    */
   isBroadcasting?: boolean;
+  viewerCount?: number | null;
+  maxViewersPerLink?: number | null;
   /**
    * Run a moderation action on THIS participant's live-call connection.
    * Supplied only to a room owner/admin, and never for your own tile; the
@@ -704,6 +865,8 @@ function ParticipantTile({
   inPopout,
   onCopyBroadcastUrl,
   isBroadcasting,
+  viewerCount,
+  maxViewersPerLink,
   onModerate,
 }: ParticipantTileProps) {
   const pip = usePipTile();
@@ -1048,7 +1211,7 @@ function ParticipantTile({
       {isBroadcasting && (
         <span
           className={clsx("pointer-events-none absolute flex items-center gap-1 whitespace-nowrap rounded-full bg-rose-500/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-pop", immersive ? "left-3 top-24" : "left-1/2 top-1.5 -translate-x-1/2")}
-          title={`${p.name} is being broadcast to an external feed right now`}
+          title={broadcastBadgeTitle(p.name, viewerCount)}
         >
           <span aria-hidden="true" className="text-[8px] leading-none">
             ●
@@ -1116,15 +1279,12 @@ function ParticipantTile({
             the window-id orphaning that made pop-out capture unusable on a
             live show — see components/Broadcast/BroadcastPage.tsx. */}
         {onCopyBroadcastUrl && (
-          <TileControlButton
-            icon={Radio}
-            label={`Copy broadcast URL for ${p.name}`}
-            title={`Copy broadcast URL — a no-login page showing only ${p.name}’s camera, for an OBS browser source. Treat it as a credential: anyone with the link can watch until it expires or you revoke it.`}
-            active={isBroadcasting}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCopyBroadcastUrl();
-            }}
+          <BroadcastCopyMenu
+            targetName={p.name}
+            isBroadcasting={isBroadcasting}
+            viewerCount={viewerCount}
+            maxViewersPerLink={maxViewersPerLink}
+            onCopy={onCopyBroadcastUrl}
           />
         )}
         {onTogglePin && (
@@ -1680,7 +1840,12 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
 
   // Who is being streamed right now — the consent surface, read by every
   // member. Drives the "● Broadcasting" badge on the tiles below.
-  const { isBroadcasting, refresh: refreshBroadcasts } =
+  const {
+    isBroadcasting,
+    viewerCountFor,
+    maxViewersPerLinkFor,
+    refresh: refreshBroadcasts,
+  } =
     useRoomBroadcasts(roomId);
 
   // Minting is OWNER-only on the server. Read the caller's own membership row
@@ -1758,14 +1923,20 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
   );
 
   const copyBroadcastUrl = useCallback(
-    async (identity: string, label: string) => {
+    async (
+      identity: string,
+      label: string,
+      variant: BroadcastCopyVariant,
+    ) => {
       if (mintingFor) return;
+      const config = broadcastCopyVariantConfig(variant);
       setMintingFor(identity);
       try {
         const minted = await api.mintBroadcastToken({
           room: roomId,
           participant_identity: identity,
           participant_label: label,
+          allow_audio: config.allowAudio,
           label: `OBS · ${label}`,
         });
         const userId = useAppStore.getState().currentUser?.id;
@@ -1778,6 +1949,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             roomId: minted.room_id,
             participantIdentity: minted.participant_identity,
             token: minted.token,
+            source: config.source,
+            audio: config.audio,
           }),
           readTileChromePrefs(userId).lowerThird || roomLowerThirdOptIn(roomMeta),
         );
@@ -1786,16 +1959,16 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         useAppStore.getState().pushToast(
           copied
             ? {
-                title: `Broadcast URL copied — ${label}`,
-                body: "Paste it into an OBS browser source. It is a credential: anyone with the link can watch this camera until it expires or you revoke it.",
+                title: `${config.label} link copied — ${label}`,
+                body: `Paste it into an OBS browser source. It is a credential: anyone with the link can watch this ${config.source === "screen" ? "screen share" : "camera"} until it expires or you revoke it.${config.source === "screen" ? " The page stays black until a screen share starts." : ""}`,
                 kind: "success",
               }
             : {
                 // The clipboard API is absent in an insecure context (plain-HTTP
                 // LAN self-hosts). Never swallow that — the URL is minted and
                 // unrecoverable, so it has to be readable somewhere.
-                title: "Couldn't reach the clipboard — copy this URL by hand",
-                body: url,
+                title: `Couldn't reach the clipboard — copy the ${config.label.toLowerCase()} link by hand`,
+                body: `${url}${config.source === "screen" ? "\n\nThe page stays black until a screen share starts." : ""}`,
                 kind: "error",
                 sticky: true,
               },
@@ -1803,7 +1976,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       } catch (error) {
         const err = error as ApiError;
         useAppStore.getState().pushToast({
-          title: "Couldn't create the broadcast URL",
+          title: `Couldn't create the ${config.label.toLowerCase()} link`,
           body:
             (typeof err?.detail === "string" && err.detail) ||
             err?.message ||
@@ -2434,6 +2607,8 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     // broadcast token is scoped to the REAL identity ("<username>_<pid>"), so
     // minting one against "local" would produce a URL that renders nobody.
     const lkIdentity = p.isLocal ? (localParticipant?.identity ?? null) : p.id;
+    const viewerCount = viewerCountFor(lkIdentity);
+    const maxViewersPerLink = maxViewersPerLinkFor(lkIdentity);
     // The tile may read "Aaron (you)"; the token list should say the name.
     const lkLabel = p.isLocal ? localParticipant?.name || p.name : p.name;
     return (
@@ -2442,9 +2617,11 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         p={p}
         roomId={roomId}
         isBroadcasting={isBroadcasting(lkIdentity)}
+        viewerCount={viewerCount}
+        maxViewersPerLink={maxViewersPerLink}
         onCopyBroadcastUrl={
           isRoomOwner && lkIdentity
-            ? () => void copyBroadcastUrl(lkIdentity, lkLabel)
+            ? (variant) => void copyBroadcastUrl(lkIdentity, lkLabel, variant)
             : undefined
         }
         onModerate={

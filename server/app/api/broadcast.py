@@ -229,12 +229,7 @@ async def revoke_recorder_tokens(
             row.revoked_at = _now()
             revoked += 1
             if livekit is not None and room_name:
-                try:
-                    await livekit.remove_participant(
-                        room_name=room_name, identity=_viewer_identity(row.id)
-                    )
-                except Exception:
-                    logger.debug("recorder_viewer_evict_failed", exc_info=True)
+                await _evict_viewers(livekit, room_name, row.id)
         if rows:
             await db.commit()
             logger.info(
@@ -293,6 +288,26 @@ class BroadcastJoinResponse(BaseModel):
     # participant — render the one named participant (OBS feed).
     # composite   — render every publisher in the room (recorder token).
     mode: str = "participant"
+
+
+def _viewer_identity_prefix(token_id: uuid.UUID) -> str:
+    """Stable LiveKit identity prefix for every viewer of one token."""
+    return f"broadcast-{token_id}"
+
+
+def _viewer_identity_matches(identity: Any, token_id: uuid.UUID) -> bool:
+    """Match only this token's identity or its per-join descendants."""
+    if not isinstance(identity, str):
+        return False
+    prefix = _viewer_identity_prefix(token_id)
+    return identity == prefix or identity.startswith(f"{prefix}-")
+
+
+def _participant_identity(participant: Any) -> Any:
+    identity = getattr(participant, "identity", None)
+    if identity is None and isinstance(participant, dict):
+        identity = participant.get("identity")
+    return identity
 
 
 async def _resolve_room(db: AsyncSession, ref: str) -> Room:
@@ -461,10 +476,7 @@ async def revoke_broadcast_token(
         await db.commit()
 
     try:
-        await livekit.remove_participant(
-            room_name=room.livekit_room_name,
-            identity=_viewer_identity(row.id),
-        )
+        await _evict_viewers(livekit, room.livekit_room_name, row.id)
     except Exception:
         # The viewer may not be connected; revocation already stands.
         logger.debug("broadcast_viewer_evict_failed", exc_info=True)
@@ -480,6 +492,7 @@ async def list_active_broadcasts(
     room: str,
     user: Annotated[dict, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    livekit: Annotated[LiveKitService, Depends(get_livekit)],
 ) -> dict:
     """Who currently has a live broadcast feed in this room.
 
@@ -502,6 +515,24 @@ async def list_active_broadcasts(
             )
         )
     ).scalars().all()
+    active_rows = [r for r in rows if not is_recorder_token(r)]
+    viewer_counts: dict[Any, int | None] = {}
+    if active_rows:
+        try:
+            info = await livekit.get_room(room_obj.livekit_room_name)
+            participants = info.get("participants", []) if isinstance(info, dict) else []
+            viewer_counts = {
+                row.id: sum(
+                    _viewer_identity_matches(_participant_identity(p), row.id)
+                    for p in participants
+                )
+                for row in active_rows
+            }
+        except Exception:
+            # The consent row remains useful during a LiveKit outage, but a
+            # stale count would be more misleading than an explicit unknown.
+            viewer_counts = {row.id: None for row in active_rows}
+
     return {
         "room_id": str(room_obj.id),
         "broadcasting": [
@@ -510,11 +541,13 @@ async def list_active_broadcasts(
                 "participant_label": r.participant_label,
                 "allow_audio": r.allow_audio,
                 "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "viewer_count": viewer_counts.get(r.id),
             }
-            for r in rows
+            for r in active_rows
             # A recorder token is a RECORDING, not a broadcast; it announces
             # itself through recording_state (contract: this shape unchanged).
-            if not is_recorder_token(r)
+            # Serialize token rows, never LiveKit viewer identities: one token
+            # is one consent/badge row even when several pages joined it.
         ],
     }
 
@@ -525,13 +558,39 @@ async def list_active_broadcasts(
 
 
 def _viewer_identity(token_id: uuid.UUID) -> str:
-    """Per-token LiveKit identity.
+    """Per-join LiveKit identity under the token's stable prefix.
 
-    Unique per token because a duplicate identity causes LiveKit to evict the
-    older session (DUPLICATE_IDENTITY) — two OBS sources on the same feed would
-    otherwise silently kill each other.
+    A duplicate identity causes LiveKit to evict the older session
+    (DUPLICATE_IDENTITY), so every POST /join gets its own 8-character random
+    suffix while revocation matches the stable prefix.
     """
-    return f"broadcast-{token_id}"
+    return f"{_viewer_identity_prefix(token_id)}-{secrets.token_urlsafe(6)}"
+
+
+async def _evict_viewers(livekit: Any, room_name: str, token_id: uuid.UUID) -> None:
+    """Evict every current LiveKit viewer created from one broadcast token."""
+    try:
+        info = await livekit.get_room(room_name)
+        participants = info.get("participants", []) if isinstance(info, dict) else []
+    except Exception:
+        # Revocation remains durable even if LiveKit is unavailable. A later
+        # join is refused by the revoked row, and no raw credential is logged.
+        logger.debug("broadcast_viewer_list_failed", exc_info=True)
+        return
+
+    for participant in participants:
+        identity = _participant_identity(participant)
+        if not _viewer_identity_matches(identity, token_id):
+            continue
+        try:
+            await livekit.remove_participant(
+                room_name=room_name,
+                identity=identity,
+            )
+        except Exception:
+            # One stale viewer must not prevent the other viewers from being
+            # removed, and the database revocation already stands.
+            logger.debug("broadcast_viewer_evict_failed", exc_info=True)
 
 
 @router.post("/join", response_model=BroadcastJoinResponse)

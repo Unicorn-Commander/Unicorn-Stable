@@ -70,6 +70,12 @@ export const REFRESH_FRACTION = 0.8;
 /** Floor on the refresh timer, so a dying link can't spin a tight re-mint loop. */
 export const MIN_REFRESH_DELAY_S = 10;
 
+export type BroadcastSource = "auto" | "camera" | "screen";
+
+function normalizeBroadcastSource(value: unknown): BroadcastSource {
+  return value === "camera" || value === "screen" ? value : "auto";
+}
+
 /**
  * How long the LiveKit token minted at `nowMs` will actually live, given the
  * broadcast token's expiry. Mirrors the server:
@@ -107,8 +113,8 @@ export function refreshDelayMs(
 
 /**
  * Reconnect/retry backoff. Doubles from 2s to a 30s ceiling — long enough that
- * two OBS sources pointed at the SAME link (which evict each other, one LiveKit
- * identity per token) damp out instead of flapping at full speed.
+ * two OBS sources pointed at the SAME link (which now receive distinct
+ * LiveKit identities per join) damp out instead of flapping at full speed.
  */
 export function backoffDelayMs(attempt: number): number {
   const n = Math.max(1, Math.floor(attempt));
@@ -126,16 +132,20 @@ export interface BroadcastOptions {
   transparent: boolean;
   /** `?audio=1` — a REQUEST for audio. The server's `allow_audio` still decides. */
   wantAudio: boolean;
+  /** Which video source to render. Missing and unknown values mean `auto`. */
+  source: BroadcastSource;
 }
 
 export function parseBroadcastOptions(search: string): BroadcastOptions {
   const params = new URLSearchParams(search);
   const bg = (params.get("bg") ?? "").trim().toLowerCase();
   const audio = (params.get("audio") ?? "").trim().toLowerCase();
+  const source = (params.get("source") ?? "").trim().toLowerCase();
   return {
     token: (params.get("token") ?? "").trim(),
     transparent: bg === "transparent",
     wantAudio: audio === "1" || audio === "true" || audio === "yes",
+    source: normalizeBroadcastSource(source),
   };
 }
 
@@ -147,6 +157,56 @@ export interface BroadcastUrlParts {
   token: string;
   transparent?: boolean;
   audio?: boolean;
+  source?: BroadcastSource;
+}
+
+export type BroadcastCopyVariant =
+  | "camera"
+  | "camera-audio"
+  | "screen"
+  | "screen-audio";
+
+export interface BroadcastCopyVariantConfig {
+  source: Exclude<BroadcastSource, "auto">;
+  allowAudio: boolean;
+  audio: boolean;
+  label: string;
+}
+
+/** The one-to-one mapping from the owner menu to mint and URL settings. */
+export function broadcastCopyVariantConfig(
+  variant: BroadcastCopyVariant,
+): BroadcastCopyVariantConfig {
+  switch (variant) {
+    case "camera":
+      return {
+        source: "camera",
+        allowAudio: false,
+        audio: false,
+        label: "Camera",
+      };
+    case "camera-audio":
+      return {
+        source: "camera",
+        allowAudio: true,
+        audio: true,
+        label: "Camera with audio",
+      };
+    case "screen":
+      return {
+        source: "screen",
+        allowAudio: false,
+        audio: false,
+        label: "Screen",
+      };
+    case "screen-audio":
+      return {
+        source: "screen",
+        allowAudio: true,
+        audio: true,
+        label: "Screen with audio",
+      };
+  }
 }
 
 /**
@@ -159,6 +219,9 @@ export interface BroadcastUrlParts {
  */
 export function buildBroadcastUrl(parts: BroadcastUrlParts): string {
   const query = new URLSearchParams({ token: parts.token });
+  if (parts.source === "camera" || parts.source === "screen") {
+    query.set("source", parts.source);
+  }
   if (parts.transparent) query.set("bg", "transparent");
   if (parts.audio) query.set("audio", "1");
   const path = [
@@ -200,6 +263,85 @@ export function livekitIdentityForMember(
   return `${username}_${participantId}`;
 }
 
+export type BroadcastViewerCount = number | null | undefined;
+
+/** Human-readable count for the consent surfaces; null means unknown. */
+export function broadcastViewerCountLabel(
+  viewerCount: BroadcastViewerCount,
+): string | null {
+  if (viewerCount == null) return null;
+  return `${viewerCount} viewer${viewerCount === 1 ? "" : "s"}`;
+}
+
+export function broadcastBadgeTitle(
+  name: string,
+  viewerCount: BroadcastViewerCount,
+): string {
+  const count = broadcastViewerCountLabel(viewerCount);
+  return `${name} is being broadcast to an external feed right now${count ? ` — ${count}` : ""}`;
+}
+
+export function broadcastMenuHeader(
+  name: string,
+  viewerCount: BroadcastViewerCount,
+): string {
+  const count = broadcastViewerCountLabel(viewerCount);
+  return `Broadcast ${name}${count ? ` · ${count}` : ""}`;
+}
+
+export const BROADCAST_MULTI_VIEWER_WARNING =
+  "One of these links has more than one viewer. Revoke it if that is not you.";
+
+/**
+ * The leak warning. Takes the most viewers on any SINGLE link, not a total:
+ * one viewer on a camera link plus one on a screen link is the expected shape.
+ */
+export function broadcastViewerWarning(
+  maxViewersPerLink: BroadcastViewerCount,
+): string | null {
+  return maxViewersPerLink != null && maxViewersPerLink >= 2
+    ? BROADCAST_MULTI_VIEWER_WARNING
+    : null;
+}
+
+/** Viewers of ONE participant across every live link minted for them. */
+export interface BroadcastViewerSummary {
+  /** How many live links this participant has. */
+  links: number;
+  /** Viewers across all of those links; null when any link's count is unknown. */
+  total: number | null;
+  /** The most viewers on any single link; null when any link's count is unknown. */
+  maxPerLink: number | null;
+}
+
+/**
+ * One participant can have several live links at once (a camera link and a
+ * screen link, say), and each is its own `/broadcast/active` row. The badge
+ * wants the TOTAL; the leak warning wants the most on any SINGLE link.
+ * An unknown count on any link makes both numbers unknown, never a guess.
+ */
+export function summarizeBroadcastViewers(
+  rows: readonly {
+    participant_identity: string;
+    viewer_count?: number | null;
+  }[],
+  identity: string | null | undefined,
+): BroadcastViewerSummary | null {
+  if (!identity) return null;
+  const mine = rows.filter((row) => row.participant_identity === identity);
+  if (mine.length === 0) return null;
+  const counts = mine.map((row) => row.viewer_count);
+  if (counts.some((count) => count == null)) {
+    return { links: mine.length, total: null, maxPerLink: null };
+  }
+  const known = counts as number[];
+  return {
+    links: mine.length,
+    total: known.reduce((sum, count) => sum + count, 0),
+    maxPerLink: Math.max(...known),
+  };
+}
+
 /** The shape of a LiveKit TrackPublication this module needs. Structural on
  * purpose: local and remote publications both satisfy it, and so does a test. */
 export interface BroadcastPublicationLike {
@@ -219,6 +361,26 @@ interface PickOptions {
    * SUBSCRIBE to (nothing is subscribed yet); true when deciding what to ATTACH.
    */
   requireTrack?: boolean;
+  /** Optional object-form source for callers that also need `requireTrack`. */
+  source?: BroadcastSource;
+}
+
+type PickSourceArg = BroadcastSource | PickOptions;
+
+function resolvePickOptions(
+  sourceOrOptions: PickSourceArg | undefined,
+  options: PickOptions | undefined,
+): { source: BroadcastSource; options?: PickOptions } {
+  if (typeof sourceOrOptions === "string") {
+    return {
+      source: sourceOrOptions,
+      options,
+    };
+  }
+  return {
+    source: normalizeBroadcastSource(sourceOrOptions?.source),
+    options: sourceOrOptions,
+  };
 }
 
 function live<T extends BroadcastPublicationLike>(
@@ -247,8 +409,19 @@ function live<T extends BroadcastPublicationLike>(
  */
 export function pickBroadcastVideoPublication<
   T extends BroadcastPublicationLike,
->(pubs: readonly T[], opts?: PickOptions): T | null {
-  const candidates = live(pubs, "video", opts);
+>(
+  pubs: readonly T[],
+  sourceOrOptions: PickSourceArg = "auto",
+  options?: PickOptions,
+): T | null {
+  const resolved = resolvePickOptions(sourceOrOptions, options);
+  const candidates = live(pubs, "video", resolved.options);
+  if (resolved.source === "camera") {
+    return candidates.find((p) => p.source === "camera") ?? null;
+  }
+  if (resolved.source === "screen") {
+    return candidates.find((p) => p.source === "screen_share") ?? null;
+  }
   return (
     candidates.find((p) => p.source === "camera") ??
     candidates.find((p) => p.source === "screen_share") ??
@@ -258,16 +431,29 @@ export function pickBroadcastVideoPublication<
 
 /**
  * The ONE audio publication a broadcast feed plays, when audio was BOTH minted
- * (`allow_audio`) and requested (`?audio=1`). Microphone first, then whatever
- * else is live (a screen share's audio).
+ * (`allow_audio`) and requested (`?audio=1`). Auto preserves today's
+ * microphone-first fallback; camera is microphone-only; screen prefers the
+ * screen share's audio and falls back to the microphone.
  */
 export function pickBroadcastAudioPublication<
   T extends BroadcastPublicationLike,
->(pubs: readonly T[], opts?: PickOptions): T | null {
-  const candidates = live(pubs, "audio", opts);
-  return (
-    candidates.find((p) => p.source === "microphone") ?? candidates[0] ?? null
-  );
+>(
+  pubs: readonly T[],
+  sourceOrOptions: PickSourceArg = "auto",
+  options?: PickOptions,
+): T | null {
+  const resolved = resolvePickOptions(sourceOrOptions, options);
+  const candidates = live(pubs, "audio", resolved.options);
+  const microphone = candidates.find((p) => p.source === "microphone");
+  if (resolved.source === "camera") return microphone ?? null;
+  if (resolved.source === "screen") {
+    return (
+      candidates.find((p) => p.source === "screen_share_audio") ??
+      microphone ??
+      null
+    );
+  }
+  return microphone ?? candidates[0] ?? null;
 }
 
 /**

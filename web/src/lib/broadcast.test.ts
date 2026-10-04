@@ -3,7 +3,12 @@ import {
   LIVEKIT_TOKEN_MAX_TTL_S,
   MIN_REFRESH_DELAY_S,
   backoffDelayMs,
+  broadcastBadgeTitle,
   buildBroadcastUrl,
+  broadcastCopyVariantConfig,
+  broadcastMenuHeader,
+  broadcastViewerWarning,
+  summarizeBroadcastViewers,
   isBroadcastTarget,
   livekitIdentityForMember,
   livekitTokenTtlSeconds,
@@ -19,10 +24,13 @@ const iso = (msFromNow: number) => new Date(NOW + msFromNow).toISOString();
 
 describe("parseBroadcastOptions", () => {
   it("reads the token, the background mode and the audio request", () => {
-    const opts = parseBroadcastOptions("?token=sbt-abc&bg=transparent&audio=1");
+    const opts = parseBroadcastOptions(
+      "?token=sbt-abc&bg=transparent&audio=1&source=screen",
+    );
     expect(opts.token).toBe("sbt-abc");
     expect(opts.transparent).toBe(true);
     expect(opts.wantAudio).toBe(true);
+    expect(opts.source).toBe("screen");
   });
 
   it("defaults to an opaque, silent feed", () => {
@@ -32,6 +40,7 @@ describe("parseBroadcastOptions", () => {
     const opts = parseBroadcastOptions("?token=sbt-abc");
     expect(opts.transparent).toBe(false);
     expect(opts.wantAudio).toBe(false);
+    expect(opts.source).toBe("auto");
   });
 
   it("treats bg=black and any other value as opaque", () => {
@@ -46,6 +55,13 @@ describe("parseBroadcastOptions", () => {
     expect(parseBroadcastOptions("?audio=0").wantAudio).toBe(false);
     expect(parseBroadcastOptions("?audio=maybe").wantAudio).toBe(false);
     expect(parseBroadcastOptions("").wantAudio).toBe(false);
+  });
+
+  it("normalizes camera and treats missing or unknown source values as auto", () => {
+    expect(parseBroadcastOptions("?source=camera").source).toBe("camera");
+    expect(parseBroadcastOptions("?source=SCREEN").source).toBe("screen");
+    expect(parseBroadcastOptions("?source=presentation").source).toBe("auto");
+    expect(parseBroadcastOptions("?").source).toBe("auto");
   });
 
   it("returns an empty token rather than undefined when none is present", () => {
@@ -162,6 +178,27 @@ describe("buildBroadcastUrl", () => {
     ).not.toMatch(/bg=|audio=/);
   });
 
+  it("emits an explicit source and omits the auto default", () => {
+    expect(
+      buildBroadcastUrl({
+        origin: "https://x.test",
+        roomId: "r",
+        participantIdentity: "p",
+        token: "t",
+        source: "screen",
+      }),
+    ).toBe("https://x.test/broadcast/r/p?token=t&source=screen");
+    expect(
+      buildBroadcastUrl({
+        origin: "https://x.test",
+        roomId: "r",
+        participantIdentity: "p",
+        token: "t",
+        source: "auto",
+      }),
+    ).toBe("https://x.test/broadcast/r/p?token=t");
+  });
+
   it("escapes identities and tokens so nothing truncates the query", () => {
     // A '?' or '#' landing in an identity would silently cut the token off
     // the pasted URL — the feed would then just 401 with no clue why.
@@ -173,6 +210,34 @@ describe("buildBroadcastUrl", () => {
     });
     expect(url).toContain("/broadcast/room%2F1/od%3Fd%20%23name?");
     expect(url).toContain("token=sbt-a%2Bb%2Fc%3D");
+  });
+});
+
+describe("broadcast copy variants", () => {
+  it("maps every menu action to the right mint permission and URL", () => {
+    const expected = {
+      camera: { source: "camera", allowAudio: false, audio: false },
+      "camera-audio": { source: "camera", allowAudio: true, audio: true },
+      screen: { source: "screen", allowAudio: false, audio: false },
+      "screen-audio": { source: "screen", allowAudio: true, audio: true },
+    } as const;
+
+    for (const variant of Object.keys(expected) as Array<keyof typeof expected>) {
+      const config = broadcastCopyVariantConfig(variant);
+      expect(config).toMatchObject(expected[variant]);
+      const url = buildBroadcastUrl({
+        origin: "https://stable.example",
+        roomId: "room",
+        participantIdentity: "person",
+        token: "sbt-once",
+        source: config.source,
+        audio: config.audio,
+      });
+      expect(new URL(url).searchParams.get("source")).toBe(config.source);
+      expect(new URL(url).searchParams.get("audio")).toBe(
+        config.audio ? "1" : null,
+      );
+    }
   });
 });
 
@@ -200,6 +265,63 @@ describe("livekitIdentityForMember", () => {
   });
 });
 
+describe("broadcast viewer consent copy", () => {
+  it("puts singular and plural counts in the broadcasting badge title", () => {
+    expect(broadcastBadgeTitle("Aaron", 1)).toContain("1 viewer");
+    expect(broadcastBadgeTitle("Aaron", 3)).toContain("3 viewers");
+    expect(broadcastMenuHeader("Aaron", 1)).toContain("1 viewer");
+    expect(broadcastMenuHeader("Aaron", 3)).toContain("3 viewers");
+  });
+
+  it("shows the multi-viewer warning only at two or more", () => {
+    expect(broadcastViewerWarning(1)).toBeNull();
+    expect(broadcastViewerWarning(2)).toBe(
+      "One of these links has more than one viewer. Revoke it if that is not you.",
+    );
+    expect(broadcastViewerWarning(3)).toBe(
+      "One of these links has more than one viewer. Revoke it if that is not you.",
+    );
+  });
+
+  it("totals a participant's viewers across links but warns per link", () => {
+    const rows = [
+      { participant_identity: "aaron_1", viewer_count: 1 },
+      { participant_identity: "aaron_1", viewer_count: 1 },
+      { participant_identity: "shafen_2", viewer_count: 3 },
+    ];
+    // A camera link and a screen link with one viewer each: two viewers in
+    // total, and NOT a leak.
+    const aaron = summarizeBroadcastViewers(rows, "aaron_1");
+    expect(aaron).toEqual({ links: 2, total: 2, maxPerLink: 1 });
+    expect(broadcastBadgeTitle("Aaron", aaron?.total)).toContain("2 viewers");
+    expect(broadcastViewerWarning(aaron?.maxPerLink)).toBeNull();
+    // Three viewers on one link is the leak shape.
+    const shafen = summarizeBroadcastViewers(rows, "shafen_2");
+    expect(shafen).toEqual({ links: 1, total: 3, maxPerLink: 3 });
+    expect(broadcastViewerWarning(shafen?.maxPerLink)).not.toBeNull();
+  });
+
+  it("reports unknown, never a guess, when any link's count is missing", () => {
+    const rows = [
+      { participant_identity: "aaron_1", viewer_count: 2 },
+      { participant_identity: "aaron_1", viewer_count: null },
+    ];
+    expect(summarizeBroadcastViewers(rows, "aaron_1")).toEqual({
+      links: 2,
+      total: null,
+      maxPerLink: null,
+    });
+    expect(summarizeBroadcastViewers(rows, "nobody")).toBeNull();
+    expect(summarizeBroadcastViewers(rows, null)).toBeNull();
+  });
+
+  it("leaves the badge and menu header count empty when unknown", () => {
+    expect(broadcastBadgeTitle("Aaron", null)).not.toContain("viewer");
+    expect(broadcastMenuHeader("Aaron", null)).toBe("Broadcast Aaron");
+    expect(broadcastViewerWarning(null)).toBeNull();
+  });
+});
+
 /* ---------------------------------------------------------------- *
  * Track selection
  * ---------------------------------------------------------------- */
@@ -221,6 +343,14 @@ describe("pickBroadcastVideoPublication", () => {
 
   it("falls back to a screen share when that is all there is", () => {
     expect(pickBroadcastVideoPublication([screen])).toBe(screen);
+  });
+
+  it("selects each requested source without crossing the source boundary", () => {
+    expect(pickBroadcastVideoPublication([screen, cam], "auto")).toBe(cam);
+    expect(pickBroadcastVideoPublication([screen, cam], "camera")).toBe(cam);
+    expect(pickBroadcastVideoPublication([screen, cam], "screen")).toBe(screen);
+    expect(pickBroadcastVideoPublication([screen], "camera")).toBeNull();
+    expect(pickBroadcastVideoPublication([cam], "screen")).toBeNull();
   });
 
   it("renders NOTHING when the camera is off", () => {
@@ -246,7 +376,7 @@ describe("pickBroadcastVideoPublication", () => {
       pickBroadcastVideoPublication([camUnsubscribed], { requireTrack: true }),
     ).toBeNull();
     expect(
-      pickBroadcastVideoPublication([camUnsubscribed, screen], {
+      pickBroadcastVideoPublication([camUnsubscribed, screen], "auto", {
         requireTrack: true,
       }),
     ).toBe(screen);
@@ -255,12 +385,21 @@ describe("pickBroadcastVideoPublication", () => {
 
 describe("pickBroadcastAudioPublication", () => {
   it("prefers the microphone, then anything else audible", () => {
-    expect(pickBroadcastAudioPublication([screenAudio, mic])).toBe(mic);
-    expect(pickBroadcastAudioPublication([screenAudio])).toBe(screenAudio);
+    expect(pickBroadcastAudioPublication([screenAudio, mic], "auto")).toBe(mic);
+    expect(pickBroadcastAudioPublication([screenAudio], "auto")).toBe(screenAudio);
+  });
+
+  it("uses only the microphone for camera and screen audio before microphone", () => {
+    expect(pickBroadcastAudioPublication([screenAudio, mic], "camera")).toBe(mic);
+    expect(pickBroadcastAudioPublication([screenAudio], "camera")).toBeNull();
+    expect(pickBroadcastAudioPublication([screenAudio, mic], "screen")).toBe(
+      screenAudio,
+    );
+    expect(pickBroadcastAudioPublication([mic], "screen")).toBe(mic);
   });
 
   it("skips a muted mic and video publications", () => {
-    expect(pickBroadcastAudioPublication([micMuted])).toBeNull();
-    expect(pickBroadcastAudioPublication([cam, screen])).toBeNull();
+    expect(pickBroadcastAudioPublication([micMuted], "auto")).toBeNull();
+    expect(pickBroadcastAudioPublication([cam, screen], "auto")).toBeNull();
   });
 });

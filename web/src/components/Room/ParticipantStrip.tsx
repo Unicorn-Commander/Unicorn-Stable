@@ -27,7 +27,10 @@ import { agentPresence } from "@/lib/agentStatus";
 import { AgentModeChip } from "./AgentModeChip";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useRoomBroadcasts } from "@/hooks/useRoomBroadcasts";
-import { livekitIdentityForMember } from "@/lib/broadcast";
+import {
+  broadcastBadgeTitle,
+  livekitIdentityForMember,
+} from "@/lib/broadcast";
 import { isGuestParticipant } from "@/lib/guest";
 import { GuestBadge } from "@/components/ui/GuestBadge";
 import { memberKindMark } from "@/lib/crew";
@@ -256,11 +259,17 @@ function MemberMenu({
  * broadcast token can be minted (and shows here) before anyone joins a call,
  * and the roster is on screen far more of the time than the video stage.
  */
-function BroadcastingBadge({ name }: { name: string }) {
+function BroadcastingBadge({
+  name,
+  viewerCount,
+}: {
+  name: string;
+  viewerCount?: number | null;
+}) {
   return (
     <span
       className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-rose-500/90 px-1.5 py-0.5 text-[9px] font-semibold text-white"
-      title={`${name} is being broadcast to an external feed right now`}
+      title={broadcastBadgeTitle(name, viewerCount)}
     >
       <span aria-hidden="true" className="text-[7px] leading-none">
         ●
@@ -278,6 +287,7 @@ function HumanMemberRow({
   favorite,
   onToggleFavorite,
   broadcasting,
+  viewerCount,
 }: {
   member: RoomMember;
   online: boolean;
@@ -286,6 +296,7 @@ function HumanMemberRow({
   favorite: boolean;
   onToggleFavorite: (participantId: string) => void;
   broadcasting: boolean;
+  viewerCount?: number | null;
 }) {
   const participantId =
     member.participant_id || member.user_id || member.id || "";
@@ -318,7 +329,12 @@ function HumanMemberRow({
           read this room's whole history and may be on camera in it, so whoever
           is looking at the roster gets told, plainly, in the list itself. */}
       {isGuestParticipant(member.participant_type) && <GuestBadge />}
-      {broadcasting && <BroadcastingBadge name={member.display_name} />}
+      {broadcasting && (
+        <BroadcastingBadge
+          name={member.display_name}
+          viewerCount={viewerCount}
+        />
+      )}
       {member.is_muted && (
         <span title="Muted — can't post">
           <MicOff className="h-3 w-3 shrink-0 text-rose-400/70" />
@@ -496,14 +512,16 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
   // Consent surface: who currently has a live broadcast feed. The roster knows
   // members, /broadcast/active answers in LiveKit identities, so rebuild the
   // server's "<username>_<participant id>" to line the two up.
-  const { isBroadcasting } = useRoomBroadcasts(roomId);
-  const memberIsBroadcasting = (member: RoomMember) =>
-    isBroadcasting(
-      livekitIdentityForMember(
-        member.username,
-        member.participant_id || member.user_id,
-      ),
+  const { isBroadcasting, viewerCountFor } = useRoomBroadcasts(roomId);
+  const memberBroadcastIdentity = (member: RoomMember) =>
+    livekitIdentityForMember(
+      member.username,
+      member.participant_id || member.user_id,
     );
+  const memberIsBroadcasting = (member: RoomMember) =>
+    isBroadcasting(memberBroadcastIdentity(member));
+  const memberViewerCount = (member: RoomMember) =>
+    viewerCountFor(memberBroadcastIdentity(member));
 
   // The caller's own membership row (server-flagged is_self) decides whether to
   // show moderation controls at all. Only owners/admins moderate.
@@ -860,6 +878,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 )}
                 onToggleFavorite={(id) => void toggleFavorite(id)}
                 broadcasting={memberIsBroadcasting(member)}
+                viewerCount={memberViewerCount(member)}
               />
             ))}
           </ul>
@@ -884,6 +903,7 @@ export function ParticipantStrip({ roomId }: ParticipantStripProps) {
                 )}
                 onToggleFavorite={(id) => void toggleFavorite(id)}
                 broadcasting={memberIsBroadcasting(member)}
+                viewerCount={memberViewerCount(member)}
               />
             ))}
           </ul>

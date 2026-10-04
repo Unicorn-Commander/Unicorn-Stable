@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ActiveBroadcast } from "@/services/api";
+import { summarizeBroadcastViewers } from "@/lib/broadcast";
 
 /** How often the consent surface refreshes. */
 const BROADCAST_POLL_MS = 20_000;
@@ -51,10 +52,31 @@ export function useRoomBroadcasts(roomId: string | null | undefined) {
     [identities],
   );
 
+  /** Viewers across EVERY live link for this identity (null = unknown). */
+  const viewerCountFor = useCallback(
+    (identity: string | null | undefined) =>
+      summarizeBroadcastViewers(broadcasting, identity)?.total,
+    [broadcasting],
+  );
+
+  /** The most viewers on any ONE of this identity's links: the leak signal. */
+  const maxViewersPerLinkFor = useCallback(
+    (identity: string | null | undefined) =>
+      summarizeBroadcastViewers(broadcasting, identity)?.maxPerLink,
+    [broadcasting],
+  );
+
   /** Pull the list forward — call after minting or revoking. */
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["room-broadcasts", roomId] });
   }, [qc, roomId]);
 
-  return { broadcasting, identities, isBroadcasting, refresh };
+  return {
+    broadcasting,
+    identities,
+    isBroadcasting,
+    viewerCountFor,
+    maxViewersPerLinkFor,
+    refresh,
+  };
 }

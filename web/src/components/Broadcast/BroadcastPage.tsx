@@ -19,7 +19,7 @@ import {
 import { BroadcastLowerThird } from "@/components/Room/LowerThird";
 
 /**
- * /broadcast/:roomId/:participantIdentity?token=…&bg=…&audio=…
+ * /broadcast/:roomId/:participantIdentity?token=…&source=…&bg=…&audio=…
  *
  * ONE participant's camera, full-bleed, with zero app UI — a URL an OBS browser
  * source can point at. It replaces screen-scraping Stable's `window.open`
@@ -106,14 +106,11 @@ interface BroadcastSession {
    * `generation` counter, and it is the ONLY thing that decides whether a
    * session's events may touch the DOM.
    *
-   * MEASURED BUG this exists to fix: a re-mint reuses the same LiveKit identity
-   * (the server derives it from the token id), so connecting the replacement
-   * EVICTS the old session — mid-`connect()`, i.e. before any "the new one is
-   * live now" flag could be set. The old session's Disconnected handler then
-   * read itself as still current, blanked the feed and scheduled a recovery
-   * that minted yet another token. End-to-end against a real LiveKit that was
-   * 18 joins in 35 seconds instead of 4, with a black frame at every one.
-   * Bumping `generation` at the TOP of each cycle closes the window entirely.
+   * A re-mint gets a new LiveKit identity under the token prefix, so the old
+   * and replacement sessions may overlap while `connect()` completes. The
+   * generation gate still matters: an older session's events must not reclaim
+   * the DOM after a newer cycle owns it. Bumping `generation` at the TOP of
+   * each cycle closes that window entirely.
    */
   gen: number;
 }
@@ -212,8 +209,8 @@ export function BroadcastPage() {
     /**
      * The latest cycle. Bumped BEFORE anything a cycle does, so the instant a
      * refresh starts, every older session is superseded and its events — very
-     * much including the DUPLICATE_IDENTITY eviction our own reconnect causes —
-     * become no-ops.
+     * much including a disconnect or late event from our own reconnect — become
+     * no-ops.
      */
     let generation = 0;
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -248,9 +245,13 @@ export function BroadcastPage() {
           participant.identity,
           session.join.participant_identity,
         );
-        const wantVideo = isTarget ? pickBroadcastVideoPublication(pubs) : null;
+        const wantVideo = isTarget
+          ? pickBroadcastVideoPublication(pubs, options.source)
+          : null;
         const wantAudio =
-          isTarget && playAudio ? pickBroadcastAudioPublication(pubs) : null;
+          isTarget && playAudio
+            ? pickBroadcastAudioPublication(pubs, options.source)
+            : null;
         for (const pub of pubs) {
           const wanted = pub === wantVideo || pub === wantAudio;
           if (pub.isSubscribed !== wanted) pub.setSubscribed(wanted);
@@ -268,7 +269,8 @@ export function BroadcastPage() {
     function sync(session: BroadcastSession) {
       // Generation, not `current`: a session being replaced is superseded from
       // the moment its successor's cycle STARTS, which is before the successor
-      // exists. Gating on `current` left the evicted session briefly in charge.
+      // exists. Gating on `current` could leave the superseded session briefly
+      // in charge.
       if (disposed || session.gen !== generation) return;
       const target = Array.from(session.room.remoteParticipants.values()).find(
         (p) =>
@@ -277,14 +279,18 @@ export function BroadcastPage() {
       const pubs = target
         ? (Array.from(target.trackPublications.values()) as RemoteTrackPublication[])
         : [];
-      const videoPub = pickBroadcastVideoPublication(pubs, {
-        requireTrack: true,
-      });
+      const videoPub = pickBroadcastVideoPublication(
+        pubs,
+        options.source,
+        { requireTrack: true },
+      );
       const audioPub = shouldPlayAudio(
         session.join.allow_audio,
         options.wantAudio,
       )
-        ? pickBroadcastAudioPublication(pubs, { requireTrack: true })
+        ? pickBroadcastAudioPublication(pubs, options.source, {
+            requireTrack: true,
+          })
         : null;
       setVideoTrack(videoPub?.track ?? null);
       setAudioTrack(audioPub?.track ?? null);
@@ -297,9 +303,8 @@ export function BroadcastPage() {
 
     /**
      * Capture the frame currently on screen so the re-mint reconnect doesn't
-     * blink. Necessary because the LiveKit identity is per-TOKEN: the new
-     * connection EVICTS the old one (DUPLICATE_IDENTITY) the instant it lands,
-     * so the two feeds can never overlap.
+     * blink. The new per-join LiveKit identity can overlap the old connection,
+     * but the still keeps the source transition visually seamless.
      */
     function freezeCurrentFrame() {
       const el = videoElRef.current;
@@ -402,10 +407,9 @@ export function BroadcastPage() {
         .on(RoomEvent.Reconnected, resubscribe)
         .on(RoomEvent.ActiveSpeakersChanged, () => syncSpeaker(session))
         .on(RoomEvent.Disconnected, () => {
-          // A SUPERSEDED session was evicted by our own re-mint (the LiveKit
-          // identity is per broadcast token, so the replacement kicks its
-          // predecessor off) — expected, and emphatically not a reason to blank
-          // a live feed or to mint yet another token.
+          // A SUPERSEDED session may disconnect during our re-mint — expected,
+          // and emphatically not a reason to blank a live feed or mint yet
+          // another token.
           if (disposed || session.gen !== generation) return;
           goDark();
           scheduleRetry(false);
@@ -427,7 +431,7 @@ export function BroadcastPage() {
     async function cycle(isRefresh: boolean) {
       if (disposed) return;
       // Claim ownership FIRST. Everything older is superseded from here on,
-      // including the eviction this cycle is about to cause.
+      // including any disconnect that the replacement cycle may cause.
       const gen = ++generation;
       clearTimers();
 
@@ -470,7 +474,8 @@ export function BroadcastPage() {
       applySubscriptions(session);
       sync(session);
 
-      // The new connection already evicted this one; just release the handles.
+      // The new connection now has its own identity; release the old handles
+      // after the replacement has claimed the DOM.
       if (previous && previous !== session) void previous.room.disconnect();
 
       // THE ANTI-DEATH TIMER. Without it the show ends at the LiveKit token's
@@ -493,7 +498,7 @@ export function BroadcastPage() {
       roomRef.current = null;
       if (dead) void dead.room.disconnect();
     };
-  }, [options.token, options.wantAudio, clearFreeze]);
+  }, [options.source, options.token, options.wantAudio, clearFreeze]);
 
   /* Autoplay. An OBS browser source is allowed to start audio unprompted; a
      normal tab is not, and the FIRST gesture unblocks it. Deliberately no UI —
