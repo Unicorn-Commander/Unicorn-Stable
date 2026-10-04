@@ -339,7 +339,7 @@ export interface RecordingRowFacts {
   started_by_name?: string | null;
   storage_url?: string | null;
   mo_session_id?: string | null;
-  session_url?: string | null;
+  mo_session_url?: string | null;
 }
 
 export function mayDownloadRecording(opts: {
@@ -361,7 +361,7 @@ export function httpUrl(value: string | null | undefined): string | null {
 
 /** A real Meeting-Ops link when the row carries one. An id alone is not a URL. */
 export function meetingOpsHref(row: RecordingRowFacts): string | null {
-  return httpUrl(row.session_url) ?? httpUrl(row.mo_session_id);
+  return httpUrl(row.mo_session_url);
 }
 
 export function formatRecordingWhen(iso: string | null | undefined): string {

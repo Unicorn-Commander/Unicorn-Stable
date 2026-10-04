@@ -41,15 +41,27 @@ export const recordingHandlers = [
         duration_seconds: 724,
         storage_url: "https://storage.example/rec-1.ogg",
         mo_session_id: "mo-1",
-        session_url: "https://meetingops.example/sessions/mo-1",
+        mo_session_url: "https://meetingops.example/sessions/mo-1",
         retention_until: null,
         legal_hold: false,
       },
     ]),
   ),
 
+  http.get("*/api/v1/rooms/:roomId/recordings/:recordingId/download", () =>
+    HttpResponse.json({
+      url: "https://signed.example/rec-1.ogg?X-Amz-Signature=test",
+      expires_in_seconds: 900,
+      kind: "audio",
+      content_type: "audio/ogg",
+    }),
+  ),
+
   http.patch("*/api/v1/rooms/:roomId", async ({ request }) => {
-    const body = (await request.json()) as { recording_policy?: unknown };
+    const body = (await request.json()) as {
+      recording_policy?: unknown;
+      recording_kind?: unknown;
+    };
     if (
       body.recording_policy !== undefined &&
       body.recording_policy !== "off" &&
@@ -58,9 +70,17 @@ export const recordingHandlers = [
     ) {
       return HttpResponse.json({ detail: "Invalid recording_policy" }, { status: 422 });
     }
+    if (
+      body.recording_kind !== undefined &&
+      body.recording_kind !== "audio" &&
+      body.recording_kind !== "composite" &&
+      body.recording_kind !== "track"
+    ) {
+      return HttpResponse.json({ detail: "Invalid recording_kind" }, { status: 422 });
+    }
     return HttpResponse.json({
       recording_policy: body.recording_policy ?? "off",
-      recording_kind: "audio",
+      recording_kind: body.recording_kind ?? "audio",
     });
   }),
 ];

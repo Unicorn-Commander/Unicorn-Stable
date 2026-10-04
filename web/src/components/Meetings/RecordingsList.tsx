@@ -1,33 +1,62 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
-import { api, type RecordingListItem, type RoomMember } from "@/services/api";
+import {
+  api,
+  type ApiError,
+  type RecordingListItem,
+  type RoomMember,
+} from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
   formatRecordingDuration,
   formatRecordingWhen,
-  httpUrl,
   mayDownloadRecording,
   meetingOpsHref,
   recordingKindLabel,
   recordingWho,
 } from "@/lib/recording";
+import { openSignedDownload } from "@/lib/openSignedDownload";
 
 /**
  * The fact of a recording, for every member. The file and the Meeting-Ops
  * session open only when this person is allowed to have them.
  */
 export function RecordingsList({
+  roomId,
   rows,
   members,
   myRole,
   myParticipantId,
 }: {
+  roomId: string;
   rows: RecordingListItem[];
   members: readonly RoomMember[] | null | undefined;
   myRole: string | null;
   myParticipantId: string | null;
 }) {
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  async function download(row: RecordingListItem) {
+    if (downloadingId) return;
+    setDownloadingId(row.id);
+    try {
+      await openSignedDownload(() => api.downloadRecording(roomId, row.id), window);
+    } catch (error) {
+      const err = error as ApiError;
+      useAppStore.getState().pushToast({
+        title: "Couldn't download recording",
+        body:
+          (typeof err?.detail === "string" && err.detail) ||
+          err?.message ||
+          "Request failed",
+        kind: "error",
+      });
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
   if (rows.length === 0) {
     return (
       <p className="px-1 text-[11px] leading-relaxed text-slate-500" data-testid="recordings-list">
@@ -42,7 +71,6 @@ export function RecordingsList({
         const when = formatRecordingWhen(row.started_at);
         const duration = formatRecordingDuration(row.duration_seconds);
         const href = meetingOpsHref(row);
-        const file = httpUrl(row.storage_url);
         const canDownload = mayDownloadRecording({
           myRole,
           myParticipantId,
@@ -78,10 +106,16 @@ export function RecordingsList({
               ) : row.mo_session_id ? (
                 <span className="text-slate-500">In Meeting-Ops</span>
               ) : null}
-              {canDownload && file ? (
-                <a href={file} className="font-medium text-slate-300 hover:underline" download>
-                  Download
-                </a>
+              {canDownload ? (
+                <button
+                  type="button"
+                  className="font-medium text-slate-300 hover:underline disabled:cursor-wait disabled:opacity-60"
+                  disabled={downloadingId !== null}
+                  aria-busy={downloadingId === row.id}
+                  onClick={() => void download(row)}
+                >
+                  {downloadingId === row.id ? "Downloading…" : "Download"}
+                </button>
               ) : null}
             </div>
           </li>
@@ -137,6 +171,7 @@ export function MeetingsRecordings({
         </p>
       ) : (
         <RecordingsList
+          roomId={roomId}
           rows={rows}
           members={members}
           myRole={myRole}

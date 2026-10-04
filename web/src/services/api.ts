@@ -829,7 +829,7 @@ export interface RecordingListItem {
   storage_url?: string | null;
   mo_session_id?: string | null;
   /** Present when L8s (or a proxy) knows the Meeting-Ops session URL. */
-  session_url?: string | null;
+  mo_session_url?: string | null;
   retention_until?: string | null;
   legal_hold?: boolean;
 }
@@ -1361,6 +1361,13 @@ class StableApiClient {
     return this.request("PATCH", `/api/v1/rooms/${roomId}`, { recording_policy });
   }
 
+  async updateRecordingKind(
+    roomId: string,
+    recording_kind: "audio" | "composite",
+  ): Promise<{ recording_kind: "audio" | "composite" }> {
+    return this.request("PATCH", `/api/v1/rooms/${roomId}`, { recording_kind });
+  }
+
   /** Entitled + policy allows. 403 when the room is off or the role is missing; 409 until L8s wires egress. */
   async startRecording(
     roomId: string,
@@ -1379,6 +1386,21 @@ class StableApiClient {
       `/api/v1/rooms/${roomId}/recordings`,
     );
     return Array.isArray(rows) ? rows : [];
+  }
+
+  async downloadRecording(
+    roomId: string,
+    recordingId: string,
+  ): Promise<{
+    url: string;
+    expires_in_seconds: number;
+    kind: string;
+    content_type?: string | null;
+  }> {
+    return this.request(
+      "GET",
+      `/api/v1/rooms/${roomId}/recordings/${recordingId}/download`,
+    );
   }
 
   /** Archive a room (server-side soft-delete via is_archived). Returns the updated room. */

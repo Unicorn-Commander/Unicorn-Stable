@@ -44,13 +44,26 @@ describe("recording API (MSW until L8s)", () => {
       kind: "audio",
       started_by_name: "Aaron",
       duration_seconds: 724,
-      session_url: "https://meetingops.example/sessions/mo-1",
+      mo_session_url: "https://meetingops.example/sessions/mo-1",
+    });
+  });
+
+  it("gets a short-lived download URL for a recording", async () => {
+    await expect(api.downloadRecording("room-1", "rec-1")).resolves.toMatchObject({
+      url: "https://signed.example/rec-1.ogg?X-Amz-Signature=test",
+      expires_in_seconds: 900,
     });
   });
 
   it("patches the room recording policy", async () => {
     await expect(api.updateRecordingPolicy("room-1", "on_request")).resolves.toMatchObject({
       recording_policy: "on_request",
+    });
+  });
+
+  it("patches the room recording kind and returns the selected kind", async () => {
+    await expect(api.updateRecordingKind("room-1", "composite")).resolves.toMatchObject({
+      recording_kind: "composite",
     });
   });
 
