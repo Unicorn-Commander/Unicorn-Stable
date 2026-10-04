@@ -496,9 +496,15 @@ def _principal_history_from(principal: Any) -> datetime | None:
 
     None is full history: the JWT path sets it explicitly, and a NULL
     ``history_from`` column means the same. A caller double that predates
-    the field is treated as NULL, never as 'hide everything'."""
+    the field is treated as NULL, never as 'hide everything'. A value that
+    is present and not a datetime is not full history: the caller reads
+    nothing older than now."""
     value = getattr(principal, "history_from", None)
-    return value if isinstance(value, datetime) else None
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.now(timezone.utc)
 
 
 def _operator_of(request: Request) -> str | None:

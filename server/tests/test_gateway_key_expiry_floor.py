@@ -138,6 +138,40 @@ async def test_null_expiry_passes():
     assert principal.history_from is None
 
 
+def _assert_bad_lifetime_log(warn, row_id, field: str) -> None:
+    assert warn.call_count == 1
+    args, kwargs = warn.call_args
+    assert args == ("gateway_key_bad_lifetime",)
+    assert kwargs == {
+        "key_id_prefix": str(row_id)[:8],
+        "field": field,
+    }
+    blob = repr(warn.call_args)
+    assert TOKEN not in blob
+    assert hash_key(TOKEN) not in blob
+    assert field in blob
+
+
+async def test_bad_expires_at_is_401():
+    row_id = uuid.uuid4()
+    with patch("app.auth.gateway_auth.logger.warning") as warn:
+        with pytest.raises(GatewayAuthError) as ctx:
+            await _verify(_row(id=row_id, expires_at="not-a-datetime"))
+    assert ctx.value.status_code == 401
+    assert ctx.value.detail == "Invalid or revoked gateway key"
+    _assert_bad_lifetime_log(warn, row_id, "expires_at")
+
+
+async def test_bad_history_from_is_401():
+    row_id = uuid.uuid4()
+    with patch("app.auth.gateway_auth.logger.warning") as warn:
+        with pytest.raises(GatewayAuthError) as ctx:
+            await _verify(_row(id=row_id, history_from={"from": "mint"}))
+    assert ctx.value.status_code == 401
+    assert ctx.value.detail == "Invalid or revoked gateway key"
+    _assert_bad_lifetime_log(warn, row_id, "history_from")
+
+
 async def test_revoked_still_wins_and_keeps_the_old_message():
     with pytest.raises(GatewayAuthError) as ctx:
         await _verify(
@@ -527,6 +561,48 @@ async def test_floor_is_passed_on_messages_and_on_context():
             limit=50,
         )
     assert svc.get_messages.await_args.kwargs["not_before"] is None
+
+
+async def _read_floor(principal):
+    room = SimpleNamespace(
+        id=uuid.uuid4(), room_type=None, parent_room_id=None, metadata_=None
+    )
+    svc = SimpleNamespace(
+        get_messages=AsyncMock(return_value={"messages": [], "cursor": None, "has_more": False})
+    )
+    with (
+        patch.object(G, "_gateway_rate_limit", new=AsyncMock()),
+        patch.object(G, "_resolve_room", new=AsyncMock(return_value=room)),
+        patch.object(G, "_enforce_scope", new=AsyncMock()),
+        patch.object(G, "_seat_agent_mode", new=AsyncMock(return_value="answers_all")),
+        patch.object(G, "_find_seat_participant", new=AsyncMock(return_value=None)),
+        patch.object(G, "_classify_for_seat", new=AsyncMock(return_value=FACTS)),
+        patch.object(G, "touch_bridge_seen", new=AsyncMock()),
+        patch.object(G, "clear_relay_pending", new=AsyncMock()),
+        patch.object(G, "_build_message_service", return_value=svc),
+    ):
+        await G.gateway_get_messages(
+            room="hub",
+            principal=principal,
+            db=AsyncMock(),
+            livekit=AsyncMock(),
+            redis=AsyncMock(),
+            cursor=None,
+            limit=50,
+        )
+    return svc.get_messages.await_args.kwargs["not_before"]
+
+
+async def test_a_non_datetime_floor_reads_nothing_older_than_now():
+    started = datetime.now(timezone.utc)
+    floor = await _read_floor(
+        SimpleNamespace(agent_id="persephone", history_from="not-a-datetime")
+    )
+    assert isinstance(floor, datetime)
+    assert floor >= started
+    # Missing attribute and None stay full history.
+    assert await _read_floor(SimpleNamespace(agent_id="persephone")) is None
+    assert await _read_floor(SimpleNamespace(agent_id="persephone", history_from=None)) is None
 
 
 async def test_a_pre_floor_cursor_yields_an_empty_page():
