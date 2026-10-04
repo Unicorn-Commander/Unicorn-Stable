@@ -30,8 +30,10 @@ granularity. The page renders only the named participant, but that is a
 client-side choice, NOT an enforcement boundary — a holder running their own
 client could subscribe to other publishers in that room. Never describe a
 broadcast link as "only shows that one person"; it is a room-scoped view
-credential. Per-participant enforcement would require LiveKit's server-side
-subscription-permission API.
+credential. LiveKit has no server-side control for this (1.10 through 1.13):
+only a track's own publisher can restrict who subscribes to it, and the server
+cannot subscribe a participant that lacks ``can_subscribe``. See
+docs/design/broadcast-links-v2-2026-10-04.md.
 
 CONSENT
 -------
