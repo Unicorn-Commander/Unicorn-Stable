@@ -32,7 +32,7 @@ import { api } from "@/services/api";
 import { noteThreadOnParent, threadStubFromEvent, type ThreadCreatedEvent } from "@/lib/conversation";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { usePresenterStore } from "@/stores/presenterStore";
-import { allowedRoomIds } from "@/lib/presenterMode";
+import { presenterRule } from "@/lib/presenterMode";
 
 /**
  * Hard ceilings for a server-asserted agent state held locally.
@@ -68,11 +68,20 @@ export function useGlobalNotifications() {
   const rooms = useAppStore((s) => s.rooms);
   const queryClient = useQueryClient();
 
-  function isHiddenWhilePresenting(roomId: string): boolean {
+  function maskTransientRoom(roomId: string): boolean {
     const app = useAppStore.getState();
     const presenter = usePresenterStore.getState();
     if (!presenter.enabled) return false;
-    return !allowedRoomIds(app.rooms, app.activeRoomId, presenter.safeRoomIds).has(roomId);
+    // Safe rooms may show their names in lists, but message previews and
+    // transient notification detail remain off-screen. Only the open room and
+    // its own threads retain the full room experience (P5).
+    const rule = presenterRule({
+      enabled: true,
+      openRoomId: app.activeRoomId,
+      safeRoomIds: presenter.safeRoomIds,
+      rooms: app.rooms,
+    });
+    return !rule.isOpenRoom(roomId);
   }
 
   // Ask for OS-notification permission ONCE, on the user's first click after
@@ -174,7 +183,7 @@ export function useGlobalNotifications() {
       }
       if (loadPrefs().inAppToasts && shouldNotify) {
         const room = rooms.find((r) => r.id === event.room_id);
-        const masked = isHiddenWhilePresenting(event.room_id);
+        const masked = maskTransientRoom(event.room_id);
         const face = masked ? null : resolveIdentity(event.message);
         pushToast({
           title: masked
@@ -197,7 +206,7 @@ export function useGlobalNotifications() {
         Notification.permission === "granted"
       ) {
         const room = rooms.find((r) => r.id === event.room_id);
-        const masked = isHiddenWhilePresenting(event.room_id);
+        const masked = maskTransientRoom(event.room_id);
         const face = masked ? null : resolveIdentity(event.message);
         try {
           void navigator.serviceWorker.ready.then((registration) =>
@@ -252,7 +261,7 @@ export function useGlobalNotifications() {
         // one call start cannot announce twice.
         playCue("notify");
         if (loadPrefs().inAppToasts) {
-          const masked = isHiddenWhilePresenting(event.room_id);
+          const masked = maskTransientRoom(event.room_id);
           const face = resolveIdentity({
             id: event.caller.id,
             display_name: event.caller.display_name,
@@ -366,7 +375,7 @@ export function useGlobalNotifications() {
         if (loadPrefs().inAppToasts) {
           const who = e.by?.display_name || "Someone";
           const room = e.room_name || "a room";
-          const masked = isHiddenWhilePresenting(e.room_id);
+          const masked = maskTransientRoom(e.room_id);
           pushToast({
             title: masked ? "Incoming call" : `${who} started a call`,
             body: masked

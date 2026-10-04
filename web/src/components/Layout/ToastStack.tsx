@@ -110,7 +110,9 @@ export function ToastStack() {
     >
       <AnimatePresence initial={false}>
         {toasts.slice(-5).map((t) => {
-          const masked = enabled && !!t.roomId && !rule.isRoomAllowed(t.roomId);
+          // Safe rooms are list-visible, but their message detail is still a
+          // preview/snippet. Only the open room and its threads stay rich.
+          const masked = enabled && !!t.roomId && !rule.isOpenRoom(t.roomId);
           const title = masked ? "New message" : t.title;
           const body = masked ? undefined : t.body;
           const icon = masked ? null : t.icon;

@@ -105,6 +105,7 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
       pushToast({
         title: decision === "approved" ? "Request approved" : "Request rejected",
         body: `${approval.message.sender_name} · ${approval.room_name}`,
+        roomId: approval.room_id,
       });
     } catch (error) {
       // A different owner/admin may have decided while this panel was open.

@@ -106,6 +106,11 @@ describe("presenter display leak seam", () => {
       body: "ZZPREVIEW_ALLOWED_A",
       roomId: "open",
     });
+    useAppStore.getState().pushToast({
+      title: "ZZPERSON_ALLOWED_B in ZZROOM_ALLOWED_B",
+      body: "ZZPREVIEW_SAFE_B",
+      roomId: "safe",
+    });
     renderToast();
     await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
     const html = document.body.innerHTML;
@@ -114,7 +119,8 @@ describe("presenter display leak seam", () => {
     expect(html).not.toContain("ZZPREVIEW_PRIVATE_1");
     expect(html).toContain("ZZROOM_ALLOWED_A");
     expect(html).toContain("ZZPREVIEW_ALLOWED_A");
-    expect(screen.getByText("New message")).toBeTruthy();
+    expect(html).not.toContain("ZZPREVIEW_SAFE_B");
+    expect(screen.getAllByText("New message")).toHaveLength(2);
   });
 
   it("leaves the same hidden-room toast visible when presenter mode is off", async () => {
