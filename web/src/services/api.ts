@@ -1361,6 +1361,13 @@ class StableApiClient {
     return this.request("PATCH", `/api/v1/rooms/${roomId}`, { recording_policy });
   }
 
+  async updateRecordingKind(
+    roomId: string,
+    recording_kind: "audio" | "composite",
+  ): Promise<{ recording_kind: "audio" | "composite" }> {
+    return this.request("PATCH", `/api/v1/rooms/${roomId}`, { recording_kind });
+  }
+
   /** Entitled + policy allows. 403 when the room is off or the role is missing; 409 until L8s wires egress. */
   async startRecording(
     roomId: string,

@@ -61,6 +61,12 @@ describe("recording API (MSW until L8s)", () => {
     });
   });
 
+  it("patches the room recording kind and returns the selected kind", async () => {
+    await expect(api.updateRecordingKind("room-1", "composite")).resolves.toMatchObject({
+      recording_kind: "composite",
+    });
+  });
+
   it("surfaces a refusal", async () => {
     server.use(
       http.post("*/api/v1/rooms/:roomId/recording/start", () =>

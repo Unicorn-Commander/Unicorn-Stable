@@ -58,7 +58,10 @@ export const recordingHandlers = [
   ),
 
   http.patch("*/api/v1/rooms/:roomId", async ({ request }) => {
-    const body = (await request.json()) as { recording_policy?: unknown };
+    const body = (await request.json()) as {
+      recording_policy?: unknown;
+      recording_kind?: unknown;
+    };
     if (
       body.recording_policy !== undefined &&
       body.recording_policy !== "off" &&
@@ -67,9 +70,17 @@ export const recordingHandlers = [
     ) {
       return HttpResponse.json({ detail: "Invalid recording_policy" }, { status: 422 });
     }
+    if (
+      body.recording_kind !== undefined &&
+      body.recording_kind !== "audio" &&
+      body.recording_kind !== "composite" &&
+      body.recording_kind !== "track"
+    ) {
+      return HttpResponse.json({ detail: "Invalid recording_kind" }, { status: 422 });
+    }
     return HttpResponse.json({
       recording_policy: body.recording_policy ?? "off",
-      recording_kind: "audio",
+      recording_kind: body.recording_kind ?? "audio",
     });
   }),
 ];

@@ -1,13 +1,23 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Circle, X } from "lucide-react";
+import { Check, Circle, Loader2, X } from "lucide-react";
 import { api, type ApiError, type Room } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { canEditVoiceSettings } from "@/lib/voiceSettings";
 import type { RecordingPolicy } from "@/lib/recording";
 import { RecordingPolicyForm } from "./RecordingPolicyForm";
+
+type RecordingChoice = "audio" | "composite";
+
+const RECORDING_FORMAT_OPTIONS: readonly {
+  value: RecordingChoice;
+  label: string;
+}[] = [
+  { value: "audio", label: "Audio" },
+  { value: "composite", label: "Video" },
+];
 
 /**
  * Room recording policy. Owner/admin only — the same ladder as voice settings,
@@ -36,10 +46,12 @@ export function RecordingSettingsModal({
   });
   const canEdit = canEditVoiceSettings(members);
   const value: RecordingPolicy = room?.recording_policy ?? "off";
+  const kind: RecordingChoice = room?.recording_kind === "composite" ? "composite" : "audio";
   const [saving, setSaving] = useState<RecordingPolicy | null>(null);
+  const [savingKind, setSavingKind] = useState<RecordingChoice | null>(null);
 
   async function choose(next: RecordingPolicy) {
-    if (!canEdit || saving || next === value) return;
+    if (!canEdit || saving || savingKind || next === value) return;
     setSaving(next);
     const previous = qc.getQueryData<Room>(["room", roomId]);
     const previousPolicy =
@@ -82,6 +94,47 @@ export function RecordingSettingsModal({
       });
     } finally {
       setSaving(null);
+    }
+  }
+
+  async function chooseKind(next: RecordingChoice) {
+    if (!canEdit || saving || savingKind || next === kind) return;
+    setSavingKind(next);
+    const previous = qc.getQueryData<Room>(["room", roomId]);
+    const previousKind =
+      useAppStore.getState().rooms.find((room) => room.id === roomId)?.recording_kind ?? kind;
+    const patch = (recording_kind: RecordingChoice) => {
+      qc.setQueryData<Room>(["room", roomId], (prev) =>
+        prev ? { ...prev, recording_kind } : prev,
+      );
+      useAppStore.getState().updateRoom(roomId, { recording_kind });
+    };
+    patch(next);
+    try {
+      const result = await api.updateRecordingKind(roomId, next);
+      const saved: RecordingChoice = result.recording_kind === "composite" ? "composite" : "audio";
+      patch(saved);
+      void qc.invalidateQueries({ queryKey: ["room", roomId] });
+      useAppStore.getState().pushToast({
+        title: "Recording format saved",
+        body: saved === "composite" ? "Video recording is selected." : "Audio recording is selected.",
+        kind: "success",
+      });
+    } catch (error) {
+      if (previous) qc.setQueryData(["room", roomId], previous);
+      else void qc.invalidateQueries({ queryKey: ["room", roomId] });
+      useAppStore.getState().updateRoom(roomId, { recording_kind: previousKind });
+      const err = error as ApiError;
+      useAppStore.getState().pushToast({
+        title: "Couldn't change recording format",
+        body:
+          (typeof err?.detail === "string" && err.detail) ||
+          err?.message ||
+          "Request failed",
+        kind: "error",
+      });
+    } finally {
+      setSavingKind(null);
     }
   }
 
@@ -132,9 +185,53 @@ export function RecordingSettingsModal({
           <RecordingPolicyForm
             value={value}
             saving={saving}
-            disabled={!canEdit}
+            disabled={!canEdit || savingKind !== null}
             onChange={(next) => void choose(next)}
           />
+          {value !== "off" && (
+            <div className="mt-5 border-t border-line pt-4" data-testid="recording-format">
+              <p className="text-sm font-medium text-slate-100">What to record</p>
+              <div
+                role="radiogroup"
+                aria-label="Recording format"
+                className="mt-2 flex gap-2"
+              >
+                {RECORDING_FORMAT_OPTIONS.map((option) => {
+                  const active = kind === option.value;
+                  const busy = savingKind === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      disabled={!canEdit || saving !== null || savingKind !== null}
+                      onClick={() => void chooseKind(option.value)}
+                      className={
+                        "focus-ring flex flex-1 items-center justify-center gap-2 rounded-lg border p-2.5 text-sm font-medium transition-colors " +
+                        (active
+                          ? "border-rose-500/50 bg-rose-500/10 text-slate-100"
+                          : "border-line bg-surface-2/50 text-slate-300") +
+                        (!canEdit || saving !== null || savingKind !== null
+                          ? " cursor-default opacity-60"
+                          : " hover:border-line-strong")
+                      }
+                    >
+                      {option.label}
+                      {busy ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                      ) : (
+                        active && <Check className="h-3.5 w-3.5 text-rose-300" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                Video uses more server capacity, and at most two video recordings run at once on an instance.
+              </p>
+            </div>
+          )}
         </div>
       </motion.div>
     </motion.div>
