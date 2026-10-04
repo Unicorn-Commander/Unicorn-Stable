@@ -55,10 +55,17 @@ at *room* granularity. A determined token holder running their own client could
 subscribe to other participants in that room, not just the named one. The UI
 renders only the target, but that is a client-side choice, not an enforcement
 boundary. Mitigations: short TTL, per-participant scoping recorded and
-auditable, and revocation. If per-participant enforcement is later required,
-LiveKit's server-side subscription-permission API is the mechanism. **Do not
-describe a broadcast link as "only shows that one person" — it is a
-room-scoped view credential.**
+auditable, and revocation. **Do not describe a broadcast link as "only shows
+that one person" — it is a room-scoped view credential.**
+
+*Correction, 2026-10-04:* an earlier version of this section named "LiveKit's
+server-side subscription-permission API" as the way to enforce one participant
+per link. No such server-side control exists in LiveKit 1.10 through 1.13: the
+server cannot limit which publishers a subscribe-capable participant picks, and
+cannot subscribe a participant that lacks `canSubscribe`. Only a track's own
+publisher can restrict its subscribers. The options that follow from that, and
+the proposed network lock, viewer cap and standing links, are in
+`docs/design/broadcast-links-v2-2026-10-04.md` (proposed, not built).
 
 **Consent — a deliberate design addition.** `hidden=True` means the OBS feed
 does not pollute the call UI with a ghost participant, which is the whole point.
