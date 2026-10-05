@@ -8,6 +8,7 @@ import {
   type RoomMember,
 } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
+import { usePresenterStore } from "@/stores/presenterStore";
 import {
   formatRecordingDuration,
   formatRecordingWhen,
@@ -36,6 +37,7 @@ export function RecordingsList({
   myParticipantId: string | null;
 }) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
 
   async function download(row: RecordingListItem) {
     if (downloadingId) return;
@@ -94,7 +96,7 @@ export function RecordingsList({
               {who}
             </p>
             <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
-              {href ? (
+              {href && !presenterEnabled ? (
                 <a
                   href={href}
                   target="_blank"
@@ -104,7 +106,11 @@ export function RecordingsList({
                   Open in Meeting-Ops
                 </a>
               ) : row.mo_session_id ? (
-                <span className="text-slate-500">In Meeting-Ops</span>
+                <span className="text-slate-500">
+                  {presenterEnabled ? "External transcript service" : "In Meeting-Ops"}
+                </span>
+              ) : href && presenterEnabled ? (
+                <span className="text-slate-500">External transcript link hidden</span>
               ) : null}
               {canDownload ? (
                 <button

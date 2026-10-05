@@ -50,6 +50,14 @@ import {
 import { useFederationStore } from "@/stores/federationStore";
 import { useThemeStore } from "@/stores/themeStore";
 import { useFacePrefStore } from "@/stores/facePrefStore";
+import { usePresenterStore } from "@/stores/presenterStore";
+import {
+  filterRooms,
+  isPresenterShortcut,
+  presenterQueryValue,
+  presenterRule,
+  removePresenterQuery,
+} from "@/lib/presenterMode";
 import { Identity, PhotoNudge, useSelfFace, useShowPhotoNudge } from "@/components/ui/Identity";
 import { identityFor } from "@/lib/identity";
 import { StableMark } from "@/components/StableMark";
@@ -155,19 +163,40 @@ let keyboardWalk: KeyboardWalk | null = null;
 
 function sidebarRoomOrder(queryClient: QueryClient): string[][] {
   const {
-    rooms,
+    rooms: allRooms,
     activeRoomId,
     unreadCounts,
     mentionUnreads,
     agents,
     currentParticipantId,
     currentUser,
+    participants,
   } = useAppStore.getState();
   const { categories, people, folders, collapsed } =
     useChannelCategories.getState();
   const { searchQuery, expandedPeople, focusMode, crewShowAll } =
     useSidebarUi.getState();
   const scope = useFederationStore.getState().activeInstanceId;
+  const cached = readCrewCache(queryClient, scope);
+  const presenterPrefs = usePresenterStore.getState();
+  const rule = presenterRule({
+    enabled: presenterPrefs.enabled,
+    openRoomId: activeRoomId,
+    safeRoomIds: presenterPrefs.safeRoomIds,
+    rooms: allRooms,
+    participantsByRoom: participants,
+    currentUser: currentUser
+      ? {
+          id: currentUser.id,
+          displayName: currentUser.displayName,
+          username: currentUser.username,
+          email: currentUser.email,
+        }
+      : null,
+    crew: cached.crew,
+    agents,
+  });
+  const rooms = filterRooms(allRooms, rule);
   const isUnread = (room: { id: string; unread_count?: number }) => {
     const raw = unreadCounts[room.id] ?? room.unread_count ?? 0;
     return badgeCount(room.id, raw) > 0 || mentionUnreads[room.id] === true;
@@ -182,10 +211,15 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
     // The fold RoomList applies (Home lists Crew and Conversations too).
     const isDesktop = window.matchMedia("(min-width: 768px)").matches;
     const destination = listDestination(routed, isDesktop);
-    const cached = readCrewCache(queryClient, scope);
-    const crewSection = (page: boolean) =>
-      buildCrewSection({
-        crew: cached.crew,
+    const crewSection = (page: boolean) => {
+      const built = buildCrewSection({
+        crew: presenterPrefs.enabled
+          ? cached.crew.filter(
+              (member) =>
+                member.group === "own_seat" ||
+                rule.isIdentityAllowed(member.agent_id, member.display_name),
+            )
+          : cached.crew,
         crewAnswered: cached.crewAnswered,
         selfIds: [currentParticipantId, currentUser?.id],
         rooms,
@@ -196,6 +230,19 @@ function sidebarRoomOrder(queryClient: QueryClient): string[][] {
         roomUnread: (room) =>
           badgeCount(room.id, unreadCounts[room.id] ?? room.unread_count ?? 0),
       });
+      if (!presenterPrefs.enabled) return built;
+      return {
+        ...built,
+        groups: built.groups.map((group) => ({
+          ...group,
+          rows: group.rows.map((row) =>
+            row.roomId && !rule.isRoomAllowed(row.roomId)
+              ? { ...row, roomId: null }
+              : row,
+          ),
+        })),
+      };
+    };
     if (destination === "crew") return flattenCrewRows(crewSection(true));
     if (destination === "calls") {
       return flattenSidebarOrder(
@@ -316,10 +363,26 @@ export function AppShell() {
   // the same reason: restored here, not in the settings modal, so it applies
   // to the first call tile of the session, not the first visit to Settings.
   const scopeFacePref = useFacePrefStore((s) => s.scopeToUser);
+  const scopePresenter = usePresenterStore((s) => s.scopeToUser);
   useEffect(() => {
     scopePalette(currentUser?.id ?? null);
     scopeFacePref(currentUser?.id ?? null);
-  }, [currentUser?.id, scopePalette, scopeFacePref]);
+    scopePresenter(currentUser?.id ?? null);
+  }, [currentUser?.id, scopePalette, scopeFacePref, scopePresenter]);
+  // URL control is a one-shot convenience for a presenter who is already
+  // looking at the app. Remove it without navigation so the browser URL does
+  // not become a persistent presentation switch.
+  const setPresenterEnabled = usePresenterStore((s) => s.setEnabled);
+  useEffect(() => {
+    const value = presenterQueryValue(location.search);
+    if (value === null) return;
+    setPresenterEnabled(value);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      removePresenterQuery(window.location.pathname, location.search, window.location.hash),
+    );
+  }, [location.search, setPresenterEnabled]);
   // Identity hue for the signed-in resident (rings the drawer-footer avatar).
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const selfFace = useSelfFace();
@@ -501,6 +564,20 @@ export function AppShell() {
       if ((e.metaKey || e.ctrlKey) && e.key === "/") {
         e.preventDefault();
         useAppStore.getState().toggleCheatsheet();
+        return;
+      }
+      // Cmd/Ctrl+Alt+P is not used by Stable and is not a browser-reserved
+      // command. It is intentionally ignored while editing text.
+      if (isPresenterShortcut({
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        key: e.key,
+        editable: isEditableTarget(e.target),
+      })) {
+        e.preventDefault();
+        usePresenterStore.getState().toggleEnabled();
         return;
       }
       // Bare "?" (Shift+/) opens the same cheatsheet — the near-universal

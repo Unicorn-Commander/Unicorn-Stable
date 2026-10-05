@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { BookOpen, FileText } from "lucide-react";
 import { api, type HomeSummary } from "@/services/api";
 import { useFederationStore } from "@/stores/federationStore";
+import { usePresenterStore } from "@/stores/presenterStore";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 import { rowTime } from "./HomeRow";
 
 /**
@@ -24,6 +26,7 @@ export function KnowledgeRecents({
   transcripts?: HomeSummary["recent_transcripts"];
 }) {
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
 
   // Own key (no react-query consumer existed for collections — the KB panel
   // reads them through knowledgeStore, which fetches on open, so there is no
@@ -44,6 +47,7 @@ export function KnowledgeRecents({
         .slice(0, 5),
     [collections],
   );
+  const visibleRecent = presenterEnabled ? [] : recent;
 
   return (
     <section aria-labelledby="home-knowledge-heading">
@@ -57,7 +61,7 @@ export function KnowledgeRecents({
             Knowledge
           </h2>
         </div>
-        {recent.length > 0 && (
+        {visibleRecent.length > 0 && (
           <button
             type="button"
             onClick={() => onOpenKnowledge()}
@@ -68,13 +72,20 @@ export function KnowledgeRecents({
         )}
       </div>
 
-      {recent.length === 0 ? (
+      {visibleRecent.length === 0 ? (
+        presenterEnabled ? (
+          <PresenterHiddenLine
+            count={collections.length + artifacts.length + transcripts.length}
+            className="px-0"
+          />
+        ) : (
         <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
           No knowledge bases yet — create one to ground your agents.
         </p>
+        )
       ) : (
         <ul className="card overflow-hidden">
-          {recent.map((collection, i) => (
+          {visibleRecent.map((collection, i) => (
             <li key={collection.id}>
               <button
                 type="button"
@@ -100,7 +111,7 @@ export function KnowledgeRecents({
           ))}
         </ul>
       )}
-      {(artifacts.length > 0 || transcripts.length > 0) && (
+      {!presenterEnabled && (artifacts.length > 0 || transcripts.length > 0) && (
         <ul className="card mt-3 overflow-hidden">
           {artifacts.map((item) => (
             <li

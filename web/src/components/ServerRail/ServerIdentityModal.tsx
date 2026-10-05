@@ -6,6 +6,7 @@ import { getInstanceToken } from "@/services/auth";
 import { DESCRIPTION_MAX, NAME_MAX, displayName, instanceHost } from "@/lib/instances";
 import { isServerAdmin } from "./admin";
 import { ServerLogo } from "./ServerLogo";
+import { usePresenterStore } from "@/stores/presenterStore";
 
 /**
  * Admin editor for THIS server's rail identity — logo, name, description,
@@ -27,6 +28,7 @@ export function ServerIdentityModal() {
   const activeId = useFederationStore((state) => state.activeInstanceId);
   const metaByInstance = useFederationStore((state) => state.metaByInstance);
   const refreshInstanceMeta = useFederationStore((state) => state.refreshInstanceMeta);
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
 
   const instance = instances.find((item) => item.id === activeId) ?? null;
   const meta = activeId ? metaByInstance[activeId] : undefined;
@@ -58,7 +60,7 @@ export function ServerIdentityModal() {
     return () => document.removeEventListener("keydown", onKey);
   }, [open, setOpen]);
 
-  if (!open || !instance || !isServerAdmin()) return null;
+  if (presenterEnabled || !open || !instance || !isServerAdmin()) return null;
 
   async function send(path: string, init: RequestInit): Promise<boolean> {
     if (!instance || !activeId) return false;

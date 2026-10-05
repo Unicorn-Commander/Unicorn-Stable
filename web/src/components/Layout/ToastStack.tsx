@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Bell, X } from "lucide-react";
 import { safeAvatarSrc, type SafeAvatarSrc } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
 const AUTO_DISMISS_MS = 6000;
 // Errors linger: 6s is a success-chirp budget, not enough to read a failure
@@ -79,6 +80,7 @@ export function ToastStack() {
   const toasts = useAppStore((s) => s.toasts);
   const dismissToast = useAppStore((s) => s.dismissToast);
   const navigate = useNavigate();
+  const { enabled, rule } = usePresentedRooms();
 
   useEffect(() => {
     if (toasts.length === 0) return;
@@ -108,7 +110,13 @@ export function ToastStack() {
     >
       <AnimatePresence initial={false}>
         {toasts.slice(-5).map((t) => {
-          const tone = toneFor(kindFor(t.title, t.kind));
+          // Safe rooms are list-visible, but their message detail is still a
+          // preview/snippet. Only the open room and its threads stay rich.
+          const masked = enabled && !!t.roomId && !rule.isOpenRoom(t.roomId);
+          const title = masked ? "New message" : t.title;
+          const body = masked ? undefined : t.body;
+          const icon = masked ? null : t.icon;
+          const tone = toneFor(kindFor(title, t.kind));
           return (
             <motion.div
               key={t.id}
@@ -130,18 +138,30 @@ export function ToastStack() {
                 }}
                 className="flex w-full items-start gap-2.5 p-3 pl-4 pr-9 text-left transition-colors hover:bg-white/[0.04]"
               >
-                <ToastIcon icon={t.icon} chip={tone.chip} iconClass={tone.icon} />
+                <ToastIcon icon={icon} chip={tone.chip} iconClass={tone.icon} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">
-                    {t.title}
+                    {title}
                   </p>
-                  {t.body && (
+                  {body && (
                     <p className="mt-0.5 line-clamp-2 text-xs text-slate-400">
-                      {t.body}
+                      {body}
                     </p>
                   )}
                 </div>
               </button>
+              {t.action && !masked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    t.action?.onClick();
+                    dismissToast(t.id);
+                  }}
+                  className="focus-ring absolute bottom-2.5 right-3 rounded-md px-2 py-1 text-xs font-semibold text-stable-cyan hover:bg-stable-cyan/10"
+                >
+                  {t.action.label}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => dismissToast(t.id)}

@@ -9,6 +9,7 @@ import { beginThread, openAgentHub } from "@/lib/beginThread";
 import { crewPresence, opensHub, SEAT_IN_ITS_ROOMS } from "@/lib/crew";
 import { useCrew } from "@/hooks/useCrew";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 import { useFederationStore } from "@/stores/federationStore";
 import { badgeCount } from "@/utils/unreadModel";
 import { onMutedChange } from "@/utils/mute";
@@ -51,7 +52,7 @@ export function seatRowMask(edges: { left: boolean; right: boolean }): CSSProper
 /** Your seats, as the rail counts them: every one, its hub and its badge. */
 export function useOwnSeatRows(): CrewRow[] {
   const { crew, crewAnswered } = useCrew();
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms } = usePresentedRooms();
   const agents = useAppStore((s) => s.agents);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const currentParticipantId = useAppStore((s) => s.currentParticipantId);
@@ -87,7 +88,15 @@ export function useOwnSeatRows(): CrewRow[] {
  * unread. Tap opens the hub; ⋯ is New conversation and Settings — a seat
  * takes no calls until voice ships, so there is no Call.
  */
-export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: readonly CrewCard[] }) {
+export function SeatCards({
+  rows,
+  cards,
+  presenterEnabled = false,
+}: {
+  rows: readonly CrewRow[];
+  cards: readonly CrewCard[];
+  presenterEnabled?: boolean;
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const scope = useFederationStore((s) => s.activeInstanceId);
@@ -253,20 +262,20 @@ export function SeatCards({ rows, cards }: { rows: readonly CrewRow[]; cards: re
                       </span>
                     )}
                   </span>
-                  {facts.task && (
+                  {!presenterEnabled && facts.task && (
                     <span className="flex items-baseline gap-1 text-xs" data-testid="seat-card-task">
                       <span className="min-w-0 truncate text-stable-cyan">{facts.task}</span>
                       {since && <span className="shrink-0 text-slate-500">· {since}</span>}
                     </span>
                   )}
-                  {facts.lastLine && (
+                  {!presenterEnabled && facts.lastLine && (
                     <span className="block truncate text-xs text-slate-400" data-testid="seat-card-line">
                       {previewText(facts.lastLine)}
                     </span>
                   )}
-                  {!facts.task && !facts.lastLine && (
+                  {presenterEnabled || (!facts.task && !facts.lastLine) ? (
                     <span className="block truncate text-xs text-slate-500">{presence.label}</span>
-                  )}
+                  ) : null}
                 </span>
               </button>
               {/* Under a finger the ⋮ is 44px: it sits in the corner so its

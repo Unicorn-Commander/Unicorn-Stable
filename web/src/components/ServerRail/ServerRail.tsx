@@ -9,6 +9,7 @@ import {
   PanelLeftOpen,
   Plus,
   Search,
+  Server,
   Users,
   Video,
   type LucideIcon,
@@ -39,6 +40,8 @@ import {
 } from "@/stores/navStore";
 import { useAppStore } from "@/stores/appStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { usePresenterStore } from "@/stores/presenterStore";
 
 /**
  * The server rail: which Stables you can reach, which one you're in, and what
@@ -94,7 +97,7 @@ function DestinationRail({ mobile = false }: { mobile?: boolean }) {
   const setActiveView = useNavStore((s) => s.setActiveView);
   const v2Destination = useNavStore((s) => s.v2Destination);
   const setV2Destination = useNavStore((s) => s.setV2Destination);
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms } = usePresentedRooms();
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -303,6 +306,7 @@ function FederationRail({ mobile = false }: { mobile?: boolean }) {
   const setRailHidden = useFederationStore((state) => state.setRailHidden);
   const switcherOpen = useFederationStore((state) => state.switcherOpen);
   const setSwitcherOpen = useFederationStore((state) => state.setSwitcherOpen);
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
 
   const multi = instances.length > 1;
 
@@ -365,10 +369,12 @@ function FederationRail({ mobile = false }: { mobile?: boolean }) {
           </Tooltip>
           {mobile && (
             <span className="text-xs text-slate-500">
-              {displayName(
-                instances.find((instance) => instance.id === activeId) ?? instances[0]!,
-                metaByInstance[activeId ?? ""],
-              )}
+              {presenterEnabled
+                ? "Workspace"
+                : displayName(
+                    instances.find((instance) => instance.id === activeId) ?? instances[0]!,
+                    metaByInstance[activeId ?? ""],
+                  )}
             </span>
           )}
         </div>
@@ -398,13 +404,19 @@ function FederationRail({ mobile = false }: { mobile?: boolean }) {
             <div key={instance.id} className="group relative shrink-0">
               <button
                 type="button"
-                aria-label={`Switch to ${name} (${host})${unread > 0 ? ` — ${unread} unread` : ""}`}
+                aria-label={`${presenterEnabled ? "Switch workspace" : `Switch to ${name} (${host})`}${unread > 0 ? ` — ${unread} unread` : ""}`}
                 aria-current={active ? "true" : undefined}
                 disabled={switching}
                 onClick={() => void switchInstance(instance.id)}
                 className="focus-ring relative flex items-center justify-center rounded-2xl transition-all hover:rounded-xl disabled:opacity-60"
               >
-                <ServerLogo instance={instance} size={mobile ? "md" : "lg"} active={active} />
+                {presenterEnabled ? (
+                  <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-700/50">
+                    <Server className="h-5 w-5 text-slate-300" aria-hidden="true" />
+                  </span>
+                ) : (
+                  <ServerLogo instance={instance} size={mobile ? "md" : "lg"} active={active} />
+                )}
                 {active && !mobile && (
                   <span className="absolute -left-3 top-1/2 h-8 w-1 -translate-y-1/2 rounded-r bg-white" />
                 )}
@@ -418,7 +430,7 @@ function FederationRail({ mobile = false }: { mobile?: boolean }) {
               {/* Hover/focus card. Progressive enhancement only: every word in
                   here is also reachable by tapping Search, because a touch
                   device has no hover and must not lose the description. */}
-              {!mobile && (
+              {!mobile && !presenterEnabled && (
                 <div
                   role="presentation"
                   className="pointer-events-none absolute left-full top-0 z-50 ml-2 hidden w-60 rounded-xl border border-line bg-slate-900/95 p-3 opacity-0 shadow-pop backdrop-blur transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 md:block"

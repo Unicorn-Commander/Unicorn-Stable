@@ -15,6 +15,8 @@ import { resolveIdentity } from "@/lib/identity";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 interface ActivityCenterProps {
   onClose: () => void;
@@ -42,6 +44,7 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
   const pushToast = useAppStore((state) => state.pushToast);
   const updateMessage = useAppStore((state) => state.updateMessage);
   const activeInstanceId = useFederationStore((state) => state.activeInstanceId);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const [deciding, setDeciding] = useState<{
     id: string;
     decision: "approved" | "rejected";
@@ -59,6 +62,17 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
     refetchInterval: 15_000,
   });
   const approvals = data?.items ?? [];
+  const visibleApprovals = presenterEnabled
+    ? approvals.filter(
+        (approval) =>
+          rule.isRoomAllowed(approval.room_id) &&
+          rule.isNameAllowed(approval.room_name) &&
+          rule.isIdentityAllowed(
+            approval.message.sender_id,
+            approval.message.sender_name,
+          ),
+      )
+    : approvals;
   const activityType = tab === "approvals" ? null : EVENT_TYPE[tab];
   const activityQuery = useQuery({
     queryKey: ["activity-events", activityType, activeInstanceId],
@@ -66,6 +80,15 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
     enabled: activityType !== null,
     refetchInterval: 15_000,
   });
+  const activityEvents = activityQuery.data ?? [];
+  const visibleActivityEvents = presenterEnabled
+    ? activityEvents.filter(
+        (event) =>
+          rule.isRoomAllowed(event.room_id) &&
+          rule.isNameAllowed(event.room_name) &&
+          (!event.actor_name || rule.isNameAllowed(event.actor_name)),
+      )
+    : activityEvents;
 
   async function decide(
     approval: PendingApproval,
@@ -82,6 +105,7 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
       pushToast({
         title: decision === "approved" ? "Request approved" : "Request rejected",
         body: `${approval.message.sender_name} · ${approval.room_name}`,
+        roomId: approval.room_id,
       });
     } catch (error) {
       // A different owner/admin may have decided while this panel was open.
@@ -154,20 +178,27 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
           {tab === "approvals" && !isLoading && (
             <span
               className="ml-auto rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-slate-300 tabular-nums"
-              aria-label={`${approvals.length}${data?.has_more ? " or more" : ""} pending approvals`}
+              aria-label={`${visibleApprovals.length}${data?.has_more ? " or more" : ""} pending approvals`}
             >
-              {approvals.length}
+              {visibleApprovals.length}
               {data?.has_more ? "+" : ""}
             </span>
           )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
+          <PresenterHiddenLine
+            count={
+              presenterEnabled
+                ? approvals.length - visibleApprovals.length + activityEvents.length - visibleActivityEvents.length
+                : 0
+            }
+          />
           {tab !== "approvals" ? (
             activityQuery.isLoading ? <div className="flex h-40 items-center justify-center text-sm text-slate-400">Loading activity…</div> :
             activityQuery.isError ? <div className="flex flex-col items-center px-6 py-14 text-center"><XCircle className="mb-3 h-7 w-7 text-rose-300" /><h3 className="text-sm font-semibold text-slate-100">Activity unavailable</h3><button type="button" onClick={() => void activityQuery.refetch()} className="focus-ring mt-4 rounded-xl border border-line px-4 py-2 text-sm text-slate-200">Try again</button></div> :
-            (activityQuery.data?.length ?? 0) === 0 ? <div className="flex flex-col items-center px-6 py-16 text-center"><Check className="mb-3 h-7 w-7 text-emerald-300" /><h3 className="text-sm font-semibold text-slate-100">You’re all caught up</h3></div> :
-            <ul className="divide-y divide-line">{activityQuery.data?.map((event) => <li key={event.id}><button type="button" onClick={() => { onClose(); navigate(`/c/${event.room_id}?message=${event.message_id}`); }} className="focus-ring w-full px-4 py-3 text-left hover:bg-white/[0.04]"><p className="text-xs text-slate-400">{event.actor_name ?? "Someone"} · {event.room_name} · {new Date(event.created_at).toLocaleString()}</p><p className="mt-1 line-clamp-2 text-sm text-slate-200">{event.content || (event.metadata?.emoji as string | undefined) || "Activity"}</p></button></li>)}</ul>
+            visibleActivityEvents.length === 0 ? <div className="flex flex-col items-center px-6 py-16 text-center"><Check className="mb-3 h-7 w-7 text-emerald-300" /><h3 className="text-sm font-semibold text-slate-100">You’re all caught up</h3></div> :
+            <ul className="divide-y divide-line">{visibleActivityEvents.map((event) => <li key={event.id}><button type="button" onClick={() => { onClose(); navigate(`/c/${event.room_id}?message=${event.message_id}`); }} className="focus-ring w-full px-4 py-3 text-left hover:bg-white/[0.04]"><p className="text-xs text-slate-400">{event.actor_name ?? "Someone"} · {event.room_name} · {new Date(event.created_at).toLocaleString()}</p><p className="mt-1 line-clamp-2 text-sm text-slate-200">{!presenterEnabled || rule.isOpenRoom(event.room_id) ? event.content || (event.metadata?.emoji as string | undefined) || "Activity" : "Activity"}</p></button></li>)}</ul>
           ) : isLoading ? (
             <div
               className="flex h-40 items-center justify-center text-sm text-slate-400"
@@ -192,7 +223,7 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
                 Try again
               </button>
             </div>
-          ) : approvals.length === 0 ? (
+          ) : visibleApprovals.length === 0 ? (
             <div className="flex flex-col items-center px-6 py-16 text-center">
               <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-400/20 bg-emerald-400/10">
                 <Check className="h-6 w-6 text-emerald-300" />
@@ -206,9 +237,10 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
             </div>
           ) : (
             <ul className="divide-y divide-line" aria-label="Pending approvals">
-              {approvals.map((approval) => {
+              {visibleApprovals.map((approval) => {
                 const message = approval.message;
                 const busy = deciding?.id === message.id;
+                const showMessage = !presenterEnabled || rule.isOpenRoom(approval.room_id);
                 return (
                   <li key={message.id} className="p-4">
                     <article className="rounded-2xl border border-line bg-white/[0.025] p-3.5">
@@ -224,9 +256,11 @@ export function ActivityCenter({ onClose, initialTab = "approvals" }: ActivityCe
                           </p>
                         </div>
                       </div>
-                      <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">
-                        {message.content}
-                      </p>
+                      {showMessage && (
+                        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">
+                          {message.content}
+                        </p>
+                      )}
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         <button
                           type="button"

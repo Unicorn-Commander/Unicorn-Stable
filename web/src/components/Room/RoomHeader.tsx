@@ -5,6 +5,7 @@ import {
   Bell,
   BellOff,
   Bookmark,
+  Check,
   ChevronDown,
   Circle,
   Cpu,
@@ -48,6 +49,8 @@ import { isMuted, onMutedChange, toggleMute } from "@/utils/mute";
 import { PhotoNudge, useShowPhotoNudge } from "@/components/ui/Identity";
 import { BrigadeAgentPicker } from "./BrigadeAgentPicker";
 import { ModelSwitcher } from "./ModelSwitcher";
+import { PresenterBadge } from "@/components/Layout/PresenterBadge";
+import { usePresenterStore } from "@/stores/presenterStore";
 
 /**
  * The room's only bar. 44px: identity on the left, then Call, Record,
@@ -183,6 +186,8 @@ export function RoomHeader({
   const toggleCheatsheet = useAppStore((s) => s.toggleCheatsheet);
   const showPhotoNudge = useShowPhotoNudge();
   const currentUser = useAppStore((s) => s.currentUser);
+  const safeToShow = usePresenterStore((s) => s.safeRoomIds.includes(roomId));
+  const setSafeRoom = usePresenterStore((s) => s.setSafeRoom);
   const roomPanels = useRoomPanels(roomId);
   const { startCall } = useDirectCall();
 
@@ -313,6 +318,7 @@ export function RoomHeader({
         data-testid="room-header-actions"
         className="relative flex shrink-0 items-center gap-0.5"
       >
+        <PresenterBadge className="mr-1 inline-flex" />
         {/* Desktop only: on a phone the 44px row is full and the FAB inside
             a hub already starts a thread, so the entry sits in More there. */}
         {onNewConversation && (
@@ -511,6 +517,15 @@ export function RoomHeader({
                 {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                 {muted ? "Unmute room" : "Mute room"}
               </MenuItem>
+              <MenuItem
+                role="menuitemcheckbox"
+                checked={safeToShow}
+                onClick={() => run(() => setSafeRoom(roomId, !safeToShow))}
+                data-testid="safe-presenting-room"
+              >
+                <Check className={clsx("h-4 w-4", !safeToShow && "opacity-0")} />
+                Safe to show while presenting
+              </MenuItem>
               <MenuItem onClick={() => run(onToggleMembers)} className="sm:hidden" data-testid="phone-members">
                 <Users className="h-4 w-4" />
                 {membersOpen ? "Hide members" : "Members"}
@@ -692,18 +707,23 @@ function MenuItem({
   children,
   className,
   disabled,
+  role = "menuitem",
+  checked,
   "data-testid": testId,
 }: {
   onClick: () => void;
   children: ReactNode;
   className?: string;
   disabled?: boolean;
+  role?: "menuitem" | "menuitemcheckbox";
+  checked?: boolean;
   "data-testid"?: string;
 }) {
   return (
     <button
       type="button"
-      role="menuitem"
+      role={role}
+      aria-checked={role === "menuitemcheckbox" ? checked : undefined}
       disabled={disabled}
       onClick={onClick}
       data-testid={testId}

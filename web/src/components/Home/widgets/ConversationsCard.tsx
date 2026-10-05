@@ -15,6 +15,8 @@ import {
   type UnreadMap,
 } from "@/components/Home/homeModel";
 import { HomeRow, SenderLine } from "./HomeRow";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 /**
  * W3 — one Conversations card, two tabs.
@@ -50,13 +52,19 @@ export function ConversationsCard({
   chosenTab: ConversationsTab | null;
   onChooseTab: (tab: ConversationsTab) => void;
 }) {
-  const chats = humanChatsByActivity(rooms, 12, excludeRoomIds);
-  const channels = channelsByActivity(rooms, 12, excludeRoomIds);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const visibleRooms = presenterEnabled
+    ? rooms.filter((room) => rule.isRoomAllowed(room.id))
+    : rooms;
+  const hiddenCount = presenterEnabled ? rooms.length - visibleRooms.length : 0;
+  const chats = humanChatsByActivity(visibleRooms, 12, excludeRoomIds);
+  const channels = channelsByActivity(visibleRooms, 12, excludeRoomIds);
 
   // Null until the user picks, so the DEFAULT stays live (whichever side has
   // newer top activity — it may flip once as rooms stream in) but an explicit
   // choice is never overridden.
   const tab = chosenTab ?? defaultConversationsTab(chats, channels);
+  const showPreview = (roomId: string) => !presenterEnabled || rule.isOpenRoom(roomId);
 
   const [browseOpen, setBrowseOpen] = useState(false);
   // The rooms list is empty until the first payload lands. Before that, "No
@@ -140,6 +148,7 @@ export function ConversationsCard({
           ))}
         </div>
       </div>
+      <PresenterHiddenLine count={hiddenCount} className="mb-2 px-0" />
 
       {tab === "chats" ? (
         chats.length === 0 ? (
@@ -199,8 +208,12 @@ export function ConversationsCard({
                     divider={i > 0}
                     onClick={() => onOpenRoom(room.id)}
                     line={
-                      m ? (
+                      m && showPreview(room.id) ? (
                         <SenderLine message={m} read={unread === 0} />
+                      ) : m ? (
+                        <p className="mt-0.5 truncate text-xs text-slate-500">
+                          Messages hidden while presenting
+                        </p>
                       ) : (
                         <p className="mt-0.5 truncate text-xs italic text-slate-600">
                           No messages yet
@@ -259,8 +272,12 @@ export function ConversationsCard({
                   divider={i > 0}
                   onClick={() => onOpenRoom(room.id)}
                   line={
-                    m ? (
+                    m && showPreview(room.id) ? (
                       <SenderLine message={m} read={unread === 0} />
+                    ) : m ? (
+                      <p className="mt-0.5 truncate text-xs text-slate-500">
+                        Messages hidden while presenting
+                      </p>
                     ) : (
                       <p className="mt-0.5 truncate text-xs italic text-slate-600">
                         No messages yet

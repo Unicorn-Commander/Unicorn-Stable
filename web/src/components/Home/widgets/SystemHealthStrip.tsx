@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { api, type ApiError } from "@/services/api";
 import { ws } from "@/services/websocket";
 import { useFederationStore } from "@/stores/federationStore";
+import { usePresenterStore } from "@/stores/presenterStore";
 import {
   agentsSegment,
   buildRevision,
@@ -50,6 +51,7 @@ export function useHomeHealth(
   workerLastSeenAt?: string | null,
 ): HomeHealthModel {
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
 
   // Realtime — event-driven, seeded from the live getter so a dashboard
   // mounted after the socket settled starts truthful instead of defaulting
@@ -115,9 +117,11 @@ export function useHomeHealth(
     let server: HealthSegment;
     if (health) {
       revision = buildRevision(health.services);
-      const detail = serviceEntries(health.services ?? {})
-        .map((e) => `${e.name}: ${e.state}`)
-        .join("\n");
+      const detail = presenterEnabled
+        ? "Service status hidden while presenting."
+        : serviceEntries(health.services ?? {})
+            .map((e) => `${e.name}: ${e.state}`)
+            .join("\n");
       server =
         health.status === "ready"
           ? { key: "server", label: "Server ready", tone: "ok", detail }
@@ -165,16 +169,20 @@ export function useHomeHealth(
             // Explicitly not configured — a known state, so it must not park
             // the Workspace chip on "unknown" forever (see overallTone).
             tone: "off",
-            detail: "Meeting-Ops is not configured on this instance.",
+            detail: presenterEnabled
+              ? "Transcript destination hidden while presenting."
+              : "Meeting-Ops is not configured on this instance.",
           };
     } else {
       meetings = {
         key: "meetings",
         label: "Transcripts · unknown",
         tone: "unknown",
-        detail: meetingOpsFailed
-          ? "Could not read the Meeting-Ops status."
-          : undefined,
+        detail: presenterEnabled
+          ? "Transcript destination hidden while presenting."
+          : meetingOpsFailed
+            ? "Could not read the Meeting-Ops status."
+            : undefined,
       };
     }
     segments.push(meetings);
@@ -192,6 +200,7 @@ export function useHomeHealth(
     roster,
     meetingOps,
     meetingOpsFailed,
+    presenterEnabled,
     workerLastSeenAt,
   ]);
 }
