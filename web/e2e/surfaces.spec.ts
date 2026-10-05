@@ -2553,6 +2553,83 @@ async function stubNavV3World(page: Page, options: NavV3Options = {}): Promise<N
 }
 
 test.describe("Crew-first nav (v3)", () => {
+  // Presenter mode is a display filter for sharing and filming: with it on,
+  // nothing but the open room and the signed-in user's own seats may be in the
+  // DOM. Text, attributes and the tab title are all checked, because a name in
+  // a tooltip is on camera too.
+  for (const viewport of ["mobile", "desktop"] as const) {
+    test(`presenter mode leaves only the open room and your own seats @ ${viewport}`, async ({ page }) => {
+      await page.setViewportSize(viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT);
+      await stubHomeSummary(page);
+      await stubNavV3World(page);
+      // Things this fixture world draws when the mode is off: other rooms, a
+      // direct chat, a house agent, another seat's thread preview.
+      const HIDDEN = ["war-room", "leadership", "taxsq-portal", "Nate Ellison", "Majik Mane", "Panel v2 is on the wall"];
+      const drawn = async (names: string[]) => {
+        const all = await page.evaluate(() => `${document.body.innerHTML}\n${document.title}`);
+        return names.filter((name) => all.includes(name));
+      };
+      const openList = async () => {
+        if (viewport === "desktop") await clickTestId(page, "nav-conversations");
+        else await page.getByTestId("phone-tab-bar").getByTestId("nav-conversations").click();
+      };
+
+      await test.step("off: the lists are rich", async () => {
+        await page.goto("/?present=0");
+        await waitForAppReady(page);
+        await openList();
+        await expect.poll(() => drawn(["taxsq-portal", "Nate Ellison"])).toEqual(["taxsq-portal", "Nate Ellison"]);
+        await expect(page.getByTestId("presenter-badge")).toHaveCount(0);
+      });
+
+      await test.step("on, from the address bar, with a room open", async () => {
+        await page.goto("/c/room-general?present=1");
+        await waitForAppReady(page);
+        await expect(page.getByTestId("presenter-badge").first()).toBeVisible();
+        // The parameter is consumed: the address is not a standing switch.
+        expect(new URL(page.url()).search).toBe("");
+        if (viewport === "desktop") {
+          await clickTestId(page, "nav-conversations");
+          const crew = page.getByTestId("crew-section");
+          await expect(crew).toContainText("Persephone");
+          await expect(crew.getByTestId("presenter-hidden-line")).toBeVisible();
+        }
+        await expect.poll(() => drawn(HIDDEN)).toEqual([]);
+        // The open room is untouched.
+        await expect(page.getByTestId("room-view")).toContainText("general");
+        expect(await page.title()).toContain("general");
+      });
+
+      await test.step("on Home no room is open, so the channel goes too", async () => {
+        await page.goto("/");
+        await waitForAppReady(page);
+        await expect(page.getByTestId("home-dashboard")).toBeVisible();
+        await expect(page.getByTestId("home-dashboard")).toContainText("Persephone");
+        await expect.poll(() => drawn([...HIDDEN, "Board is clear"])).toEqual([]);
+        await openList();
+        await expect.poll(() => drawn([...HIDDEN, "Hey team, the new deploy is live"])).toEqual([]);
+        await expect(page.getByTestId("presenter-hidden-line").first()).toBeVisible();
+      });
+
+      await test.step("a reload keeps hiding", async () => {
+        await page.reload();
+        await waitForAppReady(page);
+        await expect(page.getByTestId("presenter-badge").first()).toBeVisible();
+        await openList();
+        await expect.poll(() => drawn(HIDDEN)).toEqual([]);
+      });
+
+      await test.step("the badge turns it off, and the lists come back", async () => {
+        await page.goto("/");
+        await waitForAppReady(page);
+        await page.getByTestId("presenter-badge").first().click();
+        await expect(page.getByTestId("presenter-badge")).toHaveCount(0);
+        await openList();
+        await expect.poll(() => drawn(["taxsq-portal", "Nate Ellison"])).toEqual(["taxsq-portal", "Nate Ellison"]);
+      });
+    });
+  }
+
   for (const viewport of ["mobile", "desktop"] as const) {
     test(`crew, hub, new conversation @ ${viewport}`, async ({ page }, testInfo) => {
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;

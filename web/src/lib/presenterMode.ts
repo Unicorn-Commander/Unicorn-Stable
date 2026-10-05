@@ -294,10 +294,3 @@ export function messageForRoom(
 ): Message | null {
   return rule.isOpenRoom(roomId) ? message : null;
 }
-
-export function nameForNotification(
-  roomId: string | null | undefined,
-  rule: PresenterRule,
-): string {
-  return rule.isRoomAllowed(roomId) ? "New message" : "New message";
-}

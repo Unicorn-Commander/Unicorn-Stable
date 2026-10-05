@@ -162,12 +162,6 @@ describe("presenter display leak seam", () => {
     expect(document.body.innerHTML).toContain("ZZROOM_PRIVATE_1");
   });
 
-  it("keeps only the allowed room names in a display title", () => {
-    document.title = "ZZROOM_ALLOWED_A — Stable";
-    expect(document.title).toContain("ZZROOM_ALLOWED_A");
-    expect(document.title).not.toContain("ZZROOM_PRIVATE_1");
-  });
-
   it("does not show quick-switcher suggestions until typing, then filters rooms", async () => {
     renderSwitcher();
     await waitFor(() => expect(screen.getByRole("dialog", { name: "Quick switcher" })).toBeTruthy());

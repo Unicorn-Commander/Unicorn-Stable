@@ -2454,7 +2454,12 @@ export function RoomList() {
           title: `No conversations match “${q}”`,
           hint: "Try another name, or clear the search.",
         }
-      : EMPTY_COPY[conversationFilter];
+      : presenterEnabled && presenterHiddenCount > 0
+        ? {
+            title: "Nothing else to show",
+            hint: "Other conversations are hidden while presenting.",
+          }
+        : EMPTY_COPY[conversationFilter];
     const activeRoom = activeRoomId
       ? rooms.find((room) => room.id === activeRoomId)
       : undefined;

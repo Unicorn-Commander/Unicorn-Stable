@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, afterEach, vi } from "vitest";
-import { usePresenterStore, PRESENTER_PREF_KEY } from "./presenterStore";
+import {
+  usePresenterStore,
+  PRESENTER_PREF_KEY,
+  resetPresenterSessionForTests,
+} from "./presenterStore";
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -23,6 +27,7 @@ describe("presenter device preferences", () => {
       safeRoomIds: [],
       scopedUserId: null,
     });
+    resetPresenterSessionForTests();
   });
 
   afterEach(() => {
@@ -46,6 +51,39 @@ describe("presenter device preferences", () => {
     });
     expect(localStorage.getItem(`${PRESENTER_PREF_KEY}::user-b`)).toContain('"enabled":false');
     expect(localStorage.getItem(`${PRESENTER_PREF_KEY}::user-b`)).toContain('"room-b"');
+  });
+
+  it("keeps a choice made before sign-in over an older saved one", () => {
+    // Saved long ago for this person: off.
+    localStorage.setItem(`${PRESENTER_PREF_KEY}::user-a`, JSON.stringify({ enabled: false, safeRoomIds: ["room-a"] }));
+    // This page was opened with ?present=1 (or toggled on the sign-in screen).
+    usePresenterStore.getState().setEnabled(true);
+    usePresenterStore.getState().scopeToUser("user-a");
+    expect(usePresenterStore.getState()).toMatchObject({
+      enabled: true,
+      safeRoomIds: ["room-a"],
+      scopedUserId: "user-a",
+    });
+    expect(localStorage.getItem(`${PRESENTER_PREF_KEY}::user-a`)).toContain('"enabled":true');
+  });
+
+  it("loads the saved choice when nothing was chosen on this page", () => {
+    localStorage.setItem(`${PRESENTER_PREF_KEY}::user-a`, JSON.stringify({ enabled: true, safeRoomIds: [] }));
+    usePresenterStore.getState().scopeToUser("user-a");
+    expect(usePresenterStore.getState().enabled).toBe(true);
+  });
+
+  it("does not hand one person's safe rooms to the next person on the device", () => {
+    const store = usePresenterStore.getState();
+    store.scopeToUser("user-a");
+    store.setEnabled(true);
+    store.setSafeRoom("room-a", true);
+    store.scopeToUser("user-b");
+    expect(usePresenterStore.getState()).toMatchObject({
+      enabled: true, // the device was hiding, so it keeps hiding
+      safeRoomIds: [],
+      scopedUserId: "user-b",
+    });
   });
 
   it("supports both enable toggles and safe-room checkboxes", () => {
