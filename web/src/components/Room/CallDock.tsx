@@ -137,6 +137,13 @@ export function CallDock() {
           kind="audioinput"
           devices={devices.audioinput}
           selected={selectedDevices.audioinput}
+          also={[
+            {
+              kind: "audiooutput",
+              devices: devices.audiooutput,
+              selected: selectedDevices.audiooutput,
+            },
+          ]}
           onSelect={switchDevice}
           size="sm"
         />

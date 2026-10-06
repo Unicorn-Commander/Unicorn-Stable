@@ -11,8 +11,15 @@ import type { StableDeviceKind } from "@/lib/mediaDevices";
  * VoiceProvider.switchDevice (the same store the pre-join dialog reads), so
  * the next call starts on it.
  *
- * Renders nothing when there is at most one device to choose from — a menu
- * with one entry is noise.
+ * One chevron can carry more than one kind: the mic chevron lists the
+ * microphones AND the speakers in one menu, each under its own heading, the
+ * way Jitsi and QuickTime do it (`also`). Until 2026-10-05 the speaker could
+ * only be changed from Settings, although Settings said the bar could do it.
+ *
+ * Renders nothing when there is at most one device to choose from across the
+ * sections — a menu with one entry is noise. A section with a single device
+ * still shows when another section earned the menu, so the caller can see
+ * which speaker the call is playing through.
  */
 
 const KIND_LABEL: Record<StableDeviceKind, string> = {
@@ -21,10 +28,18 @@ const KIND_LABEL: Record<StableDeviceKind, string> = {
   audiooutput: "Speaker",
 };
 
+export interface DeviceSection {
+  kind: StableDeviceKind;
+  devices: MediaDeviceInfo[];
+  selected: string;
+}
+
 interface Props {
   kind: StableDeviceKind;
   devices: MediaDeviceInfo[];
   selected: string;
+  /** Further kinds listed in the same menu, below the first (e.g. Speaker under the mic chevron). */
+  also?: DeviceSection[];
   onSelect: (kind: StableDeviceKind, deviceId: string) => Promise<void>;
   /** Trigger height, matches the sibling control button. */
   size?: "sm" | "md" | "lg";
@@ -34,11 +49,14 @@ export function DevicePickerButton({
   kind,
   devices,
   selected,
+  also = [],
   onSelect,
   size = "md",
 }: Props) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ bottom: number; left: number } | null>(null);
+  // `${kind}:${deviceId}` — Chrome gives the OS-default mic and the OS-default
+  // speaker the same id ("default"), so the id alone cannot name a row.
   const [busy, setBusy] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -65,7 +83,12 @@ export function DevicePickerButton({
     };
   }, [open]);
 
-  if (devices.length < 2) return null;
+  // A kind the browser does not expose (Safari lists no speakers) is left out
+  // rather than shown empty.
+  const sections: DeviceSection[] = [{ kind, devices, selected }, ...also].filter(
+    (s) => s.devices.length > 0,
+  );
+  if (!sections.some((s) => s.devices.length >= 2)) return null;
 
   function toggle(e: ReactMouseEvent) {
     e.stopPropagation();
@@ -80,25 +103,29 @@ export function DevicePickerButton({
     setOpen((v) => !v);
   }
 
-  async function pick(e: ReactMouseEvent, deviceId: string) {
+  async function pick(e: ReactMouseEvent, section: DeviceSection, deviceId: string) {
     e.stopPropagation();
-    if (deviceId === selected) {
+    if (deviceId === section.selected) {
       setOpen(false);
       return;
     }
-    setBusy(deviceId);
+    const row = `${section.kind}:${deviceId}`;
+    setBusy(row);
     try {
-      await onSelect(kind, deviceId);
+      await onSelect(section.kind, deviceId);
       setOpen(false);
     } catch (err) {
-      console.error(`switch ${kind} failed`, err);
+      console.error(`switch ${section.kind} failed`, err);
     } finally {
       setBusy(null);
     }
   }
 
   const heights = { sm: "h-9", md: "h-10", lg: "h-11" } as const;
-  const label = KIND_LABEL[kind];
+  // "Choose microphone and speaker" when the menu carries both.
+  const label = sections
+    .map((s) => KIND_LABEL[s.kind].toLowerCase())
+    .join(" and ");
 
   return (
     <>
@@ -111,10 +138,10 @@ export function DevicePickerButton({
           heights[size],
           open && "bg-white/[0.08] text-slate-100",
         )}
-        aria-label={`Choose ${label.toLowerCase()}`}
+        aria-label={`Choose ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`Choose ${label.toLowerCase()}`}
+        title={`Choose ${label}`}
       >
         <ChevronUp
           className={clsx("h-3.5 w-3.5 transition-transform", open && "rotate-180")}
@@ -130,32 +157,47 @@ export function DevicePickerButton({
             className="glass-heavy fixed z-[90] w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl p-1.5 shadow-pop"
             style={{ bottom: pos.bottom, left: pos.left }}
           >
-            <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              {label}
-            </p>
-            {devices.map((d, i) => {
-              const active = d.deviceId === selected;
+            {sections.map((section, si) => {
+              const heading = KIND_LABEL[section.kind];
               return (
-                <button
-                  key={d.deviceId || i}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={active}
-                  disabled={busy !== null}
-                  onClick={(e) => void pick(e, d.deviceId)}
-                  className={clsx(
-                    "focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-                    active
-                      ? "bg-white/[0.08] text-slate-100"
-                      : "text-slate-300 hover:bg-white/[0.06] hover:text-slate-100",
-                    busy === d.deviceId && "opacity-60",
-                  )}
+                <div
+                  key={section.kind}
+                  role="group"
+                  aria-label={heading}
+                  className={clsx(si > 0 && "mt-1 border-t border-white/[0.08] pt-1")}
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    {d.label || `${label} ${i + 1}`}
-                  </span>
-                  {active && <Check className="h-4 w-4 shrink-0 text-emerald-400" />}
-                </button>
+                  <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    {heading}
+                  </p>
+                  {section.devices.map((d, i) => {
+                    const active = d.deviceId === section.selected;
+                    const row = `${section.kind}:${d.deviceId}`;
+                    return (
+                      <button
+                        key={d.deviceId || i}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        disabled={busy !== null}
+                        onClick={(e) => void pick(e, section, d.deviceId)}
+                        className={clsx(
+                          "focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                          active
+                            ? "bg-white/[0.08] text-slate-100"
+                            : "text-slate-300 hover:bg-white/[0.06] hover:text-slate-100",
+                          busy === row && "opacity-60",
+                        )}
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {d.label || `${heading} ${i + 1}`}
+                        </span>
+                        {active && (
+                          <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>,

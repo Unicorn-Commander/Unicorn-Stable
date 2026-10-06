@@ -3021,6 +3021,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
         kind="audioinput"
         devices={devices.audioinput}
         selected={selectedDevices.audioinput}
+        also={[
+          {
+            kind: "audiooutput",
+            devices: devices.audiooutput,
+            selected: selectedDevices.audiooutput,
+          },
+        ]}
         onSelect={switchDevice}
         size="lg"
       />
@@ -3088,6 +3095,13 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
             kind="audioinput"
             devices={devices.audioinput}
             selected={selectedDevices.audioinput}
+            also={[
+              {
+                kind: "audiooutput",
+                devices: devices.audiooutput,
+                selected: selectedDevices.audiooutput,
+              },
+            ]}
             onSelect={switchDevice}
           />
           <button
