@@ -437,9 +437,10 @@ def select_due_tasks(
     """Tasks assigned to the caller and due on or before tomorrow.
 
     ``trusted_caller`` is the caller's own Project-Ops token (``list_my_tasks``
-    is already their queue). The service JWT's queue is kept only when each
-    row names the caller's email. If those rows do not say who they belong to,
-    the block is null — an empty list would claim the caller has nothing due.
+    is already their queue). The server credential's queue is kept only when
+    each row names the caller's email. If those rows do not say who they
+    belong to, the block is null — an empty list would claim the caller has
+    nothing due.
     """
     horizon = today + timedelta(days=1)
     if not trusted_caller:
