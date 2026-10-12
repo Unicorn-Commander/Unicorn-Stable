@@ -143,6 +143,35 @@ describe("runStartCall", () => {
     expect(d.disconnect).not.toHaveBeenCalled();
   });
 
+  it("surfaces a runner canonical-room 409 and does not retry it", async () => {
+    const showRunnerVoiceCanonicalOnly = vi.fn();
+    const { d } = deps({
+      showRunnerVoiceCanonicalOnly,
+      ringRoom: vi.fn(async () => {
+        throw {
+          status: 409,
+          detail: {
+            code: "runner_voice_canonical_only",
+            detail: "Open this runner's canonical chat; new runner rooms require provisioning",
+            canonical_room_id: "canonical-room",
+            canonical_room_name: "Persephone · Desk",
+            seat: "persephone",
+          },
+        };
+      }),
+    });
+    expect(await runStartCall({ ...E04, roomType: "dm" }, d)).toBe("joined_no_ring");
+    expect(showRunnerVoiceCanonicalOnly).toHaveBeenCalledWith({
+      code: "runner_voice_canonical_only",
+      detail: "Open this runner's canonical chat; new runner rooms require provisioning",
+      canonical_room_id: "canonical-room",
+      canonical_room_name: "Persephone · Desk",
+      seat: "persephone",
+    });
+    expect(d.ringRoom).toHaveBeenCalledTimes(1);
+    expect(d.showOutcome).not.toHaveBeenCalled();
+  });
+
   it("a failed ring leaves you IN the call and says they weren't told", async () => {
     const { d } = deps({
       ringRoom: vi.fn(async () => {

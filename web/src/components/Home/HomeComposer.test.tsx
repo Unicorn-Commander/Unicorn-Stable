@@ -16,7 +16,9 @@ import { CREW_UNAVAILABLE, HOME_DRAFT_KEY, HomeComposer } from "./HomeComposer";
 vi.mock("@/hooks/useStableRoom", () => ({
   useStableRoom: () => ({ isConnected: false, isConnecting: false }),
 }));
-vi.mock("@/hooks/useDirectCall", () => ({ useDirectCall: () => ({ startCall: vi.fn() }) }));
+vi.mock("@/hooks/useDirectCall", () => ({
+  useDirectCall: () => ({ startCall: vi.fn(), startCanonicalCall: vi.fn() }),
+}));
 
 // Drafts live in localStorage, which this test environment does not have.
 const stored = new Map<string, string>();

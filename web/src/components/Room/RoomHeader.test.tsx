@@ -8,7 +8,7 @@ import { usePanelChromeStore } from "@/stores/panelChromeStore";
 import { RoomHeader, type RoomHeaderProps } from "./RoomHeader";
 
 vi.mock("@/hooks/useDirectCall", () => ({
-  useDirectCall: () => ({ startCall: vi.fn() }),
+  useDirectCall: () => ({ startCall: vi.fn(), startCanonicalCall: vi.fn() }),
 }));
 
 function room(policy: Room["recording_policy"]): Room {

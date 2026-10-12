@@ -13,7 +13,9 @@ const { startCall, begin } = vi.hoisted(() => ({ startCall: vi.fn(), begin: vi.f
 vi.mock("@/hooks/useStableRoom", () => ({
   useStableRoom: () => ({ isConnected: false, isConnecting: false }),
 }));
-vi.mock("@/hooks/useDirectCall", () => ({ useDirectCall: () => ({ startCall }) }));
+vi.mock("@/hooks/useDirectCall", () => ({
+  useDirectCall: () => ({ startCall, startCanonicalCall: vi.fn() }),
+}));
 vi.mock("@/lib/beginThread", () => ({ beginThread: begin }));
 
 // Drafts live in localStorage, which this test environment does not have.

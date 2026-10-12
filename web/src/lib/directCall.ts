@@ -1,4 +1,8 @@
-import type { RingResponse } from "@/services/api";
+import {
+  runnerVoiceCanonicalOnly,
+  type RingResponse,
+  type RunnerVoiceCanonicalOnly,
+} from "@/services/api";
 import type { OutgoingCall } from "@/stores/outgoingCallStore";
 
 /**
@@ -39,6 +43,8 @@ export interface StartCallDeps {
   showOutcome: (call: OutgoingCall) => void;
   /** Leave the call we just joined (used when nobody could be rung in a 1:1 DM). */
   disconnect: () => void;
+  /** Surface a server-resolved runner voice redirect in the call UI. */
+  showRunnerVoiceCanonicalOnly?: (notice: RunnerVoiceCanonicalOnly) => void;
 }
 
 export type StartCallResult =
@@ -54,6 +60,7 @@ export type StartCallResult =
 interface ApiErrorLike {
   status?: number;
   detail?: string;
+  body?: unknown;
 }
 
 export async function runStartCall(
@@ -122,6 +129,11 @@ export async function runStartCall(
     return "joined_ringing";
   } catch (err) {
     const e = err as ApiErrorLike;
+    const runnerNotice = runnerVoiceCanonicalOnly(err);
+    if (runnerNotice) {
+      deps.showRunnerVoiceCanonicalOnly?.(runnerNotice);
+      return "joined_no_ring";
+    }
     // 409 = nobody human to ring (agent DMs). Not a failure: we are in, and
     // the agents are dispatched by the LiveKit room itself.
     if (e?.status === 409) return "joined_no_ring";
