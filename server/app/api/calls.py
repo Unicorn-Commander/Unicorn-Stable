@@ -29,6 +29,11 @@ from app.api.webhooks import _extract_participant_id
 # drift from the one the service actually arms its timer with. One clock.
 from app.services import call_service as _cs
 from app.services.call_service import CallService
+from app.services.agent_routing import (
+    find_canonical_room,
+    participant_backend,
+    runner_voice_canonical_only,
+)
 from app.services.livekit_service import LiveKitService
 from app.config import get_settings
 
@@ -168,6 +173,28 @@ async def ring_room(
     ).scalars().all()
 
     if not rows:
+        # Runner seats do not have a phone to ring. A hub/thread that points
+        # at one must send the caller to the seat's provisioned canonical room
+        # instead of returning an empty call with no explanation.
+        runner_rows = (
+            await db.execute(
+                select(Participant)
+                .join(RoomMember, RoomMember.participant_id == Participant.id)
+                .where(
+                    RoomMember.room_id == room.id,
+                    Participant.participant_type == ParticipantType.AGENT,
+                )
+            )
+        ).scalars().all()
+        for runner in runner_rows:
+            if participant_backend(runner) != "runner":
+                continue
+            canonical_room = await find_canonical_room(db, runner)
+            if canonical_room is not None and canonical_room.id != room.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=runner_voice_canonical_only(runner, canonical_room),
+                )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="There is nobody in this conversation to call.",

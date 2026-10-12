@@ -53,6 +53,8 @@ class CrewRow(BaseModel):
     last_seen_at: datetime | None = None
     #: The caller's OWN hub with this agent (R7 + P2-4), when one exists.
     hub_room_id: str | None = None
+    #: Server-resolved room where a runner seat carries voice.
+    voice_canonical_room: dict[str, str] | None = None
     #: What the runner announced through ``PUT /gateway/me`` (harness,
     #: default_model, default_effort, models[], efforts[], updated_at); null
     #: for Brigade agents and for seats that have not announced yet.
@@ -77,6 +79,7 @@ def crew_row(entry: CrewEntry) -> CrewRow:
         presence="online" if entry.presence == "online" else "offline",
         last_seen_at=entry.last_seen_at,
         hub_room_id=entry.hub_room_id,
+        voice_canonical_room=entry.voice_canonical_room,
         seat_capabilities=entry.seat_capabilities,
         last_line=entry.last_line,
         last_at=entry.last_at,
