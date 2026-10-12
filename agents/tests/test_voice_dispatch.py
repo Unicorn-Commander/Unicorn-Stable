@@ -90,6 +90,22 @@ class NameMatchingTests(TestCase):
         self.assertEqual(reason, "mention_not_address:rook")
 
 
+class AddressOnlyTests(TestCase):
+    def test_wake_only_lines_are_cues_not_questions(self) -> None:
+        from agent_runtime.voice_dispatch import address_only_line
+
+        for text in ("Persephone", "hey Persephone", "Persephone, um okay"):
+            self.assertTrue(address_only_line(text, {"persephone"}), text)
+
+    def test_a_question_after_the_wake_is_not_address_only(self) -> None:
+        from agent_runtime.voice_dispatch import address_only_line
+
+        self.assertFalse(
+            address_only_line("hey Persephone what is the question", {"persephone"})
+        )
+        self.assertFalse(address_only_line("I asked Persephone yesterday", {"persephone"}))
+
+
 class ScenarioTests(TestCase):
     """The six DoD scenarios, in the order the spec lists them."""
 

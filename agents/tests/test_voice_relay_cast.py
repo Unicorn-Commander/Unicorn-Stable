@@ -502,3 +502,108 @@ class ChunkedSayTests(IsolatedAsyncioTestCase):
         agent._interrupt_speech(speaker="aaron_1", chars=5)
         self.assertTrue(getattr(handle, "hit", False))
         self.assertTrue(agent._barge_in)
+
+
+class EchoBargeInTests(TestCase):
+    """Speaker feedback is not a human taking the relay's floor."""
+
+    AARON = "aaron_1111-c0cf018d-f9d4-4638-a43b-23914024aad4"
+
+    def _speaking_agent(self, *, mode: str = "auto"):
+        hit = {"value": False}
+
+        def interrupt() -> None:
+            hit["value"] = True
+
+        agent = _agent(
+            _publisher=MagicMock(),
+            _captions=None,
+            _lk_room=SimpleNamespace(
+                remote_participants={
+                    self.AARON: SimpleNamespace(identity=self.AARON),
+                }
+            ),
+        )
+        agent._speaking = True
+        agent._barge_in_mode = mode
+        agent._speech_handle = SimpleNamespace(interrupt=interrupt)
+        return agent, hit
+
+    def test_exact_echo_is_dropped_before_it_is_persisted(self) -> None:
+        agent, hit = self._speaking_agent()
+        agent._remember_spoken("Got it, here's stable and short.")
+
+        agent._on_track_final(
+            SimpleNamespace(
+                participant_identity=self.AARON,
+                participant_name="Aaron",
+            ),
+            "got it here's stable and short",
+        )
+
+        agent._publisher.persist_user_utterance.assert_not_called()
+        self.assertFalse(hit["value"])
+        self.assertFalse(agent._barge_in)
+
+    def test_echo_after_playout_is_still_not_persisted(self) -> None:
+        agent, hit = self._speaking_agent()
+        agent._remember_spoken("Got it, here's stable and short.")
+        agent._speaking = False
+
+        agent._on_track_final(
+            SimpleNamespace(
+                participant_identity=self.AARON,
+                participant_name="Aaron",
+            ),
+            "got it here's stable and short",
+        )
+
+        agent._publisher.persist_user_utterance.assert_not_called()
+        self.assertFalse(hit["value"])
+
+    def test_stt_drifted_echo_is_dropped(self) -> None:
+        agent, hit = self._speaking_agent()
+        agent._remember_spoken("Got it, here's stable and short.")
+
+        check = agent._barge_check(
+            "got it here's stable and shrt",
+            speaker=self.AARON,
+        )
+
+        self.assertEqual(check.reason, "echo")
+        self.assertGreaterEqual(check.score or 0.0, 0.8)
+        self.assertFalse(hit["value"])
+
+    def test_short_four_echo_is_not_a_barge_or_persisted_line(self) -> None:
+        agent, hit = self._speaking_agent()
+        agent._remember_spoken("The answer is four things.")
+
+        agent._on_track_final(
+            SimpleNamespace(participant_identity=self.AARON, participant_name="Aaron"),
+            "four",
+        )
+
+        agent._publisher.persist_user_utterance.assert_not_called()
+        self.assertFalse(hit["value"])
+
+    def test_long_nonmatching_speech_still_cuts_the_reply(self) -> None:
+        agent, hit = self._speaking_agent()
+
+        agent._on_track_final(
+            SimpleNamespace(participant_identity=self.AARON, participant_name="Aaron"),
+            "please stop talking about that now",
+        )
+
+        self.assertTrue(hit["value"])
+        self.assertTrue(agent._barge_in)
+
+    def test_off_mode_never_cuts_a_long_nonmatching_line(self) -> None:
+        agent, hit = self._speaking_agent(mode="off")
+
+        agent._on_track_final(
+            SimpleNamespace(participant_identity=self.AARON, participant_name="Aaron"),
+            "please stop talking about that now",
+        )
+
+        self.assertFalse(hit["value"])
+        self.assertFalse(agent._barge_in)
