@@ -2,14 +2,10 @@
 
 Providers via a unified OpenAI-compatible interface:
 
-- ``whisper`` (default) — self-hosted Unicorn Amanuensis. The deployed default
-  endpoint is the live uc-1 box over Tailscale:
-  ``http://100.78.236.160:9000/v1`` (override with ``WHISPER_BASE_URL``).
-  Amanuensis exposes the OpenAI ``/v1/audio/transcriptions`` multipart API
-  (verified: returns the standard ``{text, segments, language}`` JSON), so the
-  LiveKit ``openai.STT`` plugin works against it unchanged. Its single loaded
-  NPU model is used regardless of the ``model`` field, so ``WHISPER_MODEL``
-  defaults to the harmless ``whisper-1``.
+- ``whisper`` (default) — an optional self-hosted OpenAI-compatible
+  transcription endpoint from ``WHISPER_BASE_URL``. Its single loaded model
+  may ignore the ``model`` field, so ``WHISPER_MODEL`` defaults to the harmless
+  ``whisper-1``.
 - ``deepgram`` — Nova-2 cloud (needs DEEPGRAM_API_KEY).
 - ``openai`` — OpenAI hosted transcription (needs OPENAI_API_KEY).
 """
@@ -27,11 +23,8 @@ from agent_runtime.config import AgentSettings, get_agent_settings
 logger = structlog.get_logger(__name__)
 
 
-# Deployed default = live Unicorn Amanuensis on uc-1 (Tailscale). The container
-# egresses through the host's tailnet, so this is reachable from stable-agents.
-DEFAULT_WHISPER_BASE_URL = os.getenv(
-    "WHISPER_BASE_URL", "http://100.78.236.160:9000/v1"
-)
+# Empty keeps the optional local provider off until an endpoint is supplied.
+DEFAULT_WHISPER_BASE_URL = os.getenv("WHISPER_BASE_URL", "").strip()
 # Amanuensis runs its single loaded NPU model regardless of this value; keep the
 # OpenAI-conventional default so any OpenAI-compatible client validates.
 DEFAULT_WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
@@ -51,6 +44,8 @@ def get_stt_plugin(
         # Re-read env at call time so config changes take effect without a
         # module reload (the worker spawns a fresh subprocess per job).
         base_url = cfg_get(cfg, "whisper_base_url") or DEFAULT_WHISPER_BASE_URL
+        if not base_url:
+            raise ValueError("WHISPER_BASE_URL is required for whisper STT")
         stt = lk_openai.STT(
             base_url=base_url,
             api_key="not-needed",
