@@ -102,8 +102,9 @@ class Settings(BaseSettings):
     vapid_private_key: str = ""
     vapid_subject: str = "mailto:aaron@magicunicorn.tech"
 
-    # Project Ops MCP service-account token. Stable uses this only server-side
-    # when promoting messages into Project Ops tasks.
+    # Project Ops MCP service credentials. Prefer the least-privilege PAT;
+    # retain the JWT as a migration fallback until the PAT is provisioned.
+    projectops_service_pat: str = ""
     projectops_service_jwt: str = ""
     projectops_mcp_url: str = "https://api.projectops.magicunicorn.dev/api/v1/mcp"
     projectops_dashboard_url: str = "https://projectops.magicunicorn.dev"

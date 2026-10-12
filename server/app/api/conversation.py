@@ -45,6 +45,7 @@ from app.deps import (
     get_settings_dep,
     is_control_key,
     rate_limit,
+    require_po_staff,
     require_room_member,
 )
 from app.models.agent import AgentEvent
@@ -66,7 +67,7 @@ from app.schemas.room import (
     RoomResponse,
     ThreadCreate,
 )
-from app.services.agent_access import ensure_agent_access
+from app.services.agent_access import ensure_agent_access, is_instance_admin
 from app.services.context_builder import DEFAULT_BUDGET_TOKENS, MAX_BUDGET_TOKENS, build_context
 from app.services.livekit_service import LiveKitService
 from app.services.presence_service import PresenceService
@@ -622,7 +623,7 @@ async def accept_invite(
 @router.post("/rooms/for-project", response_model=ProjectChannelResponse)
 async def ensure_project_channel(
     body: ProjectChannelBody,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(require_po_staff)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
     db: Annotated[AsyncSession, Depends(get_db)],
     livekit: Annotated[LiveKitService, Depends(get_livekit)],
@@ -648,6 +649,7 @@ async def ensure_project_channel(
         project_number=number,
         project=project,
         org_id=settings.instance_org_id,
+        allow_existing_join=is_instance_admin(user),
     )
     if created:
         await push_room_to_participants(

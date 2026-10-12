@@ -186,6 +186,7 @@ class EnsureProjectChannelService(IsolatedAsyncioTestCase):
         # Any spelling finds the ONE channel: the service normalises too.
         room, created = await svc.ensure_project_channel(
             creator_id=uuid.uuid4(), project_number="p-115", project={"title": TITLE}, org_id=None,
+            allow_existing_join=True,
         )
         self.assertFalse(created)
         self.assertIs(room, existing)
@@ -308,7 +309,12 @@ class PromoteToTaskPrefill(IsolatedAsyncioTestCase):
         with patch.object(M, "_load_visible_message", AsyncMock(return_value=(msg, room))), patch.object(
             M, "_call_projectops_tool", AsyncMock(return_value={"id": "t1", "projectNumber": "P-00115", "projectId": "proj-1"})
         ) as call:
-            out = await M.promote_message_to_projectops_task(msg.id, body, {"participant_id": uuid.uuid4()}, db)
+            out = await M.promote_message_to_projectops_task(
+                msg.id,
+                body,
+                {"participant_id": uuid.uuid4(), "email": "caller@example.com"},
+                db,
+            )
         return out, call, msg
 
     async def test_bound_room_prefills_the_project(self) -> None:
@@ -331,7 +337,12 @@ class PromoteToTaskPrefill(IsolatedAsyncioTestCase):
             M, "_call_projectops_tool", AsyncMock()
         ) as call:
             with self.assertRaises(HTTPException) as ctx:
-                await M.promote_message_to_projectops_task(msg.id, M.PromoteToProjectOpsBody(), {"participant_id": uuid.uuid4()}, AsyncMock())
+                await M.promote_message_to_projectops_task(
+                    msg.id,
+                    M.PromoteToProjectOpsBody(),
+                    {"participant_id": uuid.uuid4(), "email": "caller@example.com"},
+                    AsyncMock(),
+                )
         self.assertEqual(ctx.exception.status_code, 422)
         call.assert_not_awaited()
 

@@ -688,6 +688,7 @@ async def fetch_caller_tasks(
     *,
     mcp_url: str,
     caller_bearer: str | None,
+    service_pat: str = "",
     service_jwt: str,
     caller_email: str | None,
     today: date,
@@ -712,11 +713,12 @@ async def fetch_caller_tasks(
             return result
         except Exception:
             logger.info("home_project_ops_caller_unreachable", error="caller_token")
-    if not (service_jwt or "").strip():
+    service_token = (service_pat or "").strip() or (service_jwt or "").strip()
+    if not service_token:
         _cache_put(_PO_CACHE, cache_key, None)
         return None
     try:
-        raw = await _mcp_call(mcp_url, service_jwt, "list_my_tasks", {"limit": 100})
+        raw = await _mcp_call(mcp_url, service_token, "list_my_tasks", {"limit": 100})
     except Exception:
         logger.info("home_project_ops_unreachable")
         _cache_put(_PO_CACHE, cache_key, None)
@@ -1057,6 +1059,7 @@ async def get_home_summary(
             fetch_caller_tasks(
                 mcp_url=settings.projectops_mcp_url,
                 caller_bearer=_bearer(request),
+                service_pat=settings.projectops_service_pat,
                 service_jwt=settings.projectops_service_jwt,
                 caller_email=email,
                 today=now.date(),
