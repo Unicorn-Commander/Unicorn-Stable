@@ -196,6 +196,22 @@ class EnsureProjectChannelService(IsolatedAsyncioTestCase):
         db.add.assert_called_once()
         self.assertEqual(db.add.call_args.args[0].role.value, "member")
 
+    async def test_existing_channel_requires_explicit_join_authorization(self) -> None:
+        svc, db = self._svc()
+        existing = SimpleNamespace(id=uuid.uuid4(), name="p-00115-x", visibility="private", project_number="P-00115")
+        db.execute = AsyncMock(side_effect=[_res(scalars=[existing]), _res(scalar=None)])
+
+        with self.assertRaises(HTTPException) as ctx:
+            await svc.ensure_project_channel(
+                creator_id=uuid.uuid4(),
+                project_number="P-00115",
+                project={"title": TITLE},
+                org_id=None,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        db.add.assert_not_called()
+
     async def test_junk_number_is_422_before_any_query(self) -> None:
         svc, db = self._svc()
         with self.assertRaises(HTTPException) as ctx:

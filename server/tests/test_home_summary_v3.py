@@ -8,6 +8,9 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.api.home import (
     ACTION_FOR,
@@ -36,6 +39,48 @@ from app.api.home import (
 
 NOW = datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc)
 TODAY = date(2026, 9, 22)
+
+
+@pytest.mark.asyncio
+async def test_home_today_service_fallback_keeps_only_the_callers_tasks_and_prefers_pat() -> None:
+    import app.api.home as home
+
+    home._PO_CACHE.clear()
+    raw = {
+        "tasks": [
+            {
+                "id": "mine",
+                "title": "Caller task",
+                "dueDate": "2026-09-22",
+                "status": "PENDING",
+                "assignedTo": {"email": "CALLER@example.com"},
+            },
+            {
+                "id": "other",
+                "title": "Other task",
+                "dueDate": "2026-09-22",
+                "status": "PENDING",
+                "assignedTo": {"email": "other@example.com"},
+            },
+        ]
+    }
+    with patch.object(home, "_mcp_call", AsyncMock(return_value=raw)) as call:
+        rows = await home.fetch_caller_tasks(
+            mcp_url="https://projectops.invalid/mcp",
+            caller_bearer=None,
+            service_pat="pat-test-placeholder",
+            service_jwt="jwt-test-placeholder",
+            caller_email="caller@example.com",
+            today=TODAY,
+            dashboard_url="https://projectops.magicunicorn.dev",
+            cache_key="home-caller",
+        )
+
+    assert rows is not None
+    assert [row.id for row in rows] == ["mine"]
+    assert call.await_args.args[1] == "pat-test-placeholder"
+    home._PO_CACHE.clear()
+
 
 
 def _room(room_id: str = "room-1") -> dict:

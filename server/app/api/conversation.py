@@ -632,10 +632,11 @@ async def ensure_project_channel(
 ) -> ProjectChannelResponse:
     """Ensure the private channel bound to a Project-Ops project
     (``p-<number>-<slug>``, display ``P-00115 · <title>``). Idempotent: the
-    creator owns a new one; a later caller joins the existing one. The title
-    comes from Project-Ops through the server's service client (never the
-    browser's credential); 404 for an unknown number, 502 when Project-Ops
-    cannot be reached."""
+    creator owns a new one; an existing private channel is joined only through
+    the explicit staff-authorized service option. The title comes from
+    Project-Ops through the server's service client (never the browser's
+    credential); 404 for an unknown number, 502 when Project-Ops cannot be
+    reached."""
     number = normalize_project_number(body.project_number)
     if number is None:
         raise HTTPException(
