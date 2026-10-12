@@ -1,7 +1,7 @@
 """Regression tests for cross-realm participant identity linking.
 
-The duplicate-persona bug: two Keycloaks share the realm name ``uchub``
-(auth.unicorncommander.ai and auth.magicunicorn.dev); the same human has a
+The duplicate-persona bug: two Keycloaks share the realm name ``test``
+(auth.example.com and auth-alt.example.com); the same human has a
 DIFFERENT ``sub`` in each. JIT provisioning keyed only on ``keycloak_sub``
 created a second participant for the second sub (or crashed on the unique
 username constraint when the preferred_username matched). The fix links by
@@ -46,15 +46,15 @@ from app.models.participant import (  # noqa: E402
 )
 from app.services import participant_identity as pi  # noqa: E402
 
-ISSUER = "https://auth.unicorncommander.ai/realms/uchub"
-OTHER_ISSUER = "https://auth.magicunicorn.dev/realms/uchub"
-UNTRUSTED_ISSUER = "https://evil.example.com/realms/uchub"
+ISSUER = "https://auth.example.com/realms/test"
+OTHER_ISSUER = "https://auth-alt.example.com/realms/test"
+UNTRUSTED_ISSUER = "https://evil.example.com/realms/test"
 
 FAILURES: list[str] = []
 
 SETTINGS = Settings(
-    keycloak_url="https://auth.unicorncommander.ai",
-    keycloak_realm="uchub",
+    keycloak_url="https://auth.example.com",
+    keycloak_realm="test",
     trusted_issuer_hosts=OTHER_ISSUER,
 )
 

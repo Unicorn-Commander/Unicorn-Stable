@@ -117,15 +117,14 @@ def get_config() -> HelpAgentConfig:
     landed alongside concurrent work on that file; these belong in Settings and
     should move there. The names are already Settings-shaped.
 
-    ``HELP_AGENT_BASE_URL`` defaults to the UC gateway on the shared ``web``
-    docker network. ``HELP_AGENT_MODEL`` is a LOGICAL gateway name — the gateway
-    owns which GPU serves it, so moving the model between boxes needs no change
-    here.
+    ``HELP_AGENT_BASE_URL`` is deployment-owned; its neutral default is a local
+    endpoint. ``HELP_AGENT_MODEL`` is a LOGICAL gateway name — the gateway owns
+    which GPU serves it, so moving the model between boxes needs no change here.
     """
     return HelpAgentConfig(
         enabled=_env_bool("HELP_AGENT_ENABLED", True),
         base_url=(
-            os.getenv("HELP_AGENT_BASE_URL") or "http://unicorn-litellm:4000/v1"
+            os.getenv("HELP_AGENT_BASE_URL") or "http://localhost:4000/v1"
         ).rstrip("/"),
         model=os.getenv("HELP_AGENT_MODEL") or "qwen3.6-35b",
         api_key=os.getenv("HELP_AGENT_API_KEY") or "",

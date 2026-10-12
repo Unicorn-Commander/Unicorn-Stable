@@ -201,11 +201,11 @@ class Settings(BaseSettings):
     # are injected as context when the room's agent replies. All RAG work is
     # fail-safe and fire-and-forget: any error is swallowed and never blocks
     # message send or the chat reply. Flip to False to disable entirely.
-    rag_enabled: bool = True
-    # Qdrant vector store (no auth). Reachable from the backend container.
-    qdrant_url: str = "http://172.17.0.1:6333"
-    # Infinity proxy: OpenAI-shaped /embeddings + /rerank.
-    infinity_url: str = "http://172.17.0.1:8086"
+    rag_enabled: bool = False
+    # Qdrant vector store (no auth). Optional; set the deployment-owned URL.
+    qdrant_url: str = ""
+    # Infinity proxy: OpenAI-shaped /embeddings + /rerank. Optional.
+    infinity_url: str = ""
     # Collection name (pre-created: size 1024, distance Cosine).
     rag_collection: str = "stable_documents"
     # Embedding + rerank model names passed to Infinity.
@@ -217,8 +217,8 @@ class Settings(BaseSettings):
     # (Anthropic "contextual retrieval"), cutting cross-doc retrieval misses.
     # Fully fail-safe: one short call per document; on any error/timeout the
     # chunk falls back to a filename-only prefix. Flip off to embed raw chunks.
-    context_enabled: bool = True
-    context_llm_url: str = "http://172.17.0.1:8085/v1/chat/completions"
+    context_enabled: bool = False
+    context_llm_url: str = ""
     context_model: str = "Llama-3.2-3B-Instruct-Q4_K_M"
 
     # -- Rate limiting (Redis token-bucket; see app.deps.rate_limit) --
