@@ -693,7 +693,7 @@ async def _handle_client_events(
 
     In practice a gateway/bridge agent talks to `api/gateway.py` over HTTP and
     never opens this socket, so this is a structural guarantee rather than a
-    hot path: if a bridge ever does authenticate here with a uchub JWT, it is
+    hot path: if a bridge ever does authenticate here with a Keycloak JWT, it is
     refused a human's indicator by construction instead of by convention.
     """
     typing_rooms = typing_rooms if typing_rooms is not None else set()
@@ -877,7 +877,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     subscribes to Redis pub/sub for the user's rooms and handles bidirectional
     communication.
 
-    The frame path exists because real uchub access tokens overflow a query
+    The frame path exists because real Keycloak access tokens overflow a query
     string: uvicorn's parser answers a request line past ~8 KiB by never
     responding at all, so the handshake hangs and the client shows an eternal
     "reconnecting" state with nothing in any log. A token in the first frame

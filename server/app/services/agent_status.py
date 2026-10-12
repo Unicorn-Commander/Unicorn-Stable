@@ -330,7 +330,7 @@ async def mark_relay_pending_for_room(*, db: Any, room_id: uuid.UUID) -> None:
     a multi-agent room names the agent it is actually talking about instead of
     attributing one agent's state to another.
 
-    Bridges that authenticate with a uchub JWT rather than a minted key have no
+    Bridges that authenticate with a Keycloak JWT rather than a minted key have no
     key row and so are never marked. Deliberate: the failure mode is an absent
     indicator, never a false one.
     """

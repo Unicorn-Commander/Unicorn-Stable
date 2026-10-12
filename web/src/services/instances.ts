@@ -65,7 +65,7 @@ export function instanceForCurrentOrigin(instances: StableInstance[]): StableIns
 }
 
 /** Two instances share a Keycloak session (and therefore a token) when their
- *  url + realm + clientId all match — true for our fleet (one uchub realm +
+ *  url + realm + clientId all match — true for our fleet (one configured realm +
  *  stable-web client across every instance). */
 export function sameKeycloak(a: StableInstance, b: StableInstance): boolean {
   return (

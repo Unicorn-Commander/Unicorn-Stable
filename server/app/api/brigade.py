@@ -662,7 +662,7 @@ class ChatModel(BaseModel):
 # Curated tiers the model switcher offers — the governed menu (Glean/Researcher
 # pattern): a short allowlist of verified lanes, local-first, labeled by what
 # they are FOR rather than raw catalog ids. Every id is a verified-working
-# Brigade `model` override on the uchub gateway (checked 2026-07-04); qwen
+# Brigade `model` override on the configured gateway (checked 2026-07-04); qwen
 # lanes are no-think per fleet policy. "Auto" (no override) is rendered by the
 # client as the default row. Add ids only after verifying they route 200.
 _SWITCHER_MODELS: list[dict[str, str]] = [

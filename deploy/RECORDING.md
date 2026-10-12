@@ -38,7 +38,7 @@ the actor and the before/after values. The same function is
 `POST /api/v1/admin/recording/policy {policy, kind, rooms: "all_active" | [ids],
 dry_run}` for instance admins (`STABLE_ADMIN_ROLES`, the agent-access gate).
 
-Then grant the realm role `stable-recorder` in Keycloak (uchub realm) to the
+Then grant the realm role `stable-recorder` in the configured Keycloak realm to the
 people who may press Record (Aaron, Shafen); `always` rooms record without it.
 
 ## The policy matrix

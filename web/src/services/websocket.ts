@@ -211,7 +211,7 @@ const TRANSPORT_FLIP_AFTER_TIMEOUTS = 2;
 /**
  * How long after `onopen` the server gets to answer the auth frame with
  * `auth_ok`. The token now travels in the FIRST FRAME, not the URL: real
- * uchub access tokens overflow a query string (uvicorn silently never answers
+ * Keycloak access tokens overflow a query string (uvicorn silently never answers
  * a request line past ~8 KiB, so the handshake just hangs), and a frame also
  * keeps the token out of URLs, access logs, and proxy buffers.
  */

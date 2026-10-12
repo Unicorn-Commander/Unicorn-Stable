@@ -1,6 +1,6 @@
 """User directory + invite endpoints.
 
-Source of truth is Keycloak (uchub realm). People who've signed into Stable
+Source of truth is Keycloak (the configured realm). People who've signed into Stable
 once also exist as Participant rows locally. Search merges both so you can
 invite anyone in the realm, whether or not they've logged in yet.
 """

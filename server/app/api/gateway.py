@@ -1,6 +1,6 @@
 """ORCH-1 — PUBLIC agent-gateway router (mounted at /api/v1/gateway).
 
-Lets a dev/agent authenticate with a role-gated uchub JWT OR a scoped gateway key
+Lets a dev/agent authenticate with a role-gated Keycloak JWT OR a scoped gateway key
 and post to / read from Stable rooms AS A SCOPED, NON-SPOOFABLE agent identity —
 replacing the SSH+docker-exec bridge and the single shared ``internal_agent_secret``
 (which let any holder post as any agent).
@@ -146,7 +146,7 @@ async def authenticate_gateway_caller(
     if not auth.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
-            detail="Missing bearer credential (gateway key or uchub JWT)",
+            detail="Missing bearer credential (gateway key or Keycloak JWT)",
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = auth.removeprefix("Bearer ").strip()
@@ -1541,7 +1541,7 @@ async def gateway_tts(
     """Synthesize speech via suite Kokoro (Orator) for a gateway/MCP agent.
 
     Same contract as ``POST /api/v1/tts`` but authenticated with a gateway key
-    or uchub JWT that has the agent-gateway role. Rate-limited per principal.
+    or a Keycloak JWT that has the agent-gateway role. Rate-limited per principal.
     """
     await _gateway_rate_limit(principal, redis, bucket="gw_tts", fail_open=False)
 

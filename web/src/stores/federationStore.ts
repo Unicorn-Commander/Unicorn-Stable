@@ -102,7 +102,7 @@ export const useFederationStore = create<FederationState>((set, get) => ({
       try {
         let token: string | null = null;
         if (homeAuthed && sameKeycloak(instance, home)) {
-          // Shared Keycloak (our fleet: one uchub realm + stable-web client) →
+          // Shared Keycloak (our fleet: one configured realm + stable-web client) →
           // the home token is valid at this backend. Reuse it instead of a
           // check-sso iframe (which Cloudflare blocks), aliasing this id to the
           // home client so a later switch keeps a live, auto-refreshed token.

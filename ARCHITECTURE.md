@@ -61,7 +61,7 @@ these endpoints. See `DEPLOYMENT.md` for voice services troubleshooting.
 
 These are flagged so we don't paint ourselves into a corner.
 
-- **Hard-coded `keycloak_realm: uchub`** in code. Should be env-only.
+- **Hard-coded Keycloak realm** in code. Should be env-only.
 - **Brigade-as-fixed-LLM** assumption. PUBLIC may want Bring-Your-Own-Key
   (already half-supported via the OpenAI-compat adapter).
 - **Single email sender** (`support@example.com`). PUBLIC needs

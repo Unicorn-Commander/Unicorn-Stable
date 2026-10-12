@@ -92,7 +92,7 @@ The caller **never supplies** the agent id. It is derived server-side:
   (`server/app/auth/gateway_auth.py:150-174`) looks the key's SHA-256 hash up in
   `agent_gateway_keys` and returns a `GatewayPrincipal` whose `agent_id` and
   `allowed_rooms` come **from the row**.
-- **uchub JWT**: `validate_gateway_jwt` derives `dev-<username>` from the
+- **Keycloak JWT**: `validate_gateway_jwt` derives `dev-<username>` from the
   validated claims.
 
 Both message endpoints then use `principal.agent_id`
@@ -143,10 +143,10 @@ something only an operator holds:
    **platform-wide `INTERNAL_AGENT_SECRET`**. That secret is an operator secret;
    anyone holding it can mint a key for any agent id, so it is never handed to a
    lane.
-2. **uchub user JWT** — accepted only if the token carries the
+2. **Keycloak user JWT** — accepted only if the token carries the
    `stable-agent-gateway` realm/client role (`GATEWAY_JWT_REQUIRED_ROLE`) or the
    subject is in `GATEWAY_JWT_SUBJECT_ALLOWLIST`. A valid-but-unauthorized suite
-   token is rejected with **403** — "has a valid uchub token" is deliberately not
+token is rejected with **403** — "has a valid Keycloak token" is deliberately not
    "may use the gateway". **Granting that role is a Keycloak admin action.**
 
 There is no third path. If you are an agent reading this and you do not already
@@ -255,7 +255,7 @@ external lane can reach one.
 
 | Var | Required | Meaning |
 |---|---|---|
-| `STABLE_GATEWAY_TOKEN` | ✅ | Gateway key (`sbk-…`) or a role-granted uchub JWT. Legacy name `STABLE_INTERNAL_TOKEN` is still honored. |
+| `STABLE_GATEWAY_TOKEN` | ✅ | Gateway key (`sbk-…`) or a role-granted Keycloak JWT. Legacy name `STABLE_INTERNAL_TOKEN` is still honored. |
 | `STABLE_GATEWAY_BASE_URL` | — | Backend base. Defaults to `http://localhost`. Legacy name `STABLE_INTERNAL_BASE_URL` is still honored. |
 | `AGENT_DISPLAY_NAME` | — | Local label for tool output only. The backend derives the real display name from the credential's `agent_id`. |
 | `STABLE_ROOMS` | — | Friendly-name convenience map, `friendly=livekit_room_name` pairs, comma-separated. **Not** the security boundary — the key's server-side `allowed_rooms` is. |

@@ -164,7 +164,7 @@ Honest list — the stack is healthy and chat/calls/uploads work, but:
 ## 2. Operator / production path
 
 The fleet path — production compose (`docker-compose.yml`) expects the shared
-Traefik `web` network, the `uchub` Keycloak realm, Brigade, the GPU voice
+Traefik `web` network, the configured Keycloak realm, Brigade, the GPU voice
 fleet, and per-instance `.env` files. Do **not** run `install.sh` on a fleet
 box (it refuses to touch a `.env` it didn't create).
 
