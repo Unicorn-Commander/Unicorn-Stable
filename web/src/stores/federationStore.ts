@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { loadInstances, instanceForCurrentOrigin, normalizeInstance, sameKeycloak, type StableInstance } from "@/services/instances";
+import { configureRuntimeHosts } from "@/lib/runtimeHosts";
 import { aliasInstanceAuth, getInstanceToken, initInstanceAuth, setActiveAuthInstance } from "@/services/auth";
 import { ws } from "@/services/websocket";
 import { useAppStore } from "@/stores/appStore";
@@ -192,7 +193,9 @@ export const useFederationStore = create<FederationState>((set, get) => ({
       if (!token) return;
       const response = await fetch(`${instance.apiBaseUrl}/api/v1/rooms`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) return;
-      set((state) => ({ instances: [...state.instances, instance], accessibleInstances: [...state.accessibleInstances, instance], auth: { ...state.auth, [instance.id]: { status: "authenticated", token } } }));
+      const nextInstances = [...get().instances, instance];
+      configureRuntimeHosts(nextInstances);
+      set((state) => ({ instances: nextInstances, accessibleInstances: [...state.accessibleInstances, instance], auth: { ...state.auth, [instance.id]: { status: "authenticated", token } } }));
       void get().refreshInstanceMeta();
     } catch {
       // An instance that cannot silently authenticate is not added to the rail.

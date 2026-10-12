@@ -24,7 +24,9 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # STABLE_BACKEND_HOST defaults to the compose service name for single-stack
 # deploys; multi-stack hosts override it with the unique container name.
 COPY nginx.conf /etc/nginx/templates/default.conf.template
-ENV STABLE_BACKEND_HOST=backend
+ENV STABLE_BACKEND_HOST=backend \
+    STABLE_CSP_EXTRA_SCRIPT= \
+    STABLE_CSP_EXTRA_FRAME=
 
 # --- build provenance (stamped by scripts/deploy.sh / compose build args) ---
 ARG GIT_SHA=unknown

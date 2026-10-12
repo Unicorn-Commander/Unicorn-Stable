@@ -114,9 +114,56 @@ self.addEventListener("fetch", (event) => {
 // --- push ----------------------------------------------------------------
 // Defensive handler for future web-push. Expects a JSON payload of the shape
 // { title, body, url, tag, icon }. Tolerates missing/invalid data.
-// `icon` is a resolved face URL. Only same-origin paths and https on our
-// hosts are accepted — a push payload is attacker-influenced.
-function notificationIcon(url) {
+// `icon` is a resolved face URL. Only same-origin paths and https on hosts in
+// the runtime instance descriptor are accepted — a push payload is
+// attacker-influenced.
+const runtimeExactHosts = new Set();
+const runtimeSuffixHosts = new Set();
+let runtimeHostsLoaded = false;
+
+function addRuntimeOrigin(value) {
+  if (Array.isArray(value)) {
+    value.forEach(addRuntimeOrigin);
+    return;
+  }
+  if (typeof value !== "string") return;
+  value.split(",").forEach((item) => {
+    const candidate = item.trim();
+    if (!candidate) return;
+    const wildcard = candidate.startsWith("*.");
+    const input = wildcard ? candidate.slice(2) : candidate;
+    try {
+      const host = new URL(input, self.location.origin).hostname.toLowerCase().replace(/\.$/, "");
+      if (!host) return;
+      (wildcard ? runtimeSuffixHosts : runtimeExactHosts).add(host);
+    } catch (_) {
+      // Ignore malformed operator input; same-origin remains available.
+    }
+  });
+}
+
+async function loadRuntimeHosts() {
+  if (runtimeHostsLoaded) return;
+  runtimeHostsLoaded = true;
+  try {
+    const response = await fetch("/instances.json", { cache: "no-store" });
+    if (!response.ok) return;
+    const instances = await response.json();
+    if (!Array.isArray(instances)) return;
+    instances.forEach((instance) => {
+      if (!instance || typeof instance !== "object") return;
+      addRuntimeOrigin(instance.webOrigin);
+      addRuntimeOrigin(instance.apiBaseUrl);
+      addRuntimeOrigin(instance.wsUrl);
+      addRuntimeOrigin(instance.keycloak && instance.keycloak.url);
+      addRuntimeOrigin(instance.trustedOrigins);
+    });
+  } catch (_) {
+    // Missing instances.json is the expected single-origin fallback.
+  }
+}
+
+async function notificationIcon(url) {
   if (typeof url !== "string" || !url.trim()) return "/icon-192.png";
   const raw = url.trim();
   if (raw.startsWith("/") && !raw.startsWith("//") && !raw.includes("\\")) {
@@ -126,14 +173,11 @@ function notificationIcon(url) {
     const parsed = new URL(raw);
     if (parsed.protocol !== "https:") return "/icon-192.png";
     const host = parsed.hostname.toLowerCase();
+    await loadRuntimeHosts();
     const ok =
       host === self.location.hostname ||
-      host === "magicunicorn.dev" ||
-      host.endsWith(".magicunicorn.dev") ||
-      host === "magicunicorn.tech" ||
-      host.endsWith(".magicunicorn.tech") ||
-      host === "unicorncommander.ai" ||
-      host.endsWith(".unicorncommander.ai");
+      runtimeExactHosts.has(host) ||
+      [...runtimeSuffixHosts].some((suffix) => host === suffix || host.endsWith("." + suffix));
     return ok ? raw : "/icon-192.png";
   } catch (_) {
     return "/icon-192.png";
@@ -151,16 +195,19 @@ self.addEventListener("push", (event) => {
     }
   }
 
-  const title = payload.title || "Unicorn Stable";
-  const options = {
-    body: payload.body || "",
-    tag: payload.tag, // undefined is fine → no coalescing
-    icon: notificationIcon(payload.icon),
-    badge: "/icon-192.png",
-    data: { url: notificationPath(payload.url) },
-  };
-
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    (async () => {
+      const title = payload.title || "Unicorn Stable";
+      const options = {
+        body: payload.body || "",
+        tag: payload.tag, // undefined is fine → no coalescing
+        icon: await notificationIcon(payload.icon),
+        badge: "/icon-192.png",
+        data: { url: notificationPath(payload.url) },
+      };
+      await self.registration.showNotification(title, options);
+    })(),
+  );
 });
 
 // --- notificationclick ---------------------------------------------------

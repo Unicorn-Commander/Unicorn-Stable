@@ -89,11 +89,6 @@ export function savePrefs(p: NotificationPrefs) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(p));
 }
 
-const KEYCLOAK_BASE =
-  import.meta.env.VITE_KEYCLOAK_URL || "https://auth.unicorncommander.ai";
-const KEYCLOAK_REALM = import.meta.env.VITE_KEYCLOAK_REALM || "uchub";
-const ACCOUNT_URL = `${KEYCLOAK_BASE.replace(/\/+$/, "")}/realms/${KEYCLOAK_REALM}/account/`;
-
 export type PaneId =
   | "account"
   | "appearance"
@@ -562,6 +557,12 @@ function AccountPane({
   onGoToAppearance: () => void;
 }) {
   const currentUser = useAppStore((s) => s.currentUser);
+  const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const instances = useFederationStore((s) => s.accessibleInstances);
+  const activeInstance = instances.find((instance) => instance.id === activeInstanceId);
+  const accountUrl = activeInstance?.keycloak?.url
+    ? `${activeInstance.keycloak.url.replace(/\/+$/, "")}/realms/${activeInstance.keycloak.realm}/account/`
+    : "/account/";
   const userIdent = identityFor(currentUser?.id, currentUser?.displayName);
   const selfFace = useSelfFace();
   const showPhotoNudge = useShowPhotoNudge();
@@ -596,7 +597,7 @@ function AccountPane({
             <p className="mt-1 text-[11px] text-slate-500">
               Your name and email come from{" "}
               <a
-                href={ACCOUNT_URL}
+                href={accountUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="focus-ring rounded text-stable-purple-light hover:underline"

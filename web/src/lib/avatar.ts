@@ -41,6 +41,7 @@
  */
 import { getToken, refreshToken } from "@/services/auth";
 import { useFederationStore } from "@/stores/federationStore";
+import { isRuntimeHostAllowed } from "@/lib/runtimeHosts";
 import {
   identityFor,
   initialsFor,
@@ -48,14 +49,6 @@ import {
   registerAvatarSrc,
   type Identity,
 } from "@/lib/identity";
-
-/** Hosts we will point an `<img>` at. Suffix-matched on the parsed hostname,
- *  never on the raw string — `magicunicorn.dev.evil.com` must not match. */
-const ALLOWED_AVATAR_HOST_SUFFIXES = [
-  "magicunicorn.dev",
-  "magicunicorn.tech",
-  "unicorncommander.ai",
-];
 
 /**
  * Flip to allow third-party avatar hosts (Gravatar et al.). Off, and it should
@@ -101,9 +94,7 @@ export function isSafeAvatarUrl(url: string | null | undefined): boolean {
   if (typeof window !== "undefined" && host === window.location.hostname) {
     return true;
   }
-  return ALLOWED_AVATAR_HOST_SUFFIXES.some(
-    (s) => host === s || host.endsWith("." + s),
-  );
+  return isRuntimeHostAllowed(host);
 }
 
 /** Absolute src for an `<img>`, resolving our relative avatar paths against

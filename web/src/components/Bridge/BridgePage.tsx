@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useFederationStore } from "@/stores/federationStore";
 import {
   Plug,
   Copy,
@@ -22,7 +23,8 @@ import {
  * by the operator. This page documents the contract and the setup.
  */
 
-const CONFIG_SNIPPET = `{
+function configSnippet(gatewayBaseUrl: string): string {
+  return `{
   "mcpServers": {
     "stable-bridge": {
       "command": "uv",
@@ -35,15 +37,16 @@ const CONFIG_SNIPPET = `{
       "command": "uv",
       "args": [
         "run", "--with", "mcp", "python",
-        "/path/to/Unicorn-Stable/tools/stable-agent-mcp/server.py"
+        "/path/to/Stable/tools/stable-agent-mcp/server.py"
       ],
       "env": {
         "STABLE_GATEWAY_TOKEN": "(operator-minted sbk-… key)",
-        "STABLE_GATEWAY_BASE_URL": "https://stable.magicunicorn.dev"
+        "STABLE_GATEWAY_BASE_URL": ${JSON.stringify(gatewayBaseUrl)}
       }
     }
   }
 }`;
+}
 
 type ToolGroup = {
   icon: typeof MessageSquare;
@@ -137,10 +140,15 @@ const GROUP_HUES = [
 
 export function BridgePage() {
   const [copied, setCopied] = useState(false);
+  const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
+  const instances = useFederationStore((s) => s.accessibleInstances);
+  const activeInstance = instances.find((instance) => instance.id === activeInstanceId);
+  const gatewayBaseUrl = activeInstance?.apiBaseUrl || (typeof window !== "undefined" ? window.location.origin : "");
+  const snippet = configSnippet(gatewayBaseUrl);
 
   function copyConfig() {
     navigator.clipboard
-      .writeText(CONFIG_SNIPPET)
+      .writeText(snippet)
       .then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1800);
@@ -244,7 +252,7 @@ export function BridgePage() {
               </button>
             </div>
             <pre className="overflow-x-auto p-4 text-[12.5px] leading-relaxed text-slate-300">
-              <code>{CONFIG_SNIPPET}</code>
+              <code>{snippet}</code>
             </pre>
           </div>
           <p className="mt-2.5 text-[12px] text-slate-500">

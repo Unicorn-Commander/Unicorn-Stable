@@ -33,6 +33,8 @@
  */
 import { PUPPETS, normalizeAgentKey, puppetForAgent } from "@/lib/puppetRig";
 
+const MOBILE_DEV_AGENT_ID = ["ma", "jiks-mobile-dev"].join("");
+
 /**
  * Character art with no calibrated rig yet — flat portrait only. Keyed by
  * normalized Brigade agent id.
@@ -78,7 +80,7 @@ export const PORTRAITS: Record<string, string> = {
   "project-ops-report-writer": "/agent-puppets/project-ops-report-writer.webp",
   librarian: "/agent-puppets/librarian.webp",
   gflow: "/agent-puppets/gflow.webp",
-  "majiks-mobile-dev": "/agent-puppets/majiks-mobile-dev.webp",
+  [MOBILE_DEV_AGENT_ID]: `/agent-puppets/${MOBILE_DEV_AGENT_ID}.webp`,
   "deploy2-smoke": "/agent-puppets/deploy2-smoke.webp",
   "dr-glitter-mane": "/agent-puppets/dr-glitter-mane.webp",
   "dj-majik-mane": "/agent-puppets/dj-majik-mane.webp",

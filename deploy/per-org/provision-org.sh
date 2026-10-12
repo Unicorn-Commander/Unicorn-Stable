@@ -15,7 +15,7 @@
 #   provision-org.sh <slug> --deploy        # also bring the stack up + smoke-test
 #
 # <slug>: lowercase [a-z0-9-], the org's short name (e.g. "acme"). Everything
-#         derives from it: stable-acme-*, acme.stable.unicorncommander.ai, etc.
+#         derives from it: stable-acme-* and the configured deployment domain.
 set -euo pipefail
 
 SLUG="${1:-}"
@@ -31,7 +31,21 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root
 BASE_COMPOSE="$ROOT/docker-compose.yml"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORG_DIR="$ROOT/deploy/per-org/instances/$SLUG"
-DOMAIN_BASE="stable.unicorncommander.ai"
+DOMAIN_BASE="${STABLE_DOMAIN_BASE:-example.com}"
+APP_DOMAIN="${STABLE_DOMAIN:-$SLUG.$DOMAIN_BASE}"
+LIVEKIT_DOMAIN_VALUE="${LIVEKIT_DOMAIN:-$SLUG-livekit.$DOMAIN_BASE}"
+TURN_DOMAIN_VALUE="${TURN_DOMAIN:-$SLUG-turn.$DOMAIN_BASE}"
+WS_DOMAIN="${STABLE_WS_DOMAIN:-$SLUG-ws.$DOMAIN_BASE}"
+PUBLIC_BASE_URL_VALUE="${PUBLIC_BASE_URL:-https://$APP_DOMAIN}"
+LIVEKIT_PUBLIC_URL_VALUE="${LIVEKIT_PUBLIC_URL:-wss://$LIVEKIT_DOMAIN_VALUE}"
+CORS_ORIGINS_VALUE="${CORS_ORIGINS:-$PUBLIC_BASE_URL_VALUE}"
+VAPID_SUBJECT_VALUE="${VAPID_SUBJECT:-}"
+KEYCLOAK_URL_VALUE="${KEYCLOAK_URL:-}"
+KEYCLOAK_REALM_VALUE="${KEYCLOAK_REALM:-stable}"
+BRIGADE_BASE_URL_VALUE="${BRIGADE_BASE_URL:-}"
+METERING_REPORT_URL_VALUE="${METERING_REPORT_URL:-}"
+WHISPER_BASE_URL_VALUE="${WHISPER_BASE_URL:-}"
+KOKORO_BASE_URL_VALUE="${KOKORO_BASE_URL:-}"
 
 echo "▶ provision Stable org: slug=$SLUG dir=$ORG_DIR"
 mkdir -p "$ORG_DIR"
@@ -83,7 +97,19 @@ sed \
   -e "s|__SLUG__|$SLUG|g" \
   -e "s|__ORG_UUID__|$ORG_UUID|g" \
   -e "s|__LK_API__|$LK_API|g" -e "s|__LK_TCP__|$LK_TCP|g" -e "s|__LK_UDP__|$LK_UDP|g" \
-  -e "s|__KC_REALM__|uchub|g" -e "s|__KC_CLIENT__|stable-$SLUG|g" -e "s|__KC_SECRET__||g" \
+  -e "s|__APP_DOMAIN__|$APP_DOMAIN|g" \
+  -e "s|__LIVEKIT_DOMAIN__|$LIVEKIT_DOMAIN_VALUE|g" \
+  -e "s|__TURN_DOMAIN__|$TURN_DOMAIN_VALUE|g" \
+  -e "s|__PUBLIC_BASE_URL__|$PUBLIC_BASE_URL_VALUE|g" \
+  -e "s|__LIVEKIT_PUBLIC_URL__|$LIVEKIT_PUBLIC_URL_VALUE|g" \
+  -e "s|__CORS_ORIGINS__|$CORS_ORIGINS_VALUE|g" \
+  -e "s|__VAPID_SUBJECT__|$VAPID_SUBJECT_VALUE|g" \
+  -e "s|__KEYCLOAK_URL__|$KEYCLOAK_URL_VALUE|g" \
+  -e "s|__KC_REALM__|$KEYCLOAK_REALM_VALUE|g" -e "s|__KC_CLIENT__|stable-$SLUG|g" -e "s|__KC_SECRET__||g" \
+  -e "s|__BRIGADE_BASE_URL__|$BRIGADE_BASE_URL_VALUE|g" \
+  -e "s|__METERING_REPORT_URL__|$METERING_REPORT_URL_VALUE|g" \
+  -e "s|__WHISPER_BASE_URL__|$WHISPER_BASE_URL_VALUE|g" \
+  -e "s|__KOKORO_BASE_URL__|$KOKORO_BASE_URL_VALUE|g" \
   "$HERE/env.tmpl" > "$ENV_OUT"
 # fill generated secrets (use a temp to avoid sed-escaping secret chars)
 python3 - "$ENV_OUT" "$PG_PW" "$REDIS_PW" "$LK_KEY" "$LK_SECRET" "$INTERNAL_SECRET" "$UPLOAD_SECRET" "$WEBHOOK_SECRET" "$VAPID_PUB" "$VAPID_PRIV" <<'PY'
@@ -112,10 +138,10 @@ echo "  ✓ rendered $ENV_OUT (mode 600)"
 # --- 4) render the per-org compose from the canonical base -----------------
 python3 "$HERE/render_compose.py" \
   "$BASE_COMPOSE" "$ORG_DIR/docker-compose.yml" \
-  "$SLUG" "$SLUG.$DOMAIN_BASE" "$SLUG-livekit.$DOMAIN_BASE" "$SLUG-turn.$DOMAIN_BASE" \
-  "$LK_API" "$LK_TCP" "$LK_UDP" "$SLUG-ws.$DOMAIN_BASE"
+  "$SLUG" "$APP_DOMAIN" "$LIVEKIT_DOMAIN_VALUE" "$TURN_DOMAIN_VALUE" \
+  "$LK_API" "$LK_TCP" "$LK_UDP" "$WS_DOMAIN"
 
-# Reminder printed in the runbook below: $SLUG-ws.$DOMAIN_BASE must be a
+# Reminder printed in the runbook below: $WS_DOMAIN must be a
 # DNS-only (grey) A record straight to this box — the websocket host exists
 # precisely to bypass the CDN (h3/h2 extended-CONNECT stalls websockets), so
 # proxying it would defeat the point.
@@ -157,10 +183,10 @@ echo "   .env  docker-compose.yml  livekit.yaml"
 echo "════════════════════════════════════════════════════════════════════"
 echo " MANUAL STEPS before --deploy (need decisions / external systems):"
 echo "  1. DNS (Cloudflare): A/AAAA for"
-echo "       $SLUG.stable.unicorncommander.ai"
-echo "       $SLUG-livekit.stable.unicorncommander.ai"
-echo "       $SLUG-turn.stable.unicorncommander.ai   -> this host"
-echo "  2. Keycloak: create client 'stable-$SLUG' in realm uchub (or a per-org"
+echo "       $APP_DOMAIN"
+echo "       $LIVEKIT_DOMAIN_VALUE"
+echo "       $TURN_DOMAIN_VALUE   -> this host"
+echo "  2. Keycloak: create client 'stable-$SLUG' in realm $KEYCLOAK_REALM_VALUE (or a per-org"
 echo "     realm — see project_per_org_sso_design), set redirect URIs to the"
 echo "     domain above, paste the client secret into KEYCLOAK_CLIENT_SECRET."
 echo "  3. Firewall: open UDP $LK_UDP (LiveKit media) + TCP $LK_TCP to this host."
@@ -179,8 +205,8 @@ cd "$ORG_DIR"
 docker compose --env-file .env -p "stable-$SLUG" up -d
 echo "  ⏳ settling…"; sleep 10
 docker compose -p "stable-$SLUG" ps
-code="$(curl -s -o /dev/null -w '%{http_code}' "https://$SLUG.$DOMAIN_BASE/" || echo 000)"
-echo "  🌐 https://$SLUG.$DOMAIN_BASE/ -> HTTP $code"
+code="$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_BASE_URL_VALUE/" || echo 000)"
+echo "  🌐 $PUBLIC_BASE_URL_VALUE/ -> HTTP $code"
 [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]] && echo "✅ $SLUG provisioned + live." || {
   echo "❌ external check failed ($code) — check DNS/cert/Keycloak; stack is up, debug with: docker compose -p stable-$SLUG logs" >&2
   exit 1

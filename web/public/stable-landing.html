@@ -8,10 +8,10 @@
   <meta property="og:title" content="Unicorn Stable — Give your agents a seat" />
   <meta property="og:description" content="AI agents are real room members, not bots bolted onto the side. Chat, voice, video, orchestration, and dedicated deployments." />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://magicunicorn.dev/products/stable/unicorn-stable-og.jpg" />
-  <meta property="og:url" content="https://magicunicorn.dev/products/stable/" />
+  <meta property="og:image" content="/og-card.png" />
+  <meta property="og:url" content="/" />
   <meta name="twitter:card" content="summary_large_image" />
-  <link rel="canonical" href="https://magicunicorn.dev/products/stable/" />
+  <link rel="canonical" href="/" />
   <title>Unicorn Stable — Humans and agents, in the same room</title>
   <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImciIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4MT0iMCIgeTE9IjAiIHgyPSI2NCIgeTI9IjY0Ij4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzhiNWNmNiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjU1JSIgc3RvcC1jb2xvcj0iIzYzNjZmMSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMyMmQzZWUiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI2MCIgaGVpZ2h0PSI2MCIgcng9IjE2IiBmaWxsPSJ1cmwoI2cpIi8+CiAgPHBhdGggZD0iTTQ1IDExIFEzMyAyOCAxOSA0OSBRMjQgNTQgMzAgNTUgUTQwIDM0IDQ1IDExIFoiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuOTYiLz4KICA8cGF0aCBkPSJNMjUuOCAzNC44IEwzNy42IDQwLjYiIHN0cm9rZT0idXJsKCNnKSIgc3Ryb2tlLXdpZHRoPSIyLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik0zMS45IDI0LjkgTDQxLjcgMjkuOSIgc3Ryb2tlPSJ1cmwoI2cpIiBzdHJva2Utd2lkdGg9IjIuMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPHBhdGggZD0iTTE3IDkgTDE5LjMgMTUgTDI1IDE3LjIgTDE5LjMgMTkuNCBMMTcgMjUuNCBMMTQuNyAxOS40IEw5IDE3LjIgTDE0LjcgMTUgWiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iMC45MiIvPgo8L3N2Zz4K" type="image/svg+xml" />
   <style>
@@ -403,29 +403,69 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
 .proof-number .proof-word{font-size:clamp(2.6rem,6vw,4.6rem)!important;line-height:1;letter-spacing:-.02em}
 
 </style>
-    <!-- Analytics: Umami (self-hosted) — first-party deployments ONLY.
-         This page is baked into every web image, including self-hosted
-         installs whose CSP (deploy/selfhost/nginx.selfhost.conf.template)
-         rightly blocks analytics.unicorncommander.ai — an unconditional tag
-         there is a guaranteed console error, and anywhere else it is a
-         pointless request that leaks visitor IPs to our host. So the script
-         is injected at runtime, only when the page is actually served on one
-         of our own domains: the dogfood + flagship hosts and the per-org
-         tenants under stable.unicorncommander.ai (deploy/per-org). Everyone
-         else gets silence, not errors. -->
+    <!-- Analytics and hosted links are deployment data. The public landing
+         page is served by many different instances, so it reads the same
+         runtime descriptor as the SPA instead of carrying an operator host. -->
     <script>
       (function () {
-        var host = String(location.hostname || "").toLowerCase();
-        var firstParty =
-          host === "stable.magicunicorn.dev" ||
-          host === "stable.unicorncommander.ai" ||
-          /(^|\.)stable\.unicorncommander\.ai$/.test(host);
-        if (!firstParty) return;
-        var s = document.createElement("script");
-        s.defer = true;
-        s.src = "https://analytics.unicorncommander.ai/script.js";
-        s.setAttribute("data-website-id", "222f12bf-b802-4755-9000-e566350702a5");
-        document.head.appendChild(s);
+        function loadConfig() {
+          return fetch("/instances.json", { cache: "no-store" })
+            .then(function (response) { return response.ok ? response.json() : []; })
+            .then(function (items) {
+              if (!Array.isArray(items)) return {};
+              var origin = location.origin.replace(/\/$/, "");
+              return items.find(function (item) {
+                return item && String(item.webOrigin || "").replace(/\/$/, "") === origin;
+              }) || items[0] || {};
+            })
+            .catch(function () { return {}; });
+        }
+
+        function safeRuntimeUrl(value, fallback) {
+          if (typeof value !== "string" || !value.trim()) return fallback;
+          try {
+            var parsed = new URL(value, location.href);
+            if (parsed.protocol === "https:" || parsed.origin === location.origin) {
+              return parsed.href;
+            }
+          } catch (err) {}
+          return fallback;
+        }
+
+        loadConfig().then(function (config) {
+          var scriptUrl = safeRuntimeUrl(config.analyticsScriptUrl, "");
+          if (scriptUrl) {
+            var script = document.createElement("script");
+            script.defer = true;
+            script.src = scriptUrl;
+            if (config.analyticsWebsiteId) {
+              script.setAttribute("data-website-id", String(config.analyticsWebsiteId));
+            }
+            document.head.appendChild(script);
+          }
+
+          var appUrl = safeRuntimeUrl(config.appUrl, "/?app=1");
+          document.querySelectorAll("[data-app-link]").forEach(function (link) {
+            link.href = appUrl;
+          });
+          var marketingBase = safeRuntimeUrl(config.marketingBaseUrl, "");
+          if (marketingBase) {
+            document.querySelectorAll("[data-marketing-path]").forEach(function (link) {
+              link.href = new URL(link.getAttribute("data-marketing-path"), marketingBase).href;
+            });
+          }
+          if (config.contactEmail) {
+            document.querySelectorAll("[data-contact-link]").forEach(function (link) {
+              link.href = "mailto:" + String(config.contactEmail);
+            });
+          }
+          if (config.sourceUrl) {
+            var sourceUrl = safeRuntimeUrl(config.sourceUrl, "");
+            document.querySelectorAll("[data-source-link]").forEach(function (link) {
+              if (sourceUrl) link.href = sourceUrl;
+            });
+          }
+        });
       })();
     </script>
 </head>
@@ -448,19 +488,19 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
         <a href="#workforce">One workforce</a>
         <a href="#calls">Voice + video</a>
         <a href="#deploy">Enterprise</a>
-        <a href="https://magicunicorn.dev/products/stable/technical.html" target="_blank" rel="noreferrer">Technical</a>
-        <a href="https://magicunicorn.dev/products/stable/security.html" target="_blank" rel="noreferrer">Security</a>
+        <a href="/products/stable/technical.html" data-marketing-path="/products/stable/technical.html" target="_blank" rel="noreferrer">Technical</a>
+        <a href="/products/stable/security.html" data-marketing-path="/products/stable/security.html" target="_blank" rel="noreferrer">Security</a>
       </nav>
       <div class="nav-actions">
-        <a class="button button-small button-quiet hide-mobile" href="https://magicunicorn.dev/products/stable/pricing.html" target="_blank" rel="noreferrer">Get Stable</a>
-        <a class="button button-small button-primary hide-mobile" href="https://stable.unicorncommander.ai/?app=1">Open Stable <span>↗</span></a>
+        <a class="button button-small button-quiet hide-mobile" href="/products/stable/pricing.html" data-marketing-path="/products/stable/pricing.html" target="_blank" rel="noreferrer">Get Stable</a>
+        <a class="button button-small button-primary hide-mobile" data-app-link href="/?app=1">Open Stable <span>↗</span></a>
         <button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><span></span><span></span></button>
       </div>
     </div>
     <div class="mobile-menu" id="mobile-menu" data-mobile-menu>
       <div class="shell mobile-menu-inner">
-        <a href="#workforce">One workforce</a><a href="#calls">Voice + video</a><a href="#deploy">Enterprise</a><a href="https://magicunicorn.dev/products/stable/technical.html" target="_blank" rel="noreferrer">Technical</a><a href="https://magicunicorn.dev/products/stable/pricing.html" target="_blank" rel="noreferrer">Get Stable</a><a href="https://magicunicorn.dev/products/stable/security.html" target="_blank" rel="noreferrer">Security</a>
-        <a class="button button-primary" href="https://stable.unicorncommander.ai/?app=1">Open Unicorn Stable ↗</a>
+        <a href="#workforce">One workforce</a><a href="#calls">Voice + video</a><a href="#deploy">Enterprise</a><a href="/products/stable/technical.html" data-marketing-path="/products/stable/technical.html" target="_blank" rel="noreferrer">Technical</a><a href="/products/stable/pricing.html" data-marketing-path="/products/stable/pricing.html" target="_blank" rel="noreferrer">Get Stable</a><a href="/products/stable/security.html" data-marketing-path="/products/stable/security.html" target="_blank" rel="noreferrer">Security</a>
+        <a class="button button-primary" data-app-link href="/?app=1">Open Unicorn Stable ↗</a>
       </div>
     </div>
   </header>
@@ -473,7 +513,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
           <h1 data-rotating-title>The room where <span>humans</span> and <em>agents</em> actually work together.</h1>
           <p class="hero-lede">Unicorn Stable gives AI agents what every useful teammate needs: a seat in the room, an identity, presence, context, and a way to act — over chat, voice, or video.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://stable.unicorncommander.ai/?app=1">Enter the Stable <span>↗</span></a>
+            <a class="button button-primary" data-app-link href="/?app=1">Enter the Stable <span>↗</span></a>
             <a class="button button-quiet" href="#members">See how it works <span>↓</span></a>
           </div>
           <div class="hero-proof hero-claims">
@@ -622,7 +662,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
 
     <section class="chapter deploy" id="deploy">
       <div class="shell deploy-grid">
-        <div class="deploy-copy reveal"><span class="chapter-index">07 / DEPLOYMENT</span><h2>Your organization gets its own <em>Stable.</em></h2><p>Dedicated single-tenant deployments isolate the operational stack by organization: database, Redis, LiveKit, backend, agents, web application, secrets, and domains.</p><div class="deploy-actions"><a class="button button-primary" href="mailto:hello@magicunicorn.tech?subject=Unicorn%20Stable%20deployment">Discuss a deployment <span>↗</span></a><a class="button button-quiet" href="https://stable.unicorncommander.ai/?app=1">Open hosted Stable <span>↗</span></a></div></div>
+        <div class="deploy-copy reveal"><span class="chapter-index">07 / DEPLOYMENT</span><h2>Your organization gets its own <em>Stable.</em></h2><p>Dedicated single-tenant deployments isolate the operational stack by organization: database, Redis, LiveKit, backend, agents, web application, secrets, and domains.</p><div class="deploy-actions"><a class="button button-primary" data-contact-link href="mailto:hello@example.com?subject=Stable%20deployment">Discuss a deployment <span>↗</span></a><a class="button button-quiet" data-app-link href="/?app=1">Open hosted Stable <span>↗</span></a></div></div>
         <div class="stack-diagram reveal" aria-label="Dedicated Unicorn Stable deployment architecture">
           <div class="stack-title"><span>YOUR ORG</span><b>DEDICATED DEPLOYMENT</b><i class="pulse-dot"></i></div>
           <div class="stack-row"><article><span>WEB</span><strong>Stable client</strong></article><article><span>IDENTITY</span><strong>Keycloak</strong></article><article><span>REALTIME</span><strong>LiveKit</strong></article></div>
@@ -655,7 +695,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
     <section class="final-cta">
       <div class="shell cta-panel reveal">
         <div><span>THE DOOR IS OPEN</span><h2>Stop bolting agents onto the side.<br><em>Give them a seat.</em></h2><p>One workspace for people, agents, rooms, models, voice, video, and the work that follows.</p></div>
-        <div class="cta-actions"><a class="button button-primary" href="https://stable.unicorncommander.ai/?app=1">Enter Unicorn Stable <span>↗</span></a><a class="button button-quiet" href="https://magicunicorn.dev/book/?product=stable" target="_blank" rel="noreferrer">Book a conversation <span>↗</span></a><a class="button button-quiet" href="https://github.com/Unicorn-Commander/unicorn-stable-oss" target="_blank" rel="noreferrer">Source on GitHub <span>↗</span></a></div>
+        <div class="cta-actions"><a class="button button-primary" data-app-link href="/?app=1">Enter Unicorn Stable <span>↗</span></a><a class="button button-quiet" href="/book/?product=stable" data-marketing-path="/book/?product=stable" target="_blank" rel="noreferrer">Book a conversation <span>↗</span></a><a class="button button-quiet" data-source-link href="/source" target="_blank" rel="noreferrer">Source on GitHub <span>↗</span></a></div>
       </div>
     </section>
   </main>
@@ -663,9 +703,9 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
   <footer class="site-footer">
     <div class="shell footer-grid">
       <div class="footer-brand"><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><defs><linearGradient id="smk-f" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse"><stop stop-color="#9a7cff"/><stop offset="1" stop-color="#56d7ff"/></linearGradient></defs><rect x="2" y="2" width="60" height="60" rx="16" fill="url(#smk-f)"/><path d="M32 9c1.7 13.9 7.1 19.3 21 21-13.9 1.7-19.3 7.1-21 21-1.7-13.9-7.1-19.3-21-21 13.9-1.7 19.3-7.1 21-21Z" fill="#fff"/></svg></span><span><strong>UNICORN</strong> STABLE</span></a><p>Humans and agents, in the same room.</p></div>
-      <div><strong>Product</strong><a href="#members">Membership</a><a href="#commands">Orchestration</a><a href="#calls">Voice + video</a><a href="#deploy">Deployment</a><a href="https://magicunicorn.dev/products/stable/technical.html" target="_blank" rel="noreferrer">Technical ↗</a><a href="https://magicunicorn.dev/products/stable/pricing.html" target="_blank" rel="noreferrer">Get Stable ↗</a><a href="https://magicunicorn.dev/products/stable/security.html" target="_blank" rel="noreferrer">Security ↗</a></div>
-      <div><strong>Ecosystem</strong><a href="https://magicunicorn.tech" target="_blank" rel="noreferrer">Magic Unicorn — magicunicorn.tech ↗</a><a href="https://unicorncommander.ai" target="_blank" rel="noreferrer">Unicorn Commander Suite — unicorncommander.ai ↗</a></div>
-      <div><strong>Contact</strong><a href="mailto:hello@magicunicorn.tech">hello@magicunicorn.tech</a><a href="https://github.com/Unicorn-Commander/unicorn-stable-oss" target="_blank" rel="noreferrer">Open source ↗</a><a href="https://stable.unicorncommander.ai/?app=1">Open Stable ↗</a></div>
+      <div><strong>Product</strong><a href="#members">Membership</a><a href="#commands">Orchestration</a><a href="#calls">Voice + video</a><a href="#deploy">Deployment</a><a href="/products/stable/technical.html" data-marketing-path="/products/stable/technical.html" target="_blank" rel="noreferrer">Technical ↗</a><a href="/products/stable/pricing.html" data-marketing-path="/products/stable/pricing.html" target="_blank" rel="noreferrer">Get Stable ↗</a><a href="/products/stable/security.html" data-marketing-path="/products/stable/security.html" target="_blank" rel="noreferrer">Security ↗</a></div>
+      <div><strong>Ecosystem</strong><a href="/ecosystem" data-marketing-path="/ecosystem" target="_blank" rel="noreferrer">Stable ecosystem ↗</a><a href="/suite" data-marketing-path="/suite" target="_blank" rel="noreferrer">Suite ↗</a></div>
+      <div><strong>Contact</strong><a data-contact-link href="mailto:hello@example.com">hello@example.com</a><a data-source-link href="/source" target="_blank" rel="noreferrer">Open source ↗</a><a data-app-link href="/?app=1">Open Stable ↗</a></div>
     </div>
     <div class="shell footer-bottom"><span>© 2026 Magic Unicorn Unconventional Technology &amp; Stuff Inc.</span><span>Built for rooms with unusual occupants.</span></div>
   </footer>
@@ -880,7 +920,7 @@ h1 em { background: linear-gradient(115deg, var(--violet), var(--cyan), var(--mi
   document.addEventListener("click", function (e) {
     var a = e.target && e.target.closest && e.target.closest("a[href]");
     if (!a) return;
-    if (a.href.indexOf("stable.unicorncommander.ai") !== -1) {
+    if (a.hasAttribute("data-app-link")) {
       e.preventDefault();
       try { window.parent.postMessage("stable:enter", "*"); } catch (err) {}
     }
