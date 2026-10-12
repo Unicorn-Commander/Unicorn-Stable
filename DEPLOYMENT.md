@@ -39,7 +39,7 @@ git clone <this repo>
 cd Unicorn-Stable
 ./install.sh              # interactive
 # or CI/non-interactive:
-./install.sh --yes --host 192.168.1.50
+./install.sh --yes --host example.com
 ```
 
 What it does, in order:
@@ -179,7 +179,7 @@ server-rail artifact:
 scripts/deploy.sh backend          # build + deploy + verify backend
 scripts/deploy.sh web              # web (also asserts the server rail mount)
 scripts/deploy.sh backend web
-PROJECT=unicorn-stable EXTERNAL_URL=https://stable.magicunicorn.dev/ scripts/deploy.sh backend
+PROJECT=unicorn-stable EXTERNAL_URL=https://example.com/ scripts/deploy.sh backend
 ```
 
 **Rollback:** every deploy prints its rollback tag
@@ -268,7 +268,7 @@ remains the recommended deployment for anything beyond a trusted LAN.
 ## 4. Smoke tests (any path)
 
 ```bash
-BASE=http://192.168.1.50:8401        # or your https:// origin
+BASE=http://127.0.0.1:8401           # or your configured https:// origin
 
 curl -s  $BASE/api/v1/health | python3 -m json.tool   # "status": "ready"
 curl -sI $BASE/ | head -1                             # SPA serves

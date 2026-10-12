@@ -48,7 +48,7 @@ how many orgs fit on one host; past that, add a host.
 deploy/per-org/provision-org.sh acme
 
 # 2. Do the manual steps it prints:
-#    - Cloudflare DNS: acme / acme-livekit / acme-turn .stable.unicorncommander.ai -> host
+#    - DNS: acme / acme-livekit / acme-turn under the configured public domain -> host
 #    - Keycloak: client `stable-acme` in uchub (or per-org realm), paste secret into .env
 #    - Firewall: open the allocated UDP/TCP LiveKit ports
 #    - Brigade: scope the roster (accessPolicy) + set BRIGADE_API_KEY; set METERING_KEY

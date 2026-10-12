@@ -53,7 +53,9 @@ UNTRUSTED_ISSUER = "https://evil.example.com/realms/uchub"
 FAILURES: list[str] = []
 
 SETTINGS = Settings(
-    keycloak_url="https://auth.unicorncommander.ai", keycloak_realm="uchub"
+    keycloak_url="https://auth.unicorncommander.ai",
+    keycloak_realm="uchub",
+    trusted_issuer_hosts=OTHER_ISSUER,
 )
 
 

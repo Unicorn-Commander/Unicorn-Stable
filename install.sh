@@ -9,7 +9,7 @@
 #
 #   ./install.sh                  # interactive
 #   ./install.sh --yes            # accept defaults, no prompts
-#   ./install.sh --yes --host 192.168.1.50 --web-port 9401 --project mystable
+#   ./install.sh --yes --host example.com --web-port 9401 --project mystable
 #   ./install.sh --env-only       # write .env + rendered configs, don't start
 #
 # Idempotent: re-running preserves every secret already in .env, re-renders the
@@ -262,7 +262,7 @@ if [ "$BUNDLED_KEYCLOAK" = "1" ] && { [ "$STABLE_HOST" = "localhost" ] || [ "$ST
   if [ "${STABLE_ALLOW_LOCALHOST:-0}" != "1" ]; then
     die "STABLE_HOST=localhost cannot work with the bundled Keycloak: the backend \
 container must reach the Keycloak URL, and 'localhost' inside a container is the \
-container itself. Use your machine's LAN IP (e.g. --host $(detect_host || echo 192.168.x.x)), \
+container itself. Use the host name or address reachable by your browser (e.g. --host example.com), \
 or set STABLE_ALLOW_LOCALHOST=1 if you really know better."
   fi
   warn "Proceeding with localhost — backend JWKS fetch will likely fail (STABLE_ALLOW_LOCALHOST=1)"

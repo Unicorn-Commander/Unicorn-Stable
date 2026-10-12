@@ -13,8 +13,8 @@ Stable is self-hostable open source. Run it on your own hardware or cloud, keep
 conversations on infrastructure you control, and point each room at whichever
 model fits the work.
 
-> Hosted product: **[stable.unicorncommander.ai](https://stable.unicorncommander.ai)**  
-> Part of the [Unicorn Commander](https://unicorncommander.ai) suite.
+> Hosted deployments use the operator's configured domain.
+> Stable is a self-hostable collaboration suite.
 
 ---
 
@@ -73,7 +73,7 @@ admin user, waits for real health, and prints the URL + credentials to sign in.
 Non-interactive / CI:
 
 ```bash
-./install.sh --yes --host 192.168.1.50 --web-port 8401
+./install.sh --yes --host example.com --web-port 8401
 ```
 
 Every published port is remappable (`--help` lists the flags), so Stable can
@@ -174,5 +174,4 @@ modified source to its users.
 
 ---
 
-Built by **[Magic Unicorn Unconventional Technology & Stuff Inc.](https://magicunicorn.tech)**  
-Part of the **[Unicorn Commander](https://unicorncommander.ai)** suite.
+Built for self-hosted collaboration deployments.

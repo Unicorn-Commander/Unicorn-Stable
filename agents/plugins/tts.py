@@ -184,7 +184,7 @@ class OratorTTS(tts.TTS):
     """Native Kokoro-FastAPI TTS plugin (livekit-agents 1.5).
 
     Speaks the OpenAI-compatible ``POST /v1/audio/speech`` contract of the
-    midboy2 GPU Kokoro (``{model, input, voice, response_format}`` -> WAV).
+    configured GPU Kokoro service (``{model, input, voice, response_format}`` -> WAV).
     """
 
     def __init__(

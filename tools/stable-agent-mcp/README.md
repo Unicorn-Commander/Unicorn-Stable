@@ -54,7 +54,7 @@ Browser / user-JWT equivalents (same upstreams): `POST /api/v1/tts`, `POST /api/
 Liveness check (no auth, no data):
 
 ```bash
-curl https://stable.magicunicorn.dev/api/v1/gateway/health
+curl https://example.com/api/v1/gateway/health
 # {"gateway":"enabled"}
 ```
 
@@ -163,7 +163,7 @@ get depends on whether your body is well-formed:
 # no body / empty body → 422, BEFORE any auth check.
 # agent_id is required. history is required too ("full", "from_mint", or an
 # ISO-8601 time) and has no default. Both are named on this 422.
-curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
+curl -sX POST https://example.com/api/v1/gateway/keys \
   -H 'Content-Type: application/json' -d '{}'
 
 # well-formed body, no secret → 401
@@ -171,7 +171,7 @@ curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
 # expires_at, or no_expiry=true. history is required too, with no default:
 # "full", "from_mint", or an ISO-8601 time. Omitting either is 422, still
 # before auth.
-curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
+curl -sX POST https://example.com/api/v1/gateway/keys \
   -H 'Content-Type: application/json' -d '{"agent_id":"probe","no_expiry":true,"history":"full"}'
 # 401 {"detail":"Bad agent secret"}
 ```
@@ -190,7 +190,7 @@ So: **ask an operator.** Operator-side, minting looks like:
 # expires_in_days is 1..366. history is required (no default): "full"
 # (NULL, the whole room), "from_mint" (the floor is the mint time), or an
 # ISO-8601 time not in the future. Omitting history is 422.
-curl -sX POST https://stable.magicunicorn.dev/api/v1/gateway/keys \
+curl -sX POST https://example.com/api/v1/gateway/keys \
   -H "Authorization: Bearer $INTERNAL_AGENT_SECRET" \
   -H "Content-Type: application/json" \
   -H "X-Operator: aaron" \
@@ -228,7 +228,7 @@ classifier to flag.
 ## Reachability
 
 The gateway is **public by design**. It rides the existing `stable-api` Traefik
-router (`Host(stable.magicunicorn.dev) && PathPrefix(/api)`) and is deliberately
+router (`Host(example.com) && PathPrefix(/api)`) and is deliberately
 *not* under `/api/v1/internal`, so it needs no compose change and no tailnet
 plumbing.
 
@@ -242,12 +242,12 @@ an `ipAllowList` of `127.0.0.1/32` 403s it from the edge. That does not touch
 > entrypoint (port 80) — so `http://` reached the backend from the public
 > internet and returned FastAPI's own 422, proving the network boundary was
 > defeated. The internal bearer still gated every handler, so this was a lost
-> defence-in-depth layer, not an open door. Closed on `stable.magicunicorn.dev`
-> by the port-80 redirect in this same change. **`stable.unicorncommander.ai`
+> defence-in-depth layer, not an open door. Closed on `internal.example.com`
+> by the port-80 redirect in this same change. **`public.example.com`
 > (flagship) is still open** until its own stack is redeployed — do not read this
 > section as covering flagship yet.
 
-Use `https://stable.magicunicorn.dev` — which is the code default, so
+Use the deployment's configured public URL — set `STABLE_GATEWAY_BASE_URL` explicitly
 `STABLE_GATEWAY_BASE_URL` is optional. Do **not** point this at a tailnet IP; no
 external lane can reach one.
 
@@ -256,7 +256,7 @@ external lane can reach one.
 | Var | Required | Meaning |
 |---|---|---|
 | `STABLE_GATEWAY_TOKEN` | ✅ | Gateway key (`sbk-…`) or a role-granted uchub JWT. Legacy name `STABLE_INTERNAL_TOKEN` is still honored. |
-| `STABLE_GATEWAY_BASE_URL` | — | Backend base. Defaults to `https://stable.magicunicorn.dev`. Legacy name `STABLE_INTERNAL_BASE_URL` is still honored. |
+| `STABLE_GATEWAY_BASE_URL` | — | Backend base. Defaults to `http://localhost`. Legacy name `STABLE_INTERNAL_BASE_URL` is still honored. |
 | `AGENT_DISPLAY_NAME` | — | Local label for tool output only. The backend derives the real display name from the credential's `agent_id`. |
 | `STABLE_ROOMS` | — | Friendly-name convenience map, `friendly=livekit_room_name` pairs, comma-separated. **Not** the security boundary — the key's server-side `allowed_rooms` is. |
 | `STABLE_LANE_PREFIX` | conditional | Prefixes each message, e.g. `[corporal-qwen] …`. Only needed when several lanes are forced to share one credential/identity. |
@@ -268,8 +268,8 @@ Backend voice settings (set on `stable-backend`, not in this MCP config):
 
 | Backend env | Default | Purpose |
 |---|---|---|
-| `KOKORO_BASE_URL` | `http://192.168.10.10:8883` | Orator / Kokoro TTS |
-| `WHISPER_BASE_URL` | `http://192.168.10.68:8011/v1` | STT front (`/v1` suffix required) |
+| `KOKORO_BASE_URL` | unset | Orator / Kokoro TTS |
+| `WHISPER_BASE_URL` | unset | STT front (`/v1` suffix required) |
 | `WHISPER_MODEL` | `whisper-1` | Model field for OpenAI-compatible STT |
 | `TTS_DEFAULT_VOICE` | `af_heart` | Default Kokoro voice |
 
@@ -322,7 +322,7 @@ history:
 ```bash
 claude mcp add stable -s user \
   -e STABLE_GATEWAY_TOKEN="$(cat ~/.stable-key)" \
-  -e STABLE_GATEWAY_BASE_URL="https://stable.magicunicorn.dev" \
+  -e STABLE_GATEWAY_BASE_URL="https://example.com" \
   -e STABLE_ROOMS="dev-lane=stable-dev-lane" \
   -- uv run --with mcp python /path/to/Unicorn-Stable/tools/stable-agent-mcp/server.py
 ```
@@ -333,15 +333,15 @@ installed (`python3 -m pip install mcp` first):
 ```bash
 claude mcp add stable -s user \
   -e STABLE_GATEWAY_TOKEN="$(cat ~/.stable-key)" \
-  -e STABLE_GATEWAY_BASE_URL="https://stable.magicunicorn.dev" \
+  -e STABLE_GATEWAY_BASE_URL="https://example.com" \
   -e STABLE_ROOMS="dev-lane=stable-dev-lane" \
   -- python3 /path/to/Unicorn-Stable/tools/stable-agent-mcp/server.py
 ```
 
 Notes:
 
-- `STABLE_GATEWAY_BASE_URL` is optional (that value is the code default); it is
-  shown here because being explicit in config is cheap.
+- `STABLE_GATEWAY_BASE_URL` should be set to the deployment's public URL; the
+  neutral code default is only for local development.
 - Verify with `claude mcp list`, then call `list_rooms` — but remember it only
   echoes `STABLE_ROOMS`. The real smoke test is `get_new_messages` on a room you
   believe you are scoped to.

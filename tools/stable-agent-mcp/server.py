@@ -13,7 +13,7 @@ scoped gateway key and a public base URL:
                              CANNOT choose which agent it posts as (no impersonation).
                              A uchub user JWT with the `stable-agent-gateway` role
                              also works.
-  * STABLE_GATEWAY_BASE_URL -> the public backend, e.g. https://stable.magicunicorn.dev
+  * STABLE_GATEWAY_BASE_URL -> the public backend, e.g. https://example.com
 
 Contract (ORCH-1 gateway, app/api/gateway.py):
 
@@ -59,7 +59,7 @@ GATEWAY_TOKEN = (
 BASE_URL = (
     os.environ.get("STABLE_GATEWAY_BASE_URL", "").strip()
     or os.environ.get("STABLE_INTERNAL_BASE_URL", "").strip()
-    or "https://stable.magicunicorn.dev"
+    or "http://localhost"
 ).rstrip("/")
 
 GATEWAY_MESSAGES_URL = f"{BASE_URL}/api/v1/gateway/messages"

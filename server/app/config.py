@@ -71,11 +71,16 @@ class Settings(BaseSettings):
     keycloak_realm: str = "stable"
     keycloak_client_id: str = "stable-backend"
     keycloak_client_secret: str = ""
+    # Additional issuer hostnames explicitly trusted for cross-instance
+    # identity linking. Comma-separated; the configured KEYCLOAK_URL is always
+    # trusted separately.
+    trusted_issuer_hosts: str = ""
 
     # Unicorn Brigade — upstream agent backend. Agents in Stable rooms route
     # their LLM calls through Brigade so persona + memory + delegation live
     # in one place.
     brigade_base_url: str = ""
+    brigade_avatar_base_url: str = ""
     brigade_api_key: str = ""
     brigade_worker_agent_name: str = "stable-brigade"  # must match WorkerOptions.agent_name
 
