@@ -392,6 +392,25 @@ class BargeInTests(IsolatedAsyncioTestCase):
         self.assertFalse(barge.on_human_final("   "))
         self.assertFalse(barge.barge)
 
+    async def test_recent_relay_words_and_short_finals_do_not_barge(self) -> None:
+        from agent_runtime.barge_in import BargeIn
+
+        barge = BargeIn()
+        barge.speaking = True
+        barge.note_spoken("Got it, here's stable and short.")
+        self.assertFalse(barge.on_human_final("got it here's stable and shrt"))
+        self.assertFalse(barge.barge)
+        self.assertFalse(barge.on_human_final("four"))
+        self.assertFalse(barge.barge)
+
+    async def test_off_mode_does_not_interrupt_a_real_barge(self) -> None:
+        from agent_runtime.barge_in import BargeIn
+
+        barge = BargeIn(enabled=False)
+        barge.speaking = True
+        self.assertFalse(barge.on_human_final("please stop the reply now"))
+        self.assertFalse(barge.barge)
+
     async def test_ack_is_not_passed_to_say(self) -> None:
         from agent_runtime.barge_in import BargeIn, install_chunked_say
 

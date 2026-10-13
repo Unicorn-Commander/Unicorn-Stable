@@ -591,6 +591,25 @@ class ActivationModeTests(TestCase):
             )
         self.assertIn("window", ACTIVATION_MODES)
 
+    def test_barge_in_mode_defaults_to_auto_and_reads_room_metadata(self) -> None:
+        from voice_relay.agent import (
+            DEFAULT_BARGE_IN_MODE,
+            barge_in_mode_from_metadata,
+        )
+
+        self.assertEqual(DEFAULT_BARGE_IN_MODE, "auto")
+        self.assertEqual(barge_in_mode_from_metadata({}), "auto")
+        self.assertEqual(barge_in_mode_from_metadata({"voice_barge_in": "off"}), "off")
+        self.assertEqual(
+            barge_in_mode_from_metadata(
+                {"voice_barge_in": "off"}, {"voice_barge_in": "auto"}
+            ),
+            "off",
+        )
+        self.assertEqual(
+            barge_in_mode_from_metadata({"voice_barge_in": "invalid"}), "auto"
+        )
+
     def _agent(self, mode: str, gate: bool = False):
         from voice_relay.agent import VoiceRelayAgent
 
@@ -701,6 +720,41 @@ class PersistMatrixTests(TestCase):
         self.assertTrue(
             agent._maybe_persist(self.AARON, "rook, cut to camera two", ear="stt")
         )
+
+    def test_name_mode_wake_only_arms_one_follow_up_without_a_greeting(self) -> None:
+        agent = self._agent("name")
+        now = [100.0]
+        agent._clock = lambda: now[0]
+        agent._address_only_window_s = 8.0
+
+        self.assertFalse(agent._maybe_persist(self.AARON, "Hey, Rook", ear="stt"))
+        agent._publisher.persist_user_utterance.assert_not_called()
+
+        now[0] = 107.9
+        self.assertTrue(
+            agent._maybe_persist(self.AARON, "what is the question", ear="stt")
+        )
+        agent._publisher.persist_user_utterance.assert_called_once_with(
+            self.AARON, "what is the question"
+        )
+
+    def test_name_mode_wake_only_expires_before_the_follow_up(self) -> None:
+        agent = self._agent("name")
+        now = [100.0]
+        agent._clock = lambda: now[0]
+        agent._address_only_window_s = 8.0
+
+        self.assertFalse(agent._maybe_persist(self.AARON, "Rook, okay", ear="stt"))
+        now[0] = 108.1
+        self.assertFalse(
+            agent._maybe_persist(self.AARON, "what is the question", ear="stt")
+        )
+        agent._publisher.persist_user_utterance.assert_not_called()
+
+    def test_answers_all_keeps_wake_only_lines_on_the_existing_path(self) -> None:
+        agent = self._agent("always")
+        self.assertTrue(agent._maybe_persist(self.AARON, "Hey, Rook", ear="stt"))
+        agent._publisher.persist_user_utterance.assert_called_once()
 
     def test_always_mode_stands_down_beside_another_agent(self) -> None:
         agent = self._agent("always", others=["agent-majik"])

@@ -507,9 +507,18 @@ class BrigadeBackedAgent(StableAgent):
         )
         my_needles = set(mention_needles(brigade_agent_id, self.agent_type))
         self._dispatch_needles = my_needles
-        from agent_runtime.barge_in import BargeIn, install_chunked_say
+        from agent_runtime.barge_in import (
+            BargeIn,
+            install_chunked_say,
+            transcript_duration_seconds,
+        )
+        from voice_relay.agent import barge_in_mode_from_metadata
 
-        self._barge = BargeIn()
+        barge_mode = barge_in_mode_from_metadata(
+            getattr(getattr(ctx, "job", None), "metadata", ""),
+            getattr(ctx.room, "metadata", ""),
+        )
+        self._barge = BargeIn(enabled=barge_mode == "auto")
 
         def _spoken_limit() -> int:
             from voice_relay.agent import max_spoken_chars_from_metadata
@@ -785,7 +794,10 @@ class BrigadeBackedAgent(StableAgent):
                 if not bool(getattr(ev, "is_final", False)):
                     return
                 text = (getattr(ev, "transcript", "") or "").strip()
-                self._barge_on_human_final(text)
+                self._barge_on_human_final(
+                    text,
+                    duration_s=transcript_duration_seconds(ev),
+                )
             except Exception:
                 logger.debug("brigade_barge_listener_failed", exc_info=True)
 
@@ -814,10 +826,12 @@ class BrigadeBackedAgent(StableAgent):
         session.on("error", self._on_session_error)
         session.on("close", self._on_session_close)
 
-    def _barge_on_human_final(self, text: str) -> None:
+    def _barge_on_human_final(
+        self, text: str, *, duration_s: float | None = None
+    ) -> None:
         """Stop the in-flight say and release the floor. Empty text does nothing."""
         barge = getattr(self, "_barge", None)
-        if barge is None or not barge.on_human_final(text):
+        if barge is None or not barge.on_human_final(text, duration_s=duration_s):
             return
         floor = getattr(self, "_dispatch_floor", None)
         me = getattr(self, "_dispatch_me", None)

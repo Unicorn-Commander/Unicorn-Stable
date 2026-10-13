@@ -34,6 +34,29 @@ scenario: Aaron + Shafen + Corporal Qwen + Majik/DJ Majik Mane in a call —
 humans converse freely, the right agent answers when addressed, stickiness
 releases when humans resume.
 
+### 2a. Relay echo guard and wake-only handoff
+
+The relay's runtime activation names map to the room modes as follows:
+`voice_relay_activation=name` is the when-named path and `always` is the
+answers-all path. While it is speaking, the relay ignores short caller STT
+fragments (default: fewer than 2 words, or an available speech duration below
+600 ms). It also compares caller finals with a rolling 8-second buffer of the
+relay's spoken tokens; an exact or STT-drifted substring scoring at least 0.8
+is dropped before barge-in and caller-history persistence.
+
+The per-room metadata key `voice_barge_in` is `auto` by default and may be set
+to `off` for recordings or shows that must not be interrupted. `off` disables
+the cut; the echo drop remains active so speaker feedback cannot be saved as a
+human line. The runtime knobs are `VOICE_BARGE_IN_MIN_WORDS=2`,
+`VOICE_BARGE_IN_MIN_DURATION_MS=600`, and
+`VOICE_BARGE_IN_ECHO_WINDOW_SECONDS=8`.
+
+In `name` / when-named mode, a line that is only the wake name (or `hey` plus
+the wake name and at most two filler words) is a handoff cue, not a greeting
+request. It arms one unnamed follow-up for that same caller for 8 seconds;
+`VOICE_ADDRESS_STICKY_WINDOW_SECONDS` changes that window. `always` / answers-
+all keeps its existing behavior.
+
 ## 3. Model sizing
 The LLM only handles the ambiguous residue (unnamed domain-routed utterances,
 human-vs-agent-directed calls) — names and stickiness are rules/state-machine.
