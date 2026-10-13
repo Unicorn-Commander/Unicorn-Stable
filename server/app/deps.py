@@ -264,6 +264,39 @@ async def get_guest_or_member(
     return guest_user_dict(principal)
 
 
+async def require_po_staff(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Authenticate and require the existing instance-admin role.
+
+    Project-Ops routes expose cross-room project data and can create external
+    tasks, so ordinary Stable membership is not enough. The role predicate is
+    shared with the existing agent-access and instance-branding admin surfaces;
+    it reads ``STABLE_ADMIN_ROLES`` and does not introduce a new role name.
+    ``get_current_user`` remains the authentication dependency, so guest
+    credentials keep their existing 401 response.
+    """
+    if is_guest(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Project Ops requires a signed-in staff member",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    from app.services.agent_access import is_instance_admin
+
+    if not is_instance_admin(user):
+        logger.info(
+            "projectops_staff_denied",
+            participant_id=str(user.get("participant_id")),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Project Ops staff access required",
+        )
+    return user
+
+
 async def require_guest(
     user: Annotated[dict[str, Any], Depends(get_guest_or_member)],
 ) -> dict[str, Any]:

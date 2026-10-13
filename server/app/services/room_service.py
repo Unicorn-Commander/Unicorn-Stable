@@ -1737,13 +1737,13 @@ class RoomService:
         project_number: str,
         project: Mapping[str, Any],
         org_id: str | None = None,
+        allow_existing_join: bool = False,
     ) -> tuple[Room, bool]:
         """Find-or-create THE private channel bound to ``project_number``.
 
         Slug ``p-<number>-<slug>``, display ``P-00115 · <title>``, visibility
-        private, creator OWNER. A later caller for the same project joins the
-        existing channel as MEMBER (the project is visible to them in the
-        Project-Ops picker; the channel is where its work is discussed).
+        private, creator OWNER. A later caller joins the existing channel as
+        MEMBER only when the caller's route explicitly authorizes that join.
         Returns ``(room, created)``.
         """
         from app.services.project_channels import (
@@ -1777,6 +1777,17 @@ class RoomService:
 
         if room is not None:
             if await self._get_membership(room.id, creator_id) is None:
+                if not allow_existing_join:
+                    logger.warning(
+                        "project_channel_join_denied",
+                        room_id=str(room.id),
+                        project_number=project_number,
+                        participant_id=str(creator_id),
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Project channel membership is required",
+                    )
                 self._db.add(RoomMember(room_id=room.id, participant_id=creator_id, role=MemberRole.MEMBER))
                 await self._db.commit()
                 await self._db.refresh(room)
@@ -1785,6 +1796,7 @@ class RoomService:
                     room_id=str(room.id),
                     project_number=project_number,
                     participant_id=str(creator_id),
+                    authorization="project_ops_staff",
                 )
             return room, False
 
