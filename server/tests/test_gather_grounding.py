@@ -173,10 +173,15 @@ def gather(db: FakeDB, settings: Settings) -> dict:
 
 
 def main() -> int:
+    # Document RAG is optional and off by default (no internal Qdrant/Infinity
+    # address ships in code any more; .env.example documents RAG_ENABLED=false
+    # as the self-host default). Assert the default so a silent flip is caught,
+    # then switch it on explicitly: every case below is about the honesty of
+    # grounding WITH rag on, and must never pass because rag happened to be off.
+    defaults = Settings()
+    check("rag_enabled default", defaults.rag_enabled, False)
     settings = Settings()
-    # The default that made the bug ship. Asserted so a config change that
-    # flips it can never make these tests pass for the wrong reason.
-    check("rag_enabled default", settings.rag_enabled, True)
+    settings.rag_enabled = True
 
     # 1. THE PLAIN ROOM: no knowledge base, no shared document, rag on.
     #    Nothing was searched, so nothing may be claimed — and retrieval and
