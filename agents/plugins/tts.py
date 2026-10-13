@@ -1,8 +1,7 @@
 """TTS plugin configuration.
 
-Default provider is ``kokoro`` — served by the GPU-accelerated **Unicorn Kokoro**
-service on midboy2 (GTX 1070) over Tailscale
-(``http://100.66.42.57:8880`` by default; override with ``KOKORO_BASE_URL``).
+Default provider is ``kokoro`` — an optional OpenAI-compatible service configured
+with ``KOKORO_BASE_URL``.
 
 This is the stock ``kokoro-fastapi`` server, which IS OpenAI-body-compatible:
 ``POST /v1/audio/speech`` takes ``{model, input, voice, response_format, speed}``
@@ -11,9 +10,7 @@ requested ``response_format``. We request ``wav`` so the ``AudioEmitter`` can pa
 the WAV container directly; output is 24 kHz mono. ``af_heart`` (Majik) and the
 rest of the preset voices below are all served.
 
-NOTE — this is the INVERSE of the older uc-1 Unicorn Orator (pocket-tts), which
-used a native ``{text, voice}`` body and rejected ``input``. We migrated to the
-midboy2 GPU Kokoro for speed; the ``OratorTTS`` plugin below now speaks the OpenAI
+NOTE — this plugin speaks the OpenAI
 ``{model, input, voice}`` contract (kept over ``openai.TTS`` for its WAV chunk
 emit + per-agent voice presets).
 
@@ -46,9 +43,8 @@ from agent_runtime.config import AgentSettings, get_agent_settings
 logger = structlog.get_logger(__name__)
 
 
-# Deployed default = GPU Kokoro on midboy2 (GTX 1070) over Tailscale, reachable
-# from the stable-agents container. Override with KOKORO_BASE_URL.
-DEFAULT_KOKORO_BASE_URL = os.getenv("KOKORO_BASE_URL", "http://100.66.42.57:8880")
+# Empty keeps the optional local provider off until an endpoint is supplied.
+DEFAULT_KOKORO_BASE_URL = os.getenv("KOKORO_BASE_URL", "").strip()
 DEFAULT_KOKORO_MODEL = os.getenv("KOKORO_MODEL", "kokoro")
 
 # --- Usage metering (best-effort) -------------------------------------------
@@ -188,7 +184,7 @@ class OratorTTS(tts.TTS):
     """Native Kokoro-FastAPI TTS plugin (livekit-agents 1.5).
 
     Speaks the OpenAI-compatible ``POST /v1/audio/speech`` contract of the
-    midboy2 GPU Kokoro (``{model, input, voice, response_format}`` -> WAV).
+    configured GPU Kokoro service (``{model, input, voice, response_format}`` -> WAV).
     """
 
     def __init__(
@@ -362,6 +358,8 @@ def get_tts_plugin(
     if provider == "kokoro":
         voice = _resolve_kokoro_voice(personality, voice_id)
         base_url = _cfg_get(cfg, "kokoro_base_url") or DEFAULT_KOKORO_BASE_URL
+        if not base_url:
+            raise ValueError("KOKORO_BASE_URL is required for kokoro TTS")
         tts_plugin = OratorTTS(
             base_url=base_url, voice=voice, model=DEFAULT_KOKORO_MODEL, personality=personality
         )

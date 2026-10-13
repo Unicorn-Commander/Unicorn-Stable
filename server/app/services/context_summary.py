@@ -15,9 +15,9 @@ it can see.
 
 WHERE IT RUNS. The model is reached through the LiteLLM gateway
 (OpenAI-compatible ``/chat/completions``); the default lane is
-``qwen3.6-35b-long-batch`` on bigboy's 3090 — our own hardware, because a
-room summary is the room's content (customer names included) and never
-leaves the box. Base URL, key and model come from the environment
+the configured long-context model on deployment-owned hardware — a room
+summary is the room's content (customer names included) and never leaves the
+box. Base URL, key and model come from the environment
 (``CONTEXT_SUMMARY_BASE_URL`` / ``CONTEXT_SUMMARY_API_KEY`` /
 ``CONTEXT_SUMMARY_MODEL``) and are never logged or returned.
 

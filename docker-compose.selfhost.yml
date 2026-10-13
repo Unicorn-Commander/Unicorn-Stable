@@ -270,6 +270,8 @@ services:
       # Extra CSP connect-src entries so the browser may open the LiveKit
       # signaling socket on its separate port. install.sh fills this in.
       - STABLE_CSP_EXTRA_CONNECT=${STABLE_CSP_EXTRA_CONNECT:-}
+      - STABLE_CSP_EXTRA_SCRIPT=${STABLE_CSP_EXTRA_SCRIPT:-}
+      - STABLE_CSP_EXTRA_FRAME=${STABLE_CSP_EXTRA_FRAME:-}
     volumes:
       # Self-host nginx vhost (adds the /auth proxy + self-contained CSP).
       - ./deploy/selfhost/nginx.selfhost.conf.template:/etc/nginx/templates/default.conf.template:ro

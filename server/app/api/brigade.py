@@ -219,24 +219,11 @@ def _is_human_pair_dm(
 #   3. the EMOJI GLYPH       (Brigade `avatar` — a single character)
 #   4. initials on the identity colour (client-side; see lib/avatar.ts)
 #
-# CURRENT CONTRACT (verified 2026-07-29): Brigade serves its portrait catalog
-# at https://brigade.magicunicorn.dev/avatars/*.webp and its current database
-# has avatar_url populated for part of the roster. Stable therefore configures
-# BRIGADE_AVATAR_BASE_URL for the complete convention catalog while continuing
-# to let an explicit avatarUrl win. Relative explicit URLs are resolved against
-# the Brigade origin here — never against Stable's origin in the browser.
+# Deployments may configure BRIGADE_AVATAR_BASE_URL for the complete convention
+# catalog while continuing to let an explicit avatarUrl win. Relative explicit
+# URLs are resolved against the configured Brigade origin here — never against
+# Stable's origin in the browser.
 # ---------------------------------------------------------------------------
-
-# Hosts we are willing to point an <img> at. An agent avatar URL comes from
-# Brigade's database, which is not a trust boundary Stable controls, and it
-# renders in every connected client — an arbitrary host would make every
-# viewer's IP and user agent visible to whoever set that row. Same-origin
-# (relative) paths are always fine.
-_AVATAR_HOST_SUFFIXES = (
-    "magicunicorn.dev",
-    "magicunicorn.tech",
-    "unicorncommander.ai",
-)
 
 # A convention URL is only useful when Brigade actually owns that filename.
 # Do not synthesize 404s for every dynamically registered runtime agent.
@@ -267,12 +254,32 @@ _CONVENTION_AVATAR_IDS = frozenset(
 )
 
 
-def _safe_avatar_url(raw: Any) -> str | None:
-    """Accept a relative path or an https URL on one of our own hosts; else None.
+def _configured_avatar_hosts(settings: Any) -> frozenset[str]:
+    """Return the configured avatar URL hostnames and their parent domains."""
+    values = [
+        getattr(settings, "brigade_base_url", ""),
+        getattr(settings, "brigade_avatar_base_url", ""),
+        os.environ.get("BRIGADE_AVATAR_BASE_URL", ""),
+    ]
+    hosts: set[str] = set()
+    for value in values:
+        for candidate in str(value or "").split(","):
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+            if parsed.hostname:
+                hosts.add(parsed.hostname.lower().rstrip("."))
+    return frozenset(hosts)
+
+
+def _safe_avatar_url(raw: Any, settings: Any | None = None) -> str | None:
+    """Accept a relative path or an https URL on a configured host; else None.
 
     Returning None is not a failure — it drops to a verified convention image,
     then emoji, then initials.
     """
+    settings = settings or get_settings()
     if not isinstance(raw, str):
         return None
     url = raw.strip()
@@ -284,24 +291,30 @@ def _safe_avatar_url(raw: Any) -> str | None:
     if parsed.scheme != "https" or not parsed.hostname:
         return None
     host = parsed.hostname.lower()
-    if any(host == s or host.endswith("." + s) for s in _AVATAR_HOST_SUFFIXES):
+    trusted_hosts = _configured_avatar_hosts(settings)
+    if any(host == trusted or host.endswith("." + trusted) for trusted in trusted_hosts):
         return url
     logger.debug("agent_avatar_url_rejected", url=url, host=host)
     return None
 
 
-def _convention_avatar_url(agent_id: str) -> str | None:
+def _convention_avatar_url(agent_id: str, settings: Any | None = None) -> str | None:
     """Tier 2: the ``<base>/<id>.webp`` convention, only if configured.
 
     Set BRIGADE_AVATAR_BASE_URL to the Brigade-owned portrait directory.
     """
-    base = (os.environ.get("BRIGADE_AVATAR_BASE_URL") or "").strip().rstrip("/")
+    settings = settings or get_settings()
+    base = (
+        os.environ.get("BRIGADE_AVATAR_BASE_URL")
+        or getattr(settings, "brigade_avatar_base_url", "")
+        or ""
+    ).strip().rstrip("/")
     if not base or agent_id not in _CONVENTION_AVATAR_IDS:
         return None
-    return _safe_avatar_url(f"{base}/{agent_id}.webp")
+    return _safe_avatar_url(f"{base}/{agent_id}.webp", settings)
 
 
-def _registered_avatar_url(raw: Any) -> str | None:
+def _registered_avatar_url(raw: Any, settings: Any | None = None) -> str | None:
     """Resolve a Brigade ``avatarUrl`` into a browser-safe absolute URL.
 
     Brigade stores portable same-origin paths for its built-in roster. If those
@@ -310,6 +323,7 @@ def _registered_avatar_url(raw: Any) -> str | None:
     public origin first; absolute trusted URLs are left unchanged.
     """
 
+    settings = settings or get_settings()
     if (
         isinstance(raw, str)
         and raw.startswith("/api/brands/")
@@ -324,17 +338,22 @@ def _registered_avatar_url(raw: Any) -> str | None:
         logger.warning("brand_ops_relative_avatar_not_proxyable", url=raw)
         return None
     if isinstance(raw, str) and raw.startswith("/") and not raw.startswith("//"):
-        brigade_origin = get_settings().brigade_base_url.rstrip("/") + "/"
-        return _safe_avatar_url(urljoin(brigade_origin, raw))
-    return _safe_avatar_url(raw)
+        brigade_origin = getattr(settings, "brigade_base_url", "").strip().rstrip("/")
+        if not brigade_origin:
+            return None
+        return _safe_avatar_url(urljoin(brigade_origin + "/", raw), settings)
+    return _safe_avatar_url(raw, settings)
 
 
-def _resolve_agent_avatar(item: dict[str, Any]) -> tuple[str | None, str | None]:
+def _resolve_agent_avatar(
+    item: dict[str, Any], settings: Any | None = None
+) -> tuple[str | None, str | None]:
     """Return (avatar_url, emoji) for one Brigade roster record."""
+    settings = settings or get_settings()
     agent_id = str(item.get("id") or "")
     url = _registered_avatar_url(
-        item.get("avatarUrl")
-    ) or _convention_avatar_url(agent_id)
+        item.get("avatarUrl"), settings
+    ) or _convention_avatar_url(agent_id, settings)
     raw_emoji = item.get("avatar")
     emoji = raw_emoji.strip()[:8] if isinstance(raw_emoji, str) and raw_emoji.strip() else None
     return url, emoji
@@ -576,7 +595,7 @@ async def _fetch_brigade_roster(redis: Redis) -> list[BrigadeRosterAgent]:
                 or m.startswith(("claude", "gpt", "gemini"))
                 else "employee"
             )
-        avatar_url, emoji = _resolve_agent_avatar(it)
+        avatar_url, emoji = _resolve_agent_avatar(it, settings)
         availability, availability_reason = classify(
             gateway_fresh=str(it["id"]) in fresh,
             # We are inside a successful roster read, so Brigade is known-good
@@ -648,7 +667,7 @@ class ChatModel(BaseModel):
 # Curated tiers the model switcher offers — the governed menu (Glean/Researcher
 # pattern): a short allowlist of verified lanes, local-first, labeled by what
 # they are FOR rather than raw catalog ids. Every id is a verified-working
-# Brigade `model` override on the uchub gateway (checked 2026-07-04); qwen
+# Brigade `model` override on the configured gateway (checked 2026-07-04); qwen
 # lanes are no-think per fleet policy. "Auto" (no override) is rendered by the
 # client as the default row. Add ids only after verifying they route 200.
 _SWITCHER_MODELS: list[dict[str, str]] = [

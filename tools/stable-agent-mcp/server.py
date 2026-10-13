@@ -11,9 +11,9 @@ scoped gateway key and a public base URL:
   * STABLE_GATEWAY_TOKEN  -> a scoped gateway key (`sbk-…`). Bound server-side to
                              ONE agent identity + a room allowlist; the caller
                              CANNOT choose which agent it posts as (no impersonation).
-                             A uchub user JWT with the `stable-agent-gateway` role
+                             A Keycloak user JWT with the `stable-agent-gateway` role
                              also works.
-  * STABLE_GATEWAY_BASE_URL -> the public backend, e.g. https://stable.magicunicorn.dev
+  * STABLE_GATEWAY_BASE_URL -> the public backend, e.g. https://example.com
 
 Contract (ORCH-1 gateway, app/api/gateway.py):
 
@@ -49,7 +49,7 @@ from mcp.server.fastmcp import FastMCP
 # --- config (env-driven; NO secrets baked in) --------------------------------
 AGENT_DISPLAY_NAME = os.environ.get("AGENT_DISPLAY_NAME", "").strip()
 
-# The scoped gateway key (sbk-…) or a uchub JWT. Back-compat: honor the old name.
+# The scoped gateway key (sbk-…) or a Keycloak JWT. Back-compat: honor the old name.
 GATEWAY_TOKEN = (
     os.environ.get("STABLE_GATEWAY_TOKEN", "").strip()
     or os.environ.get("STABLE_INTERNAL_TOKEN", "").strip()
@@ -59,7 +59,7 @@ GATEWAY_TOKEN = (
 BASE_URL = (
     os.environ.get("STABLE_GATEWAY_BASE_URL", "").strip()
     or os.environ.get("STABLE_INTERNAL_BASE_URL", "").strip()
-    or "https://stable.magicunicorn.dev"
+    or "http://localhost"
 ).rstrip("/")
 
 GATEWAY_MESSAGES_URL = f"{BASE_URL}/api/v1/gateway/messages"

@@ -8,9 +8,9 @@ inviting non-employees or standing up a second instance.
 ```
             ┌──────────────────────────────┐    ┌──────────────────────────────┐
             │  INTERNAL Stable              │    │  PUBLIC Stable                │
-            │  *.magicunicorn.dev           │    │  *.unicorncommander.ai        │
+            │  *.internal.example.com      │    │  *.public.example.com         │
             ├──────────────────────────────┤    ├──────────────────────────────┤
- Realm      │  uchub (Magic Unicorn team)   │    │  stable-public (multi-tenant) │
+ Realm      │  internal (team deployment)  │    │  stable-public (multi-tenant) │
  Auth       │  Internal SSO + employee      │    │  Self-serve register +        │
             │  Google/Microsoft via Keycloak│    │  workspace-scoped invites     │
  Network    │  WebSocket via Cloudflare;    │    │  Same WSS path; WebRTC media  │
@@ -24,20 +24,22 @@ inviting non-employees or standing up a second instance.
 
 ## Today (2026-06)
 
-- ✅ INTERNAL is live: `stable.magicunicorn.dev` + `livekit.magicunicorn.dev`,
-  Keycloak realm `uchub`, Tailscale-only voice.
+- ✅ INTERNAL is live on the deployment's configured domains, with its configured
+  Keycloak realm and Tailscale-only voice.
 - ❌ PUBLIC instance does not exist yet. When it does, mirror the same
   containers with a different `.env` and a new realm.
 
 ## Voice topology
 
 Speech-to-Text (Whisper via amanuensis) and Text-to-Speech (Kokoro via orator)
-run on the **uc-1** appliance box (Tailscale IP 100.78.236.160):
+run on the configured voice appliance (use `WHISPER_BASE_URL` and
+`KOKORO_BASE_URL`; no address is committed here):
 
 - **amanuensis:** Whisper STT on port 9000
 - **orator:** Kokoro TTS on port 8880
 
-Both are reachable from bigboy and the stable-agents container via Tailscale.
+Both are reachable from the application host and the stable-agents container via
+the deployment's private network.
 Environment variables `WHISPER_BASE_URL` and `KOKORO_BASE_URL` point agents to
 these endpoints. See `DEPLOYMENT.md` for voice services troubleshooting.
 
@@ -59,10 +61,10 @@ these endpoints. See `DEPLOYMENT.md` for voice services troubleshooting.
 
 These are flagged so we don't paint ourselves into a corner.
 
-- **Hard-coded `keycloak_realm: uchub`** in code. Should be env-only.
+- **Hard-coded Keycloak realm** in code. Should be env-only.
 - **Brigade-as-fixed-LLM** assumption. PUBLIC may want Bring-Your-Own-Key
   (already half-supported via the OpenAI-compat adapter).
-- **Single email sender** (`support@magicunicorn.tech`). PUBLIC needs
+- **Single email sender** (`support@example.com`). PUBLIC needs
   per-workspace branding or a generic `noreply@stable.app` domain.
 - **Tailscale-IP-as-WebRTC-candidate**. PUBLIC must `use_external_ip: true`
   AND have a TURN deployment; flip the toggle in `livekit.yaml` per instance.
@@ -79,7 +81,7 @@ These are flagged so we don't paint ourselves into a corner.
    `LIVEKIT_PUBLIC_URL` accordingly.
 4. Deploy amanuensis/orator on the public instance or point to a shared voice
    appliance accessible from the internet.
-5. New DNS subdomains under `unicorncommander.ai`.
+5. New DNS subdomains under the public deployment's configured domain.
 6. Copy the same backend image, point it at the new Postgres + Keycloak.
 7. The ONLY code change should be making the realm name, voice endpoints,
    and whether to use Tailscale-IP-as-WebRTC-candidate configurable. If you

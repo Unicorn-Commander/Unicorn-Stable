@@ -1,3 +1,5 @@
+import { configureRuntimeHosts } from "@/lib/runtimeHosts";
+
 export interface StableInstance {
   id: string;
   name: string;
@@ -6,6 +8,13 @@ export interface StableInstance {
   apiBaseUrl: string;
   wsUrl?: string;
   keycloak: { url: string; realm: string; clientId: string };
+  trustedOrigins?: string | string[];
+  analyticsScriptUrl?: string;
+  analyticsWebsiteId?: string;
+  appUrl?: string;
+  marketingBaseUrl?: string;
+  contactEmail?: string;
+  sourceUrl?: string;
 }
 
 function envInstance(): StableInstance {
@@ -37,13 +46,17 @@ export async function loadInstances(): Promise<StableInstance[]> {
     if (response.ok) {
       const parsed = (await response.json()) as unknown;
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((item) => normalizeInstance(item as StableInstance));
+        const instances = parsed.map((item) => normalizeInstance(item as StableInstance));
+        configureRuntimeHosts(instances);
+        return instances;
       }
     }
   } catch {
     // A missing instances.json is the expected single-instance fallback.
   }
-  return [normalizeInstance(envInstance())];
+  const instances = [normalizeInstance(envInstance())];
+  configureRuntimeHosts(instances);
+  return instances;
 }
 
 export function instanceForCurrentOrigin(instances: StableInstance[]): StableInstance {
@@ -52,7 +65,7 @@ export function instanceForCurrentOrigin(instances: StableInstance[]): StableIns
 }
 
 /** Two instances share a Keycloak session (and therefore a token) when their
- *  url + realm + clientId all match — true for our fleet (one uchub realm +
+ *  url + realm + clientId all match — true for our fleet (one configured realm +
  *  stable-web client across every instance). */
 export function sameKeycloak(a: StableInstance, b: StableInstance): boolean {
   return (

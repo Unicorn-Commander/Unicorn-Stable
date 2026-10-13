@@ -98,8 +98,8 @@ export function Avatar({
           loading="lazy"
           decoding="async"
           // Do NOT set crossOrigin here: it would turn every load into a CORS
-          // request, and an avatar on one of our other hosts (Aaron's lives on
-          // unicorncommander.ai) does not send Access-Control-Allow-Origin —
+          // request, and an avatar on another configured host may not send
+          // Access-Control-Allow-Origin —
           // the image would simply fail. no-referrer is the useful half: it
           // stops the current room URL leaking to the image host.
           referrerPolicy="no-referrer"

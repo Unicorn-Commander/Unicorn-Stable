@@ -97,14 +97,18 @@ def _rewrite_labels(labels, slug, dom, lkdom, turndom, wsdom):
     for lb in labels or []:
         s = str(lb)
         s = name_ctx.sub(rf"\1stable-{slug}", s)
-        # Host rules → the org's domains. The ws host FIRST: it contains no
-        # other domain as a substring, but "stable.magicunicorn.dev" IS a
-        # suffix-overlap risk if a future host embeds it, so replace the most
-        # specific names before the generic one.
-        s = s.replace("stable-ws.magicunicorn.dev", wsdom)
-        s = s.replace("stable.magicunicorn.dev", dom)
-        s = s.replace("livekit.magicunicorn.dev", lkdom)
-        s = s.replace("turn.magicunicorn.dev", turndom)
+        # Host rules → the org's domains. Select the target from the router
+        # name, then replace only Host/HostSNI expressions. This keeps the
+        # canonical compose free to choose its own example/default domains.
+        host_domain = dom
+        if re.search(r"routers\.stable-livekit(?:[-.]|=)", s):
+            host_domain = lkdom
+        elif re.search(r"routers\.stable-turn(?:[-.]|=)", s):
+            host_domain = turndom
+        elif re.search(r"routers\.stable-ws(?:[-.]|=)", s):
+            host_domain = wsdom
+        host_rule = re.compile(r"(HostSNI|Host)\(`[^`]*`\)")
+        s = host_rule.sub(lambda match: f"{match.group(1)}(`{host_domain}`)", s)
         out.append(s)
     return out
 

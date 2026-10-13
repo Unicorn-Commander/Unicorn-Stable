@@ -71,11 +71,16 @@ class Settings(BaseSettings):
     keycloak_realm: str = "stable"
     keycloak_client_id: str = "stable-backend"
     keycloak_client_secret: str = ""
+    # Additional issuer hostnames explicitly trusted for cross-instance
+    # identity linking. Comma-separated; the configured KEYCLOAK_URL is always
+    # trusted separately.
+    trusted_issuer_hosts: str = ""
 
     # Unicorn Brigade — upstream agent backend. Agents in Stable rooms route
     # their LLM calls through Brigade so persona + memory + delegation live
     # in one place.
-    brigade_base_url: str = "https://brigade.magicunicorn.dev/api/v1/openai/v1"
+    brigade_base_url: str = ""
+    brigade_avatar_base_url: str = ""
     brigade_api_key: str = ""
     brigade_worker_agent_name: str = "stable-brigade"  # must match WorkerOptions.agent_name
 
@@ -83,7 +88,7 @@ class Settings(BaseSettings):
     # (services/agent_chat_responder.py). Distinct from brigade_base_url
     # (which historically pointed at the OpenAI-compat shim — currently
     # 404 in production). Auth header is X-API-Key, not Bearer.
-    brigade_api_base_url: str = "https://brigade.magicunicorn.dev/api/v1"
+    brigade_api_base_url: str = ""
 
     # Microsoft Graph email (invites, notifications). Optional — falls back
     # to logging only if not configured.
@@ -93,21 +98,21 @@ class Settings(BaseSettings):
     ms_graph_from_address: str = ""
 
     # Public URL shown in outgoing emails so recipients can click through.
-    public_base_url: str = "https://stable.magicunicorn.dev"
+    public_base_url: str = "http://localhost:3000"
 
     # Web Push (VAPID). Public key is handed to the browser as its
     # applicationServerKey; the private key signs pushes. Empty = web-push
     # disabled (subscribe + dispatch become no-ops).
     vapid_public_key: str = ""
     vapid_private_key: str = ""
-    vapid_subject: str = "mailto:aaron@magicunicorn.tech"
+    vapid_subject: str = ""
 
     # Project Ops MCP service credentials. Prefer the least-privilege PAT;
     # retain the JWT as a migration fallback until the PAT is provisioned.
     projectops_service_pat: str = ""
     projectops_service_jwt: str = ""
-    projectops_mcp_url: str = "https://api.projectops.magicunicorn.dev/api/v1/mcp"
-    projectops_dashboard_url: str = "https://projectops.magicunicorn.dev"
+    projectops_mcp_url: str = ""
+    projectops_dashboard_url: str = ""
 
     # -- Project-Ops → Stable signed webhook receiver (app/api/project_ops.py) --
     # Shared HMAC secret for POST /api/v1/webhooks/project-ops. This is the
@@ -197,11 +202,11 @@ class Settings(BaseSettings):
     # are injected as context when the room's agent replies. All RAG work is
     # fail-safe and fire-and-forget: any error is swallowed and never blocks
     # message send or the chat reply. Flip to False to disable entirely.
-    rag_enabled: bool = True
-    # Qdrant vector store (no auth). Reachable from the backend container.
-    qdrant_url: str = "http://172.17.0.1:6333"
-    # Infinity proxy: OpenAI-shaped /embeddings + /rerank.
-    infinity_url: str = "http://172.17.0.1:8086"
+    rag_enabled: bool = False
+    # Qdrant vector store (no auth). Optional; set the deployment-owned URL.
+    qdrant_url: str = ""
+    # Infinity proxy: OpenAI-shaped /embeddings + /rerank. Optional.
+    infinity_url: str = ""
     # Collection name (pre-created: size 1024, distance Cosine).
     rag_collection: str = "stable_documents"
     # Embedding + rerank model names passed to Infinity.
@@ -213,8 +218,8 @@ class Settings(BaseSettings):
     # (Anthropic "contextual retrieval"), cutting cross-doc retrieval misses.
     # Fully fail-safe: one short call per document; on any error/timeout the
     # chunk falls back to a filename-only prefix. Flip off to embed raw chunks.
-    context_enabled: bool = True
-    context_llm_url: str = "http://172.17.0.1:8085/v1/chat/completions"
+    context_enabled: bool = False
+    context_llm_url: str = ""
     context_model: str = "Llama-3.2-3B-Instruct-Q4_K_M"
 
     # -- Rate limiting (Redis token-bucket; see app.deps.rate_limit) --
@@ -351,9 +356,9 @@ class Settings(BaseSettings):
     livekit_token_ttl_seconds: int = 3600
 
     # -- Read-aloud TTS proxy (app/api/tts.py) --
-    # kokoro-fastapi front (kokoro-ha nginx on this host -> uc-1 GTX1070
-    # primary). Same value the agents container uses as KOKORO_BASE_URL.
-    kokoro_base_url: str = "http://192.168.10.10:8883"
+    # Optional kokoro-fastapi-compatible TTS front. Same value the agents
+    # container uses as KOKORO_BASE_URL when voice is enabled.
+    kokoro_base_url: str = ""
     # Suite default voice = Majik (af_heart).
     tts_default_voice: str = "af_heart"
     # Read-aloud (per-message speaker button) default for senders with no
@@ -388,16 +393,15 @@ class Settings(BaseSettings):
     meeting_ops_outbox_legal_hold: bool = False
 
     # -- Agent context (app/services/context_builder.py; design §4) --
-    # Token budget the Brigade responder asks the context builder for.
+    # Token budget the configured Brigade responder asks the context builder for.
     context_budget_tokens: int = 6000
 
     # -- Rolling room summary (app/services/context_summary.py; design §4) --
     # Every N new messages per room (or on demand by an owner/admin) the
     # delta since the previous summary is folded into a new one through the
-    # LiteLLM gateway (OpenAI-compatible chat completions). The default lane
-    # is qwen3.6-35b-long-batch on bigboy's 3090: room content, customer
-    # names included, never leaves our hardware. Base URL and key are read
-    # here and never logged or returned. Master switch default OFF.
+    # configured LiteLLM gateway (OpenAI-compatible chat completions). Base URL
+    # and key are read here and never logged or returned. Master switch default
+    # OFF.
     context_summary_enabled: bool = False
     context_summary_base_url: str = ""
     context_summary_api_key: str = ""
@@ -427,9 +431,8 @@ class Settings(BaseSettings):
     # create the Meeting-Ops session before recording `no_session`.
     call_recording_session_wait_seconds: int = 1800
     # Meeting-Ops base URL for the audio attach lane. Empty = meeting_ops_url.
-    # On bigboy dogfood this is the direct container URL
-    # (http://meet-backend:9050) so multi-hundred-MB call audio never transits
-    # the CDN edge (Cloudflare caps request bodies well below a long call).
+    # Deployments may set this to a direct service URL so large call audio does
+    # not transit a CDN edge.
     meeting_ops_upload_url: str = ""
     # A USER-scoped Meeting-Ops PAT (mops_pat_…). The transcript lane's
     # stable.transcript.ingest PAT is scope-locked to /sessions/ingest and is
@@ -489,9 +492,9 @@ class Settings(BaseSettings):
 
     # -- STT proxy (app/api/stt.py) --
     # OpenAI-compatible transcription base (must include the /v1 suffix).
-    # Deployed default = Parakeet OpenAI shim on midboy1 (was Amanuensis on
-    # uc-1). Agents use the same WHISPER_BASE_URL env var.
-    whisper_base_url: str = "http://192.168.10.68:8011/v1"
+    # Optional OpenAI-compatible transcription base. Agents use the same
+    # WHISPER_BASE_URL env var.
+    whisper_base_url: str = ""
     whisper_model: str = "whisper-1"
 
     @field_validator("agent_access_default")

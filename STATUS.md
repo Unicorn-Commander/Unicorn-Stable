@@ -6,9 +6,9 @@
 from this tree via `scripts/deploy.sh`; self-host from a fresh clone works via
 `./install.sh` (see `DEPLOYMENT.md`).
 
-- **Flagship:** stable.unicorncommander.ai — Keycloak realm `uchub`
-- **Dogfood:** stable.magicunicorn.dev — same realm, federated in the server rail
-- WebSockets ride dedicated `stable-ws.*` bypass hosts (CDN stalls WS upgrades)
+- **Flagship:** configured public deployment — configured Keycloak realm
+- **Dogfood:** configured internal deployment — same realm, federated in the server rail
+- WebSockets ride the deployment's configured bypass hosts (CDN stalls WS upgrades)
 
 ## What ships today (v0.2.0 — high level)
 

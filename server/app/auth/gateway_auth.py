@@ -2,10 +2,10 @@
 
 Two credential kinds, both mapped to a DERIVED, non-spoofable agent identity:
 
-- **uchub user JWT** — validated for signature/issuer/expiry (reusing the
+- **Keycloak user JWT** — validated for signature/issuer/expiry (reusing the
   existing crypto), then GATED on an explicit ``stable-agent-gateway`` realm/client
   role (or a subject allowlist). This is the critical difference from
-  ``deps.get_current_user``: a valid-but-unauthorized suite token (every uchub
+  ``deps.get_current_user``: a valid-but-unauthorized suite token (every configured
   user carries ``aud=account`` and passes signature validation) is REJECTED here,
   and we NEVER JIT-provision a human Participant. That closes the SSO-leak trap.
 - **gateway key** — a Stable-owned ``agent_gateway_keys`` row, verified by SHA-256
@@ -141,7 +141,7 @@ def _default_rate_rpm() -> int:
 
 
 async def validate_gateway_jwt(token: str, settings) -> GatewayPrincipal:
-    """Validate a uchub JWT AND require gateway authorization (role or allowlist).
+    """Validate a Keycloak JWT AND require gateway authorization (role or allowlist).
 
     Rejects a valid-but-unauthorized suite token (the aud=account SSO-leak) with
     403 and never provisions a human account.
@@ -169,7 +169,7 @@ async def validate_gateway_jwt(token: str, settings) -> GatewayPrincipal:
     )
     if not authorized:
         # Valid signature but NOT authorized for the gateway — this is the SSO-leak
-        # guard: "has a valid uchub token" is NOT "may use the gateway".
+        # guard: "has a valid Keycloak token" is NOT "may use the gateway".
         raise GatewayAuthError(
             403,
             "This account is not authorized for the agent gateway "

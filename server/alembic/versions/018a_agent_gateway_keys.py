@@ -22,7 +22,7 @@ head because 019's upgrade already assumes the table exists; appending a creator
 AFTER 019 would leave the fresh-DB path broken at 019 first.
 
 Existing databases already carry the table from the out-of-band SQL, and they are
-NOT all stamped at head. Measured 2026-09-18: bigboy's dogfood database is at 020,
+NOT all stamped at head. Measured 2026-09-18: one dogfood database is at 020,
 but the FLAGSHIP database is stamped ``017_guest_row_retention`` and has the table.
 Its next ``alembic upgrade head`` walks 018 -> 018a -> 019, so an unconditional
 ``create_table`` here would raise ``DuplicateTable`` and block that upgrade. The

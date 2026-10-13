@@ -27,6 +27,7 @@
 
 import { brandAvatarFor } from "@/lib/brandAvatars";
 import { normalizeAgentKey, puppetForTexture } from "@/lib/puppetRig";
+import { isRuntimeHostAllowed } from "@/lib/runtimeHosts";
 import puppetManifest from "../../public/agent-puppets/manifest.json";
 
 export interface Identity {
@@ -194,13 +195,6 @@ const APP_LOGOS = {
   webhook: { id: "webhook", name: "Webhook", src: "/app-logos/webhook.svg" },
 } as const;
 
-/** Hosts an `<img>` may point at. Same rule as `lib/avatar.ts`. */
-const ALLOWED_AVATAR_HOST_SUFFIXES = [
-  "magicunicorn.dev",
-  "magicunicorn.tech",
-  "unicorncommander.ai",
-];
-
 declare const safeAvatarBrand: unique symbol;
 
 /**
@@ -309,10 +303,7 @@ export function safeAvatarSrc(url: string | null | undefined): SafeAvatarSrc | n
   if (typeof window !== "undefined" && host === window.location.hostname) {
     return raw as SafeAvatarSrc;
   }
-  const ok = ALLOWED_AVATAR_HOST_SUFFIXES.some(
-    (suffix) => host === suffix || host.endsWith("." + suffix),
-  );
-  return ok ? (raw as SafeAvatarSrc) : null;
+  return isRuntimeHostAllowed(host) ? (raw as SafeAvatarSrc) : null;
 }
 
 let srcFn: (url: string | null | undefined) => SafeAvatarSrc | null = safeAvatarSrc;

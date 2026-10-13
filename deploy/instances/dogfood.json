@@ -1,28 +1,42 @@
 [
   {
     "id": "flagship",
-    "name": "Commander",
+    "name": "Stable",
     "icon": "S",
-    "webOrigin": "https://stable.unicorncommander.ai",
-    "apiBaseUrl": "https://stable.unicorncommander.ai",
+    "webOrigin": "https://example.com",
+    "apiBaseUrl": "https://example.com",
     "keycloak": {
-      "url": "https://auth.unicorncommander.ai",
-      "realm": "uchub",
+      "url": "https://auth.example.com",
+      "realm": "stable",
       "clientId": "stable-web"
     },
-    "wsUrl": "wss://stable-ws.unicorncommander.ai/ws"
+    "wsUrl": "wss://example.com/ws",
+    "trustedOrigins": [],
+    "analyticsScriptUrl": "",
+    "analyticsWebsiteId": "",
+    "appUrl": "",
+    "marketingBaseUrl": "",
+    "contactEmail": "",
+    "sourceUrl": ""
   },
   {
     "id": "dogfood",
-    "name": "Magic Unicorn",
+    "name": "Stable",
     "icon": "M",
-    "webOrigin": "https://stable.magicunicorn.dev",
-    "apiBaseUrl": "https://stable.magicunicorn.dev",
+    "webOrigin": "https://example.com",
+    "apiBaseUrl": "https://example.com",
     "keycloak": {
-      "url": "https://auth.unicorncommander.ai",
-      "realm": "uchub",
+      "url": "https://auth.example.com",
+      "realm": "stable",
       "clientId": "stable-web"
     },
-    "wsUrl": "wss://stable-ws.magicunicorn.dev/ws"
+    "wsUrl": "wss://example.com/ws",
+    "trustedOrigins": [],
+    "analyticsScriptUrl": "",
+    "analyticsWebsiteId": "",
+    "appUrl": "",
+    "marketingBaseUrl": "",
+    "contactEmail": "",
+    "sourceUrl": ""
   }
 ]
