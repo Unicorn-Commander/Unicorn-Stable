@@ -20,10 +20,12 @@ const FOCUSABLE_SELECTOR = [
  * `role="dialog" aria-modal="true"` plus a label in JSX. The hook provides:
  *
  *  - focus trap — Tab / Shift+Tab cycle within the panel's focusable elements
- *  - initial focus — first `[autofocus]`, else first focusable, else the
- *    panel itself (the hook stamps `tabindex="-1"` on the panel). If the
- *    component already moved focus inside the panel (e.g. a search input's
- *    own focus effect), the hook leaves it alone.
+ *  - initial focus — the panel takes focus the moment the modal opens (the
+ *    hook stamps `tabindex="-1"` on it), so a key pressed before the first
+ *    frame is already inside the trap; one frame later focus moves to the
+ *    first `[autofocus]`, else the first focusable. If the component already
+ *    moved focus inside the panel (e.g. a search input's own focus effect),
+ *    the hook leaves it alone.
  *  - focus restore — on close/unmount, focus returns to whatever was focused
  *    before the modal opened
  *  - Escape → onClose. The listener lives on the panel (not window) and stops
@@ -68,10 +70,26 @@ export function useModalA11y(
         panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
       ).filter((el) => el.offsetParent !== null); // visible only
 
+    // Take focus NOW, on the panel itself. Until the frame below runs, focus
+    // is still on whatever opened the modal — outside the panel — and a Tab
+    // pressed in that window never reaches the panel's keydown listener: it
+    // walks the page behind the scrim. A slow machine makes the window long
+    // (an end-to-end test caught the first Tab after a sheet opened leaving
+    // it). Parked on the panel, that Tab goes through the trap instead.
+    let parked = false;
+    if (!panel.contains(document.activeElement)) {
+      panel.focus({ preventScroll: true });
+      parked = document.activeElement === panel;
+    }
+
     // Initial focus after paint (framer-motion mounts mid-animation). Skip if
-    // the component already placed focus inside the panel itself.
+    // the component — or the user, with an early Tab — already put focus on
+    // something inside the panel. Focus this hook parked on the panel above
+    // does not count; a panel the component focused itself is left alone.
     const raf = requestAnimationFrame(() => {
-      if (panel.contains(document.activeElement)) return;
+      const current = document.activeElement;
+      if (current !== panel && panel.contains(current)) return;
+      if (current === panel && !parked) return;
       const auto = panel.querySelector<HTMLElement>("[autofocus]");
       const target = auto && auto.offsetParent !== null ? auto : focusables()[0];
       (target ?? panel).focus();
