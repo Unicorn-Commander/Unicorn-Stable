@@ -31,6 +31,8 @@ import { useGlobalPresence } from "@/hooks/useGlobalPresence";
 import { api } from "@/services/api";
 import { noteThreadOnParent, threadStubFromEvent, type ThreadCreatedEvent } from "@/lib/conversation";
 import { useConversationUi } from "@/stores/conversationUiStore";
+import { usePresenterStore } from "@/stores/presenterStore";
+import { presenterRule } from "@/lib/presenterMode";
 
 /**
  * Hard ceilings for a server-asserted agent state held locally.
@@ -65,6 +67,22 @@ export function useGlobalNotifications() {
   const pushToast = useAppStore((s) => s.pushToast);
   const rooms = useAppStore((s) => s.rooms);
   const queryClient = useQueryClient();
+
+  function maskTransientRoom(roomId: string): boolean {
+    const app = useAppStore.getState();
+    const presenter = usePresenterStore.getState();
+    if (!presenter.enabled) return false;
+    // Safe rooms may show their names in lists, but message previews and
+    // transient notification detail remain off-screen. Only the open room and
+    // its own threads retain the full room experience (P5).
+    const rule = presenterRule({
+      enabled: true,
+      openRoomId: app.activeRoomId,
+      safeRoomIds: presenter.safeRoomIds,
+      rooms: app.rooms,
+    });
+    return !rule.isOpenRoom(roomId);
+  }
 
   // Ask for OS-notification permission ONCE, on the user's first click after
   // load — Chrome requires a genuine user gesture, so we can't prompt on mount.
@@ -165,12 +183,15 @@ export function useGlobalNotifications() {
       }
       if (loadPrefs().inAppToasts && shouldNotify) {
         const room = rooms.find((r) => r.id === event.room_id);
-        const face = resolveIdentity(event.message);
+        const masked = maskTransientRoom(event.room_id);
+        const face = masked ? null : resolveIdentity(event.message);
         pushToast({
-          title: `${event.message.sender_name} in ${room?.name ?? "a room"}`,
-          body: event.message.content.slice(0, 120),
+          title: masked
+            ? "New message"
+            : `${event.message.sender_name} in ${room?.name ?? "a room"}`,
+          body: masked ? undefined : event.message.content.slice(0, 120),
           roomId: event.room_id,
-          icon: face.src,
+          icon: face?.src,
         });
       }
 
@@ -185,14 +206,17 @@ export function useGlobalNotifications() {
         Notification.permission === "granted"
       ) {
         const room = rooms.find((r) => r.id === event.room_id);
-        const face = resolveIdentity(event.message);
+        const masked = maskTransientRoom(event.room_id);
+        const face = masked ? null : resolveIdentity(event.message);
         try {
           void navigator.serviceWorker.ready.then((registration) =>
             registration.showNotification(
-              `${event.message.sender_name} in ${room?.name ?? "a room"}`,
+              masked
+                ? "New message"
+                : `${event.message.sender_name} in ${room?.name ?? "a room"}`,
               {
-                body: event.message.content.slice(0, 140),
-                icon: face.src || "/icon-192.png",
+                body: masked ? undefined : event.message.content.slice(0, 140),
+                icon: masked ? "/icon-192.png" : face?.src || "/icon-192.png",
                 tag: event.room_id,
                 data: { url: `/?room=${event.room_id}` },
               },
@@ -210,9 +234,12 @@ export function useGlobalNotifications() {
       // (playCue gates on soundCues itself).
       playCue("notify");
       if (loadPrefs().inAppToasts) {
+        const masked = maskTransientRoom(event.room_id);
         pushToast({
-          title: "You were added to a room",
-          body: event.inviter_name
+          title: masked ? "New message" : "You were added to a room",
+          body: masked
+            ? undefined
+            : event.inviter_name
             ? `${event.inviter_name} invited you.`
             : "Click here to open it.",
           roomId: event.room_id,
@@ -237,6 +264,7 @@ export function useGlobalNotifications() {
         // one call start cannot announce twice.
         playCue("notify");
         if (loadPrefs().inAppToasts) {
+          const masked = maskTransientRoom(event.room_id);
           const face = resolveIdentity({
             id: event.caller.id,
             display_name: event.caller.display_name,
@@ -244,10 +272,10 @@ export function useGlobalNotifications() {
             participant_type: "human",
           });
           pushToast({
-            title: `${event.caller.display_name} started a call`,
-            body: `in #${event.room_name}`,
+            title: masked ? "Incoming call" : `${event.caller.display_name} started a call`,
+            body: masked ? undefined : `in #${event.room_name}`,
             roomId: event.room_id,
-            icon: face.src,
+            icon: masked ? null : face.src,
           });
         }
         return;
@@ -350,9 +378,12 @@ export function useGlobalNotifications() {
         if (loadPrefs().inAppToasts) {
           const who = e.by?.display_name || "Someone";
           const room = e.room_name || "a room";
+          const masked = maskTransientRoom(e.room_id);
           pushToast({
-            title: `${who} started a call`,
-            body: `in ${e.room_type === "channel" ? `#${room}` : room} — tap to open and join`,
+            title: masked ? "Incoming call" : `${who} started a call`,
+            body: masked
+              ? undefined
+              : `in ${e.room_type === "channel" ? `#${room}` : room} — tap to open and join`,
             roomId: e.room_id,
           });
         }

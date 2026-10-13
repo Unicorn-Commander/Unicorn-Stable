@@ -21,6 +21,7 @@ import {
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
 import { countNeedsYou } from "@/lib/conversation";
 import { getNotifyLevel } from "@/utils/mute";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
 const DESTINATIONS: {
   id: NavView;
@@ -94,7 +95,7 @@ function LegacyViewSwitcher() {
   const setActiveView = useNavStore((s) => s.setActiveView);
   const lastRoomFor = useNavStore((s) => s.lastRoomFor);
   const serverId = useFederationStore((s) => s.activeInstanceId);
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms } = usePresentedRooms();
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const activeRoomId = useAppStore((s) => s.activeRoomId);

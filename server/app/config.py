@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # identity linking. Comma-separated; the configured KEYCLOAK_URL is always
     # trusted separately.
     trusted_issuer_hosts: str = ""
+
+    # Who GET /users/search may return. Env: USER_SEARCH_SCOPE.
+    #   members — local humans, plus at most one exact username or email
+    #     match. The default, because a per-organization deployment shares a
+    #     sign-in realm with other organizations.
+    #   realm — substring search of the whole sign-in realm. Correct only
+    #     when this deployment owns that realm.
+    # An unknown value fails closed to members (a typo must not widen search).
+    user_search_scope: Literal["members", "realm"] = "members"
 
     # Unicorn Brigade — upstream agent backend. Agents in Stable rooms route
     # their LLM calls through Brigade so persona + memory + delegation live
@@ -250,6 +259,9 @@ class Settings(BaseSettings):
     rate_limit_agent_invite_per_min: int = 20
     # invite LINKS (room_invites) minted per user per minute (design §3)
     rate_limit_room_invite_per_min: int = 20
+    # GET /users/search. The members scope's exact username or email lookup
+    # is an existence check, so one account cannot probe it without a cap.
+    rate_limit_user_search_per_min: int = 60
     # Guest invite REDEMPTION. Keyed on client IP, not on the presented secret
     # (keying on the secret would let an attacker rotate guesses for a fresh
     # bucket every time). This is the one unauthenticated guest endpoint and
@@ -496,6 +508,19 @@ class Settings(BaseSettings):
     # WHISPER_BASE_URL env var.
     whisper_base_url: str = ""
     whisper_model: str = "whisper-1"
+
+    @field_validator("user_search_scope", mode="before")
+    @classmethod
+    def validate_user_search_scope(cls, v: object) -> str:
+        # Fail closed. ``agent_access_default`` refuses to boot on a typo
+        # because either direction is a security choice; here the safe
+        # direction is known, so an empty or unknown USER_SEARCH_SCOPE
+        # narrows to members instead of widening to the whole realm.
+        if isinstance(v, str):
+            norm = v.strip().lower()
+            if norm in ("members", "realm"):
+                return norm
+        return "members"
 
     @field_validator("agent_access_default")
     @classmethod

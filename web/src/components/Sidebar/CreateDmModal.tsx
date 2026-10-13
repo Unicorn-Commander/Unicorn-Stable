@@ -12,7 +12,10 @@ import {
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
+import { UserSearchHint } from "@/components/ui/UserSearchHint";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 interface CreateDmModalProps {
   onClose: () => void;
@@ -51,6 +54,7 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const panelRef = useModalA11y(true, onClose);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -73,10 +77,17 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
     staleTime: 60_000,
   });
 
+  const visibleUsers = presenterEnabled
+    ? users.filter((user) => rule.isIdentityAllowed(user.id || user.keycloak_sub, user.display_name || user.username))
+    : users;
+  const visibleAgents = presenterEnabled
+    ? agents.filter((agent) => rule.isIdentityAllowed(agent.id, agent.name))
+    : agents;
+
   const filteredAgents: BrigadeAgent[] = (() => {
-    if (!debounced) return agents;
+    if (!debounced) return visibleAgents;
     const q = debounced.toLowerCase();
-    return agents.filter(
+    return visibleAgents.filter(
       (a) =>
         a.id.toLowerCase().includes(q) ||
         a.name.toLowerCase().includes(q) ||
@@ -354,16 +365,17 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
             className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
           />
         </div>
+        {tab === "people" ? <UserSearchHint /> : null}
 
         <div className="mb-4 max-h-64 overflow-y-auto">
           {tab === "people" ? (
-            users.length === 0 ? (
+            visibleUsers.length === 0 ? (
               <p className="px-2 py-4 text-center text-xs text-slate-500">
                 {debounced ? "No matches." : "Start typing to search."}
               </p>
             ) : (
               <ul className="divide-y divide-line">
-                {users.map((u) => {
+                {visibleUsers.map((u) => {
                   const candidate: Omit<PickedUser, "kind"> = {
                     id: u.id,
                     keycloak_sub: u.keycloak_sub,
@@ -420,7 +432,7 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
             )
           ) : filteredAgents.length === 0 ? (
             <p className="px-2 py-4 text-center text-xs text-slate-500">
-              {agents.length === 0
+              {visibleAgents.length === 0
                 ? "No agents available."
                 : "No matches."}
             </p>
@@ -461,7 +473,7 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
                           {a.name}
                         </p>
                         <p className="truncate text-xs text-slate-500">
-                          {a.description || `@${a.id}`}
+                          {presenterEnabled ? "Agent" : a.description || `@${a.id}`}
                         </p>
                       </div>
                     </div>
@@ -504,6 +516,17 @@ export function CreateDmModal({ onClose }: CreateDmModalProps) {
             </ul>
           )}
         </div>
+
+        <PresenterHiddenLine
+          count={
+            presenterEnabled
+              ? tab === "people"
+                ? users.length - visibleUsers.length
+                : agents.length - visibleAgents.length
+              : 0
+          }
+          className="mb-3 px-0"
+        />
 
         <button
           onClick={start}

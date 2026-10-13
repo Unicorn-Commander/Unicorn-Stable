@@ -37,6 +37,8 @@ import {
 } from "./homeClient";
 import { HomeComposer } from "./HomeComposer";
 import { SeatCards, useOwnSeatRows } from "./SeatCards";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 /** Below `md` the shell is the phone's: tabs at the foot, and Home's composer pinned above them. */
 const PHONE_QUERY = "(max-width: 767px)";
@@ -184,7 +186,8 @@ export function HomeDashboard({
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const rooms = useAppStore((s) => s.rooms);
+  const rawRoomCount = useAppStore((s) => s.rooms.length);
+  const { rooms, hiddenCount, rule, enabled: presenterEnabled } = usePresentedRooms();
   const roomsLoaded = useAppStore((s) => s.roomsLoaded);
   const currentUser = useAppStore((s) => s.currentUser);
   const currentParticipantId = useAppStore((s) => s.currentParticipantId);
@@ -220,7 +223,46 @@ export function HomeDashboard({
   const [staleOpen, setStaleOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const summary: HomeSummaryV3 | undefined = summaryQuery.data;
+  const rawSummary: HomeSummaryV3 | undefined = summaryQuery.data;
+  const summary = useMemo<HomeSummaryV3 | undefined>(() => {
+    if (!rawSummary || !presenterEnabled) return rawSummary;
+    const needs_you = rawSummary.needs_you.filter(
+      (row) =>
+        rule.isRoomAllowed(row.room.id) &&
+        rule.isIdentityAllowed(row.actor.participant_id, row.actor.display_name),
+    );
+    const live_calls = rawSummary.live_calls
+      .filter(
+        (call) =>
+          rule.isRoomAllowed(call.room_id) && rule.isNameAllowed(call.display_name),
+      )
+      .map((call) => ({
+        ...call,
+        floor_holder:
+          call.floor_holder &&
+          rule.isIdentityAllowed(
+            call.floor_holder.participant_id,
+            call.floor_holder.display_name,
+          )
+            ? call.floor_holder
+            : null,
+      }));
+    const crew = rawSummary.crew.filter((card) =>
+      rule.isIdentityAllowed(card.agent_id, card.display_name),
+    );
+    const today = rawSummary.today
+      ? {
+          po_tasks: [],
+          meetings: (rawSummary.today.meetings ?? []).filter(
+            (meeting) =>
+              !!meeting.room_id &&
+              rule.isRoomAllowed(meeting.room_id) &&
+              rule.isNameAllowed(meeting.title),
+          ),
+        }
+      : null;
+    return { ...rawSummary, needs_you, live_calls, crew, today };
+  }, [presenterEnabled, rawSummary, rule]);
 
   const openRoom = useCallback(
     (id: string) => {
@@ -311,7 +353,7 @@ export function HomeDashboard({
   const roomById = useMemo(() => new Map(rooms.map((room) => [room.id, room])), [rooms]);
   const seatIds = useMemo(() => new Set(seatRows.map((row) => row.member.agent_id)), [seatRows]);
 
-  const firstRun = roomsLoaded && rooms.length === 0;
+  const firstRun = roomsLoaded && rawRoomCount === 0;
   const state: "loading" | "error" | "first-run" | "loaded" =
     !roomsLoaded || summaryQuery.isPending
       ? "loading"
@@ -349,12 +391,18 @@ export function HomeDashboard({
     const fresh = orderNeedsYou(needs.fresh);
     const stale = orderNeedsYou(needs.stale);
     const recent = recentInTimeOrder(rooms, HOME_RECENT_CAP);
-    const liveCalls = mergeLiveCalls(live.list, home.live_calls);
+    const liveList = presenterEnabled
+      ? live.list.filter(
+          (call) =>
+            rule.isRoomAllowed(call.room_id) && rule.isNameAllowed(call.display_name),
+        )
+      : live.list;
+    const liveCalls = mergeLiveCalls(liveList, home.live_calls);
     // A seat's card says what the seat is doing; this is the house at work.
     const working = home.crew.filter(
       (card) => !seatIds.has(card.agent_id) && isCrewWorking(card, Date.now()),
     );
-    const catalog = catalogQuery.data ?? [];
+    const catalog = presenterEnabled ? [] : catalogQuery.data ?? [];
     const serverMeetings = home.today?.meetings ?? null;
     const standing: TodayMeeting[] =
       serverMeetings != null
@@ -413,7 +461,9 @@ export function HomeDashboard({
                     <span className="text-slate-600"> · </span>
                   </>
                 )}
-                {previewText(row.preview) || "—"}
+                {!presenterEnabled || rule.isOpenRoom(row.room.id)
+                  ? previewText(row.preview) || "—"
+                  : "—"}
                 {/* The room, when it is not the person: a hub or a DM is named by its face. */}
                 {row.kind !== "mention" && otherRoom(row) && (
                   <>
@@ -560,7 +610,7 @@ export function HomeDashboard({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">{card.display_name}</p>
                   <p className="truncate text-xs text-slate-400">
-                    {card.current_task || "Working"}
+                    {presenterEnabled ? "Working" : card.current_task || "Working"}
                     {card.since ? ` · ${rowTime(card.since)}` : ""}
                   </p>
                 </div>
@@ -605,11 +655,13 @@ export function HomeDashboard({
             })}
             {recaps.map((meeting) => (
               <li key={meeting.id} className={clsx(ROW, "flex items-center gap-3 px-3 py-2")}>
-                <AppFace id="meeting-ops" name="Meeting-Ops" />
+                <AppFace id="meeting-ops" name={presenterEnabled ? "Workspace" : "Meeting-Ops"} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-100">{meeting.title}</p>
                   <p className="truncate text-xs text-slate-400">
-                    {meeting.summary || "Recap"}
+                    {!presenterEnabled || !meeting.room_id || rule.isOpenRoom(meeting.room_id)
+                      ? meeting.summary || "Recap"
+                      : "Recap"}
                     {meeting.at ? ` · ${rowTime(meeting.at)}` : ""}
                   </p>
                 </div>
@@ -671,7 +723,7 @@ export function HomeDashboard({
                   <RoomFace room={room} selfId={selfId} agents={rosterAgents} size={20} />
                   <span className="min-w-0 flex-1 truncate text-[13px]">
                     <span className="font-medium text-slate-100">{room.display_name || room.name}</span>
-                    {room.last_message && (
+                    {room.last_message && (!presenterEnabled || rule.isOpenRoom(room.id)) && (
                       <span className="text-slate-500">
                         {" "}
                         · {previewText(lastLinePreview(room.last_message).text)}
@@ -757,7 +809,12 @@ export function HomeDashboard({
         >
           <h1 className="sr-only">Home</h1>
           {!phone && <HomeComposer starters={startersShown} firstRun={state === "first-run"} />}
-          <SeatCards rows={seatRows} cards={cards} />
+          <PresenterHiddenLine count={hiddenCount} className="px-1" />
+          <SeatCards
+            rows={seatRows}
+            cards={cards}
+            presenterEnabled={presenterEnabled}
+          />
           {body}
         </div>
       </div>

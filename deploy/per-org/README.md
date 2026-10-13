@@ -66,6 +66,11 @@ the billing gateway, so revenue tracking is automatic.
    `project_per_org_sso_design`. Shared-realm + client is faster to stand up;
    per-org realm gives BYO-IdP + full user isolation. The template defaults to a
    `stable-<slug>` client in the configured realm — change if the SSO design lands on realms.
+   User search defaults to `members` because per-org deployments share a sign-in
+   realm, so a member sees local people plus at most one exact username or email
+   match. Setting `USER_SEARCH_SCOPE=realm` would instead return username, display
+   name, and sign-in subject for every substring match in that shared realm,
+   including people who belong to other organizations.
 2. **Brigade: shared roster (scoped via accessPolicy) vs per-org Brigade.**
    Shared is cheaper and the accessPolicy API exists; per-org Brigade is full
    isolation. Start shared+scoped, revisit if isolation is insufficient.

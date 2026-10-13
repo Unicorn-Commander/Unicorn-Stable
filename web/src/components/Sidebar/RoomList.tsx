@@ -101,6 +101,9 @@ import type { PeopleDirectoryEntry } from "@/services/api";
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { HomeRail } from "@/components/Home/HomeRail";
 import { useIsDesktop } from "@/hooks/usePanelResize";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
+import { usePresenterStore } from "@/stores/presenterStore";
 
 /** Active workspace, pinned above the one Conversations list. */
 function WorkspaceTitle() {
@@ -108,11 +111,14 @@ function WorkspaceTitle() {
   const instances = useFederationStore((s) => s.instances);
   const accessible = useFederationStore((s) => s.accessibleInstances);
   const metaByInstance = useFederationStore((s) => s.metaByInstance);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
   const pool = accessible.length > 0 ? accessible : instances;
   const instance = pool.find((item) => item.id === activeId) ?? pool[0];
-  const name = instance
-    ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
-    : "Stable";
+  const name = presenterEnabled
+    ? "Workspace"
+    : instance
+      ? displayName(instance, activeId ? metaByInstance[activeId] : undefined)
+      : "Stable";
   return (
     <div
       className="flex h-6 shrink-0 items-baseline gap-2 px-1"
@@ -139,7 +145,9 @@ function WorkspaceTitle() {
 function PendingInvites() {
   const rows = useConversationUi((s) => s.pendingInvites);
   const dismiss = useConversationUi((s) => s.dismissInvite);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
   if (rows.length === 0) return null;
+  if (presenterEnabled) return <PresenterHiddenLine count={rows.length} />;
   return (
     <ul className="border-b border-line px-2 py-2" aria-label="Pending invites">
       {rows.map((row) => (
@@ -201,7 +209,12 @@ export function RoomList() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const location = useLocation();
-  const rooms = useAppStore((s) => s.rooms);
+  const {
+    rooms,
+    hiddenCount: presenterHiddenCount,
+    rule,
+    enabled: presenterEnabled,
+  } = usePresentedRooms();
   const roomsLoaded = useAppStore((s) => s.roomsLoaded);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const clearUnread = useAppStore((s) => s.clearUnread);
@@ -345,7 +358,7 @@ export function RoomList() {
     if (!ids.length) return [];
     const set = new Set(ids);
     return peopleDirectory
-      .filter((p) => set.has(p.id))
+      .filter((p) => set.has(p.id) && rule.isIdentityAllowed(p.id, p.display_name))
       .sort((a, b) => {
         const ao = presenceById[a.id]?.isOnline ?? a.is_online;
         const bo = presenceById[b.id]?.isOnline ?? b.is_online;
@@ -394,6 +407,17 @@ export function RoomList() {
       cancelled = true;
     };
   }, [scope]);
+
+  const presentedArchivedRooms = useMemo(
+    () =>
+      presenterEnabled
+        ? archivedRooms.filter((room) => rule.isRoomAllowed(room.id))
+        : archivedRooms,
+    [archivedRooms, presenterEnabled, rule],
+  );
+  const archivedHiddenCount = presenterEnabled
+    ? archivedRooms.length - presentedArchivedRooms.length
+    : 0;
 
   async function handleArchiveRoom(room: Room) {
     try {
@@ -688,10 +712,14 @@ export function RoomList() {
           [r.display_name, r.name].filter(Boolean).map((s) => s!.toLowerCase()),
         ),
     );
+    if (presenterEnabled) return [];
     return conferenceCatalog.filter(
       (c) => !joinedLabels.has(c.display_name.toLowerCase()),
     );
-  }, [conferenceCatalog, rooms]);
+  }, [conferenceCatalog, presenterEnabled, rooms]);
+  const hiddenConferenceCatalogCount = presenterEnabled
+    ? conferenceCatalog.length
+    : 0;
   const [enteringConference, setEnteringConference] = useState<string | null>(
     null,
   );
@@ -1027,6 +1055,7 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
+    const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
     const unread = rowBadgeCount({
       kind: "channel",
       id: room.id,
@@ -1119,7 +1148,7 @@ export function RoomList() {
                   </span>
                 )}
               </div>
-              {room.last_message && (
+              {showPreview && room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
                   {formatLastMessage(lastLinePreview(room.last_message).text)}
                 </p>
@@ -1219,6 +1248,7 @@ export function RoomList() {
   function renderThreadRow(room: Room, identColor: string) {
     const isActive = activeRoomId === room.id;
     const unread = unreadFor(room);
+    const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
     return (
       <li key={room.id} data-walk-room={room.id}>
         <button
@@ -1241,7 +1271,7 @@ export function RoomList() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-[13px]">
-                {room.last_message ? (
+                {showPreview && room.last_message ? (
                   <>
                     <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                   </>
@@ -1254,7 +1284,7 @@ export function RoomList() {
               <div className="flex shrink-0 items-center gap-1.5">
                 <LiveCallBadge call={liveCallByRoomId[room.id]} />
                 {hasDraft(room.id) && <DraftPencil />}
-                {room.last_message && (
+                {showPreview && room.last_message && (
                   <span className="text-[10px] tabular-nums text-slate-500">
                     {formatTimestamp(room.last_message.created_at)}
                   </span>
@@ -1285,6 +1315,7 @@ export function RoomList() {
       : entry.name;
     const ident = identityFor(isAgent ? entry.agentId : entry.key, name);
     const latest = threads[0];
+    const showPreview = !presenterEnabled || (latest ? rule.isOpenRoom(latest.id) : false);
     const hasActive = threads.some((r) => r.id === activeRoomId);
     const unreadTotal = rowBadgeCount({
       kind: "person",
@@ -1458,7 +1489,7 @@ export function RoomList() {
                     }
                   />
                   {latest && hasDraft(latest.id) && <DraftPencil />}
-                  {latest?.last_message && (
+                  {showPreview && latest?.last_message && (
                     <span className="text-[10px] tabular-nums text-slate-500">
                       {formatTimestamp(latest.last_message.created_at)}
                     </span>
@@ -1470,7 +1501,7 @@ export function RoomList() {
                   )}
                 </div>
               </div>
-              {latest?.last_message ? (
+              {showPreview && latest?.last_message ? (
                 <p className="truncate text-[11px] text-slate-500">
                   <span className="font-medium text-slate-500">
                     {latest.last_message.sender_name}:
@@ -1557,6 +1588,7 @@ export function RoomList() {
     archivedCount = 0,
   ) {
     const isActive = activeRoomId === room.id;
+    const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
     const unread = rowBadgeCount({
       kind: "group",
       id: room.id,
@@ -1659,7 +1691,7 @@ export function RoomList() {
                       {room.member_count}
                     </span>
                   )}
-                  {room.last_message && (
+                  {showPreview && room.last_message && (
                     <span className="text-[10px] tabular-nums text-slate-500">
                       {formatTimestamp(room.last_message.created_at)}
                     </span>
@@ -1671,7 +1703,7 @@ export function RoomList() {
                   )}
                 </div>
               </div>
-              {room.last_message && (
+              {showPreview && room.last_message && (
                 <p className="truncate text-[11px] text-slate-500">
                   <LastLine message={room.last_message} nameClassName="font-medium text-slate-500" format={formatLastMessage} />
                 </p>
@@ -2102,7 +2134,9 @@ export function RoomList() {
                     <span>
                       {startingChat
                         ? "Starting…"
-                        : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
+                        : presenterEnabled
+                          ? "Start a new conversation — it will appear here."
+                          : `Start a chat with ${defaultAgent.name} — every resident you talk to shows up here.`}
                     </span>
                   </button>
                 )}
@@ -2139,7 +2173,7 @@ export function RoomList() {
   }
 
   function renderArchivedSection() {
-    if (archivedRooms.length === 0) return null;
+    if (presentedArchivedRooms.length === 0) return null;
     const collapsed = showArchived;
     return (
       <section>
@@ -2153,7 +2187,7 @@ export function RoomList() {
             <Archive className="h-3 w-3 shrink-0 opacity-60" />
             <span className="truncate">Archived</span>
             <span className="ml-auto tabular-nums text-slate-500">
-              {archivedRooms.length}
+              {presentedArchivedRooms.length}
             </span>
             <ChevronDown
               className={clsx(
@@ -2165,7 +2199,7 @@ export function RoomList() {
         </div>
         {collapsed && (
           <ul role="list" className="ml-1.5 border-l border-line pl-1">
-            {archivedRooms.map((room) => (
+            {presentedArchivedRooms.map((room) => (
               <li key={room.id} className="relative">
                 <div className="flex items-center gap-1">
                   <button
@@ -2177,7 +2211,7 @@ export function RoomList() {
                     className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
                   >
                     <span className="min-w-0 flex-1 truncate text-[13px]">
-                      {room.last_message ? (
+                      {(!presenterEnabled || rule.isOpenRoom(room.id)) && room.last_message ? (
                         <>
                           <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
                         </>
@@ -2187,7 +2221,7 @@ export function RoomList() {
                         </span>
                       )}
                     </span>
-                    {room.last_message && (
+                    {(!presenterEnabled || rule.isOpenRoom(room.id)) && room.last_message && (
                       <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
                         {formatTimestamp(room.last_message.created_at)}
                       </span>
@@ -2274,6 +2308,7 @@ export function RoomList() {
             )}
 
             {renderSectionBody(channelSection)}
+            <PresenterHiddenLine count={presenterHiddenCount} />
           </>
         )}
       </section>
@@ -2282,7 +2317,11 @@ export function RoomList() {
 
   /** Meetings: live rejoin + joined conference rooms + catalog entry points. */
   function renderMeetingsBody() {
-    const hasActiveCall = Boolean(isConnected && activeCallRoomId);
+    const hasActiveCall = Boolean(
+      isConnected &&
+        activeCallRoomId &&
+        (!presenterEnabled || rule.isRoomAllowed(activeCallRoomId)),
+    );
     const activeCallRoom = hasActiveCall
       ? rooms.find((r) => r.id === activeCallRoomId) ?? null
       : null;
@@ -2372,6 +2411,10 @@ export function RoomList() {
                 ))}
               </div>
             )}
+            <PresenterHiddenLine
+              count={hiddenConferenceCatalogCount}
+              className="mx-2"
+            />
           </>
         )}
         <MeetingsRecordings roomId={activeRoomId} />
@@ -2411,7 +2454,12 @@ export function RoomList() {
           title: `No conversations match “${q}”`,
           hint: "Try another name, or clear the search.",
         }
-      : EMPTY_COPY[conversationFilter];
+      : presenterEnabled && presenterHiddenCount > 0
+        ? {
+            title: "Nothing else to show",
+            hint: "Other conversations are hidden while presenting.",
+          }
+        : EMPTY_COPY[conversationFilter];
     const activeRoom = activeRoomId
       ? rooms.find((room) => room.id === activeRoomId)
       : undefined;
@@ -2755,6 +2803,10 @@ export function RoomList() {
           </div>
         )}
         {renderNavBody()}
+        <PresenterHiddenLine
+          count={presenterHiddenCount + archivedHiddenCount}
+          className="mt-auto"
+        />
       </nav>
 
       {createDmOpen && (

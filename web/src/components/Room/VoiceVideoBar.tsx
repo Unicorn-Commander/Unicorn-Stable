@@ -109,6 +109,7 @@ import {
   monitorShareHint,
   localScreenShareCount,
 } from "@/lib/screenShare";
+import { offerPresenterMode } from "@/lib/presenterOffer";
 import { ViewModeSwitcher } from "./ViewModeSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { VoiceAgentStatus } from "./VoiceAgentStatus";
@@ -2511,6 +2512,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       result.action === "replaced" ||
       result.action === "added"
     ) {
+      offerPresenterMode();
       if (result.surface === "window" || result.surface === "browser") {
         useAppStore.getState().pushToast({
           title: "Window share active",

@@ -21,6 +21,9 @@ import clsx from "clsx";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { usePresenterStore } from "@/stores/presenterStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 import { logout } from "@/services/auth";
 import { api } from "@/services/api";
@@ -207,6 +210,7 @@ export function SettingsModal({
             )}
             {pane === "appearance" && (
               <div className="h-full overflow-y-auto p-5">
+                <PresenterModeRow />
                 <AppearanceSection />
               </div>
             )}
@@ -220,6 +224,42 @@ export function SettingsModal({
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+function PresenterModeRow() {
+  const enabled = usePresenterStore((state) => state.enabled);
+  const setEnabled = usePresenterStore((state) => state.setEnabled);
+  return (
+    <section
+      className="mb-5 rounded-xl border border-line bg-surface-2/40 p-3.5"
+      data-testid="presenter-settings-row"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-200">Presenter mode</h3>
+          <p className="mt-1 text-xs leading-relaxed text-slate-500">
+            Hides other rooms and names on this device while you share your screen, record or film. It does not change who can see what.
+          </p>
+          <p className="mt-1 text-[11px] text-slate-600">
+            This is a display filter on this device only; it changes nothing on the server.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setEnabled(!enabled)}
+          aria-pressed={enabled}
+          className={clsx(
+            "focus-ring shrink-0 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors",
+            enabled
+              ? "border-stable-purple/40 bg-stable-purple/15 text-stable-purple-light"
+              : "border-line bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]",
+          )}
+        >
+          {enabled ? "On" : "Off"}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -243,6 +283,10 @@ function AgentsPane() {
   });
   const [saving, setSaving] = useState<string | null>(null);
   const defaultAgentId = preferences?.default_agent_id ?? null;
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const visibleRoster = presenterEnabled
+    ? roster.filter((agent) => rule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : roster;
 
   const choose = async (id: string | null) => {
     if (saving) return;
@@ -338,7 +382,7 @@ function AgentsPane() {
             </span>,
             "none",
           )}
-          {roster.map((agent) =>
+          {visibleRoster.map((agent) =>
             choiceRow(
               defaultAgentId === agent.id,
               saving === agent.id,
@@ -354,9 +398,11 @@ function AgentsPane() {
                     {agent.display_name || agent.name}
                   </span>
                   <span className="block truncate text-xs text-slate-500">
-                    {[agent.rank, agent.title, agent.model]
-                      .filter(Boolean)
-                      .join(" · ") || agent.description}
+                    {presenterEnabled
+                      ? "Agent"
+                      : [agent.rank, agent.title, agent.model]
+                          .filter(Boolean)
+                          .join(" · ") || agent.description}
                   </span>
                 </span>
               </>,
@@ -365,6 +411,10 @@ function AgentsPane() {
           )}
         </ul>
       )}
+      <PresenterHiddenLine
+        count={presenterEnabled ? roster.length - visibleRoster.length : 0}
+        className="mt-2 px-0"
+      />
     </div>
   );
 }
@@ -389,6 +439,7 @@ function InstancePane() {
   const activeInstanceId = useFederationStore((s) => s.activeInstanceId);
   const instances = useFederationStore((s) => s.accessibleInstances);
   const active = instances.find((i) => i.id === activeInstanceId);
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
 
   const {
     data: health,
@@ -434,7 +485,7 @@ function InstancePane() {
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
           <dt className="text-slate-500">Server</dt>
           <dd className="truncate text-slate-200">
-            {active ? `${active.name} — ${active.apiBaseUrl}` : "This server"}
+            {presenterEnabled ? "Workspace" : active ? `${active.name} — ${active.apiBaseUrl}` : "This server"}
           </dd>
           <dt className="text-slate-500">Backend</dt>
           <dd className="font-mono text-slate-200">
@@ -491,7 +542,7 @@ function InstancePane() {
                     state.ok ? "bg-stable-mint" : "bg-amber-400",
                   )}
                 />
-                {name} · {state.label}
+                {presenterEnabled ? "Service" : name} · {state.label}
               </li>
             );
           })}
@@ -507,7 +558,7 @@ function InstancePane() {
         {roster.length} agents — {fleet.working} working · {fleet.active} active
         · {fleet.idle} idle · {fleet.offline} offline
       </p>
-      {unreachable.length > 0 && (
+      {unreachable.length > 0 && !presenterEnabled && (
         <p className="mt-1.5 text-xs text-amber-300/90">
           Unreachable:{" "}
           {unreachable
@@ -535,8 +586,8 @@ function InstancePane() {
                   : "bg-slate-500",
               )}
             />
-            <span className="font-medium text-slate-200">{inst.name}</span>
-            <span className="truncate text-slate-500">{inst.apiBaseUrl}</span>
+            <span className="font-medium text-slate-200">{presenterEnabled ? "Workspace" : inst.name}</span>
+            {!presenterEnabled && <span className="truncate text-slate-500">{inst.apiBaseUrl}</span>}
             {inst.id === activeInstanceId && (
               <span className="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide text-stable-mint">
                 active
@@ -724,6 +775,7 @@ function NotificationsPane() {
  * on the live transcript panel; this is only the always-by-default seed.
  */
 function MeetingOpsTranscriptSection() {
+  const presenterEnabled = usePresenterStore((state) => state.enabled);
   const [moPrefs, setMoPrefs] =
     useState<MeetingOpsTranscriptPrefs>(loadMeetingOpsPrefs);
   const [moConfigured, setMoConfigured] = useState<boolean | null>(null);
@@ -767,9 +819,15 @@ function MeetingOpsTranscriptSection() {
       </h3>
       <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface-1/60">
         <Toggle
-          label="Send call transcripts to Meeting-Ops by default"
+          label={
+            presenterEnabled
+              ? "Send call transcripts to an external service by default"
+              : "Send call transcripts to Meeting-Ops by default"
+          }
           hint={
-            moConfigured === false
+            presenterEnabled
+              ? "The transcript destination is hidden while presenting."
+              : moConfigured === false
               ? "On by default for new calls. Meeting-Ops is not fully configured, so exports remain safely blocked in Stable until URL, PAT, and organization are wired."
               : moConfigured === true
                 ? "New calls start with “Send to Meeting-Ops” on. You can still flip it per call in the live transcript panel."

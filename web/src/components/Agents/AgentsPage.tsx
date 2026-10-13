@@ -14,6 +14,8 @@ import {
 import { AgentOrgChart } from "./AgentOrgChart";
 import { AgentList } from "./AgentList";
 import { AgentChatModal } from "./AgentChatModal";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 type View = "chart" | "list";
 
@@ -24,7 +26,11 @@ type View = "chart" | "list";
  * affiliation = side-border, model tier = chip; rank + tools shown.
  */
 export function AgentsPage() {
-  const agents = useAppStore((s) => s.agents);
+  const allAgents = useAppStore((s) => s.agents);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const agents = presenterEnabled
+    ? allAgents.filter((agent) => rule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : allAgents;
   const [view, setView] = useState<View>("chart");
   const [query, setQuery] = useState("");
   const [modalAgent, setModalAgent] = useState<Agent | null>(null);
@@ -42,6 +48,16 @@ export function AgentsPage() {
         (a.tools || []).some((t) => t.toLowerCase().includes(q)),
     );
   }, [agents, query]);
+  const displayAgents = presenterEnabled
+    ? filtered.map((agent) => ({
+        ...agent,
+        title: undefined,
+        domain: undefined,
+        description: "",
+        capabilities: [],
+        tools: [],
+      }))
+    : filtered;
 
   const onlineCount = useMemo(
     () => agents.filter((a) => a.status !== "offline").length,
@@ -79,6 +95,10 @@ export function AgentsPage() {
               </span>{" "}
               · click any to start a chat (one or several)
             </p>
+            <PresenterHiddenLine
+              count={presenterEnabled ? allAgents.length - agents.length : 0}
+              className="mt-2 px-0"
+            />
           </div>
         </header>
 
@@ -176,12 +196,12 @@ export function AgentsPage() {
         {/* Active view */}
         {view === "chart" ? (
           <AgentOrgChart
-            agents={filtered}
+            agents={displayAgents}
             onOpen={setModalAgent}
             expandAll={query.trim().length > 0}
           />
         ) : (
-          <AgentList agents={filtered} onOpen={setModalAgent} />
+          <AgentList agents={displayAgents} onOpen={setModalAgent} />
         )}
       </div>
 

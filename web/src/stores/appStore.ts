@@ -86,6 +86,8 @@ export interface Toast {
   sticky?: boolean;
   /** Allowlisted face URL. Absent, rejected, or broken → the bell chip. */
   icon?: SafeAvatarSrc | null;
+  /** One short, in-app action. The callback is intentionally transient. */
+  action?: { label: string; onClick: () => void };
 }
 
 interface AppState {

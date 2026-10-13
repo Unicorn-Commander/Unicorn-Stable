@@ -30,6 +30,7 @@ import { useFederationStore } from "@/stores/federationStore";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
 import { SeatPicker } from "./SeatPicker";
 import { useDirectCall } from "@/hooks/useDirectCall";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
 /** Home's one draft. Not a room id: no sidebar row ever reads it. */
 export const HOME_DRAFT_KEY = "home:composer";
@@ -87,6 +88,15 @@ export function HomeComposer({
   const focusNonce = useConversationUi((s) => s.homeComposerNonce);
   const { crew, loaded, crewAnswered, unavailable } = useCrew();
   const { startCanonicalCall } = useDirectCall();
+  const {
+    enabled: presenterEnabled,
+    rooms: presentedRooms,
+    rule: presenterRule,
+  } = usePresentedRooms();
+  const visibleRooms = presenterEnabled ? presentedRooms : rooms;
+  const visibleRoster = presenterEnabled
+    ? roster.filter((agent) => presenterRule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : roster;
   const preferences = useQuery({
     queryKey: ["my-preferences", scope],
     queryFn: () => api.getMyPreferences(),
@@ -107,20 +117,26 @@ export function HomeComposer({
   // and the composer is not. A /crew that is failing holds the box too: the
   // roster's house is not who you meant (review 2, P2-7).
   const loading = !loaded || unavailable || (preferences.isPending && preferences.failureCount === 0);
-  const seats = useMemo(() => (loading ? [] : composerSeats(crew, roster)), [loading, crew, roster]);
+  const seats = useMemo(() => {
+    if (loading) return [];
+    const allSeats = composerSeats(crew, visibleRoster);
+    return presenterEnabled
+      ? allSeats.filter((seat) => presenterRule.isIdentityAllowed(seat.agent_id, seat.display_name))
+      : allSeats;
+  }, [loading, crew, visibleRoster, presenterEnabled, presenterRule]);
   const selected: CrewMember | null = useMemo(
     () => openingSeat(seats, pickedId, preferences.data?.default_agent_id ?? null),
     [seats, pickedId, preferences.data?.default_agent_id],
   );
   const target = useMemo(
-    () => composerTarget(selected, rooms, [currentParticipantId, currentUserId], crewAnswered),
-    [selected, rooms, currentParticipantId, currentUserId, crewAnswered],
+    () => composerTarget(selected, visibleRooms, [currentParticipantId, currentUserId], crewAnswered),
+    [selected, visibleRooms, currentParticipantId, currentUserId, crewAnswered],
   );
   const intro = firstRun && !loading ? firstRunIntro(selected, isTouch()) : null;
   const line = unavailable ? CREW_UNAVAILABLE : loading ? null : (composerTargetLine(target) ?? intro);
   const brain = (selected && brains[selected.agent_id]) || DEFAULT_BRAIN;
   const sharedRoom =
-    target.kind === "shared_room" ? rooms.find((room) => room.id === target.roomId) ?? null : null;
+    target.kind === "shared_room" ? visibleRooms.find((room) => room.id === target.roomId) ?? null : null;
 
   const send = useCallback(
     async (

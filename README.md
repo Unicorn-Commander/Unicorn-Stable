@@ -52,6 +52,14 @@ model fits the work.
   no third-party voice API required.
 - **Bridge for coding agents.** MCP tools so Claude Code (and friends) can join
   rooms, speak, transcribe, and leave cleanly.
+- **Recording you decide per room.** Off, on request, or always; audio or a
+  composed video of the call; a recordings list with signed downloads; and an
+  owner, an admin, or whoever started it controls the file.
+- **Feeds for a live production.** A room owner can hand broadcast software a
+  link to one participant's camera or shared screen, with audio only when
+  asked for. Everyone in the room sees who is being broadcast.
+- **Private channels and scoped agent keys.** Invite-only channels, and agent
+  keys that name their rooms, expire, and read history only from a chosen point.
 - **Optional Meeting-Ops export.** Durable, at-least-once delivery of finalized
   call transcripts to a Meeting-Ops instance.
 
