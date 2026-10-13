@@ -9,11 +9,11 @@ literally continues there. Leave the Claude Code window open and it keeps going.
 Design (no secrets on this machine, no Keycloak, no token expiry):
   * WRITE  -> POST /api/v1/internal/agent-messages on stable-backend, authed by
              the LIVEKIT_API_SECRET that already lives inside the container. The
-             secret never leaves bigboy; the payload is base64'd through an env
+             secret never leaves the application host; the payload is base64'd through an env
              var so arbitrary message content can't break shell quoting.
   * READ   -> query the `stable` Postgres directly for new messages, returned as
              JSON (so content with quotes/newlines round-trips cleanly).
-  * Both hops run over the SSH access Aaron already has (`ssh magicunicorn`).
+  * Both hops run over the operator-configured SSH access.
 
 The bridge posts as a DISTINCT agent identity ("Claude Code", id `claude-code`)
 so it never collides with the autonomous `claude` Brigade persona. Use it in a
@@ -34,7 +34,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 # --- config (env-overridable) ------------------------------------------------
-SSH_HOST = os.environ.get("STABLE_SSH_HOST", "magicunicorn")
+SSH_HOST = os.environ.get("STABLE_SSH_HOST", "localhost")
 BACKEND_CONTAINER = os.environ.get("STABLE_BACKEND_CONTAINER", "stable-backend")
 DB_CONTAINER = os.environ.get("STABLE_DB_CONTAINER", "stable-postgres")
 DB_USER = os.environ.get("STABLE_DB_USER", "stable")
@@ -67,7 +67,7 @@ mcp = FastMCP("stable-bridge")
 
 # --- low-level helpers -------------------------------------------------------
 def _ssh(remote_cmd: str, *, payload_env: str | None = None, timeout: int = 45) -> str:
-    """Run one command on bigboy over SSH. Returns stdout (raises on failure)."""
+    """Run one command on the configured host over SSH. Returns stdout (raises on failure)."""
     env_prefix = f"PAYLOAD={shlex.quote(payload_env)} " if payload_env is not None else ""
     full = env_prefix + remote_cmd
     proc = subprocess.run(
@@ -143,7 +143,7 @@ def _fetch_new(room_id: str, since_iso: str) -> list[dict]:
 # in-container poster: reads base64 JSON {room, content} from $PAYLOAD, signs with
 # the in-container internal-agent secret (falling back to the LiveKit secret to
 # match the backend's _expected_internal_secret()), posts as the bridge agent.
-# The secret never leaves bigboy. Single-quoted only.
+# The secret never leaves the configured host. Single-quoted only.
 _POST_SCRIPT = (
     "import os,base64,json,httpx;"
     "from app.config import Settings;"

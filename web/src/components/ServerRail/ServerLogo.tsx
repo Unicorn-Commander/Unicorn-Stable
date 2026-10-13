@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { Server } from "lucide-react";
 import { useFederationStore } from "@/stores/federationStore";
 import { identityFor } from "@/lib/identity";
 import { displayName } from "@/lib/instances";
@@ -22,11 +23,13 @@ export function ServerLogo({
   size,
   active = false,
   className,
+  presenterMasked = false,
 }: {
   instance: StableInstance;
   size: "sm" | "md" | "lg";
   active?: boolean;
   className?: string;
+  presenterMasked?: boolean;
 }) {
   const meta = useFederationStore((state) => state.metaByInstance[instance.id]);
   const logo = useFederationStore((state) => state.logoByInstance[instance.id]);
@@ -60,7 +63,9 @@ export function ServerLogo({
       }
       aria-hidden="true"
     >
-      {logo ? (
+      {presenterMasked ? (
+        <Server className="h-5 w-5 text-slate-300" aria-hidden="true" />
+      ) : logo ? (
         <img src={logo} alt="" className="h-full w-full object-cover" draggable={false} />
       ) : (
         glyph ?? initial

@@ -7,6 +7,7 @@ import { api } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { Identity } from "@/components/ui/Identity";
+import { UserSearchHint } from "@/components/ui/UserSearchHint";
 import { resolveIdentity } from "@/lib/identity";
 
 interface InviteMembersModalProps {
@@ -131,6 +132,7 @@ export function InviteMembersModal({
             className="w-full rounded-xl border border-line bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-stable-purple/60 focus:ring-2 focus:ring-stable-purple/20"
           />
         </div>
+        <UserSearchHint />
 
         {/* Results */}
         <div className="mb-4 max-h-64 overflow-y-auto">

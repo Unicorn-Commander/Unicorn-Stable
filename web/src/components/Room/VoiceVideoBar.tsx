@@ -59,6 +59,7 @@ import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import { identityFor } from "@/lib/identity";
 import { useStableRoom } from "@/hooks/useStableRoom";
+import { useDirectCall } from "@/hooks/useDirectCall";
 import { useVoice } from "@/contexts/VoiceProvider";
 import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
 import { useIsDesktop } from "@/hooks/usePanelResize";
@@ -108,6 +109,7 @@ import {
   monitorShareHint,
   localScreenShareCount,
 } from "@/lib/screenShare";
+import { offerPresenterMode } from "@/lib/presenterOffer";
 import { ViewModeSwitcher } from "./ViewModeSwitcher";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { VoiceAgentStatus } from "./VoiceAgentStatus";
@@ -1772,10 +1774,17 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
     isConnected,
     isConnecting,
     audioBlocked,
+    runnerVoiceCanonicalOnly: runnerVoiceNotice,
     version,
     startAudio,
     disconnect,
   } = useStableRoom(roomId);
+  const { startCanonicalCall } = useDirectCall();
+  const roomMeta = useAppStore((s) => s.rooms.find((item) => item.id === roomId));
+  const runnerSeatLabel =
+    roomMeta?.agent_members?.find(
+      (member) => member.agent_id === runnerVoiceNotice?.seat,
+    )?.display_name ?? runnerVoiceNotice?.seat;
   // One-click device switching from the call bar (chevron beside mic/cam).
   const { devices, selectedDevices, switchDevice, repairAudio } = useVoice();
 
@@ -2503,6 +2512,7 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       result.action === "replaced" ||
       result.action === "added"
     ) {
+      offerPresenterMode();
       if (result.surface === "window" || result.surface === "browser") {
         useAppStore.getState().pushToast({
           title: "Window share active",
@@ -3331,6 +3341,29 @@ export function VoiceVideoBar({ roomId }: VoiceVideoBarProps) {
       className="flex h-full flex-col"
       onPointerDown={mobileVideoChrome ? () => bumpChrome() : undefined}
     >
+      {runnerVoiceNotice && (
+        <div
+          role="alert"
+          className="flex w-full shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-400/20 bg-amber-400/15 px-4 py-2 text-sm text-amber-200"
+          data-testid="runner-voice-canonical-notice"
+        >
+          <span>
+            {runnerSeatLabel} can take calls in {runnerVoiceNotice.canonical_room_name}
+          </span>
+          <button
+            type="button"
+            className="focus-ring rounded-md bg-amber-400/20 px-2 py-1 text-xs font-semibold transition-colors hover:bg-amber-400/30"
+            onClick={() =>
+              void startCanonicalCall({
+                id: runnerVoiceNotice.canonical_room_id,
+                name: runnerVoiceNotice.canonical_room_name,
+              })
+            }
+          >
+            Call in {runnerVoiceNotice.canonical_room_name}
+          </button>
+        </div>
+      )}
       {showLkReconnect && (
         <div
           role="status"

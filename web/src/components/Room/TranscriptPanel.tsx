@@ -12,6 +12,7 @@ import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useAppStore } from "@/stores/appStore";
+import { usePresenterStore } from "@/stores/presenterStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import {
   linesWithVoiceHistory,
@@ -76,6 +77,8 @@ export function TranscriptPanel() {
   const setSendToMeetingOps = useCallUiStore((s) => s.setSendToMeetingOps);
   const callStartedAt = useCallUiStore((s) => s.callStartedAt);
   const activeCallRoomId = useCallUiStore((s) => s.activeCallRoomId);
+  const presenterEnabled = usePresenterStore((s) => s.enabled);
+  const transcriptDestination = presenterEnabled ? "external service" : "Meeting-Ops";
   const rooms = useAppStore((s) => s.rooms);
   const currentUser = useAppStore((s) => s.currentUser);
   const agents = useAppStore((s) => s.agents);
@@ -175,18 +178,18 @@ export function TranscriptPanel() {
       const mo = current.meeting_ops;
       const note =
         mo?.status === "delivered"
-          ? `Sent ${current.line_count} line${current.line_count === 1 ? "" : "s"} to Meeting-Ops`
-          : mo?.status === "blocked"
-            ? `Saved ${current.line_count} line${current.line_count === 1 ? "" : "s"} in Stable; Meeting-Ops is not configured`
+            ? `Sent ${current.line_count} line${current.line_count === 1 ? "" : "s"} to ${transcriptDestination}`
+            : mo?.status === "blocked"
+            ? `Saved ${current.line_count} line${current.line_count === 1 ? "" : "s"} in Stable; ${transcriptDestination} is not configured`
             : mo?.status === "failed"
-              ? `Saved in Stable, but Meeting-Ops rejected delivery${mo.detail ? `: ${mo.detail}` : ""}`
-              : `Saved in Stable and queued for Meeting-Ops delivery`;
+              ? `Saved in Stable, but ${transcriptDestination} rejected delivery${mo.detail ? `: ${mo.detail}` : ""}`
+              : `Saved in Stable and queued for ${transcriptDestination} delivery`;
       setLastExportNote(note);
       setLastExportUrl(mo.remote_session_url || null);
       pushToast({
-        title:
-          mo?.status === "delivered"
-            ? "Sent to Meeting-Ops"
+          title:
+            mo?.status === "delivered"
+            ? `Sent to ${transcriptDestination}`
             : mo?.status === "failed"
               ? "Delivery needs attention"
               : "Transcript safely queued",
@@ -314,11 +317,11 @@ export function TranscriptPanel() {
         </div>
       </div>
 
-      {/* Meeting-Ops session controls */}
+      {/* External transcript destination session controls */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line/80 px-3 py-1.5">
         <label
           className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-300"
-          title="When on, hang-up saves this call's captions in Stable's durable queue and delivers them to Meeting-Ops."
+          title={`When on, hang-up saves this call's captions in Stable's durable queue and delivers them to ${transcriptDestination}.`}
         >
           <input
             type="checkbox"
@@ -326,7 +329,7 @@ export function TranscriptPanel() {
             checked={sendToMeetingOps}
             onChange={(e) => setSendToMeetingOps(e.target.checked)}
           />
-          <span className="select-none">Send to Meeting-Ops</span>
+          <span className="select-none">Send to {transcriptDestination}</span>
         </label>
         <button
           type="button"

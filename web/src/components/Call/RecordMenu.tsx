@@ -10,6 +10,7 @@ import {
   showRecordControl,
   type RecordingStartKind,
 } from "@/lib/recording";
+import { offerPresenterMode } from "@/lib/presenterOffer";
 
 /**
  * Call-bar Record ▾. Hidden unless the caller has `stable-recorder` and the
@@ -69,6 +70,7 @@ export function RecordMenu({
     setOpen(false);
     try {
       await api.startRecording(roomId, kind);
+      offerPresenterMode();
     } catch (error) {
       const err = error as ApiError;
       useAppStore.getState().pushToast({

@@ -22,7 +22,7 @@ launchable now.
 6 services (`docker-compose.yml`): `livekit` (SFU) · `postgres 16` · `redis 7`
 · `backend` (FastAPI) · `agent-runtime` (LiveKit Agents) · `web` (nginx).
 Shared platform: Traefik `web` network, Brigade (agents), GPU fleet (TTS
-kokoro-ha, STT parakeet), Keycloak `uchub`, metering gateway.
+kokoro-ha, STT parakeet), the configured Keycloak realm, metering gateway.
 
 ## Files here
 
@@ -48,8 +48,8 @@ how many orgs fit on one host; past that, add a host.
 deploy/per-org/provision-org.sh acme
 
 # 2. Do the manual steps it prints:
-#    - Cloudflare DNS: acme / acme-livekit / acme-turn .stable.unicorncommander.ai -> host
-#    - Keycloak: client `stable-acme` in uchub (or per-org realm), paste secret into .env
+#    - DNS: acme / acme-livekit / acme-turn under the configured public domain -> host
+#    - Keycloak: client `stable-acme` in the configured realm (or per-org realm), paste secret into .env
 #    - Firewall: open the allocated UDP/TCP LiveKit ports
 #    - Brigade: scope the roster (accessPolicy) + set BRIGADE_API_KEY; set METERING_KEY
 
@@ -65,7 +65,12 @@ the billing gateway, so revenue tracking is automatic.
 1. **Keycloak: per-org realm vs shared realm + per-org client.** Ties to
    `project_per_org_sso_design`. Shared-realm + client is faster to stand up;
    per-org realm gives BYO-IdP + full user isolation. The template defaults to a
-   `stable-<slug>` client in `uchub` — change if the SSO design lands on realms.
+   `stable-<slug>` client in the configured realm — change if the SSO design lands on realms.
+   User search defaults to `members` because per-org deployments share a sign-in
+   realm, so a member sees local people plus at most one exact username or email
+   match. Setting `USER_SEARCH_SCOPE=realm` would instead return username, display
+   name, and sign-in subject for every substring match in that shared realm,
+   including people who belong to other organizations.
 2. **Brigade: shared roster (scoped via accessPolicy) vs per-org Brigade.**
    Shared is cheaper and the accessPolicy API exists; per-org Brigade is full
    isolation. Start shared+scoped, revisit if isolation is insufficient.

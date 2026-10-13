@@ -63,7 +63,7 @@ def build_upgrade(path: str, host: str, cookie_value: str | None) -> bytes:
         "Pragma: no-cache",
         "Cache-Control: no-cache",
         "User-Agent: " + CHROME_UA,
-        "Origin: https://stable.magicunicorn.dev",
+        "Origin: " + (os.environ.get("PROBE_ORIGIN", "").strip() or f"https://{host}"),
         "Sec-WebSocket-Version: 13",
         f"Sec-WebSocket-Key: {key}",
         "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits",
@@ -263,7 +263,7 @@ def run_serve(strict: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--serve", action="store_true", help="run gate+canary against an ephemeral local server")
-    ap.add_argument("--url", help="remote surface, e.g. wss://stable.magicunicorn.dev/ws")
+    ap.add_argument("--url", help="remote surface, e.g. wss://example.com/ws")
     ap.add_argument("--cookie-bytes", type=int, default=0, help="Cookie block size in bytes (0 = none)")
     ap.add_argument("--cookie-value", default=None, help="exact Cookie value (overrides --cookie-bytes)")
     ap.add_argument("--timeout", type=float, default=8.0, help="response timeout in seconds")

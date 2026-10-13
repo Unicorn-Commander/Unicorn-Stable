@@ -17,6 +17,8 @@ import { crewPresence, opensHub, ownerSeatLabel, SEAT_IN_ITS_ROOMS } from "@/lib
 import { useCrew } from "@/hooks/useCrew";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 import { useChannelCategories } from "@/stores/categoryStore";
 import { useNavStore } from "@/stores/navStore";
 import { useSidebarUi } from "@/stores/sidebarUiStore";
@@ -54,7 +56,7 @@ export function CrewSection({
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { crew, loaded, fromRoster, crewAnswered } = useCrew();
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms, rule, enabled: presenterEnabled } = usePresentedRooms();
   const agents = useAppStore((s) => s.agents);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
   const unreadCounts = useAppStore((s) => s.unreadCounts);
@@ -73,10 +75,17 @@ export function CrewSection({
   const [mutedVersion, setMutedVersion] = useState(0);
   useEffect(() => onMutedChange(() => setMutedVersion((v) => v + 1)), []);
 
+  const presentedCrew = presenterEnabled
+    ? crew.filter(
+        (member) =>
+          member.group === "own_seat" ||
+          rule.isIdentityAllowed(member.agent_id, member.display_name),
+      )
+    : crew;
   const model: CrewSectionModel = useMemo(
-    () =>
-      buildCrewSection({
-        crew,
+    () => {
+      const built = buildCrewSection({
+        crew: presentedCrew,
         crewAnswered,
         selfIds: [currentParticipantId, currentUserId],
         rooms,
@@ -87,11 +96,25 @@ export function CrewSection({
         collapsed: variant === "page" ? {} : collapsed,
         roomUnread: (room) =>
           badgeCount(room.id, unreadCounts[room.id] ?? room.unread_count ?? 0),
-      }),
+      });
+      if (!presenterEnabled) return built;
+      return {
+        ...built,
+        groups: built.groups.map((group) => ({
+          ...group,
+          rows: group.rows.map((row) =>
+            row.roomId && !rule.isRoomAllowed(row.roomId)
+              ? { ...row, roomId: null, hub: null, target: null, targetLabel: null, unread: 0 }
+              : row,
+          ),
+        })),
+      };
+    },
     // mutedVersion recomputes badges when a mute lands outside React.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
     [
       crew,
+      presentedCrew,
       crewAnswered,
       currentParticipantId,
       currentUserId,
@@ -103,8 +126,11 @@ export function CrewSection({
       variant,
       unreadCounts,
       mutedVersion,
+      presenterEnabled,
+      rule,
     ],
   );
+  const hiddenCrewCount = presenterEnabled ? crew.length - presentedCrew.length : 0;
 
   function closePhoneDrawer() {
     if (
@@ -441,6 +467,7 @@ export function CrewSection({
         ) : (
           renderGroups()
         )}
+        <PresenterHiddenLine count={hiddenCrewCount} />
         {fromRoster && loaded && (
           <p className="px-2.5 pt-1 text-[10px] text-slate-600">
             Roster only — this server has no crew list yet.
@@ -518,6 +545,7 @@ export function CrewSection({
               Show fewer
             </button>
           )}
+          <PresenterHiddenLine count={hiddenCrewCount} />
         </>
       )}
     </section>

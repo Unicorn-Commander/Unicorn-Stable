@@ -11,8 +11,8 @@ Upstream is expected to speak the OpenAI multipart contract::
     form: file=<audio>, model=whisper-1, language?=en
     response: { "text": "...", "language"?: "...", "segments"?: [...] }
 
-Defaults track the agent-side STT plug-in (Parakeet on midboy1, with Amanuensis
-as the historical name in docs). Env override: ``WHISPER_BASE_URL``.
+Defaults track the agent-side STT plug-in (an OpenAI-compatible configured
+service). Env override: ``WHISPER_BASE_URL``.
 """
 
 from __future__ import annotations

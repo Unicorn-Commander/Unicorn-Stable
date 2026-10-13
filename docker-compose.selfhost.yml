@@ -185,6 +185,8 @@ services:
       # http://<STABLE_HOST>:<web port>/auth.
       - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set — run ./install.sh}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-stable}
+      # Realm search is correct here: this bundle's Keycloak realm belongs to the installing organization.
+      - USER_SEARCH_SCOPE=${USER_SEARCH_SCOPE:-realm}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-stable-backend}
       - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET:-}
       # --- app URLs ---
@@ -222,6 +224,7 @@ services:
       - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
       - VAPID_SUBJECT=${VAPID_SUBJECT:-}
       - INCOMING_WEBHOOK_SECRET=${INCOMING_WEBHOOK_SECRET:-}
+      - PROJECTOPS_SERVICE_PAT=${PROJECTOPS_SERVICE_PAT:-}
       - PROJECTOPS_SERVICE_JWT=${PROJECTOPS_SERVICE_JWT:-}
       - PROJECTOPS_MCP_URL=${PROJECTOPS_MCP_URL:-}
       - PROJECTOPS_DASHBOARD_URL=${PROJECTOPS_DASHBOARD_URL:-}
@@ -269,6 +272,8 @@ services:
       # Extra CSP connect-src entries so the browser may open the LiveKit
       # signaling socket on its separate port. install.sh fills this in.
       - STABLE_CSP_EXTRA_CONNECT=${STABLE_CSP_EXTRA_CONNECT:-}
+      - STABLE_CSP_EXTRA_SCRIPT=${STABLE_CSP_EXTRA_SCRIPT:-}
+      - STABLE_CSP_EXTRA_FRAME=${STABLE_CSP_EXTRA_FRAME:-}
     volumes:
       # Self-host nginx vhost (adds the /auth proxy + self-contained CSP).
       - ./deploy/selfhost/nginx.selfhost.conf.template:/etc/nginx/templates/default.conf.template:ro

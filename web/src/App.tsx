@@ -146,7 +146,7 @@ function AuthGate({ children }: { children: ReactNode }) {
         id: "dev-user-001",
         username: "aaron",
         displayName: "Aaron Stransky",
-        email: "aaron@magicunicorn.dev",
+        email: "dev@example.com",
         avatarUrl: null,
         roles: ["admin"],
       });

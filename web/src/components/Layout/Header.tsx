@@ -19,6 +19,7 @@ import { identityFor } from "@/lib/identity";
 import { useMenuKeyboard } from "@/hooks/useMenuKeyboard";
 import { api } from "@/services/api";
 import { useFederationStore } from "@/stores/federationStore";
+import { PresenterBadge } from "./PresenterBadge";
 
 // Home, Agents, and Bridge use this bar. A room does not: RoomView's 44px
 // header is the only bar there, at every width. `hideOnMobile` remains so a
@@ -112,6 +113,7 @@ export function Header({
       </div>
 
       <div className="flex items-center gap-1">
+        <PresenterBadge className="mr-1 inline-flex" />
         {/* Global People directory — always available (not the room participant panel). */}
         <Tooltip content="People" placement="bottom">
           <button

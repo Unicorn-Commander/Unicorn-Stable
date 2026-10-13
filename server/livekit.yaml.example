@@ -41,12 +41,12 @@ logging:
   pion_level: warn
 
 # TURN relay so off-tailnet browsers can do voice/video over the public domain.
-# Traefik terminates TLS on the shared :443 (TCP-SNI router, HostSNI=turn.magicunicorn.dev)
+# Traefik terminates TLS on the shared :443 (TCP-SNI router, HostSNI=<turn-host>)
 # and forwards plaintext here -> external_tls: true makes LiveKit listen unencrypted
-# on tls_port and advertise turns:turn.magicunicorn.dev:443 to clients.
+# on tls_port and advertise the configured TURN host:443 to clients.
 # Reuses the one router-forwarded port (443); no new port forwards, no UDP TURN.
 turn:
   enabled: true
-  domain: turn.magicunicorn.dev
+  domain: example.com
   tls_port: 443
   external_tls: true

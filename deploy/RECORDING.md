@@ -38,7 +38,7 @@ the actor and the before/after values. The same function is
 `POST /api/v1/admin/recording/policy {policy, kind, rooms: "all_active" | [ids],
 dry_run}` for instance admins (`STABLE_ADMIN_ROLES`, the agent-access gate).
 
-Then grant the realm role `stable-recorder` in Keycloak (uchub realm) to the
+Then grant the realm role `stable-recorder` in the configured Keycloak realm to the
 people who may press Record (Aaron, Shafen); `always` rooms record without it.
 
 ## The policy matrix
@@ -166,9 +166,9 @@ on every call. To move it:
 Candidate from the design: centerdeep (measured 92 % idle on 08-08) — verify
 before choosing.
 
-**Decision 2026-09-24 (N3):** the worker stays on bigboy for now, next to the
+**Decision 2026-09-24 (N3):** the worker stays on the application host for now, next to the
 SFU, with `EGRESS_CPUS=5.0` and the `cpu_cost` block above in its
-`egress.yaml`. Measured that morning: bigboy 24 cores, 75 % idle, CPU PSI
+`egress.yaml`. Measured that morning: the host had 24 cores, 75 % idle, CPU PSI
 0.00, 69 GB available; centerdeep 8 cores (a VM with ~6 % steal). Moving the
 worker means exposing the stack's redis over the LAN and sharing
 `/egress-out` by NFS, which is a project of its own; do it if the first
@@ -245,7 +245,7 @@ marks the row `deleted`.
 ## What Persephone must provision before the first live proof
 
 1. **Keycloak**: realm role `stable-recorder`; grant to Aaron + Shafen.
-   ✅ 2026-09-24: role created in the uchub realm on auth.unicorncommander.ai
+   ✅ 2026-09-24: role created in the configured realm on the configured auth host
    and granted to Aaron (Shafen when he says so). The role is mirrored onto
    `participants.metadata` at sign-in, so a fresh sign-in is needed once.
 2. **Storage**: a Garage bucket (e.g. `stable-recordings`) and a key scoped to

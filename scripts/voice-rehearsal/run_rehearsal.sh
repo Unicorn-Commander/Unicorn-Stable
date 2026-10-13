@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs ON the Stable host (bigboy). Plays rehearsal lines into a room as a
+# Runs ON the Stable host. Plays rehearsal lines into a room as a
 # synthetic human, samples egress/agents/livekit CPU every 5 s, then dumps the
 # relay log, the voice_dispatch decisions, the chat lines and the room's
 # recordings into an evidence folder.

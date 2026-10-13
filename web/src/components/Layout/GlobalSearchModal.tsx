@@ -9,6 +9,7 @@ import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 import { parseSearchQuery, removeOperatorToken } from "@/utils/searchOperators";
 
 interface GlobalSearchModalProps {
@@ -23,7 +24,7 @@ interface GlobalSearchModalProps {
  * cross rooms. Selecting a result jumps to that room and opens the thread.
  */
 export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms, rule, enabled: presenterEnabled } = usePresentedRooms();
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
   const navigate = useNavigate();
   const [q, setQ] = useState("");
@@ -61,6 +62,13 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
     queryFn: () => api.searchAllMessages(debounced, parsed.operators),
     enabled: debounced.length > 0,
   });
+  const visibleResults = presenterEnabled
+    ? results.filter(
+        (message) =>
+          rule.isRoomAllowed(message.room_id) &&
+          rule.isIdentityAllowed(message.sender_id, message.sender_name),
+      )
+    : results;
 
   // room_id -> friendly label, from the already-loaded room list. Every result
   // is scoped to the caller's rooms, so its room is always present here.
@@ -92,13 +100,13 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
   function onKey(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSel((s) => Math.min(s + 1, results.length - 1));
+      setSel((s) => Math.min(s + 1, visibleResults.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSel((s) => Math.max(s - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const m = results[sel];
+      const m = visibleResults[sel];
       if (m) openResult(m);
     }
   }
@@ -187,7 +195,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
                 Try again
               </button>
             </div>
-          ) : results.length === 0 ? (
+          ) : visibleResults.length === 0 ? (
             <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-10 text-center">
               <div className="grid h-11 w-11 place-items-center rounded-2xl bg-stable-cyan/10 text-stable-cyan/80">
                 <SearchX className="h-5 w-5" />
@@ -199,7 +207,7 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
             </div>
           ) : (
             <ul className="divide-y divide-line">
-              {results.map((m, i) => (
+              {visibleResults.map((m, i) => (
                 <li key={m.id}>
                   <button
                     onMouseEnter={() => setSel(i)}
@@ -231,7 +239,9 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
                         </span>
                       </div>
                       <p className="line-clamp-2 text-xs text-slate-400">
-                        {highlight(m.content, debounced)}
+                        {!presenterEnabled || rule.isOpenRoom(m.room_id)
+                          ? highlight(m.content, debounced)
+                          : "Message hidden while presenting"}
                       </p>
                       <span className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium text-slate-400">
                         <Hash className="h-2.5 w-2.5 shrink-0 opacity-70" />

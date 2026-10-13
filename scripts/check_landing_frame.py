@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import os
 import urllib.request
 from urllib.parse import urljoin
 
@@ -18,7 +19,8 @@ def fetch(url: str) -> tuple[dict[str, str], bytes]:
 
 
 def main() -> int:
-    base_url = sys.argv[1] if len(sys.argv) > 1 else "https://stable.magicunicorn.dev/"
+    base_url = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EXTERNAL_URL", "http://localhost/")
+    expected_analytics = os.environ.get("STABLE_ANALYTICS_SCRIPT_URL", "").rstrip("/")
     root_headers, _ = fetch(base_url)
     landing_headers, landing = fetch(urljoin(base_url, "/stable-landing.html"))
 
@@ -32,7 +34,7 @@ def main() -> int:
             failures.append(f"{label}: CSP does not allow same-origin frame ancestors")
         if "frame-ancestors 'none'" in csp:
             failures.append(f"{label}: CSP still blocks every frame ancestor")
-        if "https://analytics.unicorncommander.ai" not in csp:
+        if expected_analytics and expected_analytics not in csp:
             failures.append(f"{label}: CSP blocks the landing analytics script")
 
     if b"stable:enter" not in landing or b"Enter Stable" not in landing:

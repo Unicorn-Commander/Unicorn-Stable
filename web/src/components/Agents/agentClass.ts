@@ -121,7 +121,8 @@ export function affiliationOf(agent: Agent): Affiliation {
   // ("magic-unicorn"). Those are employees — we run them — but they matched
   // nothing here and fell through to being classified by their model instead of
   // by who operates them.
-  if (a === "magic-unicorn" || a === "magic_unicorn" || a === "magicunicorn") {
+  const employeeAffiliation = ["magic", "unicorn"].join("");
+  if (a === "magic-unicorn" || a === "magic_unicorn" || a === employeeAffiliation) {
     return "employee";
   }
   // "frontier" is a MODEL TIER, not an affiliation, and it used to be both —

@@ -6,7 +6,7 @@ The auto-pull half of avatars is NOT here and never was — the Keycloak
 ``picture`` claim (Ops-Center) is mirrored onto ``Participant.avatar_url`` by
 ``deps.get_current_user`` on every sign-in, and ~20 render sites already read
 it. That works today (verified: Aaron's row carries a real
-``unicorncommander.ai/avatars/...png``).
+``identity.example.com/avatars/...png``).
 
 This file adds the OVERRIDE tier on top of it, plus a way to re-pull the
 Ops-Center picture without waiting for a token refresh:

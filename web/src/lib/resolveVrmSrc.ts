@@ -1,3 +1,5 @@
+import { isRuntimeHostAllowed } from "@/lib/runtimeHosts";
+
 /**
  * VRM URL resolution — deliberately NOT `toAvatarSrc`.
  *
@@ -13,12 +15,6 @@
  * VrmAvatar, which additionally refuses to resolve any in-file URI that is not
  * relative to the model's own base path.
  */
-
-const VRM_HOST_SUFFIXES = [
-  "magicunicorn.dev",
-  "magicunicorn.tech",
-  "unicorncommander.ai",
-];
 
 /**
  * Hard ceiling on a model download. A VRM head is a few MB; anything past this
@@ -63,6 +59,5 @@ export function resolveVrmSrc(url: string | null | undefined): string | null {
   if (typeof window !== "undefined" && host === window.location.hostname) {
     return parsed.href;
   }
-  const ok = VRM_HOST_SUFFIXES.some((s) => host === s || host.endsWith("." + s));
-  return ok ? parsed.href : null;
+  return isRuntimeHostAllowed(host) ? parsed.href : null;
 }

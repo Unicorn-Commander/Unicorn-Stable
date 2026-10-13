@@ -1,20 +1,28 @@
 /**
  * Every rung of resolveIdentity. Colour (`identityFor`) is not under test here.
  */
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import manifest from "../../public/agent-puppets/manifest.json";
 import { brandAvatarFor } from "@/lib/brandAvatars";
 import {
   EXTERNAL_VENDOR_AGENT_IDS,
   invalidateResolvedIdentityCache,
   resolveIdentity,
+  safeAvatarSrc,
   type ResolvedIdentity,
 } from "@/lib/identity";
+import { configureRuntimeHosts } from "@/lib/runtimeHosts";
 
-const KC = "https://cdn.magicunicorn.dev/aaron.png";
-const OVERRIDE = "https://cdn.magicunicorn.dev/override.png";
-const ROSTER = "https://brigade.magicunicorn.dev/avatars/custom.png";
+const KC = "https://cdn.example.com/aaron.png";
+const OVERRIDE = "https://cdn.example.com/override.png";
+const ROSTER = "https://brigade.assets.example.com/avatars/custom.png";
 const GRAVATAR = "https://www.gravatar.com/avatar/abc?d=404";
+
+beforeEach(() => {
+  configureRuntimeHosts([
+    { trustedOrigins: ["https://cdn.example.com", "*.assets.example.com"] },
+  ]);
+});
 
 function human(extra: Record<string, unknown> = {}): ResolvedIdentity {
   return resolveIdentity({
@@ -65,6 +73,15 @@ describe("resolveIdentity humans", () => {
     expect(face.needsPhoto).toBe(true);
   });
 
+  it("fails closed for remote https without a descriptor but keeps local puppet paths", () => {
+    configureRuntimeHosts([]);
+
+    expect(safeAvatarSrc("https://cdn.example.com/blocked.png")).toBeNull();
+    expect(safeAvatarSrc("/agent-puppets/majik.webp")).toBe(
+      "/agent-puppets/majik.webp",
+    );
+  });
+
   it("walks override → keycloak → effective on the avatar API state", () => {
     const face = resolveIdentity({
       effective_url: OVERRIDE,
@@ -83,7 +100,7 @@ describe("resolveIdentity humans", () => {
   it("rejects javascript and protocol-relative URLs", () => {
     expect(human({ avatar_url: "javascript:alert(1)" }).src).toBeNull();
     expect(human({ avatar_url: "//evil.example/a.png" }).src).toBeNull();
-    expect(human({ avatar_url: "http://cdn.magicunicorn.dev/a.png" }).src).toBeNull();
+    expect(human({ avatar_url: "http://cdn.example.com/a.png" }).src).toBeNull();
   });
 
   it("does not treat a human member with status and a picture as an agent", () => {
@@ -457,7 +474,7 @@ describe("resolveIdentity messages and rooms", () => {
       display_name: `Person ${id}`,
       username: id,
       participant_type: "human" as const,
-      avatar_url: `https://cdn.magicunicorn.dev/${id}.png`,
+      avatar_url: `https://cdn.example.com/${id}.png`,
     }));
     const face = resolveIdentity(
       {
@@ -480,7 +497,7 @@ describe("resolveIdentity messages and rooms", () => {
     );
     expect(face.faces).toHaveLength(3);
     expect(face.faces?.map((f) => f.id)).toEqual(["a", "b", "c"]);
-    expect(face.faces?.every((f) => f.src?.includes("magicunicorn.dev"))).toBe(true);
+    expect(face.faces?.every((f) => f.src?.includes("example.com"))).toBe(true);
     expect(face.origin).toBe("subject");
   });
 

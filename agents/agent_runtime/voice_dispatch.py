@@ -92,6 +92,8 @@ __all__ = [
     "spoken_name_match",
     "address_span",
     "best_addressed",
+    "address_only_line",
+    "address_only_window_seconds",
     "fuzzy_spoken_name_match",
     "log_name_near_miss",
     "line_subsumes",
@@ -108,6 +110,11 @@ __all__ = [
 #: Long enough for "and what about the audio?" to follow "Majik, status?";
 #: short enough that the conversation moving on releases the agent.
 STICKY_WINDOW_S = 30.0
+
+# A wake-only line is a handoff cue, not a question. It gets one unnamed
+# follow-up, with a shorter lifetime than the general cast stickiness.
+DEFAULT_ADDRESS_ONLY_WINDOW_S = 8.0
+ADDRESS_ONLY_WINDOW_ENV = "VOICE_ADDRESS_STICKY_WINDOW_SECONDS"
 
 #: How long a floor claim can be held before it is presumed abandoned. A reply
 #: releases the floor explicitly; this only covers a worker that dies mid-turn,
@@ -317,6 +324,69 @@ def spoken_tokens(text: str) -> tuple[str, ...]:
     cleaned = re.sub(r"[^\w\s']", " ", cleaned, flags=re.UNICODE)
     cleaned = cleaned.replace("_", " ")
     return tuple(part for part in cleaned.split() if part)
+
+
+_ADDRESS_ONLY_FILLERS = frozenset(
+    {
+        "alright",
+        "and",
+        "hello",
+        "hey",
+        "hi",
+        "hmm",
+        "mhm",
+        "now",
+        "okay",
+        "ok",
+        "please",
+        "right",
+        "so",
+        "thanks",
+        "uh",
+        "um",
+        "well",
+        "yeah",
+        "yo",
+    }
+)
+
+
+def address_only_line(text: str, names: set[str] | frozenset[str]) -> bool:
+    """True when a line is only a wake/address cue plus up to two fillers.
+
+    This intentionally uses the same position-aware ``address_span`` and
+    ``best_addressed`` rules as normal dispatch. A name mentioned in a sentence
+    is not a wake, and a real question after the wake remains a normal address.
+    """
+    normalized = " ".join(spoken_tokens(text))
+    if not normalized or best_addressed(normalized, {"_self": set(names)}) != "_self":
+        return False
+    for raw_name in names:
+        name = " ".join(spoken_tokens(raw_name))
+        span = address_span(normalized, name)
+        if span is None:
+            continue
+        start, length = span
+        remainder = spoken_tokens(normalized[:start] + " " + normalized[start + length :])
+        if len(remainder) <= 2 and all(
+            token in _ADDRESS_ONLY_FILLERS for token in remainder
+        ):
+            return True
+    return False
+
+
+def address_only_window_seconds() -> float:
+    """Configured lifetime of a wake-only handoff; invalid values use 8 s."""
+    raw = os.getenv(ADDRESS_ONLY_WINDOW_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_ADDRESS_ONLY_WINDOW_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_ADDRESS_ONLY_WINDOW_S
+    if value != value or value == float("inf") or value == float("-inf"):
+        return DEFAULT_ADDRESS_ONLY_WINDOW_S
+    return max(0.0, value)
 
 
 def _contiguous(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:

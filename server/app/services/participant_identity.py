@@ -1,12 +1,13 @@
 """JIT participant provisioning + cross-realm identity linking.
 
-Stable runs against a Keycloak, but the suite has TWO Keycloaks with the same
-realm name ``uchub``: auth.unicorncommander.ai (VPS) and auth.magicunicorn.dev
-(bigboy). The same human exists in both with DIFFERENT ``sub`` values.
+Stable runs against a configured Keycloak. Deployments that share identity
+across more than one Keycloak list the additional issuer hosts in
+``TRUSTED_ISSUER_HOSTS``; the same human can then be linked despite different
+``sub`` values.
 Participants are keyed by ``participants.keycloak_sub`` (unique), so a login
 minted by the "other" Keycloak used to JIT-provision a brand-new participant
 row — a duplicate persona. This happened to a real user (two participants, one
-now orphaned); a third was one bigboy-realm login away.
+now orphaned); a third was one application-realm login away.
 
 The mitigation: before creating a participant for an unknown sub, look for an
 existing HUMAN participant with the same email (case-insensitive) and RE-KEY
@@ -59,24 +60,30 @@ logger = structlog.get_logger(__name__)
 # avatar override, see models/participant.py).
 EMAIL_KEY = "email"
 
-# Our two known admin-controlled Keycloaks (both serve realm "uchub").
-TRUSTED_ISSUER_HOSTS = frozenset(
-    {"auth.unicorncommander.ai", "auth.magicunicorn.dev"}
-)
-
-
 def _normalized_email(claims: dict[str, Any]) -> str | None:
     email = (claims.get("email") or "").strip().lower()
     return email or None
 
 
+def _configured_issuer_hosts(settings: Settings) -> frozenset[str]:
+    hosts: set[str] = set()
+    for value in (settings.trusted_issuer_hosts or "").split(","):
+        candidate = value.strip()
+        if not candidate:
+            continue
+        parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+        if parsed.hostname:
+            hosts.add(parsed.hostname.lower().rstrip("."))
+    return frozenset(hosts)
+
+
 def _issuer_trusted(claims: dict[str, Any], settings: Settings) -> bool:
-    """True when the token issuer is one of our own Keycloaks."""
+    """True when the token issuer is configured for this deployment."""
     host = urlparse(claims.get("iss") or "").hostname
     if not host:
         return False
     configured = urlparse(settings.keycloak_url).hostname
-    return host == configured or host in TRUSTED_ISSUER_HOSTS
+    return host == configured or host in _configured_issuer_hosts(settings)
 
 
 def _stamp_email(participant: Participant, email: str | None) -> bool:
@@ -129,7 +136,7 @@ def _sync_mutable_fields(
         # mints none, so once a token stops carrying a `picture` claim there
         # is nothing left to mirror — the stale URL must not survive it.
         # Guarded to the gravatar class on purpose: a real Ops-Center picture
-        # (unicorncommander.ai) is never blanked by a transiently-absent
+        # configured identity picture is never blanked by a transiently-absent
         # claim, and a Stable-local override is untouched by design.
         participant.avatar_url = None
         changed = True

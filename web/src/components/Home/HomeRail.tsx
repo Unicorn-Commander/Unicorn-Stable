@@ -7,6 +7,8 @@ import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 import { LIVE_CALLS_POLL_MS } from "@/hooks/useLiveCalls";
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
 import { previewText } from "./widgets/HomeRow";
@@ -28,7 +30,7 @@ const NO_FAVORITES: readonly string[] = [];
  * server rail; this replaces the old "pick a destination" paragraph.
  */
 export function HomeRail({ onOpenRoom }: { onOpenRoom: (roomId: string) => void }) {
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms, hiddenCount, rule, enabled: presenterEnabled } = usePresentedRooms();
   const agents = useAppStore((s) => s.agents);
   const selfId = useAppStore((s) => s.currentParticipantId ?? s.currentUser?.id ?? null);
   const activeRoomId = useAppStore((s) => s.activeRoomId);
@@ -72,10 +74,17 @@ export function HomeRail({ onOpenRoom }: { onOpenRoom: (roomId: string) => void 
   }
 
   const summaryReady = summaryQuery.isSuccess;
-  const crew = summaryReady ? summaryQuery.data.crew : [];
+  const allCrew = summaryReady ? summaryQuery.data.crew : [];
+  const crew = presenterEnabled
+    ? allCrew.filter((card) => rule.isIdentityAllowed(card.agent_id, card.display_name))
+    : allCrew;
 
   return (
     <div className="space-y-4" data-testid="home-rail">
+      <PresenterHiddenLine
+        count={hiddenCount + (presenterEnabled ? allCrew.length - crew.length : 0)}
+        className="px-2.5"
+      />
       {summaryQuery.isPending ? (
         <div className="space-y-1" data-testid="home-rail-skeleton" aria-busy="true">
           {[0, 1, 2].map((index) => (
@@ -138,6 +147,7 @@ export function HomeRail({ onOpenRoom }: { onOpenRoom: (roomId: string) => void 
                   agents={agents}
                   active={room.id === activeRoomId}
                   showDraft={draftTick >= 0 && hasDraft(room.id)}
+                  showPreview={!presenterEnabled || rule.isOpenRoom(room.id)}
                   onOpen={onOpenRoom}
                 />
               </li>
@@ -160,6 +170,7 @@ export function HomeRail({ onOpenRoom }: { onOpenRoom: (roomId: string) => void 
                   agents={agents}
                   active={room.id === activeRoomId}
                   showDraft={draftTick >= 0 && hasDraft(room.id)}
+                  showPreview={!presenterEnabled || rule.isOpenRoom(room.id)}
                   onOpen={onOpenRoom}
                 />
               </li>
@@ -188,6 +199,7 @@ function RoomJump({
   agents,
   active,
   showDraft,
+  showPreview,
   onOpen,
 }: {
   room: Room;
@@ -195,6 +207,7 @@ function RoomJump({
   agents: Agent[];
   active: boolean;
   showDraft: boolean;
+  showPreview: boolean;
   onOpen: (roomId: string) => void;
 }) {
   const title = room.display_name || room.name;
@@ -216,7 +229,7 @@ function RoomJump({
             <Pencil className="h-3 w-3 shrink-0 text-slate-400" aria-label="Draft" />
           )}
         </span>
-        {preview && (
+        {preview && showPreview && (
           <span className="block truncate text-[11px] text-slate-500">{preview}</span>
         )}
       </span>

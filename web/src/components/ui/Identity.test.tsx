@@ -6,9 +6,10 @@
  */
 import { act, useLayoutEffect, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Identity, type IdentityProps } from "./Identity";
 import { AGENT_RING_AMBER, AGENT_RING_GREY, safeAvatarSrc, type SafeAvatarSrc } from "@/lib/identity";
+import { configureRuntimeHosts } from "@/lib/runtimeHosts";
 
 function art(url: string): SafeAvatarSrc {
   const safe = safeAvatarSrc(url);
@@ -18,8 +19,18 @@ function art(url: string): SafeAvatarSrc {
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const PHOTO = art("https://cdn.magicunicorn.dev/aaron.png");
-const NEXT = art("https://cdn.magicunicorn.dev/next.png");
+const PHOTO_URL = "https://cdn.example.com/aaron.png";
+const NEXT_URL = "https://cdn.example.com/next.png";
+let PHOTO!: SafeAvatarSrc;
+let NEXT!: SafeAvatarSrc;
+
+beforeEach(() => {
+  configureRuntimeHosts([
+    { trustedOrigins: ["https://cdn.example.com", "*.assets.example.com"] },
+  ]);
+  PHOTO = art(PHOTO_URL);
+  NEXT = art(NEXT_URL);
+});
 
 function props(over: Partial<IdentityProps> = {}): IdentityProps {
   return {

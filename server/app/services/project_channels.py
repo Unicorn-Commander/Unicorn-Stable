@@ -4,9 +4,10 @@ Project-Ops project through ``rooms.project_number``.
 Pure helpers (number normalisation, slug/display naming, webhook payload
 extraction, task filtering) live here so they are testable without a
 network; the two Project-Ops calls go through :func:`call_projectops_tool`,
-a thin seam over the existing service-JWT MCP client in ``api/messages.py``
-that tests monkeypatch. The JWT is read from settings inside that client and
-never appears here, in a log line, or in an error detail.
+a thin seam over the existing server-credential MCP client in
+``api/messages.py`` that tests monkeypatch. The PAT/JWT is read from settings
+inside that client and never appears here, in a log line, or in an error
+detail.
 
 Open tasks for a bound project are cached for 60 s per project number
 (``GET /rooms/{id}/tasks``), the same TTL the projects picker uses.
@@ -178,7 +179,8 @@ def _task_list(value: Any) -> list[Any]:
 
 
 async def call_projectops_tool(name: str, arguments: dict[str, Any]) -> Any:
-    """Seam over the service-JWT MCP client (``api/messages._call_projectops_tool``).
+    """Seam over the server-credential MCP client
+    (``api/messages._call_projectops_tool``).
     Raises HTTPException(502) when Project-Ops is unreachable/unconfigured."""
     from app.api.messages import _call_projectops_tool
 

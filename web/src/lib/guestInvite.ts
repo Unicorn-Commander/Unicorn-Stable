@@ -355,7 +355,7 @@ export function guestInviteWideningWarnings(draft: GuestInviteDraft): string[] {
  * ------------------------------------------------------------------ */
 
 export interface GuestInviteUrlParts {
-  /** Absolute origin, e.g. "https://stable.magicunicorn.tech". */
+  /** Absolute origin supplied by the runtime instance descriptor. */
   origin: string;
   /** The raw token from the mint response. Exists once. */
   token: string;

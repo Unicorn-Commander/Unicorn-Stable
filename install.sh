@@ -9,7 +9,7 @@
 #
 #   ./install.sh                  # interactive
 #   ./install.sh --yes            # accept defaults, no prompts
-#   ./install.sh --yes --host 192.168.1.50 --web-port 9401 --project mystable
+#   ./install.sh --yes --host example.com --web-port 9401 --project mystable
 #   ./install.sh --env-only       # write .env + rendered configs, don't start
 #
 # Idempotent: re-running preserves every secret already in .env, re-renders the
@@ -262,7 +262,7 @@ if [ "$BUNDLED_KEYCLOAK" = "1" ] && { [ "$STABLE_HOST" = "localhost" ] || [ "$ST
   if [ "${STABLE_ALLOW_LOCALHOST:-0}" != "1" ]; then
     die "STABLE_HOST=localhost cannot work with the bundled Keycloak: the backend \
 container must reach the Keycloak URL, and 'localhost' inside a container is the \
-container itself. Use your machine's LAN IP (e.g. --host $(detect_host || echo 192.168.x.x)), \
+container itself. Use the host name or address reachable by your browser (e.g. --host example.com), \
 or set STABLE_ALLOW_LOCALHOST=1 if you really know better."
   fi
   warn "Proceeding with localhost — backend JWKS fetch will likely fail (STABLE_ALLOW_LOCALHOST=1)"
@@ -363,8 +363,17 @@ BRIGADE_BASE_URL_OUT="$(env_get BRIGADE_BASE_URL)"
 BRIGADE_API_BASE_URL_OUT="$(env_get BRIGADE_API_BASE_URL)"
 BRIGADE_AVATAR_BASE_URL_OUT="$(env_get BRIGADE_AVATAR_BASE_URL)"
 BRIGADE_API_KEY_OUT="$(env_get BRIGADE_API_KEY)"
+TRUSTED_ISSUER_HOSTS_OUT="$(env_get TRUSTED_ISSUER_HOSTS)"
 KOKORO_BASE_URL_OUT="$(env_get KOKORO_BASE_URL)"
 WHISPER_BASE_URL_OUT="$(env_get WHISPER_BASE_URL)"
+STABLE_CSP_EXTRA_SCRIPT_OUT="$(env_get STABLE_CSP_EXTRA_SCRIPT)"
+STABLE_CSP_EXTRA_FRAME_OUT="$(env_get STABLE_CSP_EXTRA_FRAME)"
+STABLE_ANALYTICS_SCRIPT_URL_OUT="$(env_get STABLE_ANALYTICS_SCRIPT_URL)"
+STABLE_ANALYTICS_WEBSITE_ID_OUT="$(env_get STABLE_ANALYTICS_WEBSITE_ID)"
+STABLE_APP_URL_OUT="$(env_get STABLE_APP_URL)"
+STABLE_MARKETING_BASE_URL_OUT="$(env_get STABLE_MARKETING_BASE_URL)"
+STABLE_CONTACT_EMAIL_OUT="$(env_get STABLE_CONTACT_EMAIL)"
+STABLE_SOURCE_URL_OUT="$(env_get STABLE_SOURCE_URL)"
 ANTHROPIC_API_KEY_OUT="$(env_get ANTHROPIC_API_KEY)"
 OPENAI_API_KEY_OUT="$(env_get OPENAI_API_KEY)"
 OPENROUTER_API_KEY_OUT="$(env_get OPENROUTER_API_KEY)"
@@ -399,8 +408,11 @@ UPLOAD_URL_SECRET=$UPLOAD_URL_SECRET
 # --- identity (Keycloak OIDC — REQUIRED) ------------------------------------
 KEYCLOAK_URL=$KEYCLOAK_URL_OUT
 KEYCLOAK_REALM=$KEYCLOAK_REALM_IN
+TRUSTED_ISSUER_HOSTS=$TRUSTED_ISSUER_HOSTS_OUT
 KEYCLOAK_CLIENT_ID=$KEYCLOAK_CLIENT_ID_IN
 KEYCLOAK_CLIENT_SECRET=$KEYCLOAK_CLIENT_SECRET_OUT
+# Realm search is correct here: this install's Keycloak realm belongs to the installing organization.
+USER_SEARCH_SCOPE=realm
 KEYCLOAK_WEB_CLIENT_ID=$KEYCLOAK_WEB_CLIENT_ID
 KEYCLOAK_DB_PASSWORD=$KEYCLOAK_DB_PASSWORD
 KEYCLOAK_ADMIN_USER=$KEYCLOAK_ADMIN_USER
@@ -414,6 +426,8 @@ PUBLIC_BASE_URL=$WEB_ORIGIN
 CORS_ORIGINS=$WEB_ORIGIN
 LIVEKIT_PUBLIC_URL=ws://$STABLE_HOST:$LK_WS_PORT
 STABLE_CSP_EXTRA_CONNECT=ws://$STABLE_HOST:$LK_WS_PORT http://$STABLE_HOST:$LK_WS_PORT
+STABLE_CSP_EXTRA_SCRIPT=$STABLE_CSP_EXTRA_SCRIPT_OUT
+STABLE_CSP_EXTRA_FRAME=$STABLE_CSP_EXTRA_FRAME_OUT
 STABLE_KEYCLOAK_UPSTREAM=keycloak:8080
 
 # --- build provenance -------------------------------------------------------
@@ -428,6 +442,12 @@ BRIGADE_AVATAR_BASE_URL=$BRIGADE_AVATAR_BASE_URL_OUT
 BRIGADE_API_KEY=$BRIGADE_API_KEY_OUT
 KOKORO_BASE_URL=$KOKORO_BASE_URL_OUT
 WHISPER_BASE_URL=$WHISPER_BASE_URL_OUT
+STABLE_ANALYTICS_SCRIPT_URL=$STABLE_ANALYTICS_SCRIPT_URL_OUT
+STABLE_ANALYTICS_WEBSITE_ID=$STABLE_ANALYTICS_WEBSITE_ID_OUT
+STABLE_APP_URL=$STABLE_APP_URL_OUT
+STABLE_MARKETING_BASE_URL=$STABLE_MARKETING_BASE_URL_OUT
+STABLE_CONTACT_EMAIL=$STABLE_CONTACT_EMAIL_OUT
+STABLE_SOURCE_URL=$STABLE_SOURCE_URL_OUT
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY_OUT
 OPENAI_API_KEY=$OPENAI_API_KEY_OUT
 OPENROUTER_API_KEY=$OPENROUTER_API_KEY_OUT
@@ -461,6 +481,13 @@ cat > "$SELFHOST_DIR/instances.json" <<EOF
     "icon": "S",
     "webOrigin": "$WEB_ORIGIN",
     "apiBaseUrl": "$WEB_ORIGIN",
+    "trustedOrigins": "$BRIGADE_AVATAR_BASE_URL_OUT",
+    "analyticsScriptUrl": "$STABLE_ANALYTICS_SCRIPT_URL_OUT",
+    "analyticsWebsiteId": "$STABLE_ANALYTICS_WEBSITE_ID_OUT",
+    "appUrl": "$STABLE_APP_URL_OUT",
+    "marketingBaseUrl": "$STABLE_MARKETING_BASE_URL_OUT",
+    "contactEmail": "$STABLE_CONTACT_EMAIL_OUT",
+    "sourceUrl": "$STABLE_SOURCE_URL_OUT",
     "keycloak": {
       "url": "$KEYCLOAK_URL_OUT",
       "realm": "$KEYCLOAK_REALM_IN",

@@ -16,6 +16,7 @@ import { shellBadges } from "@/lib/shellBadges";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { getNotifyLevel } from "@/utils/mute";
 import { useSoftKeyboard } from "@/hooks/useSoftKeyboard";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
 const ICON: Record<PhoneTab, LucideIcon> = {
   home: Home,
@@ -45,7 +46,7 @@ export function PhoneTabBar() {
   const meSheetOpen = useConversationUi((s) => s.meSheetOpen);
   const openMeSheet = useConversationUi((s) => s.openMeSheet);
   const pendingInvites = useConversationUi((s) => s.pendingInvites.length);
-  const rooms = useAppStore((s) => s.rooms);
+  const { rooms } = usePresentedRooms();
   const unreadCounts = useAppStore((s) => s.unreadCounts);
   const mentionUnreads = useAppStore((s) => s.mentionUnreads);
   const stored = useNavStore((s) => s.v2Destination);

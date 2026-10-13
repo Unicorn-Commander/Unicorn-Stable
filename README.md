@@ -13,8 +13,8 @@ Stable is self-hostable open source. Run it on your own hardware or cloud, keep
 conversations on infrastructure you control, and point each room at whichever
 model fits the work.
 
-> Hosted product: **[stable.unicorncommander.ai](https://stable.unicorncommander.ai)**  
-> Part of the [Unicorn Commander](https://unicorncommander.ai) suite.
+> Hosted deployments use the operator's configured domain.
+> Stable is a self-hostable collaboration suite.
 
 ---
 
@@ -52,6 +52,14 @@ model fits the work.
   no third-party voice API required.
 - **Bridge for coding agents.** MCP tools so Claude Code (and friends) can join
   rooms, speak, transcribe, and leave cleanly.
+- **Recording you decide per room.** Off, on request, or always; audio or a
+  composed video of the call; a recordings list with signed downloads; and an
+  owner, an admin, or whoever started it controls the file.
+- **Feeds for a live production.** A room owner can hand broadcast software a
+  link to one participant's camera or shared screen, with audio only when
+  asked for. Everyone in the room sees who is being broadcast.
+- **Private channels and scoped agent keys.** Invite-only channels, and agent
+  keys that name their rooms, expire, and read history only from a chosen point.
 - **Optional Meeting-Ops export.** Durable, at-least-once delivery of finalized
   call transcripts to a Meeting-Ops instance.
 
@@ -73,7 +81,7 @@ admin user, waits for real health, and prints the URL + credentials to sign in.
 Non-interactive / CI:
 
 ```bash
-./install.sh --yes --host 192.168.1.50 --web-port 8401
+./install.sh --yes --host example.com --web-port 8401
 ```
 
 Every published port is remappable (`--help` lists the flags), so Stable can
@@ -174,5 +182,4 @@ modified source to its users.
 
 ---
 
-Built by **[Magic Unicorn Unconventional Technology & Stuff Inc.](https://magicunicorn.tech)**  
-Part of the **[Unicorn Commander](https://unicorncommander.ai)** suite.
+Built for self-hosted collaboration deployments.

@@ -1,6 +1,10 @@
 import { useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "@/services/api";
-import { residentAgentIds } from "@/services/api";
+import {
+  residentAgentIds,
+  type VoiceCanonicalRoom,
+} from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { useVoice, type ConnectOptions } from "@/contexts/VoiceProvider";
 import { useOutgoingCallStore } from "@/stores/outgoingCallStore";
@@ -38,8 +42,16 @@ export interface StartCallOptions extends ConnectOptions {
   ring?: boolean;
 }
 
+export type CanonicalCallTarget = VoiceCanonicalRoom;
+
 export function useDirectCall() {
-  const { connect, disconnect } = useVoice();
+  const {
+    connect,
+    disconnect,
+    showRunnerVoiceCanonicalOnly,
+    clearRunnerVoiceCanonicalOnly,
+  } = useVoice();
+  const navigate = useNavigate();
 
   const startCall = useCallback(
     async (roomId: string, opts?: StartCallOptions) => {
@@ -67,6 +79,7 @@ export function useDirectCall() {
           ring: out.ring,
           showOutcome: out.showOutcome,
           disconnect,
+          showRunnerVoiceCanonicalOnly,
         },
       );
       if (
@@ -85,8 +98,37 @@ export function useDirectCall() {
       }
       return result;
     },
-    [connect, disconnect],
+    [connect, disconnect, showRunnerVoiceCanonicalOnly],
   );
 
-  return { startCall };
+  /**
+   * Open a server-resolved canonical runner room through the same deep-link
+   * call-start path used by native controls. `ring=0` is intentional: the
+   * runner gateway is already attached to its canonical room and has no phone
+   * endpoint to ring.
+   */
+  const startCanonicalCall = useCallback(
+    async (target: CanonicalCallTarget, kind: "voice" | "video" = "voice") => {
+      clearRunnerVoiceCanonicalOnly();
+      let room = useAppStore.getState().rooms.find((item) => item.id === target.id);
+      if (!room) {
+        try {
+          room = await api.getRoom(target.id);
+          useAppStore.getState().upsertRoom(room);
+        } catch (error) {
+          const detail = (error as { detail?: unknown } | null)?.detail;
+          useAppStore.getState().pushToast({
+            title: "Couldn't open the call room",
+            body: typeof detail === "string" ? detail : "The canonical room could not be loaded.",
+            kind: "error",
+          });
+          return;
+        }
+      }
+      navigate(`/c/${room.id}?join=1&kind=${kind}&ring=0`);
+    },
+    [clearRunnerVoiceCanonicalOnly, navigate],
+  );
+
+  return { startCall, startCanonicalCall };
 }

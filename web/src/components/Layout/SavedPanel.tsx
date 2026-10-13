@@ -20,6 +20,8 @@ import {
   usePanelPopout,
 } from "@/components/ui/panelPopout";
 import { useAppStore } from "@/stores/appStore";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 interface SavedPanelProps {
   onClose: () => void;
@@ -29,6 +31,7 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const pushToast = useAppStore((s) => s.pushToast);
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
   const isDesktop = useIsDesktop();
   const presentation = usePanelChromeStore((s) => s.presentation.saved);
   const setPresentation = usePanelChromeStore((s) => s.setPresentation);
@@ -62,6 +65,13 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
     queryKey: ["saved"],
     queryFn: () => api.getSaved(),
   });
+  const visibleSaved = presenterEnabled
+    ? saved.filter(
+        (message) =>
+          rule.isRoomAllowed(message.room_id) &&
+          rule.isIdentityAllowed(message.sender_id, message.sender_name),
+      )
+    : saved;
 
   const headerBar = (
     <div className="flex items-center justify-between border-b border-line px-3 py-2">
@@ -75,9 +85,9 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
         >
           Saved
         </h2>
-        {saved.length > 0 && (
+        {visibleSaved.length > 0 && (
           <span className="text-xs text-slate-500 tabular-nums">
-            ({saved.length})
+            ({visibleSaved.length})
           </span>
         )}
       </div>
@@ -105,7 +115,8 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
 
   const listBody = (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      {saved.length === 0 ? (
+      <PresenterHiddenLine count={presenterEnabled ? saved.length - visibleSaved.length : 0} />
+      {visibleSaved.length === 0 ? (
         <div className="flex flex-col items-center px-4 py-14 text-center">
           <div className="relative mb-4">
             <div
@@ -124,9 +135,11 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
           </p>
         </div>
       ) : (
+        <>
         <ul className="divide-y divide-line">
-          {saved.map((m: Message) => {
+          {visibleSaved.map((m: Message) => {
             const ident = identityFor(m.sender_id, m.sender_name);
+            const showContent = !presenterEnabled || rule.isOpenRoom(m.room_id);
             return (
               <li key={m.id} className="p-3.5 transition-colors hover:bg-white/[0.02]">
                 <div className="flex items-start gap-2.5">
@@ -143,9 +156,13 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
                         {new Date(m.created_at).toLocaleString()}
                       </span>
                     </div>
-                    <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed text-slate-300">
-                      {m.content}
-                    </p>
+                    {showContent ? (
+                      <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed text-slate-300">
+                        {m.content}
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 text-xs text-slate-500">Saved message</p>
+                    )}
                     <div className="mt-1.5 flex gap-3 text-[10px]">
                       <button
                         type="button"
@@ -176,6 +193,7 @@ export function SavedPanel({ onClose }: SavedPanelProps) {
             );
           })}
         </ul>
+        </>
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import { useModalA11y } from "@/hooks/useModalA11y";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iP(hone|ad)/.test(navigator.platform);
 const mod = isMac ? "⌘" : "Ctrl";
+const alt = isMac ? "⌥" : "Alt";
 
 interface Row {
   combo: string;
@@ -16,6 +17,7 @@ const KEYS: Row[] = [
   { combo: `${mod} ⇧ K`, desc: "Home's composer — message a seat, from anywhere" },
   { combo: `${mod} \u21e7 F`, desc: "Search messages across all channels" },
   { combo: `${mod} /`, desc: "This cheatsheet" },
+  { combo: `${mod} ${alt} P`, desc: "Toggle Presenter mode (this device)" },
   { combo: "?", desc: "This cheatsheet (outside inputs)" },
   { combo: "Alt ↑ / ↓", desc: "Previous / next room in sidebar order" },
   { combo: `${mod} N`, desc: "New — person, agent, thread, channel, project, call" },

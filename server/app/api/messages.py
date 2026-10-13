@@ -27,6 +27,7 @@ from app.deps import (
     is_guest,
     rate_limit,
     rate_limit_principal,
+    require_po_staff,
     require_room_member,
     require_room_member_or_guest,
 )
@@ -1006,10 +1007,11 @@ def _extract_mcp_value(payload: dict[str, Any]) -> Any:
 
 async def _call_projectops_tool(name: str, arguments: dict[str, Any]) -> Any:
     cfg = get_settings()
-    if not cfg.projectops_service_jwt:
+    service_token = (cfg.projectops_service_pat or "").strip() or (cfg.projectops_service_jwt or "").strip()
+    if not service_token:
         raise HTTPException(
             status_code=502,
-            detail="Project Ops service JWT is not configured",
+            detail="Project Ops service credential is not configured",
         )
 
     try:
@@ -1017,7 +1019,7 @@ async def _call_projectops_tool(name: str, arguments: dict[str, Any]) -> Any:
             resp = await client.post(
                 cfg.projectops_mcp_url,
                 headers={
-                    "Authorization": f"Bearer {cfg.projectops_service_jwt}",
+                    "Authorization": f"Bearer {service_token}",
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream",
                 },
@@ -1172,10 +1174,10 @@ def _build_projectops_description(msg: Any, room: Any, body: PromoteToProjectOps
 
 @router.get("/po/projects", response_model=list[ProjectOpsProject])
 async def list_projectops_projects(
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(require_po_staff)],
 ) -> list[ProjectOpsProject]:
-    """List Project Ops projects visible to the service account for the picker."""
-    _ = user
+    """List Project Ops projects visible to the least-privilege service user."""
+    _ = user  # The dependency provides the explicit Stable-side staff gate.
     return await _list_projectops_projects_cached()
 
 
@@ -1186,7 +1188,7 @@ async def list_projectops_projects(
 async def promote_message_to_projectops_task(
     message_id: uuid.UUID,
     body: PromoteToProjectOpsBody,
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    user: Annotated[dict[str, Any], Depends(require_po_staff)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProjectOpsTaskResponse:
     """Promote a visible Stable message into a Project Ops task.
@@ -1201,7 +1203,14 @@ async def promote_message_to_projectops_task(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="project_number is required: this room is not bound to a Project-Ops project",
         )
+    caller_email = str(user.get("email") or "").strip()
+    if not caller_email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Project Ops promotion requires the caller's email",
+        )
     description = _build_projectops_description(msg, room, body)
+    description = f"Promoted from Stable by {caller_email}\n\n{description}"
     task_args = {
         "projectNumber": project_number,
         "title": (body.title or _default_task_title(msg.content or "")).strip(),

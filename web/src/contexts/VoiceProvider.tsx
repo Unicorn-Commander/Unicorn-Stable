@@ -20,7 +20,13 @@ import {
   isMovedToAnotherDevice,
   MOVED_TO_ANOTHER_DEVICE_TOAST,
 } from "@/lib/callHandoff";
-import { api, residentAgentIds } from "@/services/api";
+import {
+  api,
+  isHttpClientError,
+  residentAgentIds,
+  runnerVoiceCanonicalOnly,
+  type RunnerVoiceCanonicalOnly,
+} from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import {
   decodeRoomData,
@@ -144,6 +150,10 @@ interface VoiceContextValue {
   /** Persist a call-entry preference: local cache now, server when signed in. */
   setCallPrefs: (patch: Partial<CallEntryPrefs>) => Promise<CallEntryPrefs>;
   disconnect: () => void;
+  /** Structured runner-seat redirect from a voice dispatch refusal. */
+  runnerVoiceCanonicalOnly: RunnerVoiceCanonicalOnly | null;
+  showRunnerVoiceCanonicalOnly: (notice: RunnerVoiceCanonicalOnly) => void;
+  clearRunnerVoiceCanonicalOnly: () => void;
   startAudio: () => Promise<void>;
   repairAudio: () => Promise<void>;
   /**
@@ -266,6 +276,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runnerVoiceNotice, setRunnerVoiceCanonicalOnly] =
+    useState<RunnerVoiceCanonicalOnly | null>(null);
+  const showRunnerVoiceCanonicalOnly = useCallback(
+    (notice: RunnerVoiceCanonicalOnly) => setRunnerVoiceCanonicalOnly(notice),
+    [],
+  );
+  const clearRunnerVoiceCanonicalOnly = useCallback(
+    () => setRunnerVoiceCanonicalOnly(null),
+    [],
+  );
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [showDeviceCheck, setShowDeviceCheck] = useState(false);
   // Which kind of call the open device check belongs to (labels the dialog).
@@ -732,6 +752,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setAudioBlocked(false);
     setVersion(0);
     setVoiceActive(false);
+    setRunnerVoiceCanonicalOnly(null);
     // No active call → agent ui_commands have no room to target.
     setActiveCallRoom(null);
   }, [setVoiceActive]);
@@ -810,6 +831,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const join = useCallback(async (overrides?: JoinOverrides): Promise<boolean> => {
     const roomId = useAppStore.getState().activeRoomId;
     if (!roomId || connectingRef.current) return false;
+    clearRunnerVoiceCanonicalOnly();
     // Deep-link / immediate-join choices arrive as ids; they win over the
     // (possibly stale-in-closure) selected state for THIS join.
     const chosen = {
@@ -1204,15 +1226,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         const model = useAppStore.getState().modelOverrides[roomId];
         let joined = 0;
         let lastError: unknown = null;
+        let terminalError: unknown = null;
         for (const agentId of agentIds) {
           try {
             await api.inviteBrigadeAgent(roomId, agentId, model);
             joined += 1;
           } catch (e) {
             lastError = e;
+            if (isHttpClientError(e)) {
+              terminalError = e;
+              const notice = runnerVoiceCanonicalOnly(e);
+              if (notice) showRunnerVoiceCanonicalOnly(notice);
+            }
             console.error("agent dispatch failed", agentId, e);
           }
         }
+        if (terminalError !== null) throw terminalError;
         // Only a TOTAL failure is the call's failure. One agent the caller
         // isn't entitled to must not silence the ones they are, nor stop the
         // self-heal poll below.
@@ -1228,6 +1257,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         roomHasAgent = expectedAgents > 0;
       } catch (e) {
         console.error("failed to dispatch agent into voice call", e);
+        if (isHttpClientError(e)) roomHasAgent = false;
         if (isEntitlementDenial(e)) {
           // The server's per-user agent gate said no. The human's call is
           // fine (someone else in the room may be entitled to summon the
@@ -1267,6 +1297,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
               await inviteAgents();
             } catch (e) {
               console.error("agent re-invite failed", e);
+              if (isHttpClientError(e)) return;
             }
             if (attempt < 3) ensureAgent(attempt + 1);
           }, 4000);
@@ -1309,6 +1340,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     selectedDevices.videoinput,
     selectedDevices.audiooutput,
     queryClient,
+    showRunnerVoiceCanonicalOnly,
+    clearRunnerVoiceCanonicalOnly,
   ]);
 
   /**
@@ -1440,6 +1473,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         callPrefs,
         setCallPrefs,
         disconnect,
+        runnerVoiceCanonicalOnly: runnerVoiceNotice,
+        showRunnerVoiceCanonicalOnly,
+        clearRunnerVoiceCanonicalOnly,
         startAudio,
         repairAudio,
         claimScreenAudio,

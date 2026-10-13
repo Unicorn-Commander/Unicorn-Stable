@@ -150,7 +150,7 @@ export function parseBroadcastOptions(search: string): BroadcastOptions {
 }
 
 export interface BroadcastUrlParts {
-  /** Absolute origin, e.g. "https://stable.magicunicorn.tech". */
+  /** Absolute origin supplied by the runtime instance descriptor. */
   origin: string;
   roomId: string;
   participantIdentity: string;

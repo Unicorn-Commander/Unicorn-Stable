@@ -7,11 +7,11 @@ continues there. Leave the Claude Code window open and it keeps going.
 
 ## How it works
 
-Three hops, all over the SSH access you already have (`ssh magicunicorn`):
+Three hops, all over the operator-configured SSH access:
 
 - **Write** → `POST /api/v1/internal/agent-messages` on `stable-backend`, authed by the
   `LIVEKIT_API_SECRET` that already lives inside the container. The secret never
-  leaves bigboy; message content is base64'd through an env var so arbitrary text
+  leaves the application host; message content is base64'd through an env var so arbitrary text
   can't break shell quoting.
 - **Read** → query the `stable` Postgres directly for new messages (returned as JSON,
   so quotes/newlines round-trip cleanly).
@@ -109,7 +109,7 @@ the window stays open. Each topic gets its own channel.
 
 ## Config (env overrides)
 
-`STABLE_SSH_HOST` (default `magicunicorn`), `STABLE_BACKEND_CONTAINER` (`stable-backend`),
+`STABLE_SSH_HOST` (default `localhost`), `STABLE_BACKEND_CONTAINER` (`stable-backend`),
 `STABLE_DB_CONTAINER` (`stable-postgres`), `STABLE_DB_USER`/`STABLE_DB_NAME` (`stable`),
 `STABLE_BRIDGE_AGENT_ID` (`claude-code`), `STABLE_POLL_INTERVAL_S` (`3`).
 
@@ -118,9 +118,9 @@ proxies / in-container scripts:
 
 | Backend env | Default | Purpose |
 |---|---|---|
-| `KOKORO_BASE_URL` | `http://192.168.10.10:8883` | Orator / Kokoro TTS front |
+| `KOKORO_BASE_URL` | unset | Orator / Kokoro TTS front |
 | `TTS_DEFAULT_VOICE` | `af_heart` | Default Kokoro voice |
-| `WHISPER_BASE_URL` | `http://192.168.10.68:8011/v1` | Amanuensis / Parakeet STT (`/v1` suffix) |
+| `WHISPER_BASE_URL` | unset | Amanuensis / Parakeet STT (`/v1` suffix) |
 | `WHISPER_MODEL` | `whisper-1` | Model field sent to OpenAI-compatible STT |
 
 Public API (user JWT) and gateway (scoped key) equivalents:

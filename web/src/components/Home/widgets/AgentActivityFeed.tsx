@@ -20,6 +20,8 @@ function FoldedThreads({ row }: { row: AgentThreadRow }) {
   );
 }
 import { HomeRow, SenderLine, previewText } from "./HomeRow";
+import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
 /**
  * W5 — the agent activity feed. Absorbs the old "Needs your attention"
@@ -85,7 +87,19 @@ export function AgentActivityFeed({
   onOpenRoom: (roomId: string) => void;
   onBrowseAgents: () => void;
 }) {
-  const { waiting, recent, staleWaitingTotal } = feed;
+  const { enabled: presenterEnabled, rule } = usePresentedRooms();
+  const visibleRoster = presenterEnabled
+    ? roster.filter((agent) => rule.isIdentityAllowed(agent.id, agent.display_name || agent.name))
+    : roster;
+  const isVisibleRow = (row: AgentThreadRow) =>
+    rule.isRoomAllowed(row.room.id) &&
+    (!row.room.last_message || rule.isIdentityAllowed(row.room.last_message.sender_id, row.room.last_message.sender_name));
+  const waiting = presenterEnabled ? feed.waiting.filter(isVisibleRow) : feed.waiting;
+  const recent = presenterEnabled ? feed.recent.filter(isVisibleRow) : feed.recent;
+  const staleWaitingTotal = presenterEnabled ? 0 : feed.staleWaitingTotal;
+  const hiddenCount = presenterEnabled
+    ? feed.waiting.length - waiting.length + feed.recent.length - recent.length + feed.staleWaitingTotal
+    : 0;
   const empty =
     waiting.length === 0 && recent.length === 0 && staleWaitingTotal === 0;
 
@@ -100,6 +114,7 @@ export function AgentActivityFeed({
           Agent activity
         </h2>
       </div>
+      <PresenterHiddenLine count={hiddenCount} className="mb-2 px-0" />
 
       {empty ? (
         <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-xs text-slate-500">
@@ -128,7 +143,7 @@ export function AgentActivityFeed({
                 <HomeRow
                   leading={
                     <Identity
-                      {...resolveIdentity(room, { agents: roster })}
+                      {...resolveIdentity(room, { agents: visibleRoster })}
                       size={32}
                       className="mt-0.5"
                     />
@@ -142,7 +157,13 @@ export function AgentActivityFeed({
                   line={
                     <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
                       {m ? (
-                        <SenderLine message={m} />
+                        presenterEnabled && !rule.isOpenRoom(room.id) ? (
+                          <span className="truncate text-xs text-slate-500">
+                            Messages hidden while presenting
+                          </span>
+                        ) : (
+                          <SenderLine message={m} />
+                        )
                       ) : (
                         <span className="truncate text-xs text-slate-500">
                           Unread agent messages
@@ -167,7 +188,7 @@ export function AgentActivityFeed({
             return (
               <li key={room.id}>
                 <HomeRow
-                  leading={<AgentPortraitForMessage message={m} roster={roster} />}
+                  leading={<AgentPortraitForMessage message={m} roster={visibleRoster} />}
                   title={m.sender_name}
                   titleStyle={{
                     color: identityFor(m.sender_id, m.sender_name).text,
@@ -180,7 +201,11 @@ export function AgentActivityFeed({
                       <span className="shrink-0 rounded bg-white/[0.05] px-1.5 py-px text-[10px] font-medium text-slate-400">
                         {room.display_name || room.name}
                       </span>
-                      <span className="truncate">{previewText(m.content)}</span>
+                      <span className="truncate">
+                        {presenterEnabled && !rule.isOpenRoom(room.id)
+                          ? "Messages hidden while presenting"
+                          : previewText(m.content)}
+                      </span>
                       <FoldedThreads row={row} />
                     </span>
                   }

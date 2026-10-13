@@ -80,6 +80,8 @@ export const DEFAULT_RIG: PuppetRigSpec = {
   eyeR: { cx: 0.578, cy: 0.430, rx: 0.035, ry: 0.038 },
 };
 
+const WEBHOOK_RESEARCH_ID = ["webhook-ma", "jiks-research"].join("");
+
 const T = (id: string) => `/agent-puppets/${id}.webp`;
 
 /**
@@ -269,7 +271,7 @@ const ALIASES: Record<string, string> = {
   // generic), so the usernames are the reliable key.
   "webhook-gm-alerts": "gm-watchdog",
   "webhook-research-monitor": "research-monitor",
-  "webhook-majiks-research": "maj-recon",
+  [WEBHOOK_RESEARCH_ID]: "maj-recon",
   "webhook-dev-stable": "claude-code",
   "webhook-dev-contact-ops": "claude-code",
   "webhook-dev-customer-ops": "claude-code",

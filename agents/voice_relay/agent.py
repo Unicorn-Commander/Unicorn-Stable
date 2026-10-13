@@ -43,6 +43,10 @@ CONFIGURATION comes from the room's metadata, read at dispatch:
     (identity = the sender's username), hosted by this relay process, with
     its own audio track — so Grok's words leave Grok's tile, not Rook's.
     See voice_relay/cast.py. With both flags off, nothing below changes.
+  * ``voice_barge_in`` — OPTIONAL, ``auto`` by default. ``auto`` lets a real
+    caller interruption cut the current reply after the echo/short-transcript
+    guard; ``off`` keeps playback continuous for recordings and shows. The
+    guard still prevents relay echo from becoming a persisted caller line.
 
 THE TALK GATE can name a TARGET (``talk_gate`` frame, ``target`` field, added
 2026-09-01). A held pedal then addresses that agent rather than the relay's
@@ -66,6 +70,11 @@ itself, because Stable disables browser captions whenever a specific mic is
 selected, leaving the transcript panel empty on any real rig. Only a line
 ADDRESSED TO THE AGENT becomes a chat message. Persisting every spoken
 sentence turned a private conversation into a wall of chat nobody asked for.
+
+While the relay is speaking, a short STT result is not allowed to cut it, and a
+transcript matching recent relay speech is treated as speaker echo: it is
+dropped before caller-history persistence. The thresholds and rolling echo
+window are environment-tunable; see the voice dispatch documentation.
 
 The browser path alone was not enough, and the reason is worth writing down:
 Stable deliberately DISABLES browser captions whenever the caller picks a
@@ -100,6 +109,11 @@ from typing import Any, NamedTuple
 
 import structlog
 
+from agent_runtime.barge_in import (
+    BargeInCheck,
+    TranscriptEchoGuard,
+    transcript_duration_seconds,
+)
 from agent_runtime.base import StableAgent
 from agent_runtime.puppet_video import (
     PuppetVideo,
@@ -114,6 +128,8 @@ from agent_runtime.transcript_publisher import (
 from agent_runtime.voice_dispatch import (
     FRAGMENT_WINDOW_S,
     OTHER_EAR_DUP_S,
+    address_only_line,
+    address_only_window_seconds,
     best_addressed,
     fuzzy_spoken_name_match,
     log_name_near_miss,
@@ -156,6 +172,13 @@ DEFAULT_RELAY_PERSONA = "rook"
 #:   off    — never write to chat. Transcript only.
 ACTIVATION_MODES = ("name", "window", "always", "ptt", "off")
 DEFAULT_ACTIVATION = "name"
+
+# Whether a caller's speech can stop relay playback. The echo/short-transcript
+# filter remains active in both modes so the relay cannot save its own words as
+# a caller message when speakers feed the program audio back into the mic.
+BARGE_IN_MODES = ("auto", "off")
+DEFAULT_BARGE_IN_MODE = "auto"
+BARGE_IN_METADATA_KEY = "voice_barge_in"
 
 #: Sliding conversation window for ``window`` mode. 75s sits in the 60–90s
 #: range Aaron asked for on 2026-08-30: long enough for a follow-up after a
@@ -306,6 +329,18 @@ def activation_from_metadata(metadata: Any) -> str:
     mode = data.get("voice_relay_activation")
     mode = mode.strip().lower() if isinstance(mode, str) else ""
     return mode if mode in ACTIVATION_MODES else DEFAULT_ACTIVATION
+
+
+def barge_in_mode_from_metadata(*metadatas: Any) -> str:
+    """Read ``voice_barge_in`` with dispatch metadata taking precedence."""
+    for metadata in metadatas:
+        data = _metadata_dict(metadata)
+        if BARGE_IN_METADATA_KEY not in data:
+            continue
+        mode = data.get(BARGE_IN_METADATA_KEY)
+        mode = mode.strip().lower() if isinstance(mode, str) else ""
+        return mode if mode in BARGE_IN_MODES else DEFAULT_BARGE_IN_MODE
+    return DEFAULT_BARGE_IN_MODE
 
 
 def clamp_window_seconds(value: Any) -> int:
@@ -853,6 +888,8 @@ class VoiceRelayAgent(StableAgent):
         self._captions: TranscriptPublisher | None = None
         self._my_names: set[str] = set()
         self._activation = DEFAULT_ACTIVATION
+        self._barge_in_mode = DEFAULT_BARGE_IN_MODE
+        self._echo_guard = TranscriptEchoGuard()
         #: Sliding conversation window (window mode). Monotonic deadline;
         #: 0 means closed. Each addressed line and each spoken reply slides it.
         self._window_until = 0.0
@@ -866,6 +903,11 @@ class VoiceRelayAgent(StableAgent):
         #: The room's designated voice co-host (``voice_primary_agent_id``),
         #: read with the rest of the relay config. None = nobody.
         self._primary_agent: str | None = None
+        #: A wake-only line in name mode arms exactly one follow-up for this
+        #: speaker. The general floor claim remains shared; this short-lived
+        #: map supplies the narrower wake handoff semantics.
+        self._address_only_until: dict[str, float] = {}
+        self._address_only_window_s = address_only_window_seconds()
         #: sender username → Kokoro voice id. Empty until build_pipeline reads
         #: the room; ``_speaking_for()`` then substitutes the legacy single
         #: source so a relay built by hand in a test still has a map.
@@ -930,6 +972,7 @@ class VoiceRelayAgent(StableAgent):
             if job_activation != DEFAULT_ACTIVATION
             else activation_from_metadata(room_meta)
         )
+        self._barge_in_mode = barge_in_mode_from_metadata(job_meta, room_meta)
         job_window = window_seconds_from_metadata(job_meta)
         self._window_seconds = (
             job_window
@@ -1076,6 +1119,7 @@ class VoiceRelayAgent(StableAgent):
             source=self._source_username,
             persona=self._relay_persona,
             activation=self._activation,
+            barge_in=self._barge_in_mode,
             voices=dict(self._voices),
             video=self._video,
             multi=self._multi,
@@ -1282,9 +1326,30 @@ class VoiceRelayAgent(StableAgent):
                         window_seconds=self._window_seconds,
                         by=str(payload.get("by") or "")[:40],
                     )
-                elif not any(
+                raw_barge = payload.get(BARGE_IN_METADATA_KEY, payload.get("barge_in"))
+                if raw_barge is not None:
+                    next_barge = str(raw_barge).strip().lower()
+                    if next_barge in BARGE_IN_MODES:
+                        old_barge, self._barge_in_mode = self._barge_in_mode, next_barge
+                        logger.info(
+                            "voice_relay_barge_in_changed",
+                            old=old_barge,
+                            new=next_barge,
+                            by=str(payload.get("by") or "")[:40],
+                        )
+                    else:
+                        logger.warning("voice_relay_barge_in_invalid")
+                if mode not in ACTIVATION_MODES and not any(
                     k in payload
-                    for k in ("voices", "video", "multi", "max_spoken_chars", "cast_aliases")
+                    for k in (
+                        "voices",
+                        "video",
+                        "multi",
+                        "max_spoken_chars",
+                        "cast_aliases",
+                        BARGE_IN_METADATA_KEY,
+                        "barge_in",
+                    )
                 ):
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
                 if "max_spoken_chars" in payload:
@@ -1404,6 +1469,62 @@ class VoiceRelayAgent(StableAgent):
             logger.info("voice_relay_unmuted", reason=reason)
         return changed
 
+    def _barge_check(
+        self,
+        text: str,
+        *,
+        speaker: str,
+        event: Any = None,
+    ) -> BargeInCheck:
+        """Classify one caller transcript against the recent relay speech.
+
+        Echo matching also runs just after playback finishes: the microphone
+        can deliver the room's final reflected words after the speech handle
+        has closed, and those words must not become a caller-history line.
+        Short-result handling remains a barge gate only while speaking.
+        """
+        guard = getattr(self, "_echo_guard", None)
+        if guard is None:
+            guard = TranscriptEchoGuard()
+            self._echo_guard = guard
+        check = guard.check(
+            text,
+            duration_s=transcript_duration_seconds(event),
+            now=self._clock(),
+        )
+        if check.reason == "echo":
+            logger.debug(
+                "voice_relay_echo_dropped",
+                speaker=speaker,
+                score=round(check.score or 0.0, 3),
+                chars=len(text),
+            )
+            return check
+        if not self._speaking:
+            return BargeInCheck()
+        if check.reason == "short":
+            logger.debug(
+                "voice_relay_short_barge_ignored",
+                speaker=speaker,
+                chars=len(text),
+            )
+        return check
+
+    def _can_interrupt(self, check: BargeInCheck) -> bool:
+        """Whether this check is a real barge under the room's switch."""
+        return (
+            self._speaking
+            and getattr(self, "_barge_in_mode", DEFAULT_BARGE_IN_MODE) == "auto"
+            and check.reason is None
+        )
+
+    def _remember_spoken(self, text: str) -> None:
+        guard = getattr(self, "_echo_guard", None)
+        if guard is None:
+            guard = TranscriptEchoGuard()
+            self._echo_guard = guard
+        guard.note_spoken(text, now=self._clock())
+
     def _on_own_stt(self, ev: Any) -> None:
         """A final from the relay's OWN STT. Sync; must never raise."""
         try:
@@ -1421,6 +1542,10 @@ class VoiceRelayAgent(StableAgent):
                     note="no human identity for this utterance; dropped",
                 )
                 return
+            barge_check = self._barge_check(text, speaker=speaker, event=ev)
+            if barge_check.reason == "echo":
+                return
+            can_interrupt = self._can_interrupt(barge_check)
             # A healthy per-track ear owns this microphone. The linked
             # participant still barges in through here, the way it always
             # has. The line itself is held back when that ear's own energy
@@ -1428,7 +1553,7 @@ class VoiceRelayAgent(StableAgent):
             # longer silence gate). It lands only when the gate stayed shut:
             # a quiet mic the per-track ear cannot hear.
             if self._speaker_covered(speaker):
-                if self._speaking:
+                if can_interrupt:
                     self._interrupt_speech(speaker=speaker, chars=len(text))
                 if self._track_heard_speech(speaker):
                     return
@@ -1456,7 +1581,7 @@ class VoiceRelayAgent(StableAgent):
 
             # Chat is a different bar than the transcript, and BOTH ears share
             # one rule for it. _hear commits one finished line.
-            if self._hear(speaker, text, ear="stt") and self._speaking:
+            if self._hear(speaker, text, ear="stt") and can_interrupt:
                 self._interrupt_speech(speaker=speaker, chars=len(text))
         except Exception:
             logger.warning("voice_relay_own_stt_failed", exc_info=True)
@@ -1480,6 +1605,10 @@ class VoiceRelayAgent(StableAgent):
         if not content:
             return
         speaker = str(getattr(track, "participant_identity", "") or "")
+        barge_check = self._barge_check(content, speaker=speaker)
+        if barge_check.reason == "echo":
+            return
+        can_interrupt = self._can_interrupt(barge_check)
         hint = None
         participant = None
         try:
@@ -1509,14 +1638,14 @@ class VoiceRelayAgent(StableAgent):
             )
         key = f"stt:{content.lower()}"
         if self._heard_recently(key):
-            if self._speaking and content:
+            if can_interrupt and content:
                 self._interrupt_speech(speaker=speaker, chars=len(content))
             return
         self._heard_segments.add(key)
         # The track already waited out the silence gate and joined its
         # partial recognizes, so this final is one utterance.
         self._hear(speaker, content, ear="multi_track")
-        if self._speaking and content:
+        if can_interrupt and content:
             # Barge even when the line is not one we persist: a human
             # talking over the relay takes the floor. This is the only
             # per-track barge-in: raw energy alone (a music bed, desk
@@ -1670,7 +1799,20 @@ class VoiceRelayAgent(StableAgent):
             agent turn; "um" as a turn is absurd, costs a real reply, and the
             agent then SAYS something to an utterance that meant nothing.
         """
-        for_us = self._is_for_us(text)
+        if self._activation == "name" and address_only_line(text, self._listen_names()):
+            self._mark_address_only(speaker)
+            logger.info(
+                "voice_relay_address_only",
+                speaker=speaker,
+                window_seconds=getattr(
+                    self,
+                    "_address_only_window_s",
+                    address_only_window_seconds(),
+                ),
+                ear=ear,
+            )
+            return False
+        for_us = self._is_for_us(text, speaker=speaker)
         outcome: str | None = None
         if not for_us:
             outcome = self._dispatch_outside_persona(speaker, text, ear=ear)
@@ -1752,12 +1894,38 @@ class VoiceRelayAgent(StableAgent):
 
         return BoundFloor(get_floor_store(), make_room_key(getattr(self, "_room_name", "")))
 
-    def _claim_sticky(self, speaker: str, agent: str) -> None:
+    def _claim_sticky(
+        self, speaker: str, agent: str, *, now: float | None = None
+    ) -> None:
         """Remember who this speaker is talking to. Never raises into the loop."""
         try:
-            self._floor().claim(speaker, agent, now=time.monotonic())
+            self._floor().claim(
+                speaker,
+                agent,
+                now=self._clock() if now is None else now,
+            )
         except Exception:
             logger.debug("voice_relay_sticky_claim_failed", exc_info=True)
+
+    def _mark_address_only(self, speaker: str) -> None:
+        now = self._clock()
+        self._address_only_until[speaker] = now + getattr(
+            self,
+            "_address_only_window_s",
+            address_only_window_seconds(),
+        )
+        self._claim_sticky(speaker, self._identity, now=now)
+
+    def _consume_address_only(self, speaker: str) -> bool:
+        deadline = self._address_only_until.get(speaker)
+        if deadline is None:
+            return False
+        now = self._clock()
+        if now >= deadline:
+            self._address_only_until.pop(speaker, None)
+            return False
+        self._address_only_until.pop(speaker, None)
+        return True
 
     def _cast_needles(self) -> dict[str, set[str]]:
         """Spoken name forms per hosted cast identity (``agent-grok`` → grok…).
@@ -1828,7 +1996,7 @@ class VoiceRelayAgent(StableAgent):
         from agent_runtime import voice_dispatch
 
         needles = self._cast_needles()
-        now = time.monotonic()
+        now = self._clock()
         try:
             floor = self._floor()
         except Exception:
@@ -1841,6 +2009,8 @@ class VoiceRelayAgent(StableAgent):
         # one-edit recovery; a cast seat does not. Two seats in address
         # position: earliest start, then the longer match.
         by_name = best_addressed(text, needles)
+        if by_name is not None:
+            self._address_only_until.pop(speaker, None)
         candidate = by_name
         rule = "addressed_by_name"
         if candidate is None:
@@ -1934,7 +2104,7 @@ class VoiceRelayAgent(StableAgent):
         if self._activation == "window":
             self._window_until = self._clock() + self._window_seconds
 
-    def _is_for_us(self, text: str) -> bool:
+    def _is_for_us(self, text: str, *, speaker: str | None = None) -> bool:
         """Was this line addressed to the agent, under this room's rule?"""
         mode = self._activation
         if mode == "off":
@@ -1954,7 +2124,17 @@ class VoiceRelayAgent(StableAgent):
                 self._window_until = now + self._window_seconds
                 return True
             return False
-        return self._addressed_by_name(text)
+        if self._addressed_by_name(text):
+            if speaker:
+                self._address_only_until.pop(speaker, None)
+            return True
+        if speaker and self._consume_address_only(speaker):
+            # The shared floor/sticky machinery still records the addressed
+            # seat; the local deadline makes this wake-only handoff exactly
+            # one follow-up and no longer than the room's configured window.
+            self._claim_sticky(speaker, self._identity)
+            return True
+        return False
 
     def _speaker_identity(self, ev: Any) -> str | None:
         """Whose voice this was, in the form the backend accepts.
@@ -1992,8 +2172,13 @@ class VoiceRelayAgent(StableAgent):
         if verdict != "final" or not normalized:
             return
         segment = str(normalized.get("segment_id") or "")
-        text_key = f"stt:{str(normalized.get('text') or '').strip().lower()}"
+        transcript_text = str(normalized.get("text") or "").strip()
+        text_key = f"stt:{transcript_text.lower()}"
         speaker = human_identity(normalized.get("participant_id"))
+        if speaker:
+            barge_check = self._barge_check(transcript_text, speaker=speaker)
+            if barge_check.reason == "echo":
+                return
         if speaker and self._speaker_covered(speaker) and self._track_heard_speech(speaker):
             # This mic's per-track ear heard the speech and is the one that
             # persists. Claiming the text key here would make that ear's
@@ -2035,6 +2220,9 @@ class VoiceRelayAgent(StableAgent):
                             "voice_relay_caption_unattributed",
                             got=str(utterance.participant_id)[:40],
                         )
+                        continue
+                    barge_check = self._barge_check(utterance.text, speaker=speaker)
+                    if barge_check.reason == "echo":
                         continue
                     self._hear(speaker, utterance.text, ear="captions")
             except asyncio.CancelledError:
@@ -2120,6 +2308,7 @@ class VoiceRelayAgent(StableAgent):
             # voice degrades to the old behaviour rather than to silence.
             frames = await self._synthesize(line.voice, text)
             if frames and await member.speak(frames, budget_s=playout_budget(text)):
+                self._remember_spoken(text)
                 if self._captions is not None:
                     self._captions.publish_agent_final(
                         text, name=line.name, participant_id=line.sender
@@ -2154,6 +2343,7 @@ class VoiceRelayAgent(StableAgent):
                         sender=line.sender,
                     )
                     break
+                self._remember_spoken(chunk)
                 if self._uses_session_voice(line.voice):
                     result = session.say(chunk)
                 else:
