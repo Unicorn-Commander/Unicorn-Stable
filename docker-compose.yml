@@ -209,6 +209,13 @@ services:
       - INFINITY_URL=${INFINITY_URL:-http://172.17.0.1:8086}
       - CONTEXT_ENABLED=${CONTEXT_ENABLED:-true}
       - CONTEXT_LLM_URL=${CONTEXT_LLM_URL:-http://172.17.0.1:8085/v1/chat/completions}
+      # The Infinity proxy serves only the Qwen3 pair and refuses unknown
+      # model names (no silent substitution), so the code defaults (bge-m3 /
+      # bge-reranker-v2-m3) get HTTP 400 and document RAG reports
+      # "unavailable". Same 1024-dim space size; the stored vectors must be
+      # re-embedded once after switching.
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - RERANK_MODEL=${RERANK_MODEL:-Qwen/Qwen3-Reranker-0.6B}
       - LIVEKIT_URL=ws://stable-livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-wss://livekit.magicunicorn.dev}
       - LIVEKIT_API_URL=http://stable-livekit:7880
