@@ -27,6 +27,13 @@ class RoomCounterpart(BaseModel):
     agent_id: str | None = None
 
 
+class VoiceCanonicalRoom(BaseModel):
+    """Server-resolved voice target for a runner seat."""
+
+    id: uuid.UUID
+    name: str
+
+
 class RoomAgentInfo(BaseModel):
     """An agent member of a room with its per-room mode."""
 
@@ -35,6 +42,7 @@ class RoomAgentInfo(BaseModel):
     display_name: str
     avatar_url: str | None = None
     agent_mode: AgentMode | None = None
+    voice_canonical_room: VoiceCanonicalRoom | None = None
 
 
 class RoomCreate(BaseModel):
@@ -129,6 +137,8 @@ class RoomMemberResponse(BaseModel):
     # participant's metadata — ``{kind, backend, owner, owner_display_name}``
     # and nothing else (Nav v3: the roster marks and the Mode popover).
     metadata: dict[str, Any] | None = None
+    # AGENTS ONLY: the server-resolved room where a runner seat carries voice.
+    voice_canonical_room: VoiceCanonicalRoom | None = None
 
 
 class RoomResponse(BaseModel):

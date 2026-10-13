@@ -29,6 +29,7 @@ import { useConversationUi } from "@/stores/conversationUiStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { clearDraft, getDraft, saveDraft } from "@/utils/drafts";
 import { SeatPicker } from "./SeatPicker";
+import { useDirectCall } from "@/hooks/useDirectCall";
 
 /** Home's one draft. Not a room id: no sidebar row ever reads it. */
 export const HOME_DRAFT_KEY = "home:composer";
@@ -85,6 +86,7 @@ export function HomeComposer({
   const currentUserId = useAppStore((s) => s.currentUser?.id);
   const focusNonce = useConversationUi((s) => s.homeComposerNonce);
   const { crew, loaded, crewAnswered, unavailable } = useCrew();
+  const { startCanonicalCall } = useDirectCall();
   const preferences = useQuery({
     queryKey: ["my-preferences", scope],
     queryFn: () => api.getMyPreferences(),
@@ -234,10 +236,18 @@ export function HomeComposer({
     [selected, target, brain, navigate, queryClient, scope, preferences.data?.onboarding_checklist],
   );
 
-  // A call reaches a house agent in its hub. A seat takes no calls until
-  // voice ships, and a call into a shared room would ring its people.
+  // House calls use their hub. Runner seats use the server-resolved canonical
+  // room; no voice/video control is offered for their text hub/thread.
   const call = useMemo(() => {
-    if (!selected || target.kind !== "new_conversation" || isRunnerSeat(selected)) return null;
+    if (!selected || target.kind !== "new_conversation") return null;
+    if (isRunnerSeat(selected)) {
+      const canonical = selected.voice_canonical_room;
+      if (!canonical) return null;
+      return {
+        label: `Call in ${canonical.name}`,
+        onCall: () => void startCanonicalCall(canonical),
+      };
+    }
     return {
       onCall: (kind: CallKind) => {
         void (async () => {
@@ -254,7 +264,7 @@ export function HomeComposer({
         })();
       },
     };
-  }, [selected, target, navigate]);
+  }, [selected, target, navigate, startCanonicalCall]);
 
   const chip =
     selected && isRunnerSeat(selected) ? (

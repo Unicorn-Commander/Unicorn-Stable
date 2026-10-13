@@ -45,6 +45,47 @@ export interface ApiError {
   status: number;
   message: string;
   detail: string | null;
+  /** Structured FastAPI `detail` payloads remain available to call flows. */
+  body?: unknown;
+}
+
+export interface RunnerVoiceCanonicalOnly {
+  code: "runner_voice_canonical_only";
+  detail: string;
+  canonical_room_id: string;
+  canonical_room_name: string;
+  seat: string;
+}
+
+export function runnerVoiceCanonicalOnly(
+  error: unknown,
+): RunnerVoiceCanonicalOnly | null {
+  const candidate = (error as { body?: unknown } | null)?.body;
+  const detail = (error as { detail?: unknown } | null)?.detail;
+  const value =
+    candidate && typeof candidate === "object"
+      ? candidate
+      : detail && typeof detail === "object"
+        ? detail
+        : null;
+  if (!value || (value as { code?: unknown }).code !== "runner_voice_canonical_only") {
+    return null;
+  }
+  const row = value as Partial<RunnerVoiceCanonicalOnly>;
+  if (
+    typeof row.detail !== "string" ||
+    typeof row.canonical_room_id !== "string" ||
+    typeof row.canonical_room_name !== "string" ||
+    typeof row.seat !== "string"
+  ) {
+    return null;
+  }
+  return row as RunnerVoiceCanonicalOnly;
+}
+
+export function isHttpClientError(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500;
 }
 
 export interface PaginatedResponse<T> {
@@ -89,6 +130,12 @@ export interface RoomAgentMember {
   display_name: string;
   avatar_url?: string | null;
   agent_mode?: "answers_all" | "when_named" | "listening" | "muted" | null;
+  voice_canonical_room?: VoiceCanonicalRoom | null;
+}
+
+export interface VoiceCanonicalRoom {
+  id: string;
+  name: string;
 }
 
 export interface Room {
@@ -200,6 +247,8 @@ export interface RoomMember {
    * to "nothing known".
    */
   metadata?: RoomMemberMetadata | null;
+  /** Server-resolved voice target for a runner seat. */
+  voice_canonical_room?: VoiceCanonicalRoom | null;
 }
 
 export interface RoomMemberMetadata {
@@ -207,6 +256,25 @@ export interface RoomMemberMetadata {
   backend?: string | null;
   owner?: string | string[] | null;
   owner_display_name?: string | null;
+}
+
+/**
+ * The server marks runner seats with their resolved voice room. Prefer the
+ * room-list agent summary, then the active room's member payload; neither
+ * path asks the client to infer a room from a seat slug.
+ */
+export function runnerVoiceCanonicalRoom(
+  room: Pick<Room, "agent_members"> | null | undefined,
+  members: readonly RoomMember[] | null | undefined = undefined,
+): VoiceCanonicalRoom | null {
+  const fromAgents = room?.agent_members?.find(
+    (member) => member.voice_canonical_room?.id,
+  )?.voice_canonical_room;
+  if (fromAgents) return fromAgents;
+  return (
+    members?.find((member) => member.voice_canonical_room?.id)
+      ?.voice_canonical_room ?? null
+  );
 }
 
 /**
@@ -615,6 +683,8 @@ export interface CrewMember {
   presence: CrewPresence;
   /** The caller's own top-level hub with THIS agent, or null. */
   hub_room_id: string | null;
+  /** Server-resolved room where a runner seat carries voice. */
+  voice_canonical_room?: VoiceCanonicalRoom | null;
   seat_capabilities: SeatCapabilities | null;
   last_line: string | null;
   last_at: string | null;
@@ -1004,6 +1074,7 @@ export function normalizeCrewMember(raw: RawCrewMember): CrewMember | null {
     presence:
       raw.presence === "online" ? "online" : raw.presence === "unknown" ? "unknown" : "offline",
     hub_room_id: raw.hub_room_id ?? null,
+    voice_canonical_room: raw.voice_canonical_room ?? null,
     seat_capabilities: caps
       ? {
           harness: caps.harness ?? "",
@@ -1074,9 +1145,11 @@ class StableApiClient {
 
       if (!response.ok) {
         let detail: string | null = null;
+        let body: unknown;
         try {
-          const errorBody = (await response.json()) as { detail?: string };
-          detail = errorBody.detail ?? null;
+          const errorBody = (await response.json()) as { detail?: unknown };
+          body = errorBody.detail ?? errorBody;
+          detail = typeof errorBody.detail === "string" ? errorBody.detail : null;
         } catch {
           /* empty */
         }
@@ -1085,6 +1158,7 @@ class StableApiClient {
           status: response.status,
           message: response.statusText,
           detail,
+          body,
         };
         throw error;
       }

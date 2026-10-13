@@ -1092,6 +1092,7 @@ def _member_to_response(m: dict[str, Any]) -> RoomMemberResponse:
         agent_mode=m.get("agent_mode"),
         context_depth=m.get("context_depth"),
         metadata=m.get("metadata"),
+        voice_canonical_room=m.get("voice_canonical_room"),
     )
 
 

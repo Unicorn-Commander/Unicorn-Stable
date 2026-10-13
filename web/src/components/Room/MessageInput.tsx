@@ -24,7 +24,7 @@ import {
 import clsx from "clsx";
 import { EmojiPicker } from "@/components/EmojiPicker";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, runnerVoiceCanonicalRoom } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { EMPTY_MEMBERS } from "@/stores/selectors";
 import { useStableRoom } from "@/hooks/useStableRoom";
@@ -310,7 +310,7 @@ interface MessageInputProps {
    * What the call buttons do from here. Omitted: they call this room.
    * Null: there are no call buttons.
    */
-  call?: { onCall: (kind: CallKind) => void } | null;
+  call?: { onCall: (kind: CallKind) => void; label?: string } | null;
   /** Enter does nothing and the send button says why. The box stays usable. */
   blockedReason?: string | null;
   /** Bump to put the cursor in the box. */
@@ -478,10 +478,15 @@ export function MessageInput({
   // mic publish + agent dispatch + audio playback all happen in the provider.
   const { isConnected, isConnecting } = useStableRoom();
   // The START-a-call seam: a DM rings the person, a channel just joins.
-  const { startCall } = useDirectCall();
+  const { startCall, startCanonicalCall } = useDirectCall();
   const callRoom = useAppStore((s) =>
     roomId ? s.rooms.find((room) => room.id === roomId) : undefined,
   );
+  const resolvedRunnerCallTarget = runnerVoiceCanonicalRoom(callRoom, participants);
+  const runnerCallTarget =
+    resolvedRunnerCallTarget && resolvedRunnerCallTarget.id !== roomId
+      ? resolvedRunnerCallTarget
+      : null;
   const quietJoin = callRoom?.type === "group_dm" || (callRoom?.type === "dm" && residentAgentIds(callRoom).length > 0);
 
   // Brigade roster — all 22 personas. Fetched once, cached in react-query.
@@ -1113,6 +1118,10 @@ export function MessageInput({
       call.onCall(kind);
       return;
     }
+    if (runnerCallTarget) {
+      void startCanonicalCall(runnerCallTarget, kind);
+      return;
+    }
     if (!roomId) return;
     if (isConnecting) return;
     // Already in THIS room's call → nothing to start (the call surface is on
@@ -1230,37 +1239,54 @@ export function MessageInput({
   // also get "join without ringing" as its own button instead of hiding all
   // three behind a menu (desktop only — a phone composer has no room for a
   // fourth icon, and a ring there is what the caller wants).
+  const canonicalCallLabel =
+    call?.label ?? (runnerCallTarget ? `Call in ${runnerCallTarget.name}` : null);
   const callButtons = showCallButtons && (
     <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
-      {quietJoin && roomId && !call && (
+      {canonicalCallLabel ? (
         <button
-          onClick={() => void startCall(roomId, { kind: "voice", ring: false })}
-          className={clsx(ICON_BUTTON, "max-sm:hidden text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
-          aria-label="Join without ringing"
-          title="Join the call without ringing anyone"
-          data-testid="composer-quiet-join"
+          onClick={() => handleStartCall("voice")}
+          className={clsx(ICON_BUTTON, "max-w-56 gap-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+          aria-label={canonicalCallLabel}
+          title={canonicalCallLabel}
+          data-testid="composer-canonical-call"
         >
-          <BellOff className="h-4 w-4" />
+          <Phone className="h-4 w-4" />
+          <span className="hidden truncate sm:inline">{canonicalCallLabel}</span>
         </button>
+      ) : (
+        <>
+          {quietJoin && roomId && !call && (
+            <button
+              onClick={() => void startCall(roomId, { kind: "voice", ring: false })}
+              className={clsx(ICON_BUTTON, "max-sm:hidden text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+              aria-label="Join without ringing"
+              title="Join the call without ringing anyone"
+              data-testid="composer-quiet-join"
+            >
+              <BellOff className="h-4 w-4" />
+            </button>
+          )}
+          <button
+            onClick={() => handleStartCall("video")}
+            className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+            aria-label={isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video}
+            title={isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video}
+            data-testid="composer-video-call"
+          >
+            <Video className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => handleStartCall("voice")}
+            className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
+            aria-label={isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice}
+            title={isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice}
+            data-testid="composer-voice-call"
+          >
+            <Phone className="h-4 w-4" />
+          </button>
+        </>
       )}
-      <button
-        onClick={() => handleStartCall("video")}
-        className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
-        aria-label={isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video}
-        title={isConnected ? "Move the call here as a video call" : CALL_KIND_LABEL.video}
-        data-testid="composer-video-call"
-      >
-        <Video className="h-4 w-4" />
-      </button>
-      <button
-        onClick={() => handleStartCall("voice")}
-        className={clsx(ICON_BUTTON, "text-slate-400 hover:bg-white/[0.06] hover:text-stable-mint")}
-        aria-label={isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice}
-        title={isConnected ? "Move the call to this room" : CALL_KIND_LABEL.voice}
-        data-testid="composer-voice-call"
-      >
-        <Phone className="h-4 w-4" />
-      </button>
     </div>
   );
 

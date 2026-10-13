@@ -58,6 +58,7 @@ from app.models.agent_gateway_key import AgentGatewayKey
 from app.models.message import Message
 from app.models.participant import Participant, ParticipantType
 from app.models.room import Room, RoomMember, RoomType
+from app.services.agent_routing import canonical_room_reference, canonical_room_slug
 from app.services.agent_availability import _INACTIVE_BRIGADE_STATUSES
 from app.services.room_class import (
     CREW_FLAG_KEY,
@@ -128,6 +129,8 @@ class CrewEntry:
     since: datetime | None
     #: Last authenticated gateway call (seats only; 30-day memory).
     last_seen_at: datetime | None = None
+    #: Server-resolved room where a runner seat carries voice.
+    voice_canonical_room: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +758,49 @@ async def build_crew(
         roster_status=roster_status,
         brigade_roles=brigade_roles,
     )
+    canonical_rooms = await _runner_canonical_rooms(db, participants_by_pid.values())
+    for entry in entries:
+        participant = participants_by_pid.get(entry.participant_id)
+        entry.voice_canonical_room = canonical_rooms.get(
+            canonical_room_slug(participant) if participant is not None else ""
+        )
     return rank_crew(entries, now)
+
+
+async def _runner_canonical_rooms(
+    db: AsyncSession,
+    participants: Iterable[Any],
+) -> dict[str, dict[str, str]]:
+    """Resolve provisioned runner room references in one read-only batch."""
+    slugs = {
+        slug
+        for participant in participants
+        if (slug := canonical_room_slug(participant)) is not None
+    }
+    if not slugs:
+        return {}
+
+    conditions = [Room.name.in_(slugs), Room.livekit_room_name.in_(slugs)]
+    uuid_slugs: list[uuid.UUID] = []
+    for slug in slugs:
+        try:
+            uuid_slugs.append(uuid.UUID(slug))
+        except (TypeError, ValueError):
+            pass
+    if uuid_slugs:
+        conditions.append(Room.id.in_(uuid_slugs))
+    result = await db.execute(
+        select(Room).where(Room.is_archived.is_(False), or_(*conditions))
+    )
+    refs: dict[str, dict[str, str]] = {}
+    for room in result.scalars().all():
+        reference = canonical_room_reference(room)
+        if reference is None:
+            continue
+        refs[str(room.name)] = reference
+        refs[str(room.livekit_room_name)] = reference
+        refs[str(room.id)] = reference
+    return refs
 
 
 @dataclass

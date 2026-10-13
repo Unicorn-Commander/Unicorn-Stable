@@ -27,7 +27,12 @@ from app.models.room import (
     RoomMember,
     RoomType,
 )
-from app.services.agent_routing import participant_backend, find_agent_participant
+from app.services.agent_routing import (
+    canonical_room_reference,
+    canonical_room_slug,
+    find_agent_participant,
+    participant_backend,
+)
 from app.services.agent_availability import UNKNOWN, get_agent_availability
 from app.services.livekit_service import LiveKitService
 from app.services.mentions import parse_mentions
@@ -1252,6 +1257,12 @@ class RoomService:
         for membership, participant in member_rows.all():
             by_room.setdefault(str(membership.room_id), []).append((membership, participant))
 
+        canonical_rooms = await self._runner_canonical_rooms(
+            participant
+            for rows in by_room.values()
+            for _membership, participant in rows
+        )
+
         for room in rooms:
             rows = by_room.get(str(room.id), [])
             agents: list[dict[str, Any]] = []
@@ -1265,6 +1276,9 @@ class RoomService:
                         "display_name": participant.display_name or participant.username,
                         "avatar_url": participant.avatar_url,
                         "agent_mode": getattr(membership, "agent_mode", None),
+                        "voice_canonical_room": canonical_rooms.get(
+                            canonical_room_slug(participant) or ""
+                        ),
                     })
             if room.room_type == RoomType.AGENT_HUB and agents:
                 a = agents[0]
@@ -2401,6 +2415,15 @@ class RoomService:
                 [participant for _m, participant in rows if participant.participant_type == ParticipantType.AGENT]
             )
         )
+        canonical_rooms = (
+            {}
+            if guest_view
+            else await self._runner_canonical_rooms(
+                participant
+                for _membership, participant in rows
+                if participant.participant_type == ParticipantType.AGENT
+            )
+        )
 
         members: list[dict[str, Any]] = []
         for membership, participant in rows:
@@ -2471,6 +2494,11 @@ class RoomService:
                     if participant.participant_type == ParticipantType.AGENT
                     else None
                 ),
+                "voice_canonical_room": (
+                    canonical_rooms.get(canonical_room_slug(participant) or "")
+                    if participant.participant_type == ParticipantType.AGENT and not guest_view
+                    else None
+                ),
             })
 
         return members
@@ -2512,6 +2540,48 @@ class RoomService:
             for username, display_name in rows
             if username
         }
+
+    async def _runner_canonical_rooms(self, participants) -> dict[str, dict[str, str]]:
+        """Resolve only the runner references that are actually present.
+
+        Most agent rows have no canonical reference, so the normal room-list
+        and member-list paths keep their existing query count. Provisioned
+        runner seats add one batched lookup, and clients receive IDs/names
+        rather than trying to derive a room from a slug.
+        """
+        slugs = {
+            slug
+            for participant in participants
+            if (slug := canonical_room_slug(participant)) is not None
+        }
+        if not slugs:
+            return {}
+
+        conditions = [Room.name.in_(slugs), Room.livekit_room_name.in_(slugs)]
+        uuid_slugs: list[uuid.UUID] = []
+        for slug in slugs:
+            try:
+                uuid_slugs.append(uuid.UUID(slug))
+            except (TypeError, ValueError):
+                pass
+        if uuid_slugs:
+            conditions.append(Room.id.in_(uuid_slugs))
+        result = await self._db.execute(
+            select(Room).where(
+                Room.is_archived.is_(False),
+                or_(*conditions),
+            )
+        )
+        resolved = result.scalars().all()
+        by_reference: dict[str, dict[str, str]] = {}
+        for room in resolved:
+            reference = canonical_room_reference(room)
+            if reference is None:
+                continue
+            by_reference[str(room.name)] = reference
+            by_reference[str(room.livekit_room_name)] = reference
+            by_reference[str(room.id)] = reference
+        return by_reference
 
     async def _require_role(
         self,

@@ -41,6 +41,7 @@ import { useRoomPanels } from "@/hooks/useRoomPanels";
 import { popPanel } from "@/lib/callLayoutActions";
 import { requestOpenActivity } from "@/lib/shellEvents";
 import { logout } from "@/services/auth";
+import { runnerVoiceCanonicalRoom } from "@/services/api";
 import { useAppStore } from "@/stores/appStore";
 import { usePanelChromeStore } from "@/stores/panelChromeStore";
 import type { RoomPanelId } from "@/stores/panelRegistry";
@@ -184,7 +185,14 @@ export function RoomHeader({
   const showPhotoNudge = useShowPhotoNudge();
   const currentUser = useAppStore((s) => s.currentUser);
   const roomPanels = useRoomPanels(roomId);
-  const { startCall } = useDirectCall();
+  const roomMeta = useAppStore((s) => s.rooms.find((room) => room.id === roomId));
+  const roomMembers = useAppStore((s) => s.participants[roomId]);
+  const resolvedRunnerCallTarget = runnerVoiceCanonicalRoom(roomMeta, roomMembers);
+  const runnerCallTarget =
+    resolvedRunnerCallTarget && resolvedRunnerCallTarget.id !== roomId
+      ? resolvedRunnerCallTarget
+      : null;
+  const { startCall, startCanonicalCall } = useDirectCall();
 
   const [callOpen, setCallOpen] = useState(false);
   const [popOpen, setPopOpen] = useState(false);
@@ -329,56 +337,72 @@ export function RoomHeader({
           </button>
         )}
         <div className="relative" ref={callRef}>
-          <button
-            ref={callBtnRef}
-            type="button"
-            onClick={() => {
-              setCallOpen((open) => !open);
-              setPopOpen(false);
-              setOverflowOpen(false);
-              setAgentSwitchOpen(false);
-            }}
-            className="focus-ring inline-flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-slate-200 hover:bg-white/[0.06]"
-            aria-label="Call"
-            aria-haspopup="menu"
-            aria-expanded={callOpen}
-          >
-            <Phone className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Call</span>
-            <ChevronDown className="h-3 w-3 text-slate-500" />
-          </button>
-          {callOpen && (
-            <div
-              ref={callMenuRef}
-              role="menu"
-              aria-label="Call"
-              className="glass-heavy absolute right-0 top-full z-50 mt-1 w-36 rounded-xl p-1 shadow-pop"
+          {runnerCallTarget ? (
+            <button
+              type="button"
+              onClick={() => run(() => void startCanonicalCall(runnerCallTarget))}
+              className="focus-ring inline-flex h-10 max-w-56 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-slate-200 hover:bg-white/[0.06]"
+              aria-label={`Call in ${runnerCallTarget.name}`}
+              title={`Call in ${runnerCallTarget.name}`}
+              data-testid="room-header-canonical-call"
             >
+              <Phone className="h-3.5 w-3.5" />
+              <span className="hidden truncate sm:inline">Call in {runnerCallTarget.name}</span>
+            </button>
+          ) : (
+            <>
               <button
+                ref={callBtnRef}
                 type="button"
-                role="menuitem"
-                className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
-                onClick={() =>
-                  run(() => {
-                    void startCall(roomId, { video: false });
-                  })
-                }
+                onClick={() => {
+                  setCallOpen((open) => !open);
+                  setPopOpen(false);
+                  setOverflowOpen(false);
+                  setAgentSwitchOpen(false);
+                }}
+                className="focus-ring inline-flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-slate-200 hover:bg-white/[0.06]"
+                aria-label="Call"
+                aria-haspopup="menu"
+                aria-expanded={callOpen}
               >
-                <Phone className="h-3.5 w-3.5" /> Voice
+                <Phone className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Call</span>
+                <ChevronDown className="h-3 w-3 text-slate-500" />
               </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
-                onClick={() =>
-                  run(() => {
-                    void startCall(roomId, { video: true });
-                  })
-                }
-              >
-                <Video className="h-3.5 w-3.5" /> Video
-              </button>
-            </div>
+              {callOpen && (
+                <div
+                  ref={callMenuRef}
+                  role="menu"
+                  aria-label="Call"
+                  className="glass-heavy absolute right-0 top-full z-50 mt-1 w-36 rounded-xl p-1 shadow-pop"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
+                    onClick={() =>
+                      run(() => {
+                        void startCall(roomId, { video: false });
+                      })
+                    }
+                  >
+                    <Phone className="h-3.5 w-3.5" /> Voice
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="focus-ring flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/[0.06]"
+                    onClick={() =>
+                      run(() => {
+                        void startCall(roomId, { video: true });
+                      })
+                    }
+                  >
+                    <Video className="h-3.5 w-3.5" /> Video
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 

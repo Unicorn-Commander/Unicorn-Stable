@@ -290,7 +290,7 @@ class HomeCrewReusesTheBuilder(IsolatedAsyncioTestCase):
             set(dumped),
             {"agent_id", "participant_id", "display_name", "avatar_url", "role_line", "backend", "kind",
              "owner", "group", "presence", "last_seen_at", "hub_room_id", "seat_capabilities", "last_line",
-             "last_at", "unread"},
+             "last_at", "unread", "voice_canonical_room"},
         )
         self.assertEqual((dumped["kind"], dumped["owner"], dumped["group"], dumped["unread"]), ("seat", "aaron", "own_seat", 2))
         self.assertIsInstance(crew_row(entry), CrewRow)

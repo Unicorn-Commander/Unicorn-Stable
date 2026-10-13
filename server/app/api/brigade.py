@@ -27,7 +27,12 @@ from app.deps import (
     get_settings_dep,
     rate_limit,
 )
-from app.services.agent_routing import find_agent_participant, participant_backend
+from app.services.agent_routing import (
+    find_agent_participant,
+    find_canonical_room,
+    participant_backend,
+    runner_voice_canonical_only,
+)
 from app.services.crew import (
     agent_id_of,
     crew_flagged_runner_seats,
@@ -873,21 +878,24 @@ async def invite_brigade_agent(
     to act as.
     """
     participant = await find_agent_participant(db, body.brigade_agent_id)
-    if participant_backend(participant) != "brigade":
-        raise HTTPException(409, "Open this runner's canonical chat; new runner rooms require provisioning")
+    backend = participant_backend(participant)
+    canonical_room = None
+    if backend != "brigade":
+        if backend != "runner":
+            raise HTTPException(
+                409,
+                "Open this runner's canonical chat; new runner rooms require provisioning",
+            )
+        canonical_room = await find_canonical_room(db, participant)
+        # Keep the old refusal for an unprovisioned/incomplete seat. There is
+        # no safe destination to put in a redirect until its metadata resolves
+        # to an actual room row.
+        if canonical_room is None:
+            raise HTTPException(
+                409,
+                "Open this runner's canonical chat; new runner rooms require provisioning",
+            )
     settings = get_settings()
-
-    # Sanity-check the requested agent exists (Brigade roster or the crew's
-    # runner seats — see _fetch_invitable_agents). No caller here on
-    # purpose: runner seats were refused above, so the caller's ranked crew
-    # (five queries) would be dead weight on every invite.
-    agents = await _fetch_invitable_agents(db)
-    valid_ids = {a.id for a in agents}
-    if body.brigade_agent_id not in valid_ids:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown agent: {body.brigade_agent_id}",
-        )
 
     # Resolve the room (UUID id | slug name | LiveKit name) to its LiveKit room
     # name so the dispatched agent joins the SAME LiveKit room the human's token
@@ -927,6 +935,37 @@ async def invite_brigade_agent(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You must be a member of this room to invite an agent",
+        )
+
+    if backend == "runner":
+        if _resolved_room.id != canonical_room.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=runner_voice_canonical_only(
+                    participant,
+                    canonical_room,
+                    seat=body.brigade_agent_id,
+                ),
+            )
+        # The runner gateway already owns the canonical room. This endpoint
+        # is reached by the shared call-start path, so acknowledge the request
+        # without asking Brigade to provision a worker or changing room state.
+        return InviteAgentResponse(
+            room_name=lk_name,
+            brigade_agent_id=body.brigade_agent_id,
+            dispatched=False,
+            reason="runner_canonical_room",
+        )
+
+    # Sanity-check the requested agent exists (Brigade roster or the crew's
+    # runner seats — see _fetch_invitable_agents). Runner seats returned above
+    # before this lookup, so this remains a Brigade-only roster fetch.
+    agents = await _fetch_invitable_agents(db)
+    valid_ids = {a.id for a in agents}
+    if body.brigade_agent_id not in valid_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown agent: {body.brigade_agent_id}",
         )
 
     # HUMAN 1:1 DM GUARD (server backstop; the web client routes these to the
