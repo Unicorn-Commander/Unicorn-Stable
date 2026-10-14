@@ -201,6 +201,21 @@ services:
       - DATABASE_URL=postgresql+asyncpg://stable:${POSTGRES_PASSWORD:-stable_dev_password_2026}@stable-postgres:5432/stable
       - REDIS_URL=redis://:${REDIS_PASSWORD}@stable-redis:6379/0
       - QDRANT_URL=${QDRANT_URL:-http://unicorn-qdrant:6333}
+      # Document RAG + contextual retrieval. These were code defaults until the
+      # no-internal-hosts change (PR #17) made the code neutral (RAG off, URLs
+      # empty). This file IS the internal deployment, so it carries the
+      # dogfood values; without them document RAG turns off with no error.
+      - RAG_ENABLED=${RAG_ENABLED:-true}
+      - INFINITY_URL=${INFINITY_URL:-http://172.17.0.1:8086}
+      - CONTEXT_ENABLED=${CONTEXT_ENABLED:-true}
+      - CONTEXT_LLM_URL=${CONTEXT_LLM_URL:-http://172.17.0.1:8085/v1/chat/completions}
+      # The Infinity proxy serves only the Qwen3 pair and refuses unknown
+      # model names (no silent substitution), so the code defaults (bge-m3 /
+      # bge-reranker-v2-m3) get HTTP 400 and document RAG reports
+      # "unavailable". Same 1024-dim space size; the stored vectors must be
+      # re-embedded once after switching.
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - RERANK_MODEL=${RERANK_MODEL:-Qwen/Qwen3-Reranker-0.6B}
       - LIVEKIT_URL=ws://stable-livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-wss://livekit.magicunicorn.dev}
       - LIVEKIT_API_URL=http://stable-livekit:7880
@@ -223,6 +238,11 @@ services:
       - BRIGADE_AVATAR_BASE_URL=${BRIGADE_AVATAR_BASE_URL:-https://brigade.magicunicorn.dev/avatars}
       - BRIGADE_API_KEY=${BRIGADE_API_KEY:-}
       - BRIGADE_WORKER_AGENT_NAME=${BRIGADE_WORKER_AGENT_NAME:-stable-brigade}
+      # Brigade agent-chat API (agent_chat_responder, facilitator) and the
+      # cross-Keycloak identity link: code defaults before PR #17.
+      - BRIGADE_API_BASE_URL=${BRIGADE_API_BASE_URL:-https://brigade.magicunicorn.dev/api/v1}
+      - TRUSTED_ISSUER_HOSTS=${TRUSTED_ISSUER_HOSTS:-auth.unicorncommander.ai,auth.magicunicorn.dev}
+      - HELP_AGENT_BASE_URL=${HELP_AGENT_BASE_URL:-http://unicorn-litellm:4000/v1}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:8401,https://stable.magicunicorn.dev}
       - MS_GRAPH_TENANT_ID=${MS_GRAPH_TENANT_ID:-}
       - MS_GRAPH_CLIENT_ID=${MS_GRAPH_CLIENT_ID:-}
@@ -454,6 +474,11 @@ services:
       # service name `backend` is ambiguous on the shared `web` network, so
       # each stack names its own backend CONTAINER here.
       - STABLE_BACKEND_HOST=stable-backend
+      # CSP extras the nginx template used to hard-code (PR #17 made them
+      # deployment-owned): the landing analytics script and the Keycloak
+      # frames.
+      - STABLE_CSP_EXTRA_SCRIPT=${STABLE_CSP_EXTRA_SCRIPT:-https://analytics.unicorncommander.ai}
+      - STABLE_CSP_EXTRA_FRAME=${STABLE_CSP_EXTRA_FRAME:-https://auth.magicunicorn.dev https://auth.unicorncommander.ai}
     depends_on:
       - backend
     volumes:
