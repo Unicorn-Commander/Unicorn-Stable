@@ -25,7 +25,9 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
-    sourcemap: true,
+    // 'hidden': write the .map files (kept in the image for provenance checks)
+    // without a sourceMappingURL comment; nginx refuses to serve them.
+    sourcemap: "hidden",
     manifest: true,
     // Regression enforcement lives in check-bundle-budget.mjs and has separate
     // limits for initial code and opt-in renderers.
