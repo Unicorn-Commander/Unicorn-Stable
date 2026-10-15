@@ -277,7 +277,9 @@ echo "  ⏳ settling…"; sleep 10
 docker compose -p "stable-$SLUG" ps
 code="$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_BASE_URL_VALUE/" || echo 000)"
 echo "  🌐 $PUBLIC_BASE_URL_VALUE/ -> HTTP $code"
-[[ "$code" =~ ^(2|3)[0-9][0-9]$ ]] && echo "✅ $SLUG provisioned + live." || {
+if [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]]; then
+  echo "✅ $SLUG provisioned + live."
+else
   echo "❌ external check failed ($code) — check DNS/cert/Keycloak; stack is up, debug with: docker compose -p stable-$SLUG logs" >&2
   exit 1
-}
+fi
