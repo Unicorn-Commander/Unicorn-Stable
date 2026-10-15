@@ -57,6 +57,14 @@ deploy/per-org/provision-org.sh acme
 deploy/per-org/provision-org.sh acme --deploy
 ```
 
+An existing instance compose is protected from accidental re-rendering. A
+normal invocation refuses before writing artifacts; pass
+provision-org.sh acme --allow-existing to write
+instances/acme/docker-compose.yml.candidate and print a sorted unified diff.
+The candidate is never deployed by that invocation. Egress is omitted unless
+the org opts in with STABLE_EGRESS_ENABLED=true (or its existing compose
+already contains the egress service).
+
 Metering already flows per org: `STABLE_METERING_ORG_ID=<slug>` tags usage to
 the billing gateway, so revenue tracking is automatic.
 

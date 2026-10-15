@@ -13,6 +13,7 @@
 # Usage:
 #   provision-org.sh <slug>                 # render artifacts + print runbook
 #   provision-org.sh <slug> --deploy        # also bring the stack up + smoke-test
+#   provision-org.sh <slug> --allow-existing # candidate compose + sorted diff
 #
 # <slug>: lowercase [a-z0-9-], the org's short name (e.g. "acme"). Everything
 #         derives from it: stable-acme-* and the configured deployment domain.
@@ -20,7 +21,22 @@ set -euo pipefail
 
 SLUG="${1:-}"
 DEPLOY=""
-[[ "${2:-}" == "--deploy" ]] && DEPLOY=1
+ALLOW_EXISTING=""
+ARG_INDEX=0
+for ARG in "$@"; do
+  if [[ "$ARG_INDEX" -eq 0 ]]; then
+    ARG_INDEX=1
+    continue
+  fi
+  case "$ARG" in
+    --deploy) DEPLOY=1 ;;
+    --allow-existing) ALLOW_EXISTING=1 ;;
+    *)
+      echo "usage: $0 <slug> [--deploy] [--allow-existing]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [[ -z "$SLUG" || ! "$SLUG" =~ ^[a-z0-9]([a-z0-9-]{1,30}[a-z0-9])?$ ]]; then
   echo "usage: $0 <slug> [--deploy]   (slug: lowercase a-z0-9-, 2-32 chars)" >&2
@@ -31,6 +47,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root
 BASE_COMPOSE="$ROOT/docker-compose.yml"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORG_DIR="$ROOT/deploy/per-org/instances/$SLUG"
+COMPOSE_OUT="$ORG_DIR/docker-compose.yml"
+EXISTING_COMPOSE=""
+if [[ -f "$COMPOSE_OUT" ]]; then
+  if [[ -z "$ALLOW_EXISTING" ]]; then
+    echo "refusing to render over existing compose: $COMPOSE_OUT" >&2
+    echo "pass --allow-existing to write a candidate and print the diff" >&2
+    exit 3
+  fi
+  if [[ -n "$DEPLOY" ]]; then
+    echo "refusing --deploy with --allow-existing: the candidate is not deployed" >&2
+    exit 2
+  fi
+  EXISTING_COMPOSE=1
+fi
 DOMAIN_BASE="${STABLE_DOMAIN_BASE:-example.com}"
 APP_DOMAIN="${STABLE_DOMAIN:-$SLUG.$DOMAIN_BASE}"
 LIVEKIT_DOMAIN_VALUE="${LIVEKIT_DOMAIN:-$SLUG-livekit.$DOMAIN_BASE}"
@@ -165,10 +195,17 @@ chmod 600 "$ENV_OUT"
 echo "  ✓ rendered $ENV_OUT (mode 600)"
 
 # --- 4) render the per-org compose from the canonical base -----------------
-python3 "$HERE/render_compose.py" \
-  "$BASE_COMPOSE" "$ORG_DIR/docker-compose.yml" \
-  "$SLUG" "$APP_DOMAIN" "$LIVEKIT_DOMAIN_VALUE" "$TURN_DOMAIN_VALUE" \
-  "$LK_API" "$LK_TCP" "$LK_UDP" "$WS_DOMAIN"
+if [[ -n "$ALLOW_EXISTING" ]]; then
+  python3 "$HERE/render_compose.py" \
+    "$BASE_COMPOSE" "$ORG_DIR/docker-compose.yml" \
+    "$SLUG" "$APP_DOMAIN" "$LIVEKIT_DOMAIN_VALUE" "$TURN_DOMAIN_VALUE" \
+    "$LK_API" "$LK_TCP" "$LK_UDP" "$WS_DOMAIN" --allow-existing
+else
+  python3 "$HERE/render_compose.py" \
+    "$BASE_COMPOSE" "$ORG_DIR/docker-compose.yml" \
+    "$SLUG" "$APP_DOMAIN" "$LIVEKIT_DOMAIN_VALUE" "$TURN_DOMAIN_VALUE" \
+    "$LK_API" "$LK_TCP" "$LK_UDP" "$WS_DOMAIN"
+fi
 
 # Reminder printed in the runbook below: $WS_DOMAIN must be a
 # DNS-only (grey) A record straight to this box — the websocket host exists
@@ -208,7 +245,11 @@ chmod 600 "$ORG_DIR/livekit.yaml"
 echo ""
 echo "════════════════════════════════════════════════════════════════════"
 echo " ARTIFACTS READY in $ORG_DIR"
-echo "   .env  docker-compose.yml  livekit.yaml"
+if [[ -n "$EXISTING_COMPOSE" ]]; then
+  echo "   .env  docker-compose.yml.candidate  livekit.yaml"
+else
+  echo "   .env  docker-compose.yml  livekit.yaml"
+fi
 echo "════════════════════════════════════════════════════════════════════"
 echo " MANUAL STEPS before --deploy (need decisions / external systems):"
 echo "  1. DNS (Cloudflare): A/AAAA for"
