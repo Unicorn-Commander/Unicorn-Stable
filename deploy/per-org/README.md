@@ -26,13 +26,13 @@ kokoro-ha, STT parakeet), the configured Keycloak realm, metering gateway.
 
 ## Files here
 
-| File | Role |
-|---|---|
-| `provision-org.sh` | Render a new org's artifacts (secrets, ports, compose, env, livekit.yaml) + print the manual runbook. `--deploy` also brings it up + smoke-tests. |
-| `render_compose.py` | Derives the per-org compose from the canonical base `docker-compose.yml` (no template drift — one source of truth). |
-| `env.tmpl` | The per-org `.env` template (placeholders filled by the provisioner). |
-| `deprovision-org.sh` | Tear down (keeps data by default; `--purge` deletes volumes + artifacts). |
-| `instances/<slug>/` | Generated per-org artifacts (git-ignored; contains secrets). |
+| File                 | Role                                                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provision-org.sh`   | Render a new org's artifacts (secrets, ports, compose, env, livekit.yaml) + print the manual runbook. `--deploy` also brings it up + smoke-tests. |
+| `render_compose.py`  | Derives the per-org compose from the canonical base `docker-compose.yml` (no template drift — one source of truth).                               |
+| `env.tmpl`           | The per-org `.env` template (placeholders filled by the provisioner).                                                                             |
+| `deprovision-org.sh` | Tear down (keeps data by default; `--purge` deletes volumes + artifacts).                                                                         |
+| `instances/<slug>/`  | Generated per-org artifacts (git-ignored; contains secrets).                                                                                      |
 
 ## The one hard constraint: LiveKit media ports
 
@@ -56,6 +56,14 @@ deploy/per-org/provision-org.sh acme
 # 3. Deploy + smoke-test
 deploy/per-org/provision-org.sh acme --deploy
 ```
+
+An existing instance compose is protected from accidental re-rendering. A
+normal invocation refuses before writing artifacts; pass
+provision-org.sh acme --allow-existing to write
+instances/acme/docker-compose.yml.candidate and print a sorted unified diff.
+The candidate is never deployed by that invocation. Egress is omitted unless
+the org opts in with STABLE_EGRESS_ENABLED=true (or its existing compose
+already contains the egress service).
 
 Metering already flows per org: `STABLE_METERING_ORG_ID=<slug>` tags usage to
 the billing gateway, so revenue tracking is automatic.
