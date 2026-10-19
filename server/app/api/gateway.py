@@ -41,6 +41,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
+from starlette.concurrency import run_in_threadpool
 
 from app.api._internal_auth import verify_internal_bearer, verify_key_admin_bearer
 from app.api.messages import (
@@ -90,6 +91,7 @@ from app.deps import (
     is_room_member,
 )
 from app.models.agent_gateway_key import AgentGatewayKey
+from app.models.message import Message
 from app.models.participant import (
     Participant,
     ParticipantStatus,
@@ -97,6 +99,7 @@ from app.models.participant import (
 )
 from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageCreate, MessageListResponse, MessageResponse
+from app.services.gateway_images import attachments, gateway_metadata, read_image, stored_name
 from app.services.agent_availability import (
     touch_gateway_agent as touch_bridge_fresh,
 )
@@ -1072,12 +1075,62 @@ async def gateway_get_messages(
             for item in result["messages"]
         ]
     )
+    for message in messages:
+        message.metadata = gateway_metadata(message.metadata, room, message.id)
     # Classify AFTER the page is read (P2-1): a line committed between the
     # two would otherwise ride out under a class judged before it existed.
     facts = await _classify_for_seat(db, room_obj, seat_row, principal.agent_id)
     envelope = _room_envelope_facts(room_obj, seat_mode, facts, seat_setting)
     return MessageListResponse(
         messages=messages, cursor=result["cursor"], has_more=result["has_more"], **envelope
+    )
+
+
+@router.get("/rooms/{room}/messages/{message_id}/attachments/{attachment_id}")
+async def gateway_download_attachment(
+    room: str,
+    message_id: uuid.UUID,
+    attachment_id: str,
+    principal: Annotated[GatewayPrincipal, Depends(authenticate_gateway_caller)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> Response:
+    """Image bytes authorized by the same room scope/history floor as text."""
+    await _gateway_rate_limit(principal, redis, bucket="gw_msg_read", fail_open=True)
+    room_obj = await _resolve_room(db, room)
+    await _enforce_scope(db, principal, room_obj)
+    query = select(Message).where(
+        Message.id == message_id,
+        Message.room_id == room_obj.id,
+        Message.is_deleted.is_(False),
+    )
+    floor = _principal_history_from(principal)
+    if floor is not None:
+        query = query.where(Message.created_at >= floor)
+    message = (await db.execute(query)).scalar_one_or_none()
+    if message is None:
+        raise HTTPException(404, "Message not found")
+    attachment = next(
+        (
+            item
+            for item in attachments(message.metadata_)
+            if (name := stored_name(item)) and name.split(".", 1)[0] == attachment_id
+        ),
+        None,
+    )
+    if attachment is None:
+        raise HTTPException(404, "Attachment not found")
+    body, content_type = await run_in_threadpool(
+        read_image, settings.upload_dir, attachment, settings.gateway_image_max_bytes
+    )
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
     )
 
 
