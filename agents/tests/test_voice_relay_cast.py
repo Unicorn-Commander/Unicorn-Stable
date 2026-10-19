@@ -85,11 +85,12 @@ class VoicesParserTests(TestCase):
         self.assertEqual(got["agent-flow"], "am_echo")
 
     def test_preset_alias_resolves_to_a_served_voice(self) -> None:
-        """bm_daniel is in the presets but not on the box; the same fallback
-        the presets use applies here."""
+        """bm_daniel has been on the box since 2026-10-19 (it used to fall back
+        to bm_lewis); the same fallback map the presets use still applies here,
+        it is just empty now."""
         meta = {"voice_relay_voices": {"agent-holmes": "bm_daniel"}}
         got = relay_voices_from_metadata(meta, ROOK, "rook")
-        self.assertEqual(got["agent-holmes"], "bm_lewis")
+        self.assertEqual(got["agent-holmes"], "bm_daniel")
 
     def test_the_source_may_be_recast_by_the_map(self) -> None:
         meta = {"voice_relay_voices": {ROOK: "am_adam"}}
