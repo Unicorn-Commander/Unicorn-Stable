@@ -64,8 +64,14 @@ AGENT_VOICES = {
     "persephone": "af_heart",
     "the-general": "am_michael",
     "gunny": "am_adam",
+    # Perry and The Colonel, 2026-10-19 (mirrors agents/plugins/tts.py): the uc-1
+    # Kokoro pack grew to 55 voices that day. Perry is bm_daniel's only holder;
+    # the four legal-evidence agents keep bm_lewis, the voice they had always
+    # resolved to through the old fallback map.
+    "perry": "bm_daniel",
+    "the-colonel": "am_fenrir",
     "judge-advocate": "bm_lewis",
-    "detective-holmes": "bm_daniel",
+    "detective-holmes": "bm_lewis",
     "doc-medresearch": "af_nicole",
     "col-finance": "bm_lewis",
     "cpt-fullstack": "am_adam",
@@ -84,9 +90,9 @@ AGENT_VOICES = {
     "lt-taxstrat": "bm_lewis",
     "maj-leadgen": "af_bella",
     "support-agent": "af_bella",
-    "evidence-correlator": "bm_daniel",
-    "gap-analyzer": "bm_daniel",
-    "timeline-builder": "bm_daniel",
+    "evidence-correlator": "bm_lewis",
+    "gap-analyzer": "bm_lewis",
+    "timeline-builder": "bm_lewis",
     "triage": "am_michael",
 }
 AGENT_DEFAULT_VOICE = "af_bella"
