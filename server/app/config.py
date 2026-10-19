@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     # Local filesystem directory where uploaded attachments are written.
     # Overridable via UPLOAD_DIR so the path isn't hardcoded to one box.
     upload_dir: str = "/home/stable/server/uploads"
+
+    # Per image served to gateway runners; browser uploads keep their own cap.
+    gateway_image_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
 
     # Secret used to HMAC-sign upload download URLs. Falls back to the
     # LiveKit secret when unset so a fresh deploy still has a non-empty key,
