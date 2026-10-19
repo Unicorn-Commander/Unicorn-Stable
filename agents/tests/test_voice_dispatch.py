@@ -500,22 +500,42 @@ class VoicePresetTests(TestCase):
         self.assertEqual(others, {})
 
     def test_every_preset_resolves_to_a_voice_orator_actually_serves(self) -> None:
-        """The 18 voices the Kokoro deployment loads, verified 2026-08-28.
+        """Every preset must resolve to a voice the Kokoro deployment loads.
 
-        bm_daniel is in the table and NOT in that list, which is why the
-        fallback map exists — resolution, not the raw table, is what must be
-        served.
+        Measured against GET /v1/voices on 2026-10-19: 55 voices (the 18 of
+        2026-08-28 plus the rest of the kokoro-onnx v1.0 pack). The list is
+        repeated here on purpose, independent of plugins.tts, so a preset that
+        names a voice the box lacks fails this test instead of the show.
         """
         from plugins.tts import _resolve_kokoro_voice, KOKORO_VOICE_PRESETS
 
         served = {
-            "af", "af_alloy", "af_bella", "af_heart", "af_nicole", "af_nova",
-            "af_river", "af_sarah", "af_sky", "am_adam", "am_echo",
-            "am_michael", "am_onyx", "am_puck", "bf_emma", "bf_isabella",
-            "bm_george", "bm_lewis",
+            "af", "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore",
+            "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+            "am_onyx", "am_puck", "am_santa",
+            "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+            "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+            "ef_dora", "em_alex", "em_santa", "ff_siwis",
+            "hf_alpha", "hf_beta", "hm_omega", "hm_psi", "if_sara", "im_nicola",
+            "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+            "pf_dora", "pm_alex", "pm_santa",
+            "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+            "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
         }
         for agent in KOKORO_VOICE_PRESETS:
             self.assertIn(_resolve_kokoro_voice(agent, None), served, agent)
+
+    def test_perry_and_the_colonel_wear_voices_nobody_else_has(self) -> None:
+        """2026-10-19: Perry = bm_daniel, The Colonel = am_fenrir, each worn by
+        exactly one preset. Two agents sharing a voice is invisible in this table
+        and obvious the moment both speak in a room."""
+        from plugins.tts import KOKORO_VOICE_PRESETS, _resolve_kokoro_voice
+
+        for agent, voice in (("perry", "bm_daniel"), ("the-colonel", "am_fenrir")):
+            self.assertEqual(_resolve_kokoro_voice(agent, None), voice)
+            holders = [a for a, v in KOKORO_VOICE_PRESETS.items() if v == voice]
+            self.assertEqual(holders, [agent], voice)
 
 
 class RosterDisplayNameTests(TestCase):

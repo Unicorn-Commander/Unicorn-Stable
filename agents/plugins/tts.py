@@ -85,8 +85,16 @@ KOKORO_VOICE_PRESETS: dict[str, str] = {
     "persephone": "af_heart",
     "the-general": "am_michael",
     "gunny": "am_adam",
+    # Perry (General Counsel, participant agent-perry) and The Colonel (fleet
+    # patrol, agent-the-colonel), 2026-10-19: the uc-1 Kokoro pack grew from 18
+    # to 55 voices that day (P-00182 5b9f0219), so both get a voice nobody else
+    # wears. Perry is the ONLY holder of bm_daniel: the four legal-evidence agents
+    # below that used to name it had always resolved to bm_lewis through the
+    # fallback map, so they keep bm_lewis explicitly and sound exactly as before.
+    "perry": "bm_daniel",
+    "the-colonel": "am_fenrir",
     "judge-advocate": "bm_lewis",
-    "detective-holmes": "bm_daniel",
+    "detective-holmes": "bm_lewis",
     "doc-medresearch": "af_nicole",
     "col-finance": "bm_lewis",
     "cpt-fullstack": "am_adam",
@@ -108,31 +116,41 @@ KOKORO_VOICE_PRESETS: dict[str, str] = {
     "lt-taxstrat": "bm_lewis",
     "maj-leadgen": "af_bella",
     "support-agent": "af_bella",
-    "evidence-correlator": "bm_daniel",
-    "gap-analyzer": "bm_daniel",
-    "timeline-builder": "bm_daniel",
+    "evidence-correlator": "bm_lewis",
+    "gap-analyzer": "bm_lewis",
+    "timeline-builder": "bm_lewis",
     "triage": "am_michael",
     "default": "af_bella",
 }
 
-# bm_daniel appears in presets but is not in Orator's built-in list; fall back
-# to a guaranteed-present British male voice.
-_ORATOR_VOICE_FALLBACKS: dict[str, str] = {
-    "bm_daniel": "bm_lewis",
-}
+# Voice ids the server lacks map to a served stand-in here. Empty since
+# 2026-10-19: bm_daniel (the one entry) is installed now. Keep the hook; a voice
+# the box does not have must never silently become the default (uc-1 returns
+# 400 for an unknown voice since 2026-10-19, it used to answer with af_heart).
+_ORATOR_VOICE_FALLBACKS: dict[str, str] = {}
 
 #: What the deployed Kokoro actually serves — MEASURED against
-#: ``GET /v1/voices`` on 2026-09-01, not copied from the model card. A room
-#: setting that names a voice outside this list would synthesise nothing and
-#: fail silently mid-show, so the relay checks against it before trusting a
-#: per-sender voice (see ``known_kokoro_voice``).
+#: ``GET /v1/voices`` on 2026-10-19 (55 voices: the 18 of 2026-09-01 plus the
+#: rest of the kokoro-onnx v1.0 pack, installed that day), not copied from the
+#: model card. A room setting that names a voice outside this list would
+#: synthesise nothing and fail silently mid-show, so the relay checks against it
+#: before trusting a per-sender voice (see ``known_kokoro_voice``). Reserved by
+#: convention: af_heart = Persephone only; bm_fable = the Morning Brief announcer.
 KOKORO_SERVED_VOICES: frozenset[str] = frozenset(
     {
-        "af", "af_alloy", "af_bella", "af_heart", "af_nicole", "af_nova",
-        "af_river", "af_sarah", "af_sky",
-        "am_adam", "am_echo", "am_michael", "am_onyx", "am_puck",
-        "bf_emma", "bf_isabella",
-        "bm_george", "bm_lewis",
+        "af", "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore",
+        "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+        "am_onyx", "am_puck", "am_santa",
+        "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+        "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+        "ef_dora", "em_alex", "em_santa", "ff_siwis",
+        "hf_alpha", "hf_beta", "hm_omega", "hm_psi",
+        "if_sara", "im_nicola",
+        "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+        "pf_dora", "pm_alex", "pm_santa",
+        "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+        "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
     }
 )
 
