@@ -42,6 +42,11 @@ from app.schemas.message import (
 )
 from app.services.agent_chat_responder import schedule_response as schedule_agent_chat_response
 from app.services.guest_view import guest_view_of_message
+from app.services.gateway_images import (
+    attachments,
+    bind_attachment_metadata,
+    stored_name,
+)
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
 from app.models.activity import ActivityEvent, ActivityEventType
@@ -233,6 +238,69 @@ async def client_message_body(
     if body.metadata and body.content_type not in RESERVED_CONTENT_TYPES:
         sender = await load_sender_row(db, (user or {}).get("participant_id"))
     return sanitize_client_message(body, user, sender)
+
+
+async def _bind_message_attachments(
+    body: MessageCreate,
+    *,
+    room_id: uuid.UUID,
+    user: dict[str, Any],
+    db: AsyncSession,
+) -> MessageCreate:
+    """Bind local uploads before the message-create service persists them.
+
+    Uploads are files plus signed URLs rather than rows in an uploads table.
+    New URLs authenticate their uploader; this message-create binding records
+    the room and sender in the existing message metadata. The history check
+    also protects older URLs that predate those fields: one stored file cannot
+    be introduced by a different sender or in a different room later.
+    """
+    metadata = body.metadata
+    raw = metadata.get("attachments") if isinstance(metadata, dict) else None
+    if not isinstance(raw, list) or not any(
+        isinstance(item, dict) and stored_name(item) is not None for item in raw
+    ):
+        return body
+
+    bound = bind_attachment_metadata(
+        metadata,
+        room_id=room_id,
+        sender_id=user["participant_id"],
+        settings=get_settings(),
+    )
+    names = {
+        name
+        for item in (bound or {}).get("attachments", [])
+        if isinstance(item, dict)
+        if (name := stored_name(item)) is not None
+    }
+    if names:
+        result = await db.execute(
+            select(Message.room_id, Message.sender_id, Message.metadata_).where(
+                Message.metadata_["attachments"].isnot(None)
+            )
+        )
+        for prior_room_id, prior_sender_id, prior_metadata in result.all():
+            for prior in attachments(prior_metadata):
+                if stored_name(prior) not in names:
+                    continue
+                # The row's room/sender are authoritative for legacy metadata;
+                # the per-attachment fields are an additional readable record,
+                # not a client-controlled authorization source.
+                if (
+                    prior_room_id is None
+                    or str(prior_room_id) != str(room_id)
+                    or prior_sender_id is None
+                    or str(prior_sender_id) != str(user["participant_id"])
+                ):
+                    raise HTTPException(
+                        403,
+                        "Attachment is bound to another room or sender",
+                    )
+
+    if bound == metadata:
+        return body
+    return body.model_copy(update={"metadata": bound})
 
 
 def _build_message_service(
@@ -438,6 +506,11 @@ async def send_message(
     # membership check inside MessageService.
     ensure_guest_room_scope(user, room_id)
     caller_is_guest = is_guest(user)
+
+    # Bind upload metadata before the shared service persists the message.
+    # This remains in the common create path so direct internal callers cannot
+    # accidentally bypass the attachment boundary.
+    body = await _bind_message_attachments(body, room_id=room_id, user=user, db=db)
 
     # PER-INVITE OPT-INS (models/guest_access.py). Both were hard-off when
     # guest access shipped; they are now decisions the room owner makes per

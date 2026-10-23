@@ -31,6 +31,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
@@ -89,18 +90,41 @@ def _signing_key(settings: Settings) -> bytes:
     return key.encode("utf-8")
 
 
-def _sign(settings: Settings, stored_name: str, exp: int) -> str:
+def _sign(
+    settings: Settings,
+    stored_name: str,
+    exp: int,
+    uploader_id: str | None = None,
+) -> str:
+    # The owner suffix is additive. Empty/legacy URLs retain the original
+    # message for backwards compatibility, while new URLs cryptographically
+    # bind the upload to the participant who created it.
     msg = f"{stored_name}:{exp}".encode("utf-8")
+    if uploader_id:
+        msg += f":{uploader_id}".encode("utf-8")
     return hmac.new(_signing_key(settings), msg, hashlib.sha256).hexdigest()
 
 
-def _make_signed_url(settings: Settings, stored_name: str) -> str:
+def _make_signed_url(
+    settings: Settings,
+    stored_name: str,
+    uploader_id: str | None = None,
+) -> str:
     exp = int(time.time()) + int(settings.upload_url_ttl_seconds or 3600)
-    sig = _sign(settings, stored_name, exp)
-    return f"/api/v1/uploads/{stored_name}?exp={exp}&sig={sig}"
+    sig = _sign(settings, stored_name, exp, uploader_id)
+    query = {"exp": str(exp), "sig": sig}
+    if uploader_id:
+        query["uploader_id"] = uploader_id
+    return f"/api/v1/uploads/{stored_name}?{urlencode(query)}"
 
 
-def _signature_ok(settings: Settings, stored_name: str, exp_raw: str | None, sig: str | None) -> bool:
+def _signature_ok(
+    settings: Settings,
+    stored_name: str,
+    exp_raw: str | None,
+    sig: str | None,
+    uploader_id: str | None = None,
+) -> bool:
     if not exp_raw or not sig:
         return False
     try:
@@ -109,7 +133,7 @@ def _signature_ok(settings: Settings, stored_name: str, exp_raw: str | None, sig
         return False
     if exp < int(time.time()):
         return False  # expired
-    expected = _sign(settings, stored_name, exp)
+    expected = _sign(settings, stored_name, exp, uploader_id)
     return hmac.compare_digest(expected, sig)
 
 
@@ -187,7 +211,9 @@ async def upload_file(
     )
 
     return UploadResponse(
-        url=_make_signed_url(settings, stored_name),
+        url=_make_signed_url(
+            settings, stored_name, uploader_id=str(user["participant_id"])
+        ),
         filename=original,
         size=len(body),
         content_type=content_type,
@@ -241,7 +267,9 @@ async def download_upload(
     """
     if not _STORED_NAME_RE.fullmatch(stored_name):
         # Malformed / traversal attempt.
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad filename")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Bad filename"
+        )
 
     base = _upload_dir(settings).resolve()
     target = (base / stored_name).resolve()
@@ -255,6 +283,7 @@ async def download_upload(
         stored_name,
         request.query_params.get("exp"),
         request.query_params.get("sig"),
+        request.query_params.get("uploader_id"),
     )
 
     # 2) Bearer token + room membership?

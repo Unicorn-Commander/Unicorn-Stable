@@ -99,7 +99,13 @@ from app.models.participant import (
 )
 from app.models.room import MemberRole, Room, RoomMember
 from app.schemas.message import MessageCreate, MessageListResponse, MessageResponse
-from app.services.gateway_images import attachments, gateway_metadata, read_image, stored_name
+from app.services.gateway_images import (
+    attachment_room_id,
+    attachments,
+    gateway_metadata,
+    read_image,
+    stored_name,
+)
 from app.services.agent_availability import (
     touch_gateway_agent as touch_bridge_fresh,
 )
@@ -171,16 +177,29 @@ async def _gateway_rate_limit(
     *,
     bucket: str,
     fail_open: bool,
+    unavailable_detail: str | None = None,
 ) -> None:
     """Per-identity rate limit keyed on the principal (not a shared secret)."""
-    await _rate_limit_hit(
-        redis,
-        bucket=bucket,
-        identifier=principal.rate_key,
-        limit=int(principal.rate_limit_rpm or 30),
-        window_seconds=60,
-        fail_open=fail_open,
-    )
+    try:
+        await _rate_limit_hit(
+            redis,
+            bucket=bucket,
+            identifier=principal.rate_key,
+            limit=int(principal.rate_limit_rpm or 30),
+            window_seconds=60,
+            fail_open=fail_open,
+        )
+    except HTTPException as exc:
+        if (
+            unavailable_detail
+            and exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=unavailable_detail,
+                headers=exc.headers,
+            ) from exc
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1097,7 +1116,15 @@ async def gateway_download_attachment(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> Response:
     """Image bytes authorized by the same room scope/history floor as text."""
-    await _gateway_rate_limit(principal, redis, bucket="gw_msg_read", fail_open=True)
+    await _gateway_rate_limit(
+        principal,
+        redis,
+        bucket="gw_msg_read",
+        fail_open=False,
+        unavailable_detail=(
+            "Gateway download rate limiter unavailable; try again shortly."
+        ),
+    )
     room_obj = await _resolve_room(db, room)
     await _enforce_scope(db, principal, room_obj)
     query = select(Message).where(
@@ -1120,6 +1147,10 @@ async def gateway_download_attachment(
         None,
     )
     if attachment is None:
+        raise HTTPException(404, "Attachment not found")
+    recorded_room = attachment_room_id(attachment)
+    if recorded_room is not None and recorded_room != str(room_obj.id):
+        # Do not reveal whether the same file exists in another room.
         raise HTTPException(404, "Attachment not found")
     body, content_type = await run_in_threadpool(
         read_image, settings.upload_dir, attachment, settings.gateway_image_max_bytes
