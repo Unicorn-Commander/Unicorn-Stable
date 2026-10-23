@@ -14,10 +14,17 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from app.api import gateway as G
+from app.api import messages as M
+from app.api.uploads import _make_signed_url, _signature_ok
 from app.auth.gateway_auth import GatewayAuthError
 from app.config import Settings
 from app.models.message import ContentType
-from app.services.gateway_images import gateway_metadata, read_image, stored_name
+from app.services.gateway_images import (
+    bind_attachment,
+    gateway_metadata,
+    read_image,
+    stored_name,
+)
 from app.services.room_class import RoomClassFacts
 from test_nav_v3_gateway_seat import NOW, _human, _res, _room, _seat
 
@@ -36,6 +43,13 @@ def attachment(**kw):
         "content_type": "image/png",
         **kw,
     }
+
+
+def signed_attachment(settings, uploader_id=None, **kw):
+    return attachment(
+        url=_make_signed_url(settings, NAME, uploader_id),
+        **kw,
+    )
 
 
 @pytest.fixture
@@ -68,7 +82,10 @@ def test_payload_has_stable_id_and_scoped_url_without_mutating_stored_metadata()
             {
                 **attachment(),
                 "id": ATTACHMENT_ID,
-                "download_url": f"/api/v1/gateway/rooms/stable-persephone/messages/message-1/attachments/{ATTACHMENT_ID}",
+                "download_url": (
+                    "/api/v1/gateway/rooms/stable-persephone/messages/"
+                    f"message-1/attachments/{ATTACHMENT_ID}"
+                ),
             }
         ],
         "client_msg_id": "client-1",
@@ -228,10 +245,12 @@ async def test_poll_keeps_sender_scrubbing_and_exposes_photo(room, principal, ph
     "case,expected",
     [
         ("valid", 200),
+        ("bound_same_room", 200),
         ("no_auth", 401),
         ("bad_key", 401),
         ("other_room", 403),
         ("member_revoked", 403),
+        ("bound_other_room", 404),
         ("other_message", 404),
         ("message_in_another_room", 404),
         ("deleted", 404),
@@ -259,6 +278,10 @@ async def test_download_auth_scope_history_and_bytes(
         principal.allowed_rooms = ["another-room"]
     if case == "message_in_another_room":
         msg.room_id = uuid.uuid4()
+    if case == "bound_same_room":
+        photo["room_id"] = str(room.id)
+    if case == "bound_other_room":
+        photo["room_id"] = str(uuid.uuid4())
     if case == "member_revoked":
         principal.allowed_rooms = ["@member"]
     if case == "heic":
@@ -324,3 +347,266 @@ async def test_download_auth_scope_history_and_bytes(
         assert response.headers["x-content-type-options"] == "nosniff"
     if expected == 401:
         db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_message_create_binds_upload_to_room_and_sender(tmp_path):
+    sender_id = uuid.uuid4()
+    room_id = uuid.uuid4()
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(all=lambda: [])
+    body = M.MessageCreate(
+        content="photo",
+        metadata={"attachments": [signed_attachment(settings, str(sender_id))]},
+    )
+    with patch.object(M, "get_settings", return_value=settings):
+        bound_body = await M._bind_message_attachments(
+            body,
+            room_id=room_id,
+            user={"participant_id": sender_id},
+            db=db,
+        )
+    bound = bound_body.metadata["attachments"][0]
+    assert bound["room_id"] == str(room_id)
+    assert bound["sender_id"] == str(sender_id)
+
+
+def test_message_create_refuses_attachment_bound_to_another_room(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    room_id = uuid.uuid4()
+    sender_id = uuid.uuid4()
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            signed_attachment(
+                settings,
+                str(sender_id),
+                room_id=str(uuid.uuid4()),
+                sender_id=str(sender_id),
+            ),
+            room_id=room_id,
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 403
+
+
+def test_new_upload_signature_binds_the_uploader(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    other_sender_id = uuid.uuid4()
+    room_id = uuid.uuid4()
+    url = _make_signed_url(settings, NAME, str(sender_id))
+    query = dict(item.split("=", 1) for item in url.split("?", 1)[1].split("&"))
+    assert _signature_ok(
+        settings,
+        NAME,
+        query["exp"],
+        query["sig"],
+        str(sender_id),
+    )
+    assert not _signature_ok(
+        settings,
+        NAME,
+        query["exp"],
+        query["sig"],
+        str(other_sender_id),
+    )
+    bound = bind_attachment(
+        {"url": url, "room_id": str(room_id), "sender_id": str(sender_id)},
+        room_id=room_id,
+        sender_id=sender_id,
+        settings=settings,
+    )
+    assert bound["sender_id"] == str(sender_id)
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": url},
+            room_id=uuid.uuid4(),
+            sender_id=other_sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 403
+
+
+def test_legacy_signed_upload_without_claim_is_still_accepted(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    room_id = uuid.uuid4()
+    sender_id = uuid.uuid4()
+    url = _make_signed_url(settings, NAME)
+    query = dict(item.split("=", 1) for item in url.split("?", 1)[1].split("&"))
+
+    assert "uploader_id" not in query
+    assert _signature_ok(settings, NAME, query["exp"], query["sig"])
+    bound = bind_attachment(
+        {"url": url},
+        room_id=room_id,
+        sender_id=sender_id,
+        settings=settings,
+    )
+    assert bound["room_id"] == str(room_id)
+    assert bound["sender_id"] == str(sender_id)
+
+
+def test_stripping_claim_from_signed_upload_is_refused(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    url = _make_signed_url(settings, NAME, str(sender_id))
+    path, raw_query = url.split("?", 1)
+    stripped_url = (
+        path
+        + "?"
+        + "&".join(
+            part for part in raw_query.split("&") if not part.startswith("uploader_id=")
+        )
+    )
+
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": stripped_url},
+            room_id=uuid.uuid4(),
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 400
+
+
+def test_stripping_whole_signed_query_is_refused(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    signed_url = _make_signed_url(settings, NAME, str(sender_id))
+    path = signed_url.split("?", 1)[0]
+
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": path},
+            room_id=uuid.uuid4(),
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 400
+
+
+def test_forged_signature_is_refused(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    signed_url = _make_signed_url(settings, NAME, str(sender_id))
+    path, raw_query = signed_url.split("?", 1)
+    exp = next(
+        part.split("=", 1)[1]
+        for part in raw_query.split("&")
+        if part.startswith("exp=")
+    )
+    forged_url = f"{path}?exp={exp}&sig={'0' * 64}"
+
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": forged_url},
+            room_id=uuid.uuid4(),
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_message_create_refuses_legacy_upload_reused_in_another_room():
+    room_id = uuid.uuid4()
+    sender_id = uuid.uuid4()
+    prior_room_id = uuid.uuid4()
+    settings = Settings(
+        _env_file=None,
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    legacy_attachment = signed_attachment(settings)
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(
+        all=lambda: [(prior_room_id, sender_id, {"attachments": [legacy_attachment]})]
+    )
+    body = M.MessageCreate(
+        content="photo",
+        metadata={"attachments": [legacy_attachment]},
+    )
+    with pytest.raises(HTTPException) as error:
+        with patch.object(M, "get_settings", return_value=settings):
+            await M._bind_message_attachments(
+                body,
+                room_id=room_id,
+                user={"participant_id": sender_id},
+                db=db,
+            )
+    assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_gateway_download_fails_closed_when_redis_is_unavailable(room, tmp_path):
+    class BrokenRedis:
+        async def incr(self, _key):
+            raise ConnectionError("redis unavailable")
+
+    principal = SimpleNamespace(rate_key="gateway-test", rate_limit_rpm=30)
+    with pytest.raises(HTTPException) as error:
+        await G.gateway_download_attachment(
+            room=room.name,
+            message_id=uuid.uuid4(),
+            attachment_id=ATTACHMENT_ID,
+            principal=principal,
+            db=AsyncMock(),
+            redis=BrokenRedis(),
+            settings=Settings(_env_file=None, upload_dir=str(tmp_path)),
+        )
+    assert error.value.status_code == 503
+    assert error.value.detail == (
+        "Gateway download rate limiter unavailable; try again shortly."
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_message_reads_remain_fail_open_when_redis_is_unavailable():
+    class BrokenRedis:
+        async def incr(self, _key):
+            raise ConnectionError("redis unavailable")
+
+    principal = SimpleNamespace(rate_key="gateway-test", rate_limit_rpm=30)
+    await G._gateway_rate_limit(
+        principal,
+        BrokenRedis(),
+        bucket="gw_msg_read",
+        fail_open=True,
+    )
