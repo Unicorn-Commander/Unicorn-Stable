@@ -45,6 +45,13 @@ def attachment(**kw):
     }
 
 
+def signed_attachment(settings, uploader_id=None, **kw):
+    return attachment(
+        url=_make_signed_url(settings, NAME, uploader_id),
+        **kw,
+    )
+
+
 @pytest.fixture
 def photo(tmp_path):
     (tmp_path / NAME).write_bytes(PNG)
@@ -343,33 +350,53 @@ async def test_download_auth_scope_history_and_bytes(
 
 
 @pytest.mark.asyncio
-async def test_message_create_binds_upload_to_room_and_sender():
+async def test_message_create_binds_upload_to_room_and_sender(tmp_path):
     sender_id = uuid.uuid4()
     room_id = uuid.uuid4()
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
     db = AsyncMock()
     db.execute.return_value = SimpleNamespace(all=lambda: [])
     body = M.MessageCreate(
         content="photo",
-        metadata={"attachments": [attachment()]},
+        metadata={"attachments": [signed_attachment(settings, str(sender_id))]},
     )
-    bound_body = await M._bind_message_attachments(
-        body,
-        room_id=room_id,
-        user={"participant_id": sender_id},
-        db=db,
-    )
+    with patch.object(M, "get_settings", return_value=settings):
+        bound_body = await M._bind_message_attachments(
+            body,
+            room_id=room_id,
+            user={"participant_id": sender_id},
+            db=db,
+        )
     bound = bound_body.metadata["attachments"][0]
     assert bound["room_id"] == str(room_id)
     assert bound["sender_id"] == str(sender_id)
 
 
 def test_message_create_refuses_attachment_bound_to_another_room(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    room_id = uuid.uuid4()
+    sender_id = uuid.uuid4()
     with pytest.raises(HTTPException) as error:
         bind_attachment(
-            attachment(room_id=str(uuid.uuid4()), sender_id=str(uuid.uuid4())),
-            room_id=uuid.uuid4(),
-            sender_id=uuid.uuid4(),
-            settings=Settings(_env_file=None, upload_dir=str(tmp_path)),
+            signed_attachment(
+                settings,
+                str(sender_id),
+                room_id=str(uuid.uuid4()),
+                sender_id=str(sender_id),
+            ),
+            room_id=room_id,
+            sender_id=sender_id,
+            settings=settings,
         )
     assert error.value.status_code == 403
 
@@ -383,6 +410,7 @@ def test_new_upload_signature_binds_the_uploader(tmp_path):
     )
     sender_id = uuid.uuid4()
     other_sender_id = uuid.uuid4()
+    room_id = uuid.uuid4()
     url = _make_signed_url(settings, NAME, str(sender_id))
     query = dict(item.split("=", 1) for item in url.split("?", 1)[1].split("&"))
     assert _signature_ok(
@@ -400,8 +428,8 @@ def test_new_upload_signature_binds_the_uploader(tmp_path):
         str(other_sender_id),
     )
     bound = bind_attachment(
-        {"url": url},
-        room_id=uuid.uuid4(),
+        {"url": url, "room_id": str(room_id), "sender_id": str(sender_id)},
+        room_id=room_id,
         sender_id=sender_id,
         settings=settings,
     )
@@ -416,26 +444,133 @@ def test_new_upload_signature_binds_the_uploader(tmp_path):
     assert error.value.status_code == 403
 
 
+def test_legacy_signed_upload_without_claim_is_still_accepted(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    room_id = uuid.uuid4()
+    sender_id = uuid.uuid4()
+    url = _make_signed_url(settings, NAME)
+    query = dict(item.split("=", 1) for item in url.split("?", 1)[1].split("&"))
+
+    assert "uploader_id" not in query
+    assert _signature_ok(settings, NAME, query["exp"], query["sig"])
+    bound = bind_attachment(
+        {"url": url},
+        room_id=room_id,
+        sender_id=sender_id,
+        settings=settings,
+    )
+    assert bound["room_id"] == str(room_id)
+    assert bound["sender_id"] == str(sender_id)
+
+
+def test_stripping_claim_from_signed_upload_is_refused(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    url = _make_signed_url(settings, NAME, str(sender_id))
+    path, raw_query = url.split("?", 1)
+    stripped_url = (
+        path
+        + "?"
+        + "&".join(
+            part for part in raw_query.split("&") if not part.startswith("uploader_id=")
+        )
+    )
+
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": stripped_url},
+            room_id=uuid.uuid4(),
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 400
+
+
+def test_stripping_whole_signed_query_is_refused(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    signed_url = _make_signed_url(settings, NAME, str(sender_id))
+    path = signed_url.split("?", 1)[0]
+
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": path},
+            room_id=uuid.uuid4(),
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 400
+
+
+def test_forged_signature_is_refused(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        upload_dir=str(tmp_path),
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    sender_id = uuid.uuid4()
+    signed_url = _make_signed_url(settings, NAME, str(sender_id))
+    path, raw_query = signed_url.split("?", 1)
+    exp = next(
+        part.split("=", 1)[1]
+        for part in raw_query.split("&")
+        if part.startswith("exp=")
+    )
+    forged_url = f"{path}?exp={exp}&sig={'0' * 64}"
+
+    with pytest.raises(HTTPException) as error:
+        bind_attachment(
+            {"url": forged_url},
+            room_id=uuid.uuid4(),
+            sender_id=sender_id,
+            settings=settings,
+        )
+    assert error.value.status_code == 400
+
+
 @pytest.mark.asyncio
 async def test_message_create_refuses_legacy_upload_reused_in_another_room():
     room_id = uuid.uuid4()
     sender_id = uuid.uuid4()
     prior_room_id = uuid.uuid4()
+    settings = Settings(
+        _env_file=None,
+        upload_url_secret="upload-signing-test",
+        upload_url_ttl_seconds=60,
+    )
+    legacy_attachment = signed_attachment(settings)
     db = AsyncMock()
     db.execute.return_value = SimpleNamespace(
-        all=lambda: [(prior_room_id, sender_id, {"attachments": [attachment()]})]
+        all=lambda: [(prior_room_id, sender_id, {"attachments": [legacy_attachment]})]
     )
     body = M.MessageCreate(
         content="photo",
-        metadata={"attachments": [attachment()]},
+        metadata={"attachments": [legacy_attachment]},
     )
     with pytest.raises(HTTPException) as error:
-        await M._bind_message_attachments(
-            body,
-            room_id=room_id,
-            user={"participant_id": sender_id},
-            db=db,
-        )
+        with patch.object(M, "get_settings", return_value=settings):
+            await M._bind_message_attachments(
+                body,
+                room_id=room_id,
+                user={"participant_id": sender_id},
+                db=db,
+            )
     assert error.value.status_code == 403
 
 

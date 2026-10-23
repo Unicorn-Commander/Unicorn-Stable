@@ -56,12 +56,11 @@ def attachment_sender_id(attachment: dict) -> str | None:
 
 
 def attachment_uploader_id(attachment: dict, settings: "Settings") -> str | None:
-    """Validate and return the uploader claim on a new signed upload URL.
+    """Validate a signed upload URL and return its optional uploader claim.
 
-    Older upload URLs have no uploader claim and remain readable for backwards
-    compatibility. New URLs include the claim inside the HMAC, so changing or
-    removing it cannot turn another participant's upload into this sender's
-    attachment at message-create time.
+    Claimed URLs sign ``name:exp:uploader_id``; legacy URLs without a claim
+    sign ``name:exp``. Both forms must verify before a local upload is bound,
+    so removing a claim from a claimed URL invalidates its signature.
     """
     name = stored_name(attachment)
     if name is None:
@@ -75,16 +74,17 @@ def attachment_uploader_id(attachment: dict, settings: "Settings") -> str | None
     except ValueError:
         raise HTTPException(400, "Attachment upload signature is invalid")
     values = query.get("uploader_id")
-    if not values:
-        return None
-    if len(values) != 1 or not values[0]:
+    if values is None:
+        uploader_id = None
+    elif len(values) != 1 or not values[0]:
         raise HTTPException(400, "Attachment upload signature is invalid")
+    else:
+        uploader_id = values[0]
 
     # Import lazily: uploads.py is an API router, while this service is also
     # imported by that router's gateway sibling during application startup.
     from app.api.uploads import _signature_ok
 
-    uploader_id = values[0]
     if not _signature_ok(
         settings,
         name,
