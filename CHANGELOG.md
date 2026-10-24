@@ -7,6 +7,10 @@ areas below group the ~240 commits between tags into human-readable form.
 
 Changes on `main` after the v0.2.0 tag, by commit date. Each line names the commit that records it.
 
+### 2026-10
+
+- 2026-10-24 — Licence: Apache-2.0 (was AGPL-3.0-or-later).
+
 ### 2026-08
 
 - 2026-08-09 — `89d3ce4` — Sends wait for server acknowledgement and expose pending, failed, and retry states.

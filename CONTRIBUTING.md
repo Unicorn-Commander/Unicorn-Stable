@@ -43,4 +43,4 @@ pytest
 
 ## Licence
 
-By contributing, you agree that your contributions are licensed under the [GNU Affero General Public License v3.0](LICENSE).
+Contributions are made under the Apache License 2.0, the same licence as the repository (see [LICENSE](LICENSE)). By opening a pull request you confirm you wrote the change or have the right to submit it under that licence.

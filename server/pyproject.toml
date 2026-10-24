@@ -3,6 +3,7 @@ name = "stable-server"
 version = "0.2.0"
 description = "Stable — LiveKit-based chat/voice/video platform backend"
 requires-python = ">=3.12"
+license = "Apache-2.0"
 dependencies = [
     "fastapi[standard]>=0.115",
     "uvicorn[standard]>=0.34",

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version 0.2.0">
   <img src="https://img.shields.io/badge/backend-FastAPI-009688" alt="Backend: FastAPI">
   <img src="https://img.shields.io/badge/frontend-React%2019-61dafb" alt="Frontend: React 19">
@@ -365,7 +365,7 @@ The API refuses to start in production on the built-in LiveKit secret. Gateway k
 
 ## Licence
 
-[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). If you run a modified Stable as a network service, the AGPL requires you to offer the modified source to its users.
+Unicorn Stable is licensed under the [Apache License 2.0](LICENSE). You can use, change and redistribute it, including commercially, under its terms. Our names and logos are covered by [TRADEMARKS.md](TRADEMARKS.md).
 
 ---
 
