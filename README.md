@@ -73,10 +73,6 @@ The LiveKit worker process registers three agent types: `TriageAgent`, `BrigadeB
 
 ### Voice and video
 
-<p align="center">
-  <img src="docs/screenshots/voice.webp" width="900" alt="Voice and video in the room">
-</p>
-
 <p align="center"><em>Voice and video in the room.</em></p>
 
 LiveKit carries the media. The browser asks the API for a token (`POST /api/v1/tokens/livekit`) and joins. A direct call rings, and the other person accepts, declines, or the caller cancels. During a call you can switch devices, share screens, and moderate participants if you are a room owner or room admin. The client supports simultaneous screen shares and can add a second local share when the browser and media server permit it.
