@@ -167,7 +167,7 @@ function AuthGate({ children }: { children: ReactNode }) {
           member_count: 8,
           unread_count: 2,
           last_message: {
-            id: "msg-1", room_id: "room-general", sender_id: "user-jason",
+            id: "msg-1", room_id: "room-general", sender_id: "user-nate",
             sender_type: "human", sender_name: "Nate Ellison", sender_avatar: null,
             content: "Hey team, the new deploy is live", content_type: "text",
             thread_id: null, reply_count: 0, edited: false, created_at: now, updated_at: now, metadata: {},
@@ -212,8 +212,8 @@ function AuthGate({ children }: { children: ReactNode }) {
           agents: [],
         },
         {
-          id: "room-dm-jason",
-          name: "dm-jason",
+          id: "room-dm-nate",
+          name: "dm-nate",
           description: "",
           type: "dm",
           created_at: now,
@@ -221,9 +221,9 @@ function AuthGate({ children }: { children: ReactNode }) {
           member_count: 2,
           unread_count: 1,
           last_message: {
-            id: "msg-4", room_id: "room-dm-jason", sender_id: "user-jason",
+            id: "msg-4", room_id: "room-dm-nate", sender_id: "user-nate",
             sender_type: "human", sender_name: "Nate Ellison", sender_avatar: null,
-            content: "Got the Summit Medical meeting confirmed for Thursday", content_type: "text",
+            content: "Got the Bayview Health meeting confirmed for Thursday", content_type: "text",
             thread_id: null, reply_count: 0, edited: false, created_at: twoHoursAgo, updated_at: twoHoursAgo, metadata: {},
           },
           members: [],
@@ -244,7 +244,7 @@ function AuthGate({ children }: { children: ReactNode }) {
           { id: "m1", room_id: "room-general", sender_id: "agent-triage", sender_type: "agent", sender_name: "Triage Agent", sender_avatar: null, content: "Good morning. All systems green. LiveKit server is healthy, 3 agents online.", content_type: "text", thread_id: null, reply_count: 0, edited: false, created_at: new Date(Date.now() - 3600000 * 3).toISOString(), updated_at: new Date(Date.now() - 3600000 * 3).toISOString(), metadata: {} },
           { id: "m2", room_id: "room-general", sender_id: "dev-user-001", sender_type: "human", sender_name: "Aaron Stransky", sender_avatar: null, content: "Perfect. @triage can you check on the commander deployment?", content_type: "text", thread_id: null, reply_count: 1, edited: false, created_at: new Date(Date.now() - 3600000 * 2).toISOString(), updated_at: new Date(Date.now() - 3600000 * 2).toISOString(), metadata: {} },
           { id: "m3", room_id: "room-general", sender_id: "agent-triage", sender_type: "agent", sender_name: "Triage Agent", sender_avatar: null, content: "Commander is up and serving. All 5 subdomains responding. Last deploy was 6 hours ago, no errors in the logs.", content_type: "text", thread_id: null, reply_count: 0, edited: false, created_at: new Date(Date.now() - 3600000 * 2 + 30000).toISOString(), updated_at: new Date(Date.now() - 3600000 * 2 + 30000).toISOString(), metadata: {} },
-          { id: "m4", room_id: "room-general", sender_id: "user-jason", sender_type: "human", sender_name: "Nate Ellison", sender_avatar: null, content: "Hey team, the new deploy is live", content_type: "text", thread_id: null, reply_count: 0, edited: false, created_at: now, updated_at: now, metadata: {} },
+          { id: "m4", room_id: "room-general", sender_id: "user-nate", sender_type: "human", sender_name: "Nate Ellison", sender_avatar: null, content: "Hey team, the new deploy is live", content_type: "text", thread_id: null, reply_count: 0, edited: false, created_at: now, updated_at: now, metadata: {} },
         ],
         nextCursor: null,
         hasMore: false,
@@ -254,7 +254,7 @@ function AuthGate({ children }: { children: ReactNode }) {
       // Seed participants for #general
       store.setParticipants("room-general", [
         { user_id: "dev-user-001", username: "aaron", display_name: "Aaron Stransky", avatar_url: null, role: "owner", is_online: true, joined_at: now },
-        { user_id: "user-jason", username: "jason", display_name: "Nate Ellison", avatar_url: null, role: "admin", is_online: true, joined_at: now },
+        { user_id: "user-nate", username: "nate", display_name: "Nate Ellison", avatar_url: null, role: "admin", is_online: true, joined_at: now },
         { user_id: "agent-triage", username: "triage", display_name: "Triage Agent", avatar_url: null, role: "member", is_online: true, joined_at: now },
         { user_id: "agent-analyst", username: "analyst", display_name: "Deep Analyst", avatar_url: null, role: "member", is_online: true, joined_at: now },
         { user_id: "agent-coder", username: "coder", display_name: "Coder Agent", avatar_url: null, role: "member", is_online: false, joined_at: now },

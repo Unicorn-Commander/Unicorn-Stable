@@ -779,7 +779,7 @@ function resolveRoom(room: Loose, opts?: ResolveIdentityOptions): ResolvedIdenti
       others.find((member) => str(member.participant_type) !== "agent") ?? others[0];
     if (human) return resolveSubject(human);
     // No counterpart and no member rows yet: the last message still names who
-    // sent it, which beats a monogram of the ROOM's slug ("dm-jason" → "DJ").
+    // sent it, which beats a monogram of the ROOM's slug ("dm-nate" → "DN").
     const last = asLoose(room.last_message);
     if (room.last_message && str(last.sender_id) !== str(opts?.selfId)) {
       return resolveSubject(messageAsPerson(last));
