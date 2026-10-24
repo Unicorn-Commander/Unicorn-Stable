@@ -370,5 +370,5 @@ The API refuses to start in production on the built-in LiveKit secret. Gateway k
 ---
 
 <p align="center">
-  Built by <a href="https://magicunicorn.tech">Magic Unicorn</a> · part of <a href="https://unicorncommander.com">Unicorn Commander</a>
+  Built by Magic Unicorn · part of <a href="https://github.com/Unicorn-Commander">Unicorn Commander</a>
 </p>
