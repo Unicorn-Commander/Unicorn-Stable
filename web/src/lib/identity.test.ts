@@ -730,9 +730,9 @@ describe("a channel is a place, not a person", () => {
 describe("a DM row without member rows", () => {
   it("uses the last sender rather than a monogram of the room slug", () => {
     const face = resolveIdentity({
-      id: "dm-jason",
-      name: "dm-jason",
-      display_name: "dm-jason",
+      id: "dm-nate",
+      name: "dm-nate",
+      display_name: "dm-nate",
       type: "dm",
       members: [],
       last_message: {
@@ -740,7 +740,7 @@ describe("a DM row without member rows", () => {
         sender_id: "p-jason",
         sender_name: "Jason Reed",
         sender_type: "human",
-        content: "Got the Summit Medical meeting confirmed",
+        content: "Got the Bayview Health meeting confirmed",
       },
     });
     expect(face.name).toBe("Jason Reed");

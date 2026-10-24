@@ -38,7 +38,7 @@ const rooms = [
   room({ id: "room-leads-thread", name: "leads thread", parent_room_id: "room-general" }),
   room({ id: "room-dm-lead", name: "Lead Singer", type: "dm" }),
 ];
-const people = [person("u-jason", "jason", "Nate Ellison"), person("u-shafen", "shafen", "Shafen Khan")];
+const people = [person("u-nate", "nate", "Nate Ellison"), person("u-shafen", "shafen", "Shafen Khan")];
 const browsable = [
   room({ id: "room-leads", name: "leads" }),
   room({ id: "room-leadership", name: "leadership" }),

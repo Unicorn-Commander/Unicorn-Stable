@@ -694,7 +694,7 @@ describe("Home rows", () => {
         id: "jason",
         type: "dm",
         counterpart: {
-          participant_id: "user-jason",
+          participant_id: "user-nate",
           kind: "human",
           display_name: "Jason",
         },
@@ -712,7 +712,7 @@ describe("Home rows", () => {
         },
       }),
     ];
-    const rail = homeRailConversations(rooms, ["user-old", "user-jason", ""]);
+    const rail = homeRailConversations(rooms, ["user-old", "user-nate", ""]);
     expect(rail.pinned.map((room) => room.id)).toEqual(["jason"]);
     expect(rail.recent.map((room) => room.id)).toEqual(["ada", "general"]);
     expect(homeRailConversations(rooms, []).pinned).toEqual([]);
