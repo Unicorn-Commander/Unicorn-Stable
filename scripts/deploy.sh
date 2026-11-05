@@ -16,13 +16,14 @@
 #
 # Env knobs:
 #   PROJECT       compose project name           (default: unicorn-stable)
-#   EXTERNAL_URL  URL to verify after deploy      (default: http://localhost/)
+#   EXTERNAL_URL  URL to verify after deploy      (default: https://stable.magicunicorn.dev/)
 #   CPU_QUOTA     docker build --cpu-quota        (default: 600000)
 #   CPU_PERIOD    docker build --cpu-period       (default: 100000)
 set -euo pipefail
 
 PROJECT="${PROJECT:-unicorn-stable}"
-EXTERNAL_URL="${EXTERNAL_URL:-http://localhost/}"
+# The public site, not localhost: on bigboy port 80 is Traefik's, and localhost/ answers 404 for every host.
+EXTERNAL_URL="${EXTERNAL_URL:-https://stable.magicunicorn.dev/}"
 CPU_QUOTA="${CPU_QUOTA:-600000}"
 CPU_PERIOD="${CPU_PERIOD:-100000}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
