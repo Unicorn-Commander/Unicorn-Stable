@@ -31,11 +31,24 @@ import {
   Track,
   type RemoteAudioTrack,
 } from "livekit-client";
-import { Maximize, Mic, MicOff, Minimize, Video, VideoOff } from "lucide-react";
+import {
+  Maximize,
+  Mic,
+  MicOff,
+  Minimize,
+  MonitorOff,
+  MonitorUp,
+  Video,
+  VideoOff,
+} from "lucide-react";
 import clsx from "clsx";
 import { VideoGrid, type VideoTileItem } from "@/components/Room/VideoGrid";
 import { useTileFullscreen } from "@/hooks/useTileFullscreen";
-import { guestReconnectDelayMs, isGuestCallIdentity, type GuestSession } from "@/lib/guest";
+import {
+  guestReconnectDelayMs,
+  isGuestCallIdentity,
+  type GuestSession,
+} from "@/lib/guest";
 import {
   GuestSessionEnded,
   getGuestLiveKitToken,
@@ -187,7 +200,9 @@ function TileView({
           {tile.isLocal && <span className="ml-1 text-white/50">(you)</span>}
         </span>
         {isGuest && <GuestBadge />}
-        {tile.muted && <MicOff className="h-3.5 w-3.5 shrink-0 text-rose-300" />}
+        {tile.muted && (
+          <MicOff className="h-3.5 w-3.5 shrink-0 text-rose-300" />
+        )}
       </div>
     </div>
   );
@@ -203,6 +218,7 @@ export function GuestVideoStage({
   const [connected, setConnected] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [micOn, setMicOn] = useState(false);
+  const [screenShareOn, setScreenShareOn] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -222,17 +238,22 @@ export function GuestVideoStage({
       const local = current.localParticipant;
       const localCam = local.getTrackPublication(Track.Source.Camera);
       const localMic = local.getTrackPublication(Track.Source.Microphone);
+      const localScreen = local.getTrackPublication(Track.Source.ScreenShare);
+      const localScreenOn = Boolean(localScreen?.track && !localScreen.isMuted);
+      setScreenShareOn(localScreenOn);
       // The local tile only appears once there is something to show; a
       // watch-only guest never publishes and never gets one.
-      if (localCam?.track || localMic?.track) {
+      if (localCam?.track || localMic?.track || localScreen?.track) {
         next.push({
           key: `local:${local.identity}`,
           identity: local.identity,
           name: session.displayName,
           video:
-            localCam?.track instanceof LocalVideoTrack && !localCam.isMuted
-              ? localCam.track
-              : null,
+            localScreen?.track instanceof LocalVideoTrack && localScreenOn
+              ? localScreen.track
+              : localCam?.track instanceof LocalVideoTrack && !localCam.isMuted
+                ? localCam.track
+                : null,
           audio: null,
           muted: !localMic?.track || localMic.isMuted,
           speaking: speakers.has(local.identity),
@@ -242,7 +263,9 @@ export function GuestVideoStage({
 
       for (const participant of current.remoteParticipants.values()) {
         const cam = participant.getTrackPublication(Track.Source.Camera);
-        const screen = participant.getTrackPublication(Track.Source.ScreenShare);
+        const screen = participant.getTrackPublication(
+          Track.Source.ScreenShare,
+        );
         const mic = participant.getTrackPublication(Track.Source.Microphone);
         const videoPub = screen?.track ? screen : cam;
         next.push({
@@ -313,10 +336,14 @@ export function GuestVideoStage({
           if (disposed || gen !== generation) return;
           setConnected(false);
           setTiles([]);
+          setScreenShareOn(false);
           attempt += 1;
           // Re-mint rather than resume: the guest's token is clamped to their
           // session expiry, so the one in hand may already be past it.
-          retry = setTimeout(() => void cycle(), guestReconnectDelayMs(attempt));
+          retry = setTimeout(
+            () => void cycle(),
+            guestReconnectDelayMs(attempt),
+          );
         });
 
       try {
@@ -377,6 +404,30 @@ export function GuestVideoStage({
     [cameraOn, micOn, session.canPublish],
   );
 
+  const toggleScreenShare = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room || !session.canPublish) return;
+    setDeviceError(null);
+    try {
+      if (screenShareOn) {
+        await room.localParticipant.setScreenShareEnabled(false);
+        setScreenShareOn(false);
+      } else {
+        await room.localParticipant.setScreenShareEnabled(true, {
+          audio: true,
+        });
+        setScreenShareOn(true);
+      }
+    } catch {
+      // A guest may cancel the picker, deny the browser prompt, or use a
+      // browser without getDisplayMedia. Keep the call alive and explain the
+      // failed action inline instead of letting the rejection escape.
+      setDeviceError(
+        "Screen sharing isn\u2019t available or was blocked by your browser.",
+      );
+    }
+  }, [screenShareOn, session.canPublish]);
+
   const items: VideoTileItem[] = tiles.map((tile) => ({
     key: tile.key,
     node: <TileView tile={tile} members={members} />,
@@ -389,9 +440,7 @@ export function GuestVideoStage({
           <VideoGrid items={items} className="h-full" />
         ) : (
           <div className="grid h-full min-h-40 place-items-center rounded-xl border border-white/[0.06] bg-slate-950/40 text-xs text-slate-500">
-            {connected
-              ? "Nobody is on camera yet."
-              : "Connecting to the room…"}
+            {connected ? "Nobody is on camera yet." : "Connecting to the room…"}
           </div>
         )}
       </div>
@@ -402,44 +451,84 @@ export function GuestVideoStage({
         </p>
       )}
 
-      {session.canPublish ? (
-        <div className="flex items-center justify-center gap-2">
-          <button
-            type="button"
-            onClick={() => void toggle("mic")}
-            disabled={!connected}
-            aria-pressed={micOn}
-            className={clsx(
-              "focus-ring inline-flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-xs font-medium transition-colors disabled:opacity-40",
-              micOn
-                ? "bg-stable-purple text-white"
-                : "bg-white/[0.06] text-slate-300 hover:bg-white/[0.1]",
-            )}
-          >
-            {micOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-            {micOn ? "Mic on" : "Mic off"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void toggle("camera")}
-            disabled={!connected}
-            aria-pressed={cameraOn}
-            className={clsx(
-              "focus-ring inline-flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-xs font-medium transition-colors disabled:opacity-40",
-              cameraOn
-                ? "bg-stable-purple text-white"
-                : "bg-white/[0.06] text-slate-300 hover:bg-white/[0.1]",
-            )}
-          >
-            {cameraOn ? (
-              <Video className="h-4 w-4" />
-            ) : (
-              <VideoOff className="h-4 w-4" />
-            )}
-            {cameraOn ? "Camera on" : "Camera off"}
-          </button>
-        </div>
-      ) : (
+      <div className="flex items-center justify-center gap-2">
+        {session.canPublish && (
+          <>
+            <button
+              type="button"
+              onClick={() => void toggle("mic")}
+              disabled={!connected}
+              aria-pressed={micOn}
+              className={clsx(
+                "focus-ring inline-flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-xs font-medium transition-colors disabled:opacity-40",
+                micOn
+                  ? "bg-stable-purple text-white"
+                  : "bg-white/[0.06] text-slate-300 hover:bg-white/[0.1]",
+              )}
+            >
+              {micOn ? (
+                <Mic className="h-4 w-4" />
+              ) : (
+                <MicOff className="h-4 w-4" />
+              )}
+              {micOn ? "Mic on" : "Mic off"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void toggle("camera")}
+              disabled={!connected}
+              aria-pressed={cameraOn}
+              className={clsx(
+                "focus-ring inline-flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-xs font-medium transition-colors disabled:opacity-40",
+                cameraOn
+                  ? "bg-stable-purple text-white"
+                  : "bg-white/[0.06] text-slate-300 hover:bg-white/[0.1]",
+              )}
+            >
+              {cameraOn ? (
+                <Video className="h-4 w-4" />
+              ) : (
+                <VideoOff className="h-4 w-4" />
+              )}
+              {cameraOn ? "Camera on" : "Camera off"}
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          onClick={() => void toggleScreenShare()}
+          disabled={!session.canPublish || !connected}
+          aria-pressed={session.canPublish && screenShareOn}
+          aria-label={
+            session.canPublish
+              ? screenShareOn
+                ? "Stop sharing"
+                : "Share screen"
+              : "Sharing is off for guests in this room"
+          }
+          title={
+            session.canPublish
+              ? screenShareOn
+                ? "Stop sharing"
+                : "Share screen"
+              : "Sharing is off for guests in this room"
+          }
+          className={clsx(
+            "focus-ring inline-flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+            screenShareOn
+              ? "bg-stable-cyan text-slate-950"
+              : "bg-white/[0.06] text-slate-300 hover:bg-white/[0.1]",
+          )}
+        >
+          {screenShareOn ? (
+            <MonitorOff className="h-4 w-4" />
+          ) : (
+            <MonitorUp className="h-4 w-4" />
+          )}
+          {screenShareOn ? "Stop sharing" : "Share screen"}
+        </button>
+      </div>
+      {!session.canPublish && (
         // Watch-only. Say so rather than showing dead controls: the invite was
         // minted without publish and no client-side toggle can change that.
         <p className="text-center text-[11px] text-slate-500">
