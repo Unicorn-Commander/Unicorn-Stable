@@ -16,12 +16,17 @@
 #
 # Env knobs:
 #   PROJECT       compose project name           (default: unicorn-stable)
-#   EXTERNAL_URL  URL to verify after deploy      (default: http://localhost/)
+#   EXTERNAL_URL  URL to verify after deploy      (default: the Host() in the compose router label)
 #   CPU_QUOTA     docker build --cpu-quota        (default: 600000)
 #   CPU_PERIOD    docker build --cpu-period       (default: 100000)
 set -euo pipefail
 
 PROJECT="${PROJECT:-unicorn-stable}"
+# The site to verify after the recreate. On a Traefik host, port 80 belongs to Traefik and
+# http://localhost/ answers 404 for every host, so the default is the Host() in the compose
+# router label; set EXTERNAL_URL to override.
+_compose_host="$(grep -oE 'traefik\.http\.routers\.stable\.rule=Host\(`[^`]+`\)' "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/docker-compose.yml" 2>/dev/null | head -1 | sed -E 's/.*Host\(`([^`]+)`\)/\1/')"
+EXTERNAL_URL="${EXTERNAL_URL:-${_compose_host:+https://${_compose_host}/}}"
 EXTERNAL_URL="${EXTERNAL_URL:-http://localhost/}"
 CPU_QUOTA="${CPU_QUOTA:-600000}"
 CPU_PERIOD="${CPU_PERIOD:-100000}"
