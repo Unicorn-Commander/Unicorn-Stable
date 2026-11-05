@@ -587,6 +587,27 @@ class EchoBargeInTests(TestCase):
         agent._publisher.persist_user_utterance.assert_not_called()
         self.assertFalse(hit["value"])
 
+    def test_fillers_do_not_cut_the_reply(self) -> None:
+        # Measured on a live call: "so uh" dropped four of five chunks of an answer.
+        for line in ("so uh", "yeah okay", "mm right", "um so like"):
+            agent, hit = self._speaking_agent()
+            agent._on_track_final(
+                SimpleNamespace(participant_identity=self.AARON, participant_name="Aaron"),
+                line,
+            )
+            self.assertFalse(hit["value"], line)
+            self.assertFalse(agent._barge_in, line)
+
+    def test_a_person_taking_the_floor_still_cuts_the_reply(self) -> None:
+        for line in ("hold on", "wait no", "stop talking", "so uh wait a second"):
+            agent, hit = self._speaking_agent()
+            agent._on_track_final(
+                SimpleNamespace(participant_identity=self.AARON, participant_name="Aaron"),
+                line,
+            )
+            self.assertTrue(hit["value"], line)
+            self.assertTrue(agent._barge_in, line)
+
     def test_long_nonmatching_speech_still_cuts_the_reply(self) -> None:
         agent, hit = self._speaking_agent()
 

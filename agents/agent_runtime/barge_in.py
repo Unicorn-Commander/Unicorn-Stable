@@ -144,6 +144,17 @@ def transcript_duration_seconds(event: Any) -> float | None:
     return None
 
 
+#: Sounds a person makes while listening or gathering a thought. They do not ask
+#: anyone to stop. On a live call on 2026-10-26, "so uh" counted as two words and
+#: cut a seat's answer after one chunk of five. "wait", "stop" and "no" stay out
+#: of this list: those are how a person really does take the floor.
+FILLER_WORDS = frozenset({
+    "ah", "cool", "er", "erm", "hm", "hmm", "huh", "like", "mhm", "mm", "mmm", "oh",
+    "ok", "okay", "right", "so", "sure", "uh", "uhm", "um", "umm", "well", "yeah",
+    "yep", "yes", "yup",
+})
+
+
 def transcript_is_short(
     text: str,
     *,
@@ -155,7 +166,7 @@ def transcript_is_short(
     words = _env_int(_MIN_WORDS_ENV, DEFAULT_BARGE_IN_MIN_WORDS, minimum=0)
     if min_words is not None:
         words = max(0, int(min_words))
-    if len(normalize_transcript(text)) < words:
+    if len([t for t in normalize_transcript(text) if t not in FILLER_WORDS]) < words:
         return True
     duration = _env_float(
         _MIN_DURATION_ENV,
