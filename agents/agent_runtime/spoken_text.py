@@ -43,6 +43,8 @@ def is_unvoiced_ack(text: str) -> bool:
     low = bare.lower().strip(" .…")
     if len(low) > 80:
         return False
-    if low == "on it":
+    # The runner's real ack names the running tool: "⚙️ On it (running Bash)…".
+    # That exact line was read aloud on a live call on 2026-10-26.
+    if low == "on it" or low.startswith("on it ("):
         return True
     return any(low.startswith(prefix) for prefix in _STATUS_PREFIXES if prefix != "on it")

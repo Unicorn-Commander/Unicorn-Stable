@@ -326,6 +326,9 @@ class SpokenLengthAndAckTests(TestCase):
         from voice_relay.agent import should_speak
 
         self.assertTrue(is_unvoiced_ack("⚙️ On it"))
+        self.assertTrue(is_unvoiced_ack("⚙️ On it (running Bash)…"))
+        self.assertTrue(is_unvoiced_ack("⚙️ On it (running mcp__email-ops__search_mail)…"))
+        self.assertFalse(is_unvoiced_ack("⚙️ On it, the invoice went out on Friday. Anything else?"))
         self.assertTrue(is_unvoiced_ack("⚙️ _Using a tool…_"))
         self.assertFalse(
             is_unvoiced_ack(
