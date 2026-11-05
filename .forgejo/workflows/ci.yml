@@ -7,9 +7,11 @@ name: ci
 # (or Docker) available. If no runner is registered this file is inert — see
 # repo README / ops notes to register one.
 
+# Push runs main only: a PR commit used to run every job twice (push + pull_request) on the one
+# Linux runner, and that contention is what pushed the longest e2e test past its budget.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:
@@ -44,6 +46,8 @@ jobs:
   # user, and every surface would stop at Keycloak.
   web-e2e:
     runs-on: ubuntu-latest
+    # A passing run takes 33-36 min (198 tests, one worker). A hung runner fails here, not hours later.
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: web

@@ -2632,6 +2632,9 @@ test.describe("Crew-first nav (v3)", () => {
 
   for (const viewport of ["mobile", "desktop"] as const) {
     test(`crew, hub, new conversation @ ${viewport}`, async ({ page }, testInfo) => {
+      // 400 lines of walk-through: it exhausted the 120 s budget on a loaded runner (CI tasks 6484, 6492,
+      // 197 of 198 passing) with no assertion failing. Three times the budget, same assertions.
+      test.slow();
       const vp = viewport === "mobile" ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
       await page.setViewportSize(vp);
       await stubHomeSummary(page);
