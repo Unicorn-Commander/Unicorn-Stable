@@ -512,13 +512,22 @@ class BrigadeBackedAgent(StableAgent):
             install_chunked_say,
             transcript_duration_seconds,
         )
-        from voice_relay.agent import barge_in_mode_from_metadata
+        from voice_relay.agent import (
+            barge_in_allowed_speakers,
+            barge_in_mode_from_metadata,
+        )
 
         barge_mode = barge_in_mode_from_metadata(
             getattr(getattr(ctx, "job", None), "metadata", ""),
             getattr(ctx.room, "metadata", ""),
         )
-        self._barge = BargeIn(enabled=barge_mode == "auto")
+        self._barge = BargeIn(
+            enabled=barge_mode == "auto",
+            allowed_speakers=barge_in_allowed_speakers(
+                getattr(getattr(ctx, "job", None), "metadata", ""),
+                getattr(ctx.room, "metadata", ""),
+            ),
+        )
 
         def _spoken_limit() -> int:
             from voice_relay.agent import max_spoken_chars_from_metadata
@@ -790,13 +799,26 @@ class BrigadeBackedAgent(StableAgent):
             logger.debug("floor_release_wire_failed", exc_info=True)
 
         def _barge_final(ev: Any) -> None:
+            # Imported HERE: build_pipeline's import of this helper was never
+            # in scope for this method, so every session-ear final raised a
+            # NameError into the except below and the latch only ever saw the
+            # per-track and responder paths (ruff F821, found 2026-11-05).
+            from agent_runtime.barge_in import transcript_duration_seconds
+
             try:
                 if not bool(getattr(ev, "is_final", False)):
                     return
                 text = (getattr(ev, "transcript", "") or "").strip()
+                # The session ear is bound to ONE human; its finals carry a
+                # speaker_id when the STT knows it, else they are that human.
+                linked = getattr(
+                    getattr(self._session, "room_io", None), "linked_participant", None
+                )
                 self._barge_on_human_final(
                     text,
                     duration_s=transcript_duration_seconds(ev),
+                    speaker=getattr(ev, "speaker_id", None)
+                    or getattr(linked, "identity", None),
                 )
             except Exception:
                 logger.debug("brigade_barge_listener_failed", exc_info=True)
@@ -827,11 +849,17 @@ class BrigadeBackedAgent(StableAgent):
         session.on("close", self._on_session_close)
 
     def _barge_on_human_final(
-        self, text: str, *, duration_s: float | None = None
+        self,
+        text: str,
+        *,
+        duration_s: float | None = None,
+        speaker: Any = None,
     ) -> None:
         """Stop the in-flight say and release the floor. Empty text does nothing."""
         barge = getattr(self, "_barge", None)
-        if barge is None or not barge.on_human_final(text, duration_s=duration_s):
+        if barge is None or not barge.on_human_final(
+            text, duration_s=duration_s, speaker=speaker
+        ):
             return
         floor = getattr(self, "_dispatch_floor", None)
         me = getattr(self, "_dispatch_me", None)
@@ -859,7 +887,9 @@ class BrigadeBackedAgent(StableAgent):
                 content = (text or "").strip()
                 if not content:
                     return
-                self._barge_on_human_final(content)
+                self._barge_on_human_final(
+                    content, speaker=getattr(track, "participant_identity", None)
+                )
                 hint = None
                 try:
                     remotes = getattr(room, "remote_participants", {}) or {}

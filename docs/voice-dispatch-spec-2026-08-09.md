@@ -51,6 +51,19 @@ human line. The runtime knobs are `VOICE_BARGE_IN_MIN_WORDS=2`,
 `VOICE_BARGE_IN_MIN_DURATION_MS=600`, and
 `VOICE_BARGE_IN_ECHO_WINDOW_SECONDS=8`.
 
+The per-room metadata key `voice_relay_barge_in_from` (added 2026-11-05) names
+WHO may interrupt: a list of usernames (`["aaron"]`) or a comma-separated string
+(`"aaron,shafen"`). A username is the LiveKit identity with its trailing
+`_<uuid>` removed, matched case-insensitively. When the key is present and
+non-empty, only those people cut a reply; every other speaker is still
+captioned and persisted exactly as before, they just never take the floor
+(logged once per utterance as `voice_relay_barge_speaker_ignored`). Absent or
+empty, anyone can interrupt. The worker env `VOICE_BARGE_IN_FROM` (same format)
+is the default when the room says nothing. Both the relay and the Brigade lane
+honour it; the relay also takes it live from a `relay_config` frame carrying
+`barge_in_from`. Measured on a call on 2026-10-26: a guest talking over the
+seat cut it off mid-answer, and only the host's own microphone should.
+
 In `name` / when-named mode, a line that is only the wake name (or `hey` plus
 the wake name and at most two filler words) is a handoff cue, not a greeting
 request. It arms one unnamed follow-up for that same caller for 8 seconds;

@@ -47,6 +47,17 @@ CONFIGURATION comes from the room's metadata, read at dispatch:
     caller interruption cut the current reply after the echo/short-transcript
     guard; ``off`` keeps playback continuous for recordings and shows. The
     guard still prevents relay echo from becoming a persisted caller line.
+  * ``voice_relay_barge_in_from`` — OPTIONAL, added 2026-11-05: the USERNAMES
+    whose voice may interrupt the relay, as a JSON list
+    (``["aaron"]``) or a comma-separated string (``"aaron,shafen"``). A
+    username is a LiveKit identity with its trailing ``_<uuid>`` removed,
+    compared case-insensitively. Present and non-empty, only those people
+    cut a reply; everyone else is still heard, captioned and persisted
+    exactly as before, they just never take the floor. Absent or empty,
+    anyone can interrupt (the old behaviour). The env default
+    ``VOICE_BARGE_IN_FROM`` (same format) applies only when the room says
+    nothing. Measured on a call on 2026-10-26: a guest talking over
+    Persephone cut her off mid-answer; Aaron wants only his own mic to.
 
 THE TALK GATE can name a TARGET (``talk_gate`` frame, ``target`` field, added
 2026-09-01). A held pedal then addresses that agent rather than the relay's
@@ -100,6 +111,7 @@ conversation. It transports words; it does not author them.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import unicodedata
 from types import SimpleNamespace
@@ -179,6 +191,10 @@ DEFAULT_ACTIVATION = "name"
 BARGE_IN_MODES = ("auto", "off")
 DEFAULT_BARGE_IN_MODE = "auto"
 BARGE_IN_METADATA_KEY = "voice_barge_in"
+#: Who may barge (2026-11-05). A list of usernames, or a comma-separated
+#: string. None = no allowlist = anyone. See ``barge_in_allowed_speakers``.
+BARGE_IN_FROM_METADATA_KEY = "voice_relay_barge_in_from"
+BARGE_IN_FROM_ENV = "VOICE_BARGE_IN_FROM"
 
 #: Sliding conversation window for ``window`` mode. 75s sits in the 60–90s
 #: range Aaron asked for on 2026-08-30: long enough for a follow-up after a
@@ -341,6 +357,70 @@ def barge_in_mode_from_metadata(*metadatas: Any) -> str:
         mode = mode.strip().lower() if isinstance(mode, str) else ""
         return mode if mode in BARGE_IN_MODES else DEFAULT_BARGE_IN_MODE
     return DEFAULT_BARGE_IN_MODE
+
+
+def speaker_username(identity: Any) -> str:
+    """The USERNAME in a LiveKit identity: ``aaron_<uuid>`` → ``aaron``.
+
+    Lower-cased, so an allowlist spelled ``Aaron`` still matches. An identity
+    without the uuid tail (a bare username, an agent) is returned as is.
+    """
+    text = str(identity or "").strip().lower()
+    if not text:
+        return ""
+    head, sep, tail = text.rpartition("_")
+    if sep and head and _UUID_TAIL.match(tail):
+        return head
+    return text
+
+
+def _speaker_list(raw: Any) -> frozenset[str]:
+    """Usernames from a list, a comma-separated string or a JSON list string."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except Exception:
+                raw = text
+        if isinstance(raw, str):
+            raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(
+        name for name in (speaker_username(item) for item in raw) if name
+    )
+
+
+def barge_in_allowed_speakers(*metadatas: Any) -> frozenset[str] | None:
+    """Read ``voice_relay_barge_in_from``; dispatch metadata takes precedence.
+
+    Returns the usernames allowed to interrupt, or ``None`` when there is no
+    allowlist (anyone may barge). The first metadata that carries the key
+    wins, even when its value is empty — a room can say "everyone" and
+    override the worker's ``VOICE_BARGE_IN_FROM`` env default, which is read
+    only when no metadata mentions the key at all.
+    """
+    for metadata in metadatas:
+        data = _metadata_dict(metadata)
+        if BARGE_IN_FROM_METADATA_KEY not in data:
+            continue
+        return _speaker_list(data.get(BARGE_IN_FROM_METADATA_KEY)) or None
+    raw_env = os.getenv(BARGE_IN_FROM_ENV)
+    if raw_env is None or not raw_env.strip():
+        return None
+    return _speaker_list(raw_env) or None
+
+
+def speaker_may_barge(speaker_identity: Any, allowed: frozenset[str] | None) -> bool:
+    """Whether this LiveKit identity may cut the relay under ``allowed``.
+
+    No allowlist: anyone. With one, only a listed username; an unattributed
+    speaker (``None``/empty) is not one of them.
+    """
+    if not allowed:
+        return True
+    return speaker_username(speaker_identity) in allowed
 
 
 def clamp_window_seconds(value: Any) -> int:
@@ -889,6 +969,9 @@ class VoiceRelayAgent(StableAgent):
         self._my_names: set[str] = set()
         self._activation = DEFAULT_ACTIVATION
         self._barge_in_mode = DEFAULT_BARGE_IN_MODE
+        #: Usernames allowed to interrupt (``voice_relay_barge_in_from``).
+        #: None = anyone, the old behaviour.
+        self._barge_in_from: frozenset[str] | None = None
         self._echo_guard = TranscriptEchoGuard()
         #: Sliding conversation window (window mode). Monotonic deadline;
         #: 0 means closed. Each addressed line and each spoken reply slides it.
@@ -973,6 +1056,7 @@ class VoiceRelayAgent(StableAgent):
             else activation_from_metadata(room_meta)
         )
         self._barge_in_mode = barge_in_mode_from_metadata(job_meta, room_meta)
+        self._barge_in_from = barge_in_allowed_speakers(job_meta, room_meta)
         job_window = window_seconds_from_metadata(job_meta)
         self._window_seconds = (
             job_window
@@ -1120,6 +1204,7 @@ class VoiceRelayAgent(StableAgent):
             persona=self._relay_persona,
             activation=self._activation,
             barge_in=self._barge_in_mode,
+            barge_in_from=sorted(self._barge_in_from) if self._barge_in_from else None,
             voices=dict(self._voices),
             video=self._video,
             multi=self._multi,
@@ -1339,6 +1424,22 @@ class VoiceRelayAgent(StableAgent):
                         )
                     else:
                         logger.warning("voice_relay_barge_in_invalid")
+                if BARGE_IN_FROM_METADATA_KEY in payload or "barge_in_from" in payload:
+                    # The allowlist, live: a guest who keeps cutting the seat
+                    # off is fixed from the settings modal, not by a rejoin.
+                    raw_from = payload.get(
+                        BARGE_IN_FROM_METADATA_KEY, payload.get("barge_in_from")
+                    )
+                    old_from = self._barge_in_from
+                    self._barge_in_from = barge_in_allowed_speakers(
+                        {BARGE_IN_FROM_METADATA_KEY: raw_from}
+                    )
+                    logger.info(
+                        "voice_relay_barge_in_from_changed",
+                        old=sorted(old_from) if old_from else None,
+                        new=sorted(self._barge_in_from) if self._barge_in_from else None,
+                        by=str(payload.get("by") or "")[:40],
+                    )
                 if mode not in ACTIVATION_MODES and not any(
                     k in payload
                     for k in (
@@ -1349,6 +1450,8 @@ class VoiceRelayAgent(StableAgent):
                         "cast_aliases",
                         BARGE_IN_METADATA_KEY,
                         "barge_in",
+                        BARGE_IN_FROM_METADATA_KEY,
+                        "barge_in_from",
                     )
                 ):
                     logger.warning("voice_relay_config_invalid", value=mode[:20])
@@ -1510,13 +1613,28 @@ class VoiceRelayAgent(StableAgent):
             )
         return check
 
-    def _can_interrupt(self, check: BargeInCheck) -> bool:
-        """Whether this check is a real barge under the room's switch."""
-        return (
+    def _can_interrupt(self, check: BargeInCheck, *, speaker: Any = None) -> bool:
+        """Whether this check is a real barge under the room's switches.
+
+        ``speaker`` is the LiveKit identity behind the transcript. With a
+        ``voice_relay_barge_in_from`` allowlist, only a listed username cuts
+        the reply; anyone else is logged once per utterance and never does.
+        """
+        if not (
             self._speaking
             and getattr(self, "_barge_in_mode", DEFAULT_BARGE_IN_MODE) == "auto"
             and check.reason is None
+        ):
+            return False
+        allowed = getattr(self, "_barge_in_from", None)
+        if speaker_may_barge(speaker, allowed):
+            return True
+        logger.debug(
+            "voice_relay_barge_speaker_ignored",
+            speaker=str(speaker or "")[:80],
+            allowed=sorted(allowed or ()),
         )
+        return False
 
     def _remember_spoken(self, text: str) -> None:
         guard = getattr(self, "_echo_guard", None)
@@ -1545,7 +1663,7 @@ class VoiceRelayAgent(StableAgent):
             barge_check = self._barge_check(text, speaker=speaker, event=ev)
             if barge_check.reason == "echo":
                 return
-            can_interrupt = self._can_interrupt(barge_check)
+            can_interrupt = self._can_interrupt(barge_check, speaker=speaker)
             # A healthy per-track ear owns this microphone. The linked
             # participant still barges in through here, the way it always
             # has. The line itself is held back when that ear's own energy
@@ -1608,7 +1726,7 @@ class VoiceRelayAgent(StableAgent):
         barge_check = self._barge_check(content, speaker=speaker)
         if barge_check.reason == "echo":
             return
-        can_interrupt = self._can_interrupt(barge_check)
+        can_interrupt = self._can_interrupt(barge_check, speaker=speaker)
         hint = None
         participant = None
         try:

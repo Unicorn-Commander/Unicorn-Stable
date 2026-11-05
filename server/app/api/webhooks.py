@@ -249,6 +249,9 @@ _VOICE_META_KEYS = (
     "voice_relay_face_plate",
     # 0 = unlimited (hub / DM). Channels default to 900 when the row omits it.
     "voice_relay_max_spoken_chars",
+    # Who may interrupt a speaking agent (2026-11-05): usernames, a list in
+    # the DB, a comma-separated string in LiveKit metadata. Absent = anyone.
+    "voice_relay_barge_in_from",
 )
 
 
@@ -466,7 +469,10 @@ async def _sync_voice_metadata(livekit: LiveKitService, room: Room) -> None:
                 wanted[k] = str(parsed)
         elif isinstance(v, (int, float)) and k == "voice_relay_window_seconds":
             wanted[k] = str(int(v))
-        elif isinstance(v, (list, tuple)) and k == "voice_relay_aliases":
+        elif isinstance(v, (list, tuple)) and k in (
+            "voice_relay_aliases",
+            "voice_relay_barge_in_from",
+        ):
             aliases = ",".join(str(x).strip() for x in v if str(x).strip())
             if aliases:
                 wanted[k] = aliases
