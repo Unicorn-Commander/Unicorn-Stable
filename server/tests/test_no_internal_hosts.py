@@ -18,6 +18,16 @@ LOCKFILE_NAMES = frozenset(
     }
 )
 EXCLUDED_DIRECTORY_NAMES = frozenset({"docs", "tests", "node_modules", ".venv"})
+# The public brand site is not a deployment host: licence and trademark files may name it.
+PUBLIC_BRAND_HOSTS = ("unicorncommander.com",)
+
+
+def _without_public_brand_hosts(line: str) -> str:
+    for host in PUBLIC_BRAND_HOSTS:
+        line = line.replace(host, "")
+    return line
+
+
 INTERNAL_HOST_PATTERN = re.compile(
     r"magicunicorn|unicorncommander|majiks|192\.168\.|"
     r"100\.[0-9]+\.[0-9]+\.[0-9]+|\.ts\.net|bigboy|rackboy|midboy|"
@@ -64,7 +74,7 @@ def _find_internal_host_offenders(repo_root: Path) -> list[str]:
 
         text = contents.decode("utf-8", errors="replace")
         for line_number, line in enumerate(text.splitlines(), start=1):
-            if INTERNAL_HOST_PATTERN.search(line):
+            if INTERNAL_HOST_PATTERN.search(_without_public_brand_hosts(line)):
                 offenders.append(f"{relative_path}:{line_number}:{line}")
     return offenders
 
@@ -119,3 +129,9 @@ def test_tracked_walk_excludes_non_public_files_and_binary_content(tmp_path: Pat
     assert _find_internal_host_offenders(tmp_path) == [
         "public.txt:1:https://commander.magicunicorn.dev"
     ]
+
+
+def test_public_brand_site_is_not_an_internal_host() -> None:
+    line = "Questions: contact us through [unicorncommander.com](https://unicorncommander.com)."
+    assert INTERNAL_HOST_PATTERN.search(_without_public_brand_hosts(line)) is None
+    assert INTERNAL_HOST_PATTERN.search(_without_public_brand_hosts("https://api.unicorncommander.ai/mcp"))
