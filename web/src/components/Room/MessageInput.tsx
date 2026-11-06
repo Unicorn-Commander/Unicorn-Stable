@@ -332,6 +332,7 @@ interface MentionSuggestion {
   type: "human" | "agent";
   avatarUrl?: string | null;
   agentMode?: string | null;
+  inRoom?: boolean;
 }
 
 /** An attach-time upload in flight (or failed). Completed uploads leave this
@@ -522,10 +523,17 @@ export function MessageInput({
         id: a.id,
         name: a.name || a.id,
         type: "agent" as const,
+        inRoom: participants.some(
+          (p) =>
+            p.participant_type === "agent" &&
+            ((p.username || "").replace(/^agent-(?:brigade-)?/, "") === a.id ||
+              p.display_name === a.name),
+        ),
         agentMode: participants.find(
           (p) =>
             p.participant_type === "agent" &&
-            (p.username || "").replace(/^agent-/, "") === a.id,
+            ((p.username || "").replace(/^agent-(?:brigade-)?/, "") === a.id ||
+              p.display_name === a.name),
         )?.agent_mode,
       }));
 
@@ -1448,9 +1456,16 @@ export function MessageInput({
               />
               <span className="text-sm">{suggestion.name}</span>
               {suggestion.type === "agent" && (
-                <span className="ml-auto rounded-md bg-stable-cyan/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-cyan">
-                  {agentModeLabel(suggestion.agentMode) ?? "AI"}
-                </span>
+                <>
+                  {!suggestion.inRoom && (
+                    <span className="ml-auto text-[10px] text-slate-500">
+                      (not in room — will be invited)
+                    </span>
+                  )}
+                  <span className="rounded-md bg-stable-cyan/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-stable-cyan">
+                    {agentModeLabel(suggestion.agentMode) ?? "AI"}
+                  </span>
+                </>
               )}
             </button>
           ))}

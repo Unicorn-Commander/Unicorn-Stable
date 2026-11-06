@@ -830,6 +830,7 @@ export function RoomView({ roomId }: RoomViewProps) {
           <InviteMembersModal
             roomId={roomId}
             roomName={displayName}
+            mode="agents"
             // The second front door, reachable from the first: "invite someone"
             // and "let in someone with no account" are the same intent until
             // the moment they aren't, and a host should not have to know which
