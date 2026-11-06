@@ -23,7 +23,7 @@ import {
   NEW_SHEET_ITEMS,
   channelConsequence,
   projectChannelConsequence,
-  roomLabel,
+  roomTitle,
   type NewSheetItemId,
 } from "@/lib/conversation";
 import { beginThread, openAgentHub } from "@/lib/beginThread";
@@ -383,7 +383,7 @@ function ToStep({
           {picks.channels.map(({ room, joined }) => (
             <PickRow
               key={room.id}
-              title={roomLabel(room)}
+              title={roomTitle(room)}
               subtitle={joined ? (room.visibility === "private" ? "Private channel" : "Channel") : "Join channel"}
               onClick={() => void pickChannel(room, joined)}
               {...rowProps(refFor("channel", room.id))}
@@ -625,7 +625,7 @@ function ThreadStep({ onDone }: { onDone: () => void }) {
       rooms.filter((room) => {
         if (presenterEnabled && !rule.isRoomAllowed(room.id)) return false;
         if (room.parent_room_id || room.is_archived) return false;
-        const label = roomLabel(room).toLowerCase();
+        const label = roomTitle(room).toLowerCase();
         return label.includes(q.trim().toLowerCase());
       }),
     [rooms, q, presenterEnabled, rule],
@@ -635,7 +635,7 @@ function ThreadStep({ onDone }: { onDone: () => void }) {
       {parents.map((room) => (
         <PickRow
           key={room.id}
-          title={roomLabel(room)}
+          title={roomTitle(room)}
           subtitle={room.type === "channel" ? "Channel" : room.type === "agent_hub" ? "Agent hub" : "Direct"}
           onClick={() => void beginThread({ roomId: room.id, navigate }).then((t) => t && onDone())}
         />
@@ -823,7 +823,7 @@ function CallStep({ onDone }: { onDone: () => void }) {
     <ul className="flex flex-col gap-1">
       {parents.map((room) => (
         <li key={room.id} className="flex items-center gap-2 rounded-xl px-2 py-1.5 hover:bg-white/[0.04]">
-          <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{roomLabel(room)}</span>
+          <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{roomTitle(room)}</span>
           <button
             type="button"
             onClick={() => go(room, "voice")}

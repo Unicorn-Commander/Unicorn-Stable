@@ -1071,6 +1071,7 @@ class RoomService:
         # typing can't cause a lookup miss.
         room_ids = [room.id for room in rooms]
         last_msg_by_room: dict[str, Message] = {}
+        first_msg_by_room: dict[str, Message] = {}
         unread_by_room: dict[str, int] = {}
         mention_by_room: dict[str, tuple[int, bool]] = {}
         # Nested view only: live threads under this page's rooms, hung under
@@ -1105,6 +1106,24 @@ class RoomService:
             )
             for m in lm_rows.scalars().all():
                 last_msg_by_room[str(m.room_id)] = m
+
+            # The sidebar needs the first line for untitled thread children.
+            # Keep this read-only and scoped to nested children; parent rows
+            # already have their stable display name and do not need another
+            # message payload.
+            if thread_ids:
+                fm_rows = await self._db.execute(
+                    select(Message)
+                    .where(
+                        Message.room_id.in_(thread_ids),
+                        Message.is_deleted == False,  # noqa: E712
+                    )
+                    .order_by(Message.room_id, Message.created_at.asc())
+                    .distinct(Message.room_id)
+                    .options(selectinload(Message.sender))
+                )
+                for m in fm_rows.scalars().all():
+                    first_msg_by_room[str(m.room_id)] = m
 
             # Unread = messages after the caller's last_read_at, excluding the
             # caller's own. One grouped query across the page.
@@ -1167,6 +1186,7 @@ class RoomService:
                 "member_count": len(getattr(t, "members", None) or []),
                 "online_count": 0,
                 "last_message": last_msg_by_room.get(str(t.id)),
+                "first_message": first_msg_by_room.get(str(t.id)),
                 "unread_count": unread_by_room.get(str(t.id), 0) if is_member else 0,
                 "mention_count": mention_by_room.get(str(t.id), (0, False))[0],
                 "has_unread_mention": mention_by_room.get(str(t.id), (0, False))[1],

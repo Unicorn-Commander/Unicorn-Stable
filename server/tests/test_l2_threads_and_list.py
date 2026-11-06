@@ -331,6 +331,7 @@ class RoomsListFlatByDefault(IsolatedAsyncioTestCase):
             _res(scalar_value=1),                                 # count
             _res(scalars=[newer, older, foreign]),                # threads under the page
             _res(scalars=[last_msg]),                             # latest message batch
+            _res(scalars=[]),                                     # first message batch
             _res(rows=[(older.id, 4)]),                           # unread batch
             _res(rows=[(hub.id, 0, False), (older.id, 1, True), (newer.id, 0, False)]),  # memberships
             _res(rows=[(hub.id, 3)]),                             # extras: thread counts
@@ -352,6 +353,7 @@ class RoomsListFlatByDefault(IsolatedAsyncioTestCase):
         self.assertFalse(by_id[foreign.id]["is_member"])  # someone else's thread
         self.assertEqual(by_id[foreign.id]["unread_count"], 0)
         self.assertIs(by_id[older.id]["last_message"], last_msg)
+        self.assertIsNone(by_id[older.id]["first_message"])
         thread_sql = _sql(db.execute.call_args_list[2].args[0])
         self.assertIn("rooms.parent_room_id IN", thread_sql)
         self.assertIn("rooms.is_archived = false", thread_sql)
