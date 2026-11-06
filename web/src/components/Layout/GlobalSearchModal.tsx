@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import clsx from "clsx";
-import { Hash, Loader2, Search, SearchX, X } from "lucide-react";
+import { Bot, Hash, Loader2, MessageSquare, Search, SearchX, Users, X } from "lucide-react";
 import { api, type Message } from "@/services/api";
 import { useQuery } from "@tanstack/react-query";
 import { identityFor, resolveIdentity } from "@/lib/identity";
@@ -10,8 +10,9 @@ import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { usePresentedRooms } from "@/hooks/usePresentedRooms";
-import { roomTitle } from "@/lib/conversation";
+import { roomTitle, roomTypeLabel } from "@/lib/conversation";
 import { parseSearchQuery, removeOperatorToken } from "@/utils/searchOperators";
+import { searchRooms } from "./searchModel";
 
 interface GlobalSearchModalProps {
   onClose: () => void;
@@ -27,6 +28,7 @@ interface GlobalSearchModalProps {
 export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
   const { rooms, rule, enabled: presenterEnabled } = usePresentedRooms();
   const setThreadMessageId = useAppStore((s) => s.setThreadMessageId);
+  const participantsByRoom = useAppStore((s) => s.participants);
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -70,6 +72,10 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
           rule.isIdentityAllowed(message.sender_id, message.sender_name),
       )
     : results;
+  const roomMatches = useMemo(
+    () => searchRooms(rooms, debounced, participantsByRoom).slice(0, 12),
+    [rooms, debounced, participantsByRoom],
+  );
 
   // room_id -> friendly label, from the already-loaded room list. Every result
   // is scoped to the caller's rooms, so its room is always present here.
@@ -97,18 +103,28 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
     onClose();
   }
 
+  function openRoom(roomId: string) {
+    navigate(`/c/${roomId}`);
+    onClose();
+  }
+
   // ↑↓ move the selection, ↵ opens it — same contract as the QuickSwitcher
   // (the search modal is its sibling surface).
   function onKey(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSel((s) => Math.min(s + 1, visibleResults.length - 1));
+      setSel((s) => Math.min(s + 1, Math.max(roomMatches.length + visibleResults.length - 1, 0)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSel((s) => Math.max(s - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const m = visibleResults[sel];
+      const room = roomMatches[sel];
+      if (room) {
+        openRoom(room.room.id);
+        return;
+      }
+      const m = visibleResults[sel - roomMatches.length];
       if (m) openResult(m);
     }
   }
@@ -181,86 +197,158 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
                 Finds messages across all channels and DMs you're in.
               </p>
             </div>
-          ) : isFetching ? (
-            <p className="animate-pulse-soft px-3 py-8 text-center text-xs text-slate-500">
-              Searching…
-            </p>
-          ) : isError ? (
-            <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-8 text-center">
-              <p className="font-display text-sm font-semibold text-slate-200">
-                Search failed
-              </p>
-              <button
-                onClick={() => refetch()}
-                className="focus-ring rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
-              >
-                Try again
-              </button>
-            </div>
-          ) : visibleResults.length === 0 ? (
-            <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-10 text-center">
-              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-stable-cyan/10 text-stable-cyan/80">
-                <SearchX className="h-5 w-5" />
-              </div>
-              <p className="font-display text-sm font-semibold text-slate-200">
-                No matches
-              </p>
-              <p className="text-xs text-slate-500">Try a different word.</p>
-            </div>
           ) : (
-            <ul className="divide-y divide-line">
-              {visibleResults.map((m, i) => (
-                <li key={m.id}>
+            <>
+              {roomMatches.length > 0 && (
+                <section aria-label="Conversation matches">
+                  <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Conversations
+                  </p>
+                  <ul className="divide-y divide-line">
+                    {roomMatches.map((entry, i) => {
+                      const room = entry.room;
+                      const selected = i === sel;
+                      return (
+                        <li key={room.id}>
+                          <button
+                            onMouseEnter={() => setSel(i)}
+                            onClick={() => openRoom(room.id)}
+                            className={clsx(
+                              "focus-ring relative flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors",
+                              selected
+                                ? "bg-white/[0.06] text-slate-50"
+                                : "text-slate-300 hover:bg-white/[0.04]",
+                            )}
+                          >
+                            {selected && (
+                              <span
+                                aria-hidden="true"
+                                className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+                              />
+                            )}
+                            <RoomSearchIcon type={room.type} />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">
+                                {room.type === "channel" ? `#${roomTitle(room)}` : roomTitle(room)}
+                              </p>
+                              <p className="truncate text-xs text-slate-500">
+                                {roomTypeLabel(room)}
+                              </p>
+                            </div>
+                            <span className="shrink-0 rounded-md border border-line bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                              Room
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              )}
+
+              {isFetching && (
+                <p className="animate-pulse-soft px-3 py-8 text-center text-xs text-slate-500">
+                  Searching messages…
+                </p>
+              )}
+
+              {!isFetching && isError && (
+                <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-8 text-center">
+                  <p className="font-display text-sm font-semibold text-slate-200">
+                    Search failed
+                  </p>
                   <button
-                    onMouseEnter={() => setSel(i)}
-                    onClick={() => openResult(m)}
-                    className={clsx(
-                      "focus-ring relative flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors",
-                      i === sel
-                        ? "bg-white/[0.06] text-slate-50"
-                        : "text-slate-300 hover:bg-white/[0.04]",
-                    )}
+                    onClick={() => refetch()}
+                    className="focus-ring rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-line-strong hover:text-slate-100"
                   >
-                    {i === sel && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
-                      />
-                    )}
-                    <Identity {...resolveIdentity(m)} size={28} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span
-                          className="truncate text-xs font-semibold"
-                          style={{ color: identityFor(m.sender_id, m.sender_name).text }}
-                        >
-                          {m.sender_name}
-                        </span>
-                        <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
-                          {new Date(m.created_at).toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="line-clamp-2 text-xs text-slate-400">
-                        {!presenterEnabled || rule.isOpenRoom(m.room_id)
-                          ? highlight(m.content, debounced)
-                          : "Message hidden while presenting"}
-                      </p>
-                      <span className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium text-slate-400">
-                        <Hash className="h-2.5 w-2.5 shrink-0 opacity-70" />
-                        <span className="truncate">
-                          {roomLabel.get(m.room_id)?.replace(/^#/, "") ?? "a conversation"}
-                        </span>
-                      </span>
-                    </div>
+                    Try again
                   </button>
-                </li>
-              ))}
-            </ul>
+                </div>
+              )}
+
+              {!isFetching && !isError && visibleResults.length === 0 && roomMatches.length === 0 && (
+                <div className="flex animate-fade-in flex-col items-center gap-2 px-3 py-10 text-center">
+                  <div className="grid h-11 w-11 place-items-center rounded-2xl bg-stable-cyan/10 text-stable-cyan/80">
+                    <SearchX className="h-5 w-5" />
+                  </div>
+                  <p className="font-display text-sm font-semibold text-slate-200">
+                    No matches
+                  </p>
+                  <p className="text-xs text-slate-500">Try a different word.</p>
+                </div>
+              )}
+
+              {!isFetching && visibleResults.length > 0 && (
+                <section aria-label="Message matches">
+                  <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Messages
+                  </p>
+                  <ul className="divide-y divide-line">
+                    {visibleResults.map((m, i) => {
+                      const selected = i + roomMatches.length === sel;
+                      return (
+                        <li key={m.id}>
+                          <button
+                            onMouseEnter={() => setSel(i + roomMatches.length)}
+                            onClick={() => openResult(m)}
+                            className={clsx(
+                              "focus-ring relative flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors",
+                              selected
+                                ? "bg-white/[0.06] text-slate-50"
+                                : "text-slate-300 hover:bg-white/[0.04]",
+                            )}
+                          >
+                            {selected && (
+                              <span
+                                aria-hidden="true"
+                                className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-stable-purple"
+                              />
+                            )}
+                            <Identity {...resolveIdentity(m)} size={28} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <span
+                                  className="truncate text-xs font-semibold"
+                                  style={{ color: identityFor(m.sender_id, m.sender_name).text }}
+                                >
+                                  {m.sender_name}
+                                </span>
+                                <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
+                                  {new Date(m.created_at).toLocaleString()}
+                                </span>
+                              </div>
+                              <p className="line-clamp-2 text-xs text-slate-400">
+                                {!presenterEnabled || rule.isOpenRoom(m.room_id)
+                                  ? highlight(m.content, debounced)
+                                  : "Message hidden while presenting"}
+                              </p>
+                              <span className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium text-slate-400">
+                                <Hash className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                                <span className="truncate">
+                                  {roomLabel.get(m.room_id)?.replace(/^#/, "") ?? "a conversation"}
+                                </span>
+                              </span>
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              )}
+            </>
           )}
         </div>
       </motion.div>
     </motion.div>
   );
+}
+
+function RoomSearchIcon({ type }: { type: string }): React.ReactNode {
+  if (type === "channel") return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
+  if (type === "group_dm") return <Users className="h-4 w-4 shrink-0 text-amber-300/70" />;
+  if (type === "agent_hub") return <Bot className="h-4 w-4 shrink-0 text-stable-purple-light/80" />;
+  return <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />;
 }
 
 function highlight(text: string, q: string): React.ReactNode {
