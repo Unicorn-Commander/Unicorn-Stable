@@ -11,6 +11,7 @@ import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 import { LIVE_CALLS_POLL_MS } from "@/hooks/useLiveCalls";
 import { hasDraft, subscribeDrafts } from "@/utils/drafts";
+import { roomTitle } from "@/lib/conversation";
 import { previewText } from "./widgets/HomeRow";
 import {
   homeRailConversations,
@@ -210,7 +211,7 @@ function RoomJump({
   showPreview: boolean;
   onOpen: (roomId: string) => void;
 }) {
-  const title = room.display_name || room.name;
+  const title = roomTitle(room);
   const preview = room.last_message ? previewText(room.last_message.content) : "";
   return (
     <button

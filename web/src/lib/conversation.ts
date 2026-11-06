@@ -6,7 +6,7 @@
  * "Replies". One hub per agent; the "+" on a row starts a thread under that
  * row, it does not mint another room.
  */
-import type { Room, RoomMember } from "@/services/api";
+import type { Message, Room, RoomMember } from "@/services/api";
 
 export type AgentMode = "answers_all" | "when_named" | "listening" | "muted";
 
@@ -34,11 +34,77 @@ export function isThreadRoom(room: { parent_room_id?: string | null }): boolean 
   return !!room.parent_room_id;
 }
 
-export function isAgentConversation(room: {
+type ConversationMember = {
+  participant_type?: string | null;
+  is_self?: boolean;
+};
+
+type AgentConversationRoom = {
   type?: string;
   brigade_agent_id?: string | null;
+  brigade_agent_ids?: readonly string[] | null;
+  member_count?: number;
+  members?: readonly ConversationMember[] | null;
+  agent_members?: readonly { agent_id?: string | null }[] | null;
+  counterpart?: { kind?: string | null; agent_id?: string | null } | null;
+};
+
+function agentMemberCount(room: AgentConversationRoom): number {
+  const members = room.members ?? [];
+  if (members.length > 0) {
+    return members.filter((member) => member.participant_type === "agent").length;
+  }
+  const ids = new Set<string>();
+  for (const member of room.agent_members ?? []) {
+    if (member.agent_id) ids.add(member.agent_id);
+  }
+  for (const id of room.brigade_agent_ids ?? []) {
+    if (id) ids.add(id);
+  }
+  if (room.brigade_agent_id) ids.add(room.brigade_agent_id);
+  if (room.counterpart?.agent_id) ids.add(room.counterpart.agent_id);
+  if (room.counterpart?.kind === "agent" && ids.size === 0) ids.add("agent");
+  return ids.size;
+}
+
+/** Human-ish members, including the caller, for placement of group DMs. */
+export function humanMemberCount(room: AgentConversationRoom): number {
+  const members = room.members ?? [];
+  if (members.length > 0) {
+    return members.filter((member) => member.participant_type !== "agent").length;
+  }
+  return Math.max(0, (room.member_count ?? 0) - agentMemberCount(room));
+}
+
+export function isAgentConversation(room: {
+  type?: string;
+  display_name?: string | null;
+  parent_room_id?: string | null;
+  brigade_agent_id?: string | null;
+  brigade_agent_ids?: readonly string[] | null;
+  member_count?: number;
+  members?: readonly ConversationMember[] | null;
+  agent_members?: readonly { agent_id?: string | null }[] | null;
+  counterpart?: { kind?: string | null; agent_id?: string | null } | null;
 }): boolean {
-  return room.type === "agent_hub" || !!room.brigade_agent_id;
+  if (room.type === "agent_hub") return true;
+  if (room.type !== "dm" && room.type !== "group_dm") return false;
+  const hasAgent = agentMemberCount(room) > 0;
+  if (!hasAgent) return false;
+  // A group somebody named (a customer call room, a bridge-created working
+  // room) is a group, however many humans happen to be in it: Aaron could
+  // not find "Bureau of Readiness · Magic Unicorn" because its one human
+  // plus two agents filed it under Agents. Only an unnamed group with a
+  // single human is an agent conversation.
+  if (room.type === "group_dm" && hasExplicitTitle(room) && humanMemberCount(room) >= 1) return false;
+  return humanMemberCount(room) < 2;
+}
+
+/** True when a person (or the bridge that made the room) gave it a title. */
+function hasExplicitTitle(room: { display_name?: string | null; parent_room_id?: string | null }): boolean {
+  const explicit = (room.display_name || "").trim();
+  if (!explicit) return false;
+  return !(room.parent_room_id && explicit === "New thread");
 }
 
 /** DM, group, or hub — a direct relationship, not a channel. */
@@ -95,38 +161,65 @@ export function countNeedsYou(
   return n;
 }
 
+export interface RoomTitleInput {
+  name?: string | null;
+  display_name?: string | null;
+  type?: string;
+  parent_room_id?: string | null;
+  counterpart?: { display_name?: string | null } | null;
+  first_message?: Pick<Message, "content"> | null;
+  last_message?: Pick<Message, "content"> | null;
+}
+
+function threadMessageTitle(message: Pick<Message, "content"> | null | undefined): string {
+  const text = (message?.content || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length <= 60 ? text : `${text.slice(0, 59).trimEnd()}…`;
+}
+
 /**
- * Label for a row. Group rooms with no display name are named from their
- * members ("Aaron, Persephone") so a null `display_name` still reads as people.
+ * The one title resolver for rooms. An explicit display name is authoritative;
+ * group DMs never turn their bridge metadata or member roster into a title.
+ * The optional member argument is intentionally ignored so callers cannot
+ * accidentally reintroduce member-list titles at a new surface.
  */
-export function roomLabel(
-  room: Pick<Room, "name" | "type"> & {
-    display_name?: string | null;
-    counterpart?: { display_name?: string | null } | null;
-    members?: RoomMember[];
-  },
-  members?: readonly RoomMember[] | null,
+export function roomTitle(
+  room: RoomTitleInput | null | undefined,
+  _members?: readonly RoomMember[] | null,
 ): string {
+  if (!room) return "Conversation";
   const explicit = (room.display_name || "").trim();
-  if (room.type === "group_dm" && !explicit) {
-    const pool = (members && members.length ? members : room.members) ?? [];
-    const names = pool
-      .filter((m) => !m.is_self)
-      .map((m) => (m.display_name || "").trim())
-      .filter(Boolean);
-    if (names.length > 0) {
-      const shown = names.slice(0, 3).join(", ");
-      return names.length > 3 ? `${shown} +${names.length - 3}` : shown;
-    }
+  // The server's empty-thread placeholder is not a user title. Once a first
+  // message exists, the child must graduate to that line even if the list
+  // payload still carries display_name="New thread".
+  if (explicit && !(room.parent_room_id && explicit === "New thread")) return explicit;
+
+  if (room.parent_room_id) {
+    return threadMessageTitle(room.first_message) || threadMessageTitle(room.last_message) || "New thread";
   }
   if (
-    !explicit &&
     room.counterpart?.display_name &&
     (room.type === "dm" || room.type === "agent_hub")
   ) {
-    return room.counterpart.display_name;
+    return room.counterpart.display_name.trim();
   }
-  return explicit || (room.name || "").trim() || "Conversation";
+  return (room.name || "").trim() || "Conversation";
+}
+
+export type RoomTypeLabel = "Channel" | "Group" | "DM" | "Agent hub" | "Meeting";
+
+export function roomTypeLabel(room: Pick<Room, "type"> & { is_conference?: boolean }): RoomTypeLabel {
+  if (room.is_conference) return "Meeting";
+  switch (room.type) {
+    case "channel":
+      return "Channel";
+    case "group_dm":
+      return "Group";
+    case "agent_hub":
+      return "Agent hub";
+    default:
+      return "DM";
+  }
 }
 
 /**
@@ -269,10 +362,11 @@ export interface ThreadCreatedEvent {
 /** A list row we can show before GET /rooms/{id} returns. */
 export function threadStubFromEvent(event: ThreadCreatedEvent, parent?: Room | null): Room {
   const now = new Date().toISOString();
+  const explicit = (event.display_name || "").trim();
   return {
     id: event.room_id,
-    name: (event.display_name || "").trim() || "New thread",
-    display_name: (event.display_name || "").trim() || "New thread",
+    name: explicit || "New thread",
+    display_name: explicit || undefined,
     description: "",
     type: parent?.type ?? "channel",
     created_at: now,
@@ -280,6 +374,7 @@ export function threadStubFromEvent(event: ThreadCreatedEvent, parent?: Room | n
     member_count: parent?.member_count ?? 0,
     unread_count: 0,
     last_message: null,
+    first_message: null,
     members: [],
     agents: [],
     parent_room_id: event.parent_room_id,
@@ -298,7 +393,12 @@ export function upsertRoomList(rooms: readonly Room[], room: Room): Room[] {
   if (idx === -1) return [room, ...rooms];
   return rooms.map((r) =>
     r.id === room.id
-      ? { ...r, ...room, last_message: room.last_message ?? r.last_message }
+      ? {
+          ...r,
+          ...room,
+          last_message: room.last_message ?? r.last_message,
+          first_message: room.first_message ?? r.first_message,
+        }
       : r,
   );
 }

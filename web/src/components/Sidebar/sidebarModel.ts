@@ -6,6 +6,7 @@ import {
   isPrivateChannel as roomIsPrivate,
   isThreadRoom,
   olderArchivedLabel,
+  roomTitle,
 } from "@/lib/conversation";
 import {
   collapseKey,
@@ -44,7 +45,7 @@ import type { ConversationFilter, NavView } from "@/stores/navStore";
  */
 export type SidebarView = NavView | "all" | "chats";
 
-function isParentInView(room: Room, view: SidebarView): boolean {
+export function isParentInView(room: Room, view: SidebarView): boolean {
   switch (view) {
     case "all":
       return true;
@@ -56,7 +57,7 @@ function isParentInView(room: Room, view: SidebarView): boolean {
         !isAgentConversation(room)
       );
     case "direct":
-      return isDirectRoom(room);
+      return isDirectRoom(room) && !isAgentConversation(room);
     case "channels":
       return room.type === "channel" && !room.is_conference;
     case "agents":
@@ -271,6 +272,7 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
   const q = searchQuery.trim().toLowerCase();
   const selfMatch = (room: Room) =>
     !q ||
+    roomTitle(room).toLowerCase().includes(q) ||
     room.name.toLowerCase().includes(q) ||
     (room.description || "").toLowerCase().includes(q) ||
     (room.project_number || "").toLowerCase().includes(q);
@@ -308,7 +310,20 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
   }
 
   function liveChildren(parentId: string): Room[] {
-    return childrenOf.get(parentId) ?? [];
+    const children = childrenOf.get(parentId) ?? [];
+    return [...children].sort((a, b) => {
+      const aHasMessage = Boolean(a.first_message || a.last_message);
+      const bHasMessage = Boolean(b.first_message || b.last_message);
+      if (aHasMessage !== bHasMessage) return Number(bHasMessage) - Number(aHasMessage);
+      const aAt = Date.parse(
+        a.last_message?.created_at || a.updated_at || a.created_at || "",
+      );
+      const bAt = Date.parse(
+        b.last_message?.created_at || b.updated_at || b.created_at || "",
+      );
+      if (Number.isFinite(aAt) && Number.isFinite(bAt) && aAt !== bAt) return bAt - aAt;
+      return a.id.localeCompare(b.id);
+    });
   }
 
   function archivedCount(parentId: string): number {
@@ -385,7 +400,7 @@ export function buildSidebarModel(input: SidebarModelInput): SidebarModel {
       peopleEntries.push({
         kind: "person",
         key,
-        name: hub.counterpart?.display_name || hub.name,
+        name: roomTitle(hub),
         hub,
         threads: [hub, ...nested],
         archivedCount: archivedCount(hub.id),

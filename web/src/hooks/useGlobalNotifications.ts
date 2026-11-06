@@ -556,7 +556,7 @@ export function useGlobalNotifications() {
         useAppStore.getState().upsertRoom({
           ...room,
           parent_room_id: room.parent_room_id ?? event.parent_room_id,
-          display_name: room.display_name || event.display_name || room.name,
+          display_name: room.display_name || event.display_name || undefined,
         });
       }).catch(() => {
         /* The stub already put the row on screen. */

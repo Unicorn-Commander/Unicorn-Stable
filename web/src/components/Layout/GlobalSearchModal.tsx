@@ -10,6 +10,7 @@ import { Identity } from "@/components/ui/Identity";
 import { useAppStore } from "@/stores/appStore";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { roomTitle } from "@/lib/conversation";
 import { parseSearchQuery, removeOperatorToken } from "@/utils/searchOperators";
 
 interface GlobalSearchModalProps {
@@ -75,7 +76,8 @@ export function GlobalSearchModal({ onClose }: GlobalSearchModalProps) {
   const roomLabel = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of rooms) {
-      map.set(r.id, r.type === "channel" ? `#${r.name}` : r.display_name || r.name);
+      const title = roomTitle(r);
+      map.set(r.id, r.type === "channel" ? `#${title}` : title);
     }
     return map;
   }, [rooms]);

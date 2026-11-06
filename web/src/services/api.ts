@@ -154,6 +154,8 @@ export interface Room {
   mention_count?: number;
   has_unread_mention?: boolean;
   last_message: Message | null;
+  /** First non-deleted message, used to title an untitled thread child. */
+  first_message?: Message | null;
   members: RoomMember[];
   agents: Agent[];
   /**
@@ -863,6 +865,7 @@ export interface RawRoomListItem {
   // last_message rides through directly. Both are optional for forward-
   // compat: older backends omit them and the store merges a live value.
   last_message?: Message | null;
+  first_message?: Message | null;
   unread_count?: number;
   mention_count?: number;
   has_unread_mention?: boolean;
@@ -996,6 +999,7 @@ export function mapRoomListItem(r: RawRoomListItem): Room {
     mention_count: r.mention_count ?? 0,
     has_unread_mention: r.has_unread_mention === true,
     last_message: r.last_message ?? null,
+    first_message: r.first_message ?? null,
     members: [],
     agents: [],
     brigade_agent_id:

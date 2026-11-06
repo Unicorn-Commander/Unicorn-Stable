@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Message, Room } from "@/services/api";
+import type { Message, Room, RoomMember } from "@/services/api";
 import {
   buildConversationRows,
   buildSidebarModel,
@@ -12,6 +12,7 @@ import {
   roomsOnConversationRow,
   type SidebarRow,
 } from "./sidebarModel";
+import { isAgentConversation, roomTitle, roomTypeLabel } from "@/lib/conversation";
 
 function room(over: Partial<Room> = {}): Room {
   return {
@@ -39,6 +40,126 @@ const empty = {
   collapsed: {},
   expandedPeople: {},
 };
+
+function message(content: string, id = "m-thread"): Message {
+  return {
+    id,
+    room_id: "thread",
+    sender_id: "p-morgan",
+    sender_type: "human",
+    sender_name: "Morgan Vale",
+    sender_avatar: null,
+    content,
+    content_type: "text",
+    thread_id: null,
+    reply_count: 0,
+    edited: false,
+    created_at: "2026-09-21T04:00:00Z",
+    updated_at: "2026-09-21T04:00:00Z",
+    metadata: {},
+  };
+}
+
+const bureauMembers: RoomMember[] = [
+  {
+    participant_id: "p-alex",
+    username: "alex",
+    display_name: "Alex Rivera",
+    role: "owner",
+    participant_type: "human",
+    is_self: true,
+    joined_at: "",
+  },
+  {
+    participant_id: "p-morgan",
+    username: "morgan",
+    display_name: "Morgan Vale",
+    role: "member",
+    participant_type: "human",
+    joined_at: "",
+  },
+  {
+    participant_id: "p-persephone",
+    username: "persephone",
+    display_name: "Persephone",
+    role: "member",
+    participant_type: "agent",
+    joined_at: "",
+  },
+  {
+    participant_id: "p-claude-code-app",
+    username: "claude-code-app",
+    display_name: "Claude Code App",
+    role: "member",
+    participant_type: "agent",
+    joined_at: "",
+  },
+];
+
+const bureau = room({
+  id: "bureau-of-readiness-magic-unicorn",
+  name: "bureau-of-readiness-magic-unicorn",
+  display_name: "Bureau of Readiness · Magic Unicorn",
+  type: "group_dm",
+  member_count: 3,
+  members: [bureauMembers[0]!, bureauMembers[2]!, bureauMembers[3]!],
+  agent_members: [
+    {
+      participant_id: "p-persephone",
+      agent_id: "persephone",
+      display_name: "Persephone",
+      agent_mode: "answers_all",
+    },
+    {
+      participant_id: "p-claude-code-app",
+      agent_id: "claude-code-app",
+      display_name: "Claude Code App",
+      agent_mode: "when_named",
+    },
+  ],
+  metadata_: {
+    bridge_pair: "persephone:claude-code-app",
+    bridge_purpose: "readiness",
+  },
+});
+
+const humanGroup = room({
+  id: "readiness-working-group",
+  name: "readiness-working-group",
+  display_name: "Readiness Working Group",
+  type: "group_dm",
+  member_count: 3,
+  members: [bureauMembers[0]!, bureauMembers[1]!, bureauMembers[2]!],
+  agent_members: [bureau.agent_members![0]!],
+  metadata_: {
+    bridge_pair: "persephone:readiness-working-group",
+    bridge_purpose: "readiness",
+  },
+});
+
+const bureauThread = room({
+  id: "bureau-of-readiness-magic-unicorn-t-brief",
+  name: "bureau-of-readiness-magic-unicorn-t-brief",
+  type: "group_dm",
+  parent_room_id: bureau.id,
+  display_name: "New thread",
+  first_message: message(
+    "Prepare the Bureau of Readiness morning brief with the customer-call decisions and next steps.",
+    "m-bureau-first",
+  ),
+  last_message: message("The morning brief is ready.", "m-bureau-last"),
+});
+
+const emptyBureauThread = room({
+  id: "bureau-of-readiness-magic-unicorn-t-empty",
+  name: "bureau-of-readiness-magic-unicorn-t-empty",
+  type: "group_dm",
+  parent_room_id: bureau.id,
+  display_name: "New thread",
+  updated_at: "2026-09-22T05:00:00Z",
+  first_message: null,
+  last_message: null,
+});
 
 describe("sidebar nesting", () => {
   const hub = room({
@@ -131,7 +252,7 @@ describe("sidebar nesting", () => {
   const all = [newest, older, hub, person, dmThread, group, groupThread, pub, priv, project, channelThread, archived];
 
   it("nests threads under a hub, a DM, a group, and a channel", () => {
-    const model = buildSidebarModel({ rooms: all, ...empty, view: "direct" });
+    const model = buildSidebarModel({ rooms: all, ...empty, view: "all" });
     const people = model.sections[0].groups.flatMap((g) => g.rows);
     const hubRow = people.find((row) => row.kind === "person" && row.entry.kind === "agent");
     expect(hubRow && hubRow.kind === "person" && hubRow.entry.kind === "agent" && hubRow.entry.agentId).toBe(
@@ -175,7 +296,7 @@ describe("sidebar nesting", () => {
   });
 
   it("walks expanded threads and collapses them to one stop", () => {
-    const collapsed = buildSidebarModel({ rooms: all, ...empty, view: "direct" });
+    const collapsed = buildSidebarModel({ rooms: all, ...empty, view: "all" });
     const collapsedOrder = flattenSidebarOrder(collapsed);
     const hubStop = collapsedOrder.find((ids) => ids.includes("t-new"));
     expect(hubStop?.[0]).toBe("t-new");
@@ -204,8 +325,76 @@ describe("sidebar nesting", () => {
       expect.arrayContaining(["hub", "t-new", "t-old"]),
     );
     expect(roomsForView(all, "direct").map((r) => r.id)).toEqual(
-      expect.arrayContaining(["hub", "dm", "g", "t-new"]),
+      expect.arrayContaining(["dm", "g", "dm-t", "g-t"]),
     );
+    expect(roomsForView(all, "direct").map((r) => r.id)).not.toContain("hub");
+    expect(roomsForView(all, "direct").map((r) => r.id)).not.toContain("t-new");
+  });
+});
+
+describe("Bureau-shaped room findability", () => {
+  const rooms = [bureauThread, emptyBureauThread, bureau, humanGroup];
+
+  it("uses the display name and keeps bridge metadata out of titles", () => {
+    expect(roomTitle(bureau, bureauMembers)).toBe(
+      "Bureau of Readiness · Magic Unicorn",
+    );
+    expect(
+      roomTitle({ ...bureau, display_name: undefined }, bureauMembers),
+    ).toBe("bureau-of-readiness-magic-unicorn");
+    expect(roomTypeLabel(bureau)).toBe("Group");
+    expect(roomTypeLabel(room({ type: "agent_hub" }))).toBe("Agent hub");
+    expect(roomTypeLabel(room({ type: "channel", is_conference: true }))).toBe(
+      "Meeting",
+    );
+  });
+
+  it("places a human group with agents in Direct, not Agents", () => {
+    expect(isAgentConversation(bureau)).toBe(false);
+    expect(isAgentConversation(humanGroup)).toBe(false);
+
+    const directIds = roomsForView(rooms, "direct").map((candidate) => candidate.id);
+    expect(directIds).toEqual(
+      expect.arrayContaining([humanGroup.id]),
+    );
+    // A titled group (the Bureau call room: one human, two agents, named by
+    // the bridge) is a group too, and its threads follow it.
+    expect(directIds).toContain(bureau.id);
+    expect(directIds).toContain(bureauThread.id);
+
+    const agentIds = roomsForView(rooms, "agents").map((candidate) => candidate.id);
+    expect(agentIds).not.toContain(bureau.id);
+    expect(agentIds).not.toContain(bureauThread.id);
+    expect(agentIds).not.toContain(emptyBureauThread.id);
+    expect(agentIds).not.toContain(humanGroup.id);
+  });
+
+  it("titles and nests threads by first message, with empty threads last", () => {
+    expect(roomTitle(bureauThread)).toBe(
+      "Prepare the Bureau of Readiness morning brief with the cust…",
+    );
+    expect(roomTitle(emptyBureauThread)).toBe("New thread");
+
+    const model = buildSidebarModel({
+      rooms,
+      ...empty,
+      view: "direct",
+      expandedPeople: { [bureau.id]: true },
+    });
+    const groupRow = model.sections
+      .flatMap((section) => section.groups)
+      .flatMap((group) => group.rows)
+      .find((candidate) => candidate.kind === "group" && candidate.room.id === bureau.id);
+    expect(groupRow && groupRow.kind === "group" && groupRow.threads.map((thread) => thread.id)).toEqual([
+      bureauThread.id,
+      emptyBureauThread.id,
+    ]);
+
+    const order = flattenSidebarOrder(model);
+    const bureauAt = order.findIndex((ids) => ids[0] === bureau.id);
+    expect(order[bureauAt]).toEqual([bureau.id]);
+    expect(order[bureauAt + 1]).toEqual([bureauThread.id]);
+    expect(order[bureauAt + 2]).toEqual([emptyBureauThread.id]);
   });
 });
 

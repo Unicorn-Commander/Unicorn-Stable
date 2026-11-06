@@ -2,6 +2,7 @@ import type { Agent, Message } from "@/services/api";
 import { Bot } from "lucide-react";
 import { Identity } from "@/components/ui/Identity";
 import { identityFor, resolveIdentity } from "@/lib/identity";
+import { roomTitle } from "@/lib/conversation";
 import {
   unreadCountFor,
   type AgentFeedModel,
@@ -148,7 +149,7 @@ export function AgentActivityFeed({
                       className="mt-0.5"
                     />
                   }
-                  title={room.display_name || room.name}
+                  title={roomTitle(room)}
                   at={m?.created_at ?? null}
                   unread={unread}
                   tint="border-l-2 border-l-stable-coral/60 bg-stable-coral/[0.04]"
@@ -199,7 +200,7 @@ export function AgentActivityFeed({
                   line={
                     <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-slate-400">
                       <span className="shrink-0 rounded bg-white/[0.05] px-1.5 py-px text-[10px] font-medium text-slate-400">
-                        {room.display_name || room.name}
+                        {roomTitle(room)}
                       </span>
                       <span className="truncate">
                         {presenterEnabled && !rule.isOpenRoom(room.id)

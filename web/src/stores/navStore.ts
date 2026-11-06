@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { Room } from "@/services/api";
+import { isAgentConversation } from "@/lib/conversation";
 
 /**
  * View-based sidebar destinations (nav v1, the five-view shell).
@@ -195,14 +196,14 @@ function initialShellDestination(): ShellDestination {
  * Which v1 destination a room belongs to. Used for deep-link view selection
  * and last-room memory when the five-view shell is showing.
  *
- * Hubs and DMs land on Direct (the Agents destination is the same hubs,
- * filtered). Conference rooms still map to Meetings so the flag-off shell
+ * Human DMs and groups land on Direct; agent conversations land on Agents.
+ * Conference rooms still map to Meetings so the flag-off shell
  * keeps today's routing. The one-list shell does not call this to pick a
  * destination — a standing room is just a channel row.
  */
 export function viewForRoom(room: Room): NavView {
   if (room.is_conference) return "meetings";
-  if (room.type === "agent_hub" || room.brigade_agent_id) return "direct";
+  if (isAgentConversation(room)) return "agents";
   if (room.type === "dm" || room.type === "group_dm") return "direct";
   if (room.parent_room_id) {
     if (room.type === "channel") return "channels";

@@ -12,7 +12,7 @@ import { api, type ApiError, type Room, type RoomTask } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { beginThread } from "@/lib/beginThread";
-import { roomLabel } from "@/lib/conversation";
+import { roomTitle } from "@/lib/conversation";
 import { useAppStore } from "@/stores/appStore";
 import { ProjectNumber } from "@/components/Sidebar/NewSheet";
 
@@ -132,7 +132,7 @@ export function ThreadsPanel({ roomId }: { roomId: string }) {
     const query = q.trim().toLowerCase();
     const rows = data.filter((room) => {
       if (!query) return true;
-      return roomLabel(room).toLowerCase().includes(query);
+      return roomTitle(room).toLowerCase().includes(query);
     });
     return [...rows].sort((a, b) => {
       const ap = pins.includes(a.id) ? 0 : 1;
@@ -216,7 +216,7 @@ export function ThreadsPanel({ roomId }: { roomId: string }) {
             >
               <span className="flex items-center gap-1.5">
                 {pins.includes(room.id) && <Pin className="h-3 w-3 shrink-0 text-stable-gold" aria-label="Pinned" />}
-                <span className="truncate text-sm text-slate-100">{roomLabel(room)}</span>
+                <span className="truncate text-sm text-slate-100">{roomTitle(room)}</span>
               </span>
               {room.is_archived && <span className="text-[10px] text-slate-500">Archived</span>}
             </button>
