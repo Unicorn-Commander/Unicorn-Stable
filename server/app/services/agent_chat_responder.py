@@ -36,6 +36,8 @@ from app.services import agent_status
 from app.services.agent_access import resolve_agent_access
 from app.services.livekit_service import LiveKitService
 from app.services.message_service import MessageService
+from app.services.mentions import parse_mentions, resolve_mentioned_agent
+from app.services.resident_agents import add_resident_agent
 
 logger = structlog.get_logger(__name__)
 
@@ -83,6 +85,77 @@ async def _ws_deliver_to_room(
         await _get_pub_redis().publish(f"room:{room_id}", json.dumps(envelope))
     except Exception:
         logger.debug("agent_chat_ws_deliver_failed", exc_info=True)
+
+
+async def _post_agent_system_message(
+    *, db: Any, room_id: uuid.UUID, content: str, metadata: dict[str, Any]
+) -> None:
+    """Persist and fan out one Stable-authored agent membership notice."""
+    try:
+        message = Message(
+            id=uuid.uuid4(),
+            room_id=room_id,
+            sender_id=None,
+            content=content,
+            content_type=ContentType.SYSTEM,
+            metadata_=metadata,
+        )
+        db.add(message)
+        await db.commit()
+        await db.refresh(message)
+    except Exception:
+        logger.warning(
+            "agent_membership_system_message_failed",
+            room_id=str(room_id),
+            exc_info=True,
+        )
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return
+
+    try:
+        from app.schemas.message import MessageResponse
+
+        response = MessageResponse(
+            id=message.id,
+            room_id=message.room_id,
+            sender_id=None,
+            sender_type="system",
+            sender_name="Stable",
+            content=message.content,
+            content_type="system",
+            metadata=message.metadata_ or {},
+            created_at=message.created_at,
+            updated_at=getattr(message, "updated_at", None),
+        )
+        await _ws_deliver_to_room(
+            db=db,
+            room_id=room_id,
+            envelope={
+                "type": "message",
+                "payload": {
+                    "room_id": str(room_id),
+                    "message": response.model_dump(mode="json"),
+                },
+            },
+        )
+    except Exception:
+        logger.warning(
+            "agent_membership_system_message_fanout_failed",
+            room_id=str(room_id),
+            exc_info=True,
+        )
+
+
+async def _broadcast_agent_members_changed(*, room_id: uuid.UUID) -> None:
+    """Refresh the room roster after an automatic mention invite."""
+    await _ws_deliver_to_room(
+        db=None,
+        room_id=room_id,
+        envelope={"type": "members_changed", "payload": {"room_id": str(room_id)}},
+    )
 
 
 # A citation rides in the message row's JSON metadata and is re-sent on every
@@ -530,7 +603,9 @@ async def _respond(
             if msg.metadata_.get("agent_id"):
                 return
 
-        # Don't chain-react when an agent posted the trigger.
+        # Don't chain-react when an agent posted the trigger. Keep the sender
+        # row for mention-invite authorization and the user's default agent.
+        sender: Participant | None = None
         if sender_id is not None:
             sender = (
                 await db.execute(
@@ -567,7 +642,13 @@ async def _respond(
                 brigade_agent_id = pinned_agent_id
         if brigade_agent_id is None or agent_participant is None:
             brigade_agent_id, agent_participant = await _resolve_agent(
-                db=db, room=room, content=msg.content or "", room_type=room_type
+                db=db,
+                room=room,
+                content=msg.content or "",
+                room_type=room_type,
+                sender_id=sender_id,
+                sender=sender,
+                metadata=msg.metadata_,
             )
         if not brigade_agent_id or agent_participant is None:
             return
@@ -576,11 +657,19 @@ async def _respond(
         # Regenerate is unambiguous intent on a known reply, so it bypasses the
         # gate (else regenerate could silently produce nothing after the old
         # reply was already deleted).
-        if not is_regenerate and not _should_respond(
-            room_type=room_type,
-            content=msg.content or "",
-            brigade_agent_id=brigade_agent_id,
-            agent_mode=_agent_mode_for(room, agent_participant),
+        council_command = (
+            isinstance(msg.metadata_, dict) and msg.metadata_.get("council") is True
+        )
+        if (
+            not is_regenerate
+            and not council_command
+            and not _should_respond(
+                room_type=room_type,
+                content=msg.content or "",
+                brigade_agent_id=brigade_agent_id,
+                agent_name=getattr(agent_participant, "display_name", None),
+                agent_mode=_agent_mode_for(room, agent_participant),
+            )
         ):
             return
 
@@ -946,26 +1035,182 @@ async def _discard_failed_reply(*, db, placeholder, room_id):
     })
 
 
+async def _load_brigade_mention_roster(db: Any) -> list[Any]:
+    """Load the same Brigade roster used by the agent picker, when needed."""
+    try:
+        # Lazy import avoids the API/service import cycle and keeps ordinary
+        # messages from touching the upstream roster at all.
+        from app.api.brigade import _fetch_brigade_agents
+
+        return await _fetch_brigade_agents()
+    except Exception:
+        # A roster outage must not make a normal message fail. The mention is
+        # simply unresolved and the existing resident-agent path can continue.
+        logger.warning("agent_mention_roster_fetch_failed", exc_info=True)
+        return []
+
+
+def _brigade_id_of(participant: Any) -> str | None:
+    sub = getattr(participant, "keycloak_sub", None) or ""
+    return sub.split(":", 1)[1] if sub.startswith("brigade:") else None
+
+
+def _agent_id_of_roster_item(agent: Any) -> str | None:
+    """Read an agent id from either a Participant or a Brigade roster row."""
+    participant_id = _brigade_id_of(agent)
+    if participant_id:
+        return participant_id
+    value = getattr(agent, "id", None)
+    return value if isinstance(value, str) and value else None
+
+
+async def _post_agent_not_in_room_notice(
+    *, db: Any, room: Room, agent_name: str, agent_id: str, reason: str
+) -> None:
+    """Tell the room why a mention did not silently summon an agent."""
+    await _post_agent_system_message(
+        db=db,
+        room_id=room.id,
+        content=f"{agent_name} is not in this room — invite it from Members",
+        metadata={
+            "kind": "agent_not_in_room",
+            "agent_id": agent_id,
+            "reason": reason,
+        },
+    )
+
+
+async def _ensure_mentioned_agent_member(
+    *,
+    db: Any,
+    room: Room,
+    sender_id: uuid.UUID | None,
+    sender: Participant | None,
+    agent_id: str,
+    agent_name: str,
+    agent_participant: Participant | None,
+) -> tuple[str | None, Participant | None]:
+    """Join a mentioned Brigade agent, or leave one actionable system notice."""
+    if agent_participant is not None:
+        existing = (
+            await db.execute(
+                select(RoomMember).where(
+                    RoomMember.room_id == room.id,
+                    RoomMember.participant_id == agent_participant.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            # Existing membership is deliberately a no-op: the normal dispatch
+            # path below must behave exactly as it did before this feature.
+            return agent_id, agent_participant
+
+    caller_member = None
+    if sender_id is not None:
+        caller_member = (
+            await db.execute(
+                select(RoomMember).where(
+                    RoomMember.room_id == room.id,
+                    RoomMember.participant_id == sender_id,
+                )
+            )
+        ).scalar_one_or_none()
+    if caller_member is None or caller_member.role == MemberRole.GUEST:
+        await _post_agent_not_in_room_notice(
+            db=db, room=room, agent_name=agent_name, agent_id=agent_id, reason="invite_rights"
+        )
+        return None, None
+
+    if agent_participant is not None and participant_backend(agent_participant) != "brigade":
+        await _post_agent_not_in_room_notice(
+            db=db, room=room, agent_name=agent_name, agent_id=agent_id, reason="backend"
+        )
+        return None, None
+
+    if sender_id is None:
+        await _post_agent_not_in_room_notice(
+            db=db, room=room, agent_name=agent_name, agent_id=agent_id, reason="no_sender"
+        )
+        return None, None
+
+    allowed, access_reason = await resolve_agent_access(
+        db, participant_id=sender_id, agent_id=agent_id
+    )
+    if not allowed:
+        logger.warning(
+            "agent_access_denied",
+            participant_id=str(sender_id),
+            agent_id=agent_id,
+            surface="mention_invite",
+            reason=access_reason,
+        )
+        await _post_agent_not_in_room_notice(
+            db=db, room=room, agent_name=agent_name, agent_id=agent_id, reason="agent_access"
+        )
+        return None, None
+
+    if agent_participant is None:
+        agent_participant = Participant(
+            keycloak_sub=f"brigade:{agent_id}",
+            username=f"agent-{agent_id}",
+            display_name=agent_name or agent_id.replace("-", " ").title(),
+            participant_type=ParticipantType.AGENT,
+            status=ParticipantStatus.ONLINE,
+        )
+        db.add(agent_participant)
+        await db.commit()
+        await db.refresh(agent_participant)
+
+    db.add(
+        RoomMember(
+            room_id=room.id,
+            participant_id=agent_participant.id,
+            role=MemberRole.MEMBER,
+        )
+    )
+    room.metadata_ = add_resident_agent(room.metadata_, agent_id)
+    await db.commit()
+
+    sender_name = (
+        getattr(sender, "display_name", None)
+        or getattr(sender, "username", None)
+        or "Someone"
+    )
+    await _post_agent_system_message(
+        db=db,
+        room_id=room.id,
+        content=f"{agent_name} joined (mentioned by {sender_name})",
+        metadata={
+            "kind": "agent_joined_by_mention",
+            "agent_id": agent_id,
+            "mentioned_by": str(sender_id),
+        },
+    )
+    await _broadcast_agent_members_changed(room_id=room.id)
+    return agent_id, agent_participant
+
+
 async def _resolve_agent(
-    *, db: Any, room: Room, content: str = "", room_type: str = "channel"
+    *,
+    db: Any,
+    room: Room,
+    content: str = "",
+    room_type: str = "channel",
+    sender_id: uuid.UUID | None = None,
+    sender: Participant | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[str | None, Participant | None]:
     """Find the Brigade agent that should answer this message.
 
-    Priority:
-        0. MULTI-AGENT ROOMS (group_dm/channel with >1 agent member): the agent
-           the message explicitly ``@``-mentions, so every invited agent is
-           individually addressable. DMs and single-agent rooms skip this.
-        1. ``room.metadata_["brigade_agent_id"]`` (canonical, set when an
-           agent is invited).
-        2. First agent-typed RoomMember with a ``keycloak_sub`` of the form
-           ``brigade:<id>`` (legacy rooms or rooms invited without metadata).
-    Returns (brigade_agent_id, agent_participant) or (None, None).
+    Explicit agent mentions are resolved before the room's canonical agent. A
+    missing mentioned agent is admitted only when the poster is a non-guest
+    room member and has agent access; otherwise exactly one system notice is
+    posted. ``/council`` also counts as explicit intent and may select the
+    caller's default agent (or Sidekick) in an otherwise empty channel.
     """
-    # 0. In a multi-agent group/channel, route to the @-mentioned member so a
-    # message like "@maj-metrics ..." reaches that agent even though it isn't
-    # the canonical (last-invited) one. Falls through when nobody specific is
-    # named (e.g. @all), leaving the canonical agent + _should_respond in charge.
-    if room_type != "dm" and content:
+    agent_members: list[Participant] = []
+    known_agents: list[Participant] = []
+    if content:
         agent_members = (
             await db.execute(
                 select(Participant)
@@ -976,26 +1221,91 @@ async def _resolve_agent(
                 )
             )
         ).scalars().all()
-        if len(agent_members) > 1:
-            lc = content.lower()
-            for p in agent_members:
-                sub = p.keycloak_sub or ""
-                if not sub.startswith("brigade:"):
-                    continue
-                bid = sub.split(":", 1)[1]
-                needles = {
-                    bid.lower(),
-                    bid.replace("-", " ").lower(),
-                    (p.display_name or "").lower(),
-                }
-                if any(n and f"@{n}" in lc for n in needles):
-                    return bid, p
+
+    mentioned = resolve_mentioned_agent(content, agent_members)
+    roster: list[Any] = []
+    is_council = isinstance(metadata, dict) and bool(metadata.get("council"))
+    if mentioned is None and (parse_mentions(content).handles or is_council):
+        # A participant row is enough for already-invited agents and avoids a
+        # Brigade request for ordinary @human messages in an empty channel.
+        known_agents = (
+            await db.execute(
+                select(Participant).where(
+                    Participant.participant_type == ParticipantType.AGENT
+                )
+            )
+        ).scalars().all()
+        mentioned = resolve_mentioned_agent(content, known_agents)
+        if mentioned is None and parse_mentions(content).handles:
+            roster = await _load_brigade_mention_roster(db)
+            mentioned = resolve_mentioned_agent(content, roster)
+
+    if mentioned is not None:
+        agent_p = next(
+            (
+                p
+                for p in [*agent_members, *known_agents]
+                if _brigade_id_of(p) == mentioned.agent_id
+            ),
+            None,
+        )
+        if agent_p is None:
+            agent_p = await find_agent_participant(db, mentioned.agent_id)
+        return await _ensure_mentioned_agent_member(
+            db=db,
+            room=room,
+            sender_id=sender_id,
+            sender=sender,
+            agent_id=mentioned.agent_id,
+            agent_name=mentioned.display_name,
+            agent_participant=agent_p,
+        )
 
     brigade_agent_id: str | None = None
     if room.metadata_ and isinstance(room.metadata_, dict):
         raw = room.metadata_.get("brigade_agent_id")
         if isinstance(raw, str) and raw:
             brigade_agent_id = raw
+
+    # `/council` is a command-level address even when the composer did not
+    # include an @ token. Prefer the caller's stored default, then Sidekick,
+    # then the first roster entry exposed by Brigade.
+    if not brigade_agent_id and is_council:
+        preferred = None
+        sender_meta = getattr(sender, "metadata_", None)
+        if isinstance(sender_meta, dict):
+            raw_default = sender_meta.get("default_agent_id")
+            if isinstance(raw_default, str) and raw_default.strip():
+                preferred = raw_default.strip()
+        if not roster:
+            roster = await _load_brigade_mention_roster(db)
+        candidates = roster or known_agents
+        roster_by_id = {
+            agent_id: agent
+            for agent in candidates
+            if (agent_id := _agent_id_of_roster_item(agent))
+        }
+        chosen = preferred if preferred in roster_by_id else None
+        if chosen is None and "sidekick" in roster_by_id:
+            chosen = "sidekick"
+        if chosen is None and roster:
+            chosen = getattr(roster[0], "id", None)
+        if chosen:
+            selected = roster_by_id.get(chosen)
+            agent_p = await find_agent_participant(db, chosen)
+            return await _ensure_mentioned_agent_member(
+                db=db,
+                room=room,
+                sender_id=sender_id,
+                sender=sender,
+                agent_id=chosen,
+                agent_name=(
+                    getattr(selected, "name", None)
+                    or getattr(selected, "display_name", None)
+                    or chosen.replace("-", " ").title()
+                ),
+                agent_participant=agent_p,
+            )
 
     if brigade_agent_id:
         pseudo_sub = f"brigade:{brigade_agent_id}"
@@ -1082,7 +1392,9 @@ def _agent_mode_for(room: Any, agent_participant: Any) -> str | None:
     return None
 
 
-def _is_mentioned(content: str, brigade_agent_id: str) -> bool:
+def _is_mentioned(
+    content: str, brigade_agent_id: str, agent_name: str | None = None
+) -> bool:
     lc = content.lower()
     if "@everyone" in lc or "@all" in lc:
         return True
@@ -1090,7 +1402,15 @@ def _is_mentioned(content: str, brigade_agent_id: str) -> bool:
         brigade_agent_id.lower(),
         brigade_agent_id.replace("-", " ").lower(),
     }
-    return any(f"@{n}" in lc for n in needles if n)
+    if any(f"@{n}" in lc for n in needles if n):
+        return True
+    return (
+        agent_name is not None
+        and resolve_mentioned_agent(
+            content, [{"id": brigade_agent_id, "name": agent_name}]
+        )
+        is not None
+    )
 
 
 def _should_respond(
@@ -1098,6 +1418,7 @@ def _should_respond(
     room_type: str,
     content: str,
     brigade_agent_id: str,
+    agent_name: str | None = None,
     agent_mode: str | None = None,
 ) -> bool:
     """Decide whether the resolved agent answers this message.
@@ -1114,12 +1435,12 @@ def _should_respond(
     if agent_mode == "answers_all":
         return True
     if agent_mode == "when_named":
-        return _is_mentioned(content, brigade_agent_id)
+        return _is_mentioned(content, brigade_agent_id, agent_name)
     if agent_mode in ("listening", "muted"):
         return False
     if room_type in ("dm", "agent_hub"):
         return True
-    return _is_mentioned(content, brigade_agent_id)
+    return _is_mentioned(content, brigade_agent_id, agent_name)
 
 
 def history_from_context(

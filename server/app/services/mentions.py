@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, Sequence, TypeVar
+from typing import Any, Iterable, Sequence, TypeVar
 
 # The historical token grammar from push_service/api.messages, kept verbatim
 # so personal-handle matching is byte-for-byte unchanged.
@@ -63,6 +63,72 @@ class ParsedMentions:
         if self.here:
             return "here"
         return None
+
+
+@dataclass(frozen=True)
+class MentionedAgent:
+    """The stable identity selected by an agent @-mention."""
+
+    agent_id: str
+    display_name: str
+
+
+def _agent_field(agent: object, field: str) -> str:
+    """Read the small common roster shape without coupling this module to ORM/API models."""
+    if isinstance(agent, dict):
+        value: Any = agent.get(field)
+    else:
+        value = getattr(agent, field, None)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _at_name_pattern(name: str) -> re.Pattern[str] | None:
+    """Build a boundary-aware matcher for a display name after ``@``."""
+    clean = name.strip()
+    if not clean:
+        return None
+    return re.compile(
+        rf"(?<![A-Za-z0-9_.@-])@{re.escape(clean)}(?![A-Za-z0-9_.-])",
+        re.IGNORECASE,
+    )
+
+
+def resolve_mentioned_agent(
+    content: str | None, agents: Iterable[object]
+) -> MentionedAgent | None:
+    """Resolve one explicit agent mention against a roster.
+
+    Agent ids are the durable address (``@col-finance``); display names are
+    accepted too, including names containing spaces (``@Col. Finance``).
+    Matching is deliberately exact so a human handle such as ``@sidekick2``
+    cannot accidentally address ``sidekick``.
+    """
+    parsed = parse_mentions(content)
+    if not parsed.handles and not (content or "").strip():
+        return None
+    for agent in agents:
+        agent_id = _agent_field(agent, "id") or _agent_field(agent, "agent_id")
+        if not agent_id:
+            pseudo_sub = _agent_field(agent, "keycloak_sub")
+            if pseudo_sub.startswith("brigade:"):
+                agent_id = pseudo_sub.split(":", 1)[1]
+        if not agent_id:
+            continue
+        display_name = (
+            _agent_field(agent, "name")
+            or _agent_field(agent, "display_name")
+            or agent_id
+        )
+        id_aliases = {
+            agent_id.casefold(),
+            agent_id.replace("-", " ").casefold(),
+        }
+        if parsed.handles.intersection(id_aliases):
+            return MentionedAgent(agent_id=agent_id, display_name=display_name)
+        pattern = _at_name_pattern(display_name)
+        if pattern is not None and pattern.search(content or ""):
+            return MentionedAgent(agent_id=agent_id, display_name=display_name)
+    return None
 
 
 def parse_mentions(content: str | None) -> ParsedMentions:
@@ -130,8 +196,10 @@ def offline_notify_targets(
 
 __all__ = [
     "MENTION_TOKEN_RE",
+    "MentionedAgent",
     "ParsedMentions",
     "mentions_participant",
     "offline_notify_targets",
     "parse_mentions",
+    "resolve_mentioned_agent",
 ]
