@@ -15,6 +15,7 @@ import {
   type UnreadMap,
 } from "@/components/Home/homeModel";
 import { HomeRow, SenderLine } from "./HomeRow";
+import { roomTitle } from "@/lib/conversation";
 import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 import { PresenterHiddenLine } from "@/components/Layout/PresenterHiddenLine";
 
@@ -200,7 +201,7 @@ export function ConversationsCard({
                       }
                       return <Identity {...face} size={36} className="mt-0.5" />;
                     })()}
-                    title={room.display_name || room.name}
+                    title={roomTitle(room)}
                     emphasis={unread > 0}
                     at={m?.created_at ?? null}
                     unread={unread}
@@ -251,7 +252,7 @@ export function ConversationsCard({
                       <Hash className="h-4 w-4" />
                     </span>
                   }
-                  title={room.display_name || room.name}
+                  title={roomTitle(room)}
                   emphasis={unread > 0}
                   at={m?.created_at ?? null}
                   unread={unread}

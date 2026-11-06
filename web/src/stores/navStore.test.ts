@@ -75,7 +75,7 @@ describe("nav v2 flag", () => {
       "meetings",
     );
     expect(viewForRoom(room({ type: "agent_hub", brigade_agent_id: "p" }))).toBe(
-      "direct",
+      "agents",
     );
     expect(viewForRoom(room({ type: "channel" }))).toBe("channels");
   });
@@ -136,4 +136,3 @@ describe("what the sidebar lists", () => {
     expect(listDestination("conversations", false)).toBe("conversations");
   });
 });
-

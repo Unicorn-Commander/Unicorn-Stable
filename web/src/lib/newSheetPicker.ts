@@ -32,7 +32,7 @@ export interface ToPickRef {
 import type { Agent, CrewMember, PeopleDirectoryEntry, Room } from "@/services/api";
 import { crewRowMatches } from "@/components/Sidebar/sidebarModel";
 import { crewFromRoster } from "@/lib/crew";
-import { roomLabel } from "@/lib/conversation";
+import { roomTitle } from "@/lib/conversation";
 
 export interface ChannelPick {
   room: Room;
@@ -71,7 +71,7 @@ function personMatches(person: PeopleDirectoryEntry, q: string): boolean {
 }
 
 function channelMatches(room: Room, q: string): boolean {
-  const hay = `${roomLabel(room)} ${room.name} ${room.description || ""}`.toLowerCase();
+  const hay = `${roomTitle(room)} ${room.name} ${room.description || ""}`.toLowerCase();
   return hay.includes(q);
 }
 

@@ -12,7 +12,7 @@ import {
   olderArchivedLabel,
   parseThreadSlash,
   projectChannelConsequence,
-  roomLabel,
+  roomTitle,
   roomNeedsYou,
   threadStubFromEvent,
   upsertRoomList,
@@ -99,11 +99,11 @@ describe("needs you", () => {
 });
 
 describe("labels", () => {
-  it("names an untitled group from its members", () => {
+  it("keeps an untitled group on its room name instead of its members", () => {
     const members: RoomMember[] = [
       {
-        username: "aaron",
-        display_name: "Aaron",
+        username: "alex",
+        display_name: "Alex Rivera",
         role: "owner",
         is_self: true,
         joined_at: "",
@@ -123,8 +123,8 @@ describe("labels", () => {
       },
     ];
     expect(
-      roomLabel(room({ type: "group_dm", name: "group-ab", display_name: undefined }), members),
-    ).toBe("Persephone, Rook");
+      roomTitle(room({ type: "group_dm", name: "group-ab", display_name: undefined }), members),
+    ).toBe("group-ab");
   });
 
   it("formats the collapsed thread hint", () => {
@@ -191,4 +191,3 @@ describe("threadSeedOf", () => {
     expect(threadSeedOf({ sender_name: "Aaron", metadata: { kind: "voice" } })).toBeNull();
   });
 });
-

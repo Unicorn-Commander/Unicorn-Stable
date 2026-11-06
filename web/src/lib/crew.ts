@@ -24,7 +24,7 @@ import {
   type SeatCapabilities,
 } from "@/services/api";
 import { agentPresence } from "@/lib/agentStatus";
-import { roomLabel } from "@/lib/conversation";
+import { roomTitle } from "@/lib/conversation";
 
 export const CREW_GROUP_ORDER: readonly CrewGroup[] = ["own_seat", "house", "partner"] as const;
 
@@ -348,7 +348,7 @@ export function crewTargetRoom(
   if (!opensHub(member)) {
     const shared = sharedRoomFor(member, rooms);
     if (!shared) return null;
-    const label = shared.type === "channel" ? `#${roomLabel(shared)}` : roomLabel(shared);
+    const label = shared.type === "channel" ? `#${roomTitle(shared)}` : roomTitle(shared);
     return { kind: "shared", room: shared, label };
   }
   const hub = hubRoomFor(member, rooms, selfIds, crewAnswered);
@@ -546,4 +546,3 @@ export function roomClassFloor(
 
 export const SHARED_FLOOR_REASON =
   "A line from outside your seats was written here, so this conversation is shared: seats answer when named, with reduced hands. Start a new conversation for a private one.";
-

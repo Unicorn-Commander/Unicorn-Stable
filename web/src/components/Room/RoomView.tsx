@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
-import { Hash, Lock, Plus } from "lucide-react";
+import { Hash, Lock, Plus, Users } from "lucide-react";
 import { identityFor } from "@/lib/identity";
 import { api, type ApiError } from "@/services/api";
 import { ws } from "@/services/websocket";
@@ -46,7 +46,7 @@ import { resolveIdentity } from "@/lib/identity";
 import { agentPresence } from "@/lib/agentStatus";
 import { canEditVoiceSettings, voiceRelaySource } from "@/lib/voiceSettings";
 import { beginThread } from "@/lib/beginThread";
-import { roomLabel } from "@/lib/conversation";
+import { roomTitle } from "@/lib/conversation";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { InviteSheet } from "./InviteSheet";
 import { ProjectNumber } from "@/components/Sidebar/NewSheet";
@@ -379,7 +379,7 @@ export function RoomView({ roomId }: RoomViewProps) {
     }
   }, [membersError, roomId, removeRoom, navigate]);
 
-  const displayName = roomDetail?.display_name || roomDetail?.name || "Room";
+  const displayName = roomDetail ? roomTitle(roomDetail, members) : "Room";
   const [editingTopic, setEditingTopic] = useState(false);
   const [topicDraft, setTopicDraft] = useState("");
   const [editingName, setEditingName] = useState(false);
@@ -400,6 +400,7 @@ export function RoomView({ roomId }: RoomViewProps) {
   // drops the channel furniture (topic edit, rename, Invite) that implies
   // the room is a public space.
   const isDm = roomDetail?.type === "dm" || roomDetail?.type === "agent_hub";
+  const isGroup = roomDetail?.type === "group_dm";
   const parentRoom = useAppStore((s) =>
     roomDetail?.parent_room_id
       ? s.rooms.find((r) => r.id === roomDetail.parent_room_id) ?? null
@@ -683,7 +684,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               </span>
               <span className="truncate font-display text-sm font-semibold text-slate-50">
                 {parentRoom
-                  ? `${roomLabel(parentRoom)} › ${displayName}`
+                  ? `${roomTitle(parentRoom)} › ${displayName}`
                   : dmAgentId
                     ? dmAgentName
                     : dmPeerName}
@@ -692,7 +693,9 @@ export function RoomView({ roomId }: RoomViewProps) {
             </div>
           ) : (
             <>
-          {roomDetail?.visibility === "private" || roomDetail?.project_number ? (
+          {isGroup ? (
+            <Users className="h-4 w-4 shrink-0 text-amber-300/70" aria-label="Group" />
+          ) : roomDetail?.visibility === "private" || roomDetail?.project_number ? (
             <Lock className="h-4 w-4 shrink-0 text-amber-300/80" aria-label="Private channel" />
           ) : (
             <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" aria-label="Public channel" />
@@ -725,7 +728,7 @@ export function RoomView({ roomId }: RoomViewProps) {
               className="truncate font-display text-sm font-semibold text-slate-50 transition-colors hover:text-stable-purple-light focus-ring"
               title="Click to rename"
             >
-              {parentRoom ? `${roomLabel(parentRoom)} › ` : ""}
+              {parentRoom ? `${roomTitle(parentRoom)} › ` : ""}
               {displayName}
             </button>
           )}

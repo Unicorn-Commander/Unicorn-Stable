@@ -274,7 +274,13 @@ export const useAppStore = create<AppState>((set) => ({
         // this payload has no last_message (older backend), keep whatever the
         // live WS path set. Without this, every refetch blanks the previews.
         const prev = prevById.get(r.id);
-        return prev ? { ...r, last_message: r.last_message ?? prev.last_message } : r;
+        return prev
+          ? {
+              ...r,
+              last_message: r.last_message ?? prev.last_message,
+              first_message: r.first_message ?? prev.first_message,
+            }
+          : r;
       });
       // Any payload is evidence the backend answered — the list is "loaded"
       // even when it comes back empty (that's the honest empty state).
@@ -298,7 +304,12 @@ export const useAppStore = create<AppState>((set) => ({
           ? [room, ...state.rooms]
           : state.rooms.map((r) =>
               r.id === room.id
-                ? { ...r, ...room, last_message: room.last_message ?? r.last_message }
+                ? {
+                    ...r,
+                    ...room,
+                    last_message: room.last_message ?? r.last_message,
+                    first_message: room.first_message ?? r.first_message,
+                  }
                 : r,
             );
       return { rooms, unreadCounts: nextUnread };

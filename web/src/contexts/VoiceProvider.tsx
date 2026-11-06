@@ -57,6 +57,7 @@ import {
   serverLaneWanted,
 } from "@/lib/captionState";
 import { apiErrorText, isEntitlementDenial } from "@/lib/agentEntitlement";
+import { roomTitle } from "@/lib/conversation";
 import { DeviceCheckDialog } from "@/components/Call/DeviceCheckDialog";
 import { readCallJoinPrefs, saveCallJoinPrefs } from "@/lib/callJoinPrefs";
 import {
@@ -705,14 +706,14 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           .rooms.find((rm) => rm.id === callRoomId);
         await api.exportCallTranscript(callRoomId, {
           lines,
-          room_name: roomMeta?.display_name || roomMeta?.name || null,
+          room_name: roomMeta ? roomTitle(roomMeta) : null,
           call_started_at: ui.callStartedAt
             ? new Date(ui.callStartedAt).toISOString()
             : null,
           call_ended_at: new Date().toISOString(),
           send_to_meeting_ops: true,
           label: roomMeta
-            ? `Stable call · ${roomMeta.display_name || roomMeta.name}`
+            ? `Stable call · ${roomTitle(roomMeta)}`
             : "Stable call",
         });
       } catch (e) {

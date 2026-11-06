@@ -7,6 +7,7 @@ import { useCallUiStore } from "@/stores/callUiStore";
 import { identityFor } from "@/lib/identity";
 import { shouldShowCallDock } from "@/lib/callAwareness";
 import { DevicePickerButton } from "@/components/Call/DevicePickerButton";
+import { roomTitle } from "@/lib/conversation";
 
 /**
  * CallDock — the persistent, app-level representation of a LIVE call while you
@@ -54,7 +55,7 @@ export function CallDock() {
   if (!activeCallRoomId) return null; // narrow for TS — gate already required it
 
   const callRoom = rooms.find((r) => r.id === activeCallRoomId);
-  const roomName = callRoom?.name ?? "your call";
+  const roomName = callRoom ? roomTitle(callRoom) : "your call";
   const ident = identityFor(activeCallRoomId, roomName);
 
   const count = remoteParticipants.length + (localParticipant ? 1 : 0);

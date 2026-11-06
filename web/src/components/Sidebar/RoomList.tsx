@@ -91,7 +91,7 @@ import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
 import { resolveDefaultAgent } from "./newChat";
 import { beginThread } from "@/lib/beginThread";
-import { olderArchivedLabel, roomLabel } from "@/lib/conversation";
+import { olderArchivedLabel, roomTitle, roomTypeLabel, threadMessageTitle } from "@/lib/conversation";
 import { AgentModeChip } from "@/components/Room/AgentModeChip";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
@@ -202,6 +202,17 @@ function LastLine({
       )}
       {format(line.text)}
     </>
+  );
+}
+
+function RoomTypeLabel({ room }: { room: Pick<Room, "type"> & { is_conference?: boolean } }) {
+  return (
+    <span
+      className="shrink-0 rounded border border-line bg-white/[0.03] px-1 py-px text-[9px] font-medium uppercase tracking-wide text-slate-500"
+      data-testid="room-type-label"
+    >
+      {roomTypeLabel(room)}
+    </span>
   );
 }
 
@@ -424,7 +435,7 @@ export function RoomList() {
       await api.archiveRoom(room.id);
       await qc.invalidateQueries({ queryKey: ["rooms"] });
       setArchivedRooms((prev) => [...prev, { ...room, is_archived: true }]);
-      pushToast({ title: "Chat archived", body: `${room.name} moved to Archived` });
+      pushToast({ title: "Chat archived", body: `${roomTitle(room)} moved to Archived` });
     } catch (e) {
       pushToast({ title: "Couldn't archive", body: e instanceof Error ? e.message : "Request failed" });
     } finally {
@@ -437,7 +448,7 @@ export function RoomList() {
       await api.unarchiveRoom(room.id);
       await qc.invalidateQueries({ queryKey: ["rooms"] });
       setArchivedRooms((prev) => prev.filter((r) => r.id !== room.id));
-      pushToast({ title: "Chat unarchived", body: `${room.name} restored` });
+      pushToast({ title: "Chat unarchived", body: `${roomTitle(room)} restored` });
     } catch (e) {
       pushToast({ title: "Couldn't unarchive", body: e instanceof Error ? e.message : "Request failed" });
     } finally {
@@ -1113,18 +1124,21 @@ export function RoomList() {
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between">
-                <span
-                  className={clsx(
-                    "truncate text-sm",
-                    isActive ? "font-semibold" : "font-medium",
-                  )}
-                >
-                  {room.name}
-                  {room.project_number && (
-                    <span className="ml-1 rounded border border-stable-cyan/30 bg-stable-cyan/10 px-1 font-mono text-[9px] font-semibold text-stable-cyan">
-                      {room.project_number}
-                    </span>
-                  )}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className={clsx(
+                      "truncate text-sm",
+                      isActive ? "font-semibold" : "font-medium",
+                    )}
+                  >
+                    {roomTitle(room)}
+                    {room.project_number && (
+                      <span className="ml-1 rounded border border-stable-cyan/30 bg-stable-cyan/10 px-1 font-mono text-[9px] font-semibold text-stable-cyan">
+                        {room.project_number}
+                      </span>
+                    )}
+                  </span>
+                  <RoomTypeLabel room={room} />
                 </span>
                 <LiveCallBadge call={liveCallByRoomId[room.id]} />
                 {muted && (
@@ -1160,7 +1174,7 @@ export function RoomList() {
             onClick={() => void startThreadOn(room.id)}
             disabled={startingChat}
             className="focus-ring rounded-md p-1 text-slate-500 opacity-60 hover:bg-white/[0.06] hover:text-slate-200 md:opacity-0 md:group-hover:opacity-100"
-            aria-label={`New thread in ${room.name}`}
+            aria-label={`New thread in ${roomTitle(room)}`}
             title="New thread"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -1171,12 +1185,12 @@ export function RoomList() {
               onClick={() => togglePersonExpanded(room.id)}
               className="focus-ring rounded-md p-1 text-slate-500"
               aria-expanded={expanded}
-              aria-label={`${expanded ? "Hide" : "Show"} threads in ${room.name}`}
+              aria-label={`${expanded ? "Hide" : "Show"} threads in ${roomTitle(room)}`}
             >
               <ChevronDown className={clsx("h-3 w-3", !expanded && "-rotate-90")} />
             </button>
           )}
-          {renderMenuTrigger(room.id, `Options for ${room.name}`)}
+          {renderMenuTrigger(room.id, `Options for ${roomTitle(room)}`)}
         </div>
         {!expanded && olderArchivedLabel(threads.length, archivedCount) && (
           <p className="px-8 pb-1 text-[10px] text-slate-500">
@@ -1222,9 +1236,7 @@ export function RoomList() {
     // a legacy DM with no hub falls back to the newest room's label (minus
     // its "Chat with " prefix) — never a thread's title.
     const label =
-      hub?.counterpart?.display_name ||
-      hub?.display_name ||
-      hub?.name ||
+      (hub ? roomTitle(hub) : "") ||
       threads[0]?.display_name ||
       threads[0]?.name ||
       agentId;
@@ -1249,6 +1261,7 @@ export function RoomList() {
     const isActive = activeRoomId === room.id;
     const unread = unreadFor(room);
     const showPreview = !presenterEnabled || rule.isOpenRoom(room.id);
+    const title = roomTitle(room);
     return (
       <li key={room.id} data-walk-room={room.id}>
         <button
@@ -1270,16 +1283,11 @@ export function RoomList() {
           )}
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[13px]">
-                {showPreview && room.last_message ? (
-                  <>
-                    <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
-                  </>
-                ) : (
-                  <span className="italic text-slate-500">
-                    New conversation
-                  </span>
-                )}
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className={clsx("truncate text-[13px]", !room.first_message && !room.last_message && "italic text-slate-500")}>
+                  {title}
+                </span>
+                <RoomTypeLabel room={room} />
               </span>
               <div className="flex shrink-0 items-center gap-1.5">
                 <LiveCallBadge call={liveCallByRoomId[room.id]} />
@@ -1296,6 +1304,11 @@ export function RoomList() {
                 )}
               </div>
             </div>
+            {showPreview && room.last_message && threadMessageTitle(room.last_message) !== title && (
+              <p className="truncate text-[11px] text-slate-500">
+                <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
+              </p>
+            )}
           </div>
         </button>
       </li>
@@ -1471,6 +1484,7 @@ export function RoomList() {
                   >
                     {name}
                   </span>
+                  <RoomTypeLabel room={entry.hub} />
                   {/* Only a mode that differs from a private conversation's
                       default says anything; "Answers everyone" on every hub
                       was noise that cost the name its room. When shown, the
@@ -1501,7 +1515,11 @@ export function RoomList() {
                   )}
                 </div>
               </div>
-              {showPreview && latest?.last_message ? (
+              {/* Collapsed, the row previews the latest thread. Expanded, the
+                  thread rows right below carry their own previews, so the row
+                  does not repeat the newest one (it did: the same line showed
+                  twice once threads sorted by last activity). */}
+              {expanded ? null : showPreview && latest?.last_message ? (
                 <p className="truncate text-[11px] text-slate-500">
                   <span className="font-medium text-slate-500">
                     {latest.last_message.sender_name}:
@@ -1680,8 +1698,11 @@ export function RoomList() {
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">
-                  {roomLabel(room, participantsByRoom[room.id])}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-sm font-medium">
+                    {roomTitle(room, participantsByRoom[room.id])}
+                  </span>
+                  <RoomTypeLabel room={room} />
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <LiveCallBadge call={liveCallByRoomId[room.id]} />
@@ -1715,11 +1736,11 @@ export function RoomList() {
             onClick={() => void startThreadOn(room.id)}
             disabled={startingChat}
             className="focus-ring rounded-md p-1 text-slate-500 opacity-60 hover:text-slate-200 md:opacity-0 md:group-hover:opacity-100"
-            aria-label={`New thread in ${roomLabel(room, participantsByRoom[room.id])}`}
+            aria-label={`New thread in ${roomTitle(room, participantsByRoom[room.id])}`}
           >
             <Plus className="h-3.5 w-3.5" />
           </button>
-          {renderMenuTrigger(room.id, `Options for ${room.name}`)}
+          {renderMenuTrigger(room.id, `Options for ${roomTitle(room, participantsByRoom[room.id])}`)}
         </div>
         {!expanded && olderArchivedLabel(threads.length, archivedCount) && (
           <p className="px-8 pb-1 text-[10px] text-slate-500">
@@ -2210,16 +2231,11 @@ export function RoomList() {
                     }}
                     className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-slate-400 transition-colors hover:bg-white/[0.04] hover:text-slate-200 md:py-1.5"
                   >
-                    <span className="min-w-0 flex-1 truncate text-[13px]">
-                      {(!presenterEnabled || rule.isOpenRoom(room.id)) && room.last_message ? (
-                        <>
-                          <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
-                        </>
-                      ) : (
-                        <span className="italic text-slate-500">
-                          New conversation
-                        </span>
-                      )}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 truncate text-[13px]">
+                        {roomTitle(room)}
+                      </span>
+                      <RoomTypeLabel room={room} />
                     </span>
                     {(!presenterEnabled || rule.isOpenRoom(room.id)) && room.last_message && (
                       <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
@@ -2233,7 +2249,7 @@ export function RoomList() {
                       setMenuKey(menuKey === room.id ? null : room.id)
                     }
                     className="focus-ring shrink-0 rounded-md p-1 text-slate-500 hover:text-slate-200"
-                    aria-label={`Options for ${room.name}`}
+                    aria-label={`Options for ${roomTitle(room)}`}
                     aria-haspopup="menu"
                     aria-expanded={menuKey === room.id}
                   >

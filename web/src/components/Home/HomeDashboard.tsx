@@ -7,6 +7,7 @@ import { api, type Agent, type Room } from "@/services/api";
 import { Identity } from "@/components/ui/Identity";
 import { resolveIdentity } from "@/lib/identity";
 import { lastLinePreview } from "@/lib/systemLines";
+import { roomTitle } from "@/lib/conversation";
 import { useAppStore } from "@/stores/appStore";
 import { useFederationStore } from "@/stores/federationStore";
 import { useNavStore } from "@/stores/navStore";
@@ -722,7 +723,7 @@ export function HomeDashboard({
                 >
                   <RoomFace room={room} selfId={selfId} agents={rosterAgents} size={20} />
                   <span className="min-w-0 flex-1 truncate text-[13px]">
-                    <span className="font-medium text-slate-100">{room.display_name || room.name}</span>
+                    <span className="font-medium text-slate-100">{roomTitle(room)}</span>
                     {room.last_message && (!presenterEnabled || rule.isOpenRoom(room.id)) && (
                       <span className="text-slate-500">
                         {" "}

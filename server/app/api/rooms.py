@@ -65,6 +65,7 @@ def _room_to_response(
     unread_count: int = 0,
     mention_count: int = 0,
     has_unread_mention: bool = False,
+    first_message: Any = None,
     thread_count: int = 0,
     counterpart: Any = None,
     agents: list[Any] | None = None,
@@ -73,12 +74,16 @@ def _room_to_response(
     is_member: bool = True,
 ) -> RoomResponse:
     last_msg_resp = None
-    if last_message is not None:
+    first_msg_resp = None
+    if last_message is not None or first_message is not None:
         # Reuse the canonical Message serializer (flattens sender_*, maps
         # parent_id -> thread_id) so last_message matches getMessages output.
         from app.api.messages import _msg_to_response
 
-        last_msg_resp = _msg_to_response(last_message)
+        if last_message is not None:
+            last_msg_resp = _msg_to_response(last_message)
+        if first_message is not None:
+            first_msg_resp = _msg_to_response(first_message)
     return RoomResponse(
         id=room.id,
         name=room.name,
@@ -96,6 +101,7 @@ def _room_to_response(
         member_count=member_count,
         online_count=online_count,
         last_message=last_msg_resp,
+        first_message=first_msg_resp,
         unread_count=unread_count,
         mention_count=mention_count,
         has_unread_mention=has_unread_mention,
@@ -124,6 +130,7 @@ def _room_entry_to_response(entry: dict[str, Any]) -> RoomResponse:
         entry.get("member_count", 0),
         entry.get("online_count", 0),
         last_message=entry.get("last_message"),
+        first_message=entry.get("first_message"),
         unread_count=entry.get("unread_count", 0),
         mention_count=entry.get("mention_count", 0),
         has_unread_mention=entry.get("has_unread_mention", False),

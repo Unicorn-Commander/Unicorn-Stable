@@ -12,7 +12,7 @@ import {
 } from "@/lib/identity";
 import { usePresence } from "@/hooks/usePresence";
 import { useAppStore } from "@/stores/appStore";
-import { othersInRoom } from "@/lib/conversation";
+import { othersInRoom, roomTitle } from "@/lib/conversation";
 import { ws } from "@/services/websocket";
 import { StableMark } from "@/components/StableMark";
 
@@ -150,10 +150,13 @@ export function ChatPanel({ roomId, onInviteAgent }: ChatPanelProps) {
     : null;
   // Room-aware composer placeholder ("Message #general" / "Message Majik").
   const roomForLabel = useAppStore((s) => s.rooms.find((r) => r.id === roomId));
+  const roomLabel = roomForLabel
+    ? roomTitle(roomForLabel).replace(/^chat with /i, "")
+    : "";
   const composerPlaceholder = roomForLabel
     ? roomForLabel.type === "channel"
-      ? `Message #${roomForLabel.display_name || roomForLabel.name}`
-      : `Message ${(roomForLabel.display_name || roomForLabel.name).replace(/^chat with /i, "")}`
+      ? `Message #${roomLabel}`
+      : `Message ${roomLabel}`
     : undefined;
   // If a moderator muted me in this room, replace the composer with a notice
   // (the server also blocks the post; this just avoids a dead-end 403).

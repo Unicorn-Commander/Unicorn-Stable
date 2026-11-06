@@ -167,6 +167,8 @@ class RoomResponse(BaseModel):
     mention_count: int = 0
     has_unread_mention: bool = False
     last_message: MessageResponse | None = None
+    # First non-deleted message, used by the client to title an untitled thread.
+    first_message: MessageResponse | None = None
     # --- conversation model (design §3, migration 021) ---
     parent_room_id: uuid.UUID | None = None
     visibility: Visibility = "public"

@@ -33,6 +33,7 @@ import {
   useNavStore,
 } from "@/stores/navStore";
 import { displayName, instanceHost } from "@/lib/instances";
+import { roomTitle } from "@/lib/conversation";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { usePresentedRooms } from "@/hooks/usePresentedRooms";
 
@@ -47,6 +48,7 @@ type Item =
   | { kind: "channel"; id: string; label: string; sub: string }
   | { kind: "server"; id: string; label: string; sub: string }
   | { kind: "dm"; id: string; label: string; sub: string }
+  | { kind: "group"; id: string; label: string; sub: string }
   | { kind: "agent"; id: string; label: string; sub: string }
   | {
       kind: "action";
@@ -113,16 +115,24 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       .map((r) => ({
         kind: "channel" as const,
         id: r.id,
-        label: r.name,
+        label: roomTitle(r),
         sub: presenterEnabled ? "channel" : r.description || "channel",
       }));
     const dmItems: Item[] = rooms
-      .filter((r) => r.type === "dm" || r.type === "group_dm")
+      .filter((r) => r.type === "dm")
       .map((r) => ({
         kind: "dm" as const,
         id: r.id,
-        label: r.name,
+        label: roomTitle(r),
         sub: "direct message",
+      }));
+    const groupItems: Item[] = rooms
+      .filter((r) => r.type === "group_dm")
+      .map((r) => ({
+        kind: "group" as const,
+        id: r.id,
+        label: roomTitle(r),
+        sub: "group",
       }));
     const agentItems: Item[] = agents
       .filter(
@@ -229,6 +239,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       ...actionItems,
       ...channelItems,
       ...dmItems,
+      ...groupItems,
       ...agentItems,
       ...serverItems,
     ];
@@ -268,7 +279,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
       it.run();
       return;
     }
-    if (it.kind === "channel" || it.kind === "dm") {
+    if (it.kind === "channel" || it.kind === "dm" || it.kind === "group") {
       navigate(`/c/${it.id}`);
       onClose();
       return;
@@ -444,6 +455,8 @@ function Icon({ item }: { item: Item }) {
     return <Hash className="h-4 w-4 shrink-0 text-stable-cyan/70" />;
   if (item.kind === "dm")
     return <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />;
+  if (item.kind === "group")
+    return <Users className="h-4 w-4 shrink-0 text-amber-300/70" />;
   return (
     <Identity
       {...resolveIdentity(
@@ -466,6 +479,8 @@ function KindLabel({ kind }: { kind: Item["kind"] }) {
       ? "Channel"
       : kind === "dm"
         ? "DM"
+        : kind === "group"
+          ? "Group"
         : kind === "action"
           ? "Command"
           : kind === "server"

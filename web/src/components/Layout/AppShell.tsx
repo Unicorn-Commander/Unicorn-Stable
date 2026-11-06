@@ -11,6 +11,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
+import { roomTitle } from "@/lib/conversation";
 import {
   Activity,
   X,
@@ -448,7 +449,7 @@ export function AppShell() {
     const active = storeRooms.find((r) => r.id === activeRoomId);
     const prefix = total > 0 ? `(${total > 99 ? "99+" : total}) ` : "";
     const roomLabel = active
-      ? `${active.type === "channel" ? "#" : ""}${active.name} — `
+      ? `${active.type === "channel" ? "#" : ""}${roomTitle(active)} — `
       : "";
     document.title = `${prefix}${roomLabel}Stable`;
     return () => {

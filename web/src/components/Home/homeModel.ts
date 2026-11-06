@@ -1,5 +1,6 @@
 import type { Agent, PendingApproval, Room } from "@/services/api";
 import { roomsForView } from "@/components/Sidebar/sidebarModel";
+import { isAgentConversation as isAgentRoomConversation } from "@/lib/conversation";
 
 /**
  * Home dashboard derivations, extracted from HomeDashboard.tsx as pure
@@ -34,13 +35,13 @@ export function sortByRecency(a: Room, b: Room): number {
 
 export function isHumanConversation(room: Room): boolean {
   return (
-    (room.type === "dm" || room.type === "group_dm") && !room.brigade_agent_id
+    (room.type === "dm" || room.type === "group_dm") && !isAgentRoomConversation(room)
   );
 }
 
 export function isAgentConversation(room: Room): boolean {
   return (
-    (room.type === "dm" || room.type === "group_dm") && !!room.brigade_agent_id
+    (room.type === "dm" || room.type === "group_dm") && isAgentRoomConversation(room)
   );
 }
 
@@ -837,4 +838,3 @@ export function seatCardFacts(
     lastLine: text(card?.last_line) ?? text(seat.last_line),
   };
 }
-

@@ -12,6 +12,7 @@ import { identityFor, resolveIdentity } from "@/lib/identity";
 import { Identity } from "@/components/ui/Identity";
 import { useCallUiStore } from "@/stores/callUiStore";
 import { useAppStore } from "@/stores/appStore";
+import { roomTitle } from "@/lib/conversation";
 import { usePresenterStore } from "@/stores/presenterStore";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import {
@@ -153,14 +154,14 @@ export function TranscriptPanel() {
       const roomMeta = rooms.find((rm) => rm.id === activeCallRoomId);
       const result = await api.exportCallTranscript(activeCallRoomId, {
         lines: exportLines,
-        room_name: roomMeta?.display_name || roomMeta?.name || null,
+        room_name: roomMeta ? roomTitle(roomMeta) : null,
         call_started_at: callStartedAt
           ? new Date(callStartedAt).toISOString()
           : null,
         call_ended_at: new Date().toISOString(),
         send_to_meeting_ops: true,
         label: roomMeta
-          ? `Stable call · ${roomMeta.display_name || roomMeta.name}`
+          ? `Stable call · ${roomTitle(roomMeta)}`
           : "Stable call",
       });
       let current = result;
