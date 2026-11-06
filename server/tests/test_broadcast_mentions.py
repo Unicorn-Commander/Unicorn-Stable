@@ -30,6 +30,7 @@ from app.services.mentions import (
     mentions_participant,
     offline_notify_targets,
     parse_mentions,
+    resolve_mentioned_agent,
 )
 
 
@@ -141,6 +142,21 @@ class ParseMentionsTests(TestCase):
         self.assertEqual(parse_mentions("@here @channel").broad_kind, "channel")
         self.assertEqual(parse_mentions("@here").broad_kind, "here")
         self.assertIsNone(parse_mentions("@bob").broad_kind)
+
+    def test_agent_mentions_match_id_or_full_display_name(self) -> None:
+        agents = [
+            SimpleNamespace(id="sidekick", name="Sidekick"),
+            SimpleNamespace(id="col-finance", name="Col. Finance"),
+        ]
+        self.assertEqual(
+            resolve_mentioned_agent("@Sidekick please help", agents).agent_id,
+            "sidekick",
+        )
+        self.assertEqual(
+            resolve_mentioned_agent("@Col. Finance review this", agents).agent_id,
+            "col-finance",
+        )
+        self.assertIsNone(resolve_mentioned_agent("@sidekick2 please help", agents))
 
 
 # ---------------------------------------------------------------------------
