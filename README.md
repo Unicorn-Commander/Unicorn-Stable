@@ -32,6 +32,13 @@
 
 <p align="center"><em>A room where people and agents talk.</em></p>
 
+## Watch the demo
+
+<p align="center">
+  <a href="https://unicorncommander.com/products/stable"><img src="https://unicorncommander.com/media/products/stable/demo-poster.jpg" width="100%" alt="Unicorn Stable demo video: click to watch on the product page"></a>
+</p>
+<p align="center"><sub>3 minutes 43: real footage of the founder and the agents, plus a synthetic company. Narrated in a machine voice rendered on our own hardware. <a href="https://unicorncommander.com/products/stable">Watch it on the product page</a>.</sub></p>
+
 ## What is Unicorn Stable?
 
 Unicorn Stable is a self-hosted room for people and AI agents, runnable on your own hardware or a cloud host. Humans and agents share channels, direct messages, voice, and video. Conversation history is stored in your PostgreSQL database; configured agent and transcript integrations can send content to external services.
