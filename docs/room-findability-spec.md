@@ -33,3 +33,5 @@ the visual cue; the text is the accessible, searchable cue.
 - Search across member names.
 - A richer visual/type-label design beyond the small text label.
 - An audit script for finding old or misclassified room titles.
+
+- A collapsed conversation group previews its latest thread; expanded, the thread rows carry their own previews and the group row shows none (no line appears twice).

@@ -1515,7 +1515,11 @@ export function RoomList() {
                   )}
                 </div>
               </div>
-              {showPreview && latest?.last_message ? (
+              {/* Collapsed, the row previews the latest thread. Expanded, the
+                  thread rows right below carry their own previews, so the row
+                  does not repeat the newest one (it did: the same line showed
+                  twice once threads sorted by last activity). */}
+              {expanded ? null : showPreview && latest?.last_message ? (
                 <p className="truncate text-[11px] text-slate-500">
                   <span className="font-medium text-slate-500">
                     {latest.last_message.sender_name}:
