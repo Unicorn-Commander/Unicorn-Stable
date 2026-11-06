@@ -104,6 +104,26 @@ class MetadataSyncTests(IsolatedAsyncioTestCase):
         )
         lk.update_room_metadata.assert_not_awaited()
 
+    async def test_the_barge_allowlist_reaches_livekit_as_a_comma_string(self) -> None:
+        """``voice_relay_barge_in_from`` (2026-11-05): a list on the row, a
+        comma-separated string in LiveKit, the form the worker parses."""
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(return_value={})
+        await _sync_voice_metadata(
+            lk,
+            _room({"voice_relay_source": ROOK, "voice_relay_barge_in_from": ["aaron", " shafen "]}),
+        )
+        merged = json.loads(lk.update_room_metadata.await_args.args[1])
+        self.assertEqual(merged["voice_relay_barge_in_from"], "aaron,shafen")
+
+        lk = AsyncMock()
+        lk.get_room_metadata = AsyncMock(return_value={})
+        await _sync_voice_metadata(
+            lk, _room({"voice_relay_source": ROOK, "voice_relay_barge_in_from": "aaron"})
+        )
+        merged = json.loads(lk.update_room_metadata.await_args.args[1])
+        self.assertEqual(merged["voice_relay_barge_in_from"], "aaron")
+
 
 class DispatchCarriesCastTests(IsolatedAsyncioTestCase):
     async def test_the_cast_rides_the_relay_dispatch(self) -> None:

@@ -527,7 +527,7 @@ class VoiceTranscriptResponder:
         direct_reply: Callable[[str, Callable[[], None]], Awaitable[bool]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         linked_participant_getter: Callable[[], Any | None] | None = None,
-        on_human_final: Callable[[str], None] | None = None,
+        on_human_final: Callable[..., None] | None = None,
     ) -> None:
         self._session = session
         self._room = room
@@ -672,7 +672,7 @@ class VoiceTranscriptResponder:
 
         if self._on_human_final is not None:
             try:
-                self._on_human_final(utterance.text)
+                self._on_human_final(utterance.text, speaker=utterance.participant_id)
             except Exception:
                 logger.debug("voice_transcript_barge_failed", exc_info=True)
 

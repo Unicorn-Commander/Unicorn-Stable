@@ -285,6 +285,7 @@ class BargeIn:
         *,
         enabled: bool = True,
         echo_guard: TranscriptEchoGuard | None = None,
+        allowed_speakers: frozenset[str] | None = None,
     ) -> None:
         self.speaking = False
         self.barge = False
@@ -293,6 +294,9 @@ class BargeIn:
         self._task: asyncio.Task[None] | None = None
         self.enabled = bool(enabled)
         self.echo_guard = echo_guard or TranscriptEchoGuard()
+        #: ``voice_relay_barge_in_from``: usernames that may interrupt. None =
+        #: anyone. Same parser and rule as the relay (voice_relay.agent).
+        self.allowed_speakers = allowed_speakers
 
     def note_state(self, state: str) -> None:
         """AgentSession ``agent_state_changed``. Listening/idle ends the turn."""
@@ -325,10 +329,18 @@ class BargeIn:
         except Exception:
             logger.debug("brigade_barge_interrupt_failed", exc_info=True)
 
-    def on_human_final(self, text: str, *, duration_s: float | None = None) -> bool:
+    def on_human_final(
+        self,
+        text: str,
+        *,
+        duration_s: float | None = None,
+        speaker: Any = None,
+    ) -> bool:
         """Interrupt if we are speaking and the human said something.
 
         Empty finals (a VAD blip, a blank STT result) do not take the floor.
+        ``speaker`` is the LiveKit identity behind the final; with an
+        allowlist, an unlisted (or unknown) speaker never interrupts.
         Returns True when a turn was actually interrupted.
         """
         if not (text or "").strip():
@@ -345,6 +357,16 @@ class BargeIn:
             return False
         if not self.enabled:
             return False
+        if self.allowed_speakers:
+            from voice_relay.agent import speaker_may_barge
+
+            if not speaker_may_barge(speaker, self.allowed_speakers):
+                logger.debug(
+                    "voice_relay_barge_speaker_ignored",
+                    speaker=str(speaker or "")[:80],
+                    allowed=sorted(self.allowed_speakers),
+                )
+                return False
         self.interrupt()
         return True
 
