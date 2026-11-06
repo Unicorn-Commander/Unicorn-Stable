@@ -171,7 +171,7 @@ export interface RoomTitleInput {
   last_message?: Pick<Message, "content"> | null;
 }
 
-function threadMessageTitle(message: Pick<Message, "content"> | null | undefined): string {
+export function threadMessageTitle(message: Pick<Message, "content"> | null | undefined): string {
   const text = (message?.content || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   return text.length <= 60 ? text : `${text.slice(0, 59).trimEnd()}…`;
@@ -195,6 +195,11 @@ export function roomTitle(
   if (explicit && !(room.parent_room_id && explicit === "New thread")) return explicit;
 
   if (room.parent_room_id) {
+    // A thread named by a person keeps that name; the server's slug-shaped
+    // names (…-t-<hash>) and its "New thread" placeholder are not titles, so
+    // such a child reads as its opening line until somebody names it.
+    const named = (room.name || "").trim();
+    if (named && named !== "New thread" && !/-t-[a-z0-9]+$/i.test(named)) return named;
     return threadMessageTitle(room.first_message) || threadMessageTitle(room.last_message) || "New thread";
   }
   if (

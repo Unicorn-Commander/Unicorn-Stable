@@ -91,7 +91,7 @@ import { ChannelBrowser } from "./ChannelBrowser";
 import { LiveCallBadge } from "./LiveCallBadge";
 import { resolveDefaultAgent } from "./newChat";
 import { beginThread } from "@/lib/beginThread";
-import { olderArchivedLabel, roomTitle, roomTypeLabel } from "@/lib/conversation";
+import { olderArchivedLabel, roomTitle, roomTypeLabel, threadMessageTitle } from "@/lib/conversation";
 import { AgentModeChip } from "@/components/Room/AgentModeChip";
 import { useConversationUi } from "@/stores/conversationUiStore";
 import { ensureHumanDm } from "@/lib/ensureHumanDm";
@@ -1304,7 +1304,7 @@ export function RoomList() {
                 )}
               </div>
             </div>
-            {showPreview && room.last_message && (
+            {showPreview && room.last_message && threadMessageTitle(room.last_message) !== title && (
               <p className="truncate text-[11px] text-slate-500">
                 <LastLine message={room.last_message} nameClassName="font-medium" format={formatLastMessage} />
               </p>
