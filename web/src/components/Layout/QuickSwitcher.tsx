@@ -36,6 +36,7 @@ import { displayName, instanceHost } from "@/lib/instances";
 import { roomTitle } from "@/lib/conversation";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { usePresentedRooms } from "@/hooks/usePresentedRooms";
+import { searchRooms, fuzzyScore } from "./searchModel";
 
 interface QuickSwitcherProps {
   onClose: () => void;
@@ -59,27 +60,9 @@ type Item =
       run: () => void;
     };
 
-function fuzzyScore(needle: string, hay: string): number {
-  if (!needle) return 0;
-  const n = needle.toLowerCase();
-  const h = hay.toLowerCase();
-  if (h.startsWith(n)) return 1000 + (1000 - h.length);
-  if (h.includes(n)) return 500 - h.indexOf(n);
-  // subsequence match
-  let i = 0;
-  let s = 0;
-  for (const c of h) {
-    if (c === n[i]) {
-      i++;
-      s += 5;
-      if (i === n.length) break;
-    }
-  }
-  return i === n.length ? s : 0;
-}
-
 export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProps) {
   const { rooms, rule, enabled: presenterEnabled } = usePresentedRooms();
+  const participantsByRoom = useAppStore((s) => s.participants);
   // Servers live in the federation store. They are folded into THIS palette
   // rather than getting a chord of their own: one switcher that finds rooms,
   // agents, commands and servers beats two competing for Cmd/Ctrl+K.
@@ -245,8 +228,17 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
     ];
     if (presenterEnabled && !q.trim()) return [];
     if (!q.trim()) return all.slice(0, 12);
+    const roomScores = new Map(
+      searchRooms(rooms, q, participantsByRoom).map((entry) => [entry.room.id, entry.score]),
+    );
     const scored = all
-      .map((it) => ({ it, score: Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub)) }))
+      .map((it) => ({
+        it,
+        score:
+          it.kind === "channel" || it.kind === "dm" || it.kind === "group"
+            ? roomScores.get(it.id) ?? 0
+            : Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub)),
+      }))
       .filter((s) => s.score > 0)
       .sort((a, b) => b.score - a.score)
       .map((s) => s.it);
@@ -263,6 +255,7 @@ export function QuickSwitcher({ onClose, onOpenGlobalSearch }: QuickSwitcherProp
     navigate,
     presenterEnabled,
     rule,
+    participantsByRoom,
   ]);
 
   useEffect(() => {
